@@ -996,14 +996,14 @@ function CommuteCard({ settings }) {
   const fetchCommute = async () => {
     setState(s => ({ ...s, loading: true, error: null }));
     try {
-      // 1. Геокод обоих адресов через TomTom
+      // 1. Геокод через Nominatim (бесплатно, без ключа)
       const geocode = async (q) => {
-        const u = `https://api.tomtom.com/search/2/geocode/${encodeURIComponent(q)}.json?key=${tomtomKey}&limit=1`;
-        const r = await fetch(u);
+        const u = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1`;
+        const r = await fetch(u, { headers: { 'Accept-Language': 'ru' } });
         if (!r.ok) throw new Error(`Геокод не удался (${r.status})`);
         const j = await r.json();
-        if (!j.results?.length) throw new Error(`Адрес не найден: ${q}`);
-        return j.results[0].position; // {lat, lon}
+        if (!j.length) throw new Error(`Адрес не найден: ${q}`);
+        return { lat: parseFloat(j[0].lat), lon: parseFloat(j[0].lon) };
       };
 
       const [from, to] = await Promise.all([geocode(homeAddress), geocode(workAddress)]);
