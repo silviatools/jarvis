@@ -38,6 +38,7 @@ HTML_FILE = DIR / "index (9).html"
 DATA_DIR         = Path(os.environ.get("DATA_DIR", str(DIR)))
 CONFIG_FILE      = DATA_DIR / "jarvis_notify_config.json"
 SUBSCRIBERS_FILE = DATA_DIR / "jarvis_subscribers.json"
+APP_DATA_FILE    = DATA_DIR / "jarvis_app_data.json"
 
 FREQ_DAYS = {
     "daily": 1, "every2": 2, "every3": 3,
@@ -204,12 +205,25 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        # serve the HTML app at root
         if self.path in ("/", "/index.html"):
             self._serve_html()
         elif self.path == "/api/subscribers":
             subs = load_subscribers()
             self._json(200, {"count": len(subs["chat_ids"])})
+        elif self.path == "/api/data":
+            if APP_DATA_FILE.exists():
+                try:
+                    content = APP_DATA_FILE.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(content)))
+                    self._cors()
+                    self.end_headers()
+                    self.wfile.write(content)
+                except Exception as e:
+                    self._json(500, {"error": str(e)})
+            else:
+                self._json(200, {})
         else:
             super().do_GET()
 
@@ -222,6 +236,19 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 DATA_DIR.mkdir(parents=True, exist_ok=True)
                 CONFIG_FILE.write_text(
                     json.dumps(config, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                self._json(200, {"ok": True})
+            except Exception as e:
+                self._json(400, {"error": str(e)})
+        elif self.path == "/api/data":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            try:
+                app_data = json.loads(body)
+                DATA_DIR.mkdir(parents=True, exist_ok=True)
+                APP_DATA_FILE.write_text(
+                    json.dumps(app_data, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
                 self._json(200, {"ok": True})

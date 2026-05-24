@@ -4,7 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Jarvis" />
 <title>Jarvis</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -150,27 +152,57 @@ const STORAGE_KEY = 'assistant_data_v1';
 const DEFAULT_SETTINGS = {
   weatherAutoSwitch: true,
   weatherAutoSwitchMinutes: 2,
+  weatherCity: '',
   homeAddress: '',
   workAddress: '',
   tomtomKey: '',
   telegramToken: '',
 };
 
+const DEFAULT_DATA = () => ({ supplements: [], meals: [], taken: {}, settings: { ...DEFAULT_SETTINGS } });
+
 const loadData = () => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { supplements: [], meals: [], taken: {}, settings: { ...DEFAULT_SETTINGS } };
+    if (!raw) return DEFAULT_DATA();
     const parsed = JSON.parse(raw);
     parsed.settings = { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) };
     return parsed;
   } catch {
-    return { supplements: [], meals: [], taken: {}, settings: { ...DEFAULT_SETTINGS } };
+    return DEFAULT_DATA();
   }
 };
 
 const saveData = (data) => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 };
+
+const fetchServerData = async () => {
+  try {
+    const res = await fetch('/api/data', { cache: 'no-store' });
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (!json || Object.keys(json).length === 0) return null;
+    json.settings = { ...DEFAULT_SETTINGS, ...(json.settings || {}) };
+    return json;
+  } catch {
+    return null;
+  }
+};
+
+const pushServerData = (() => {
+  let timer = null;
+  return (data) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      fetch('/api/data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      }).catch(() => {});
+    }, 1500);
+  };
+})();
 
 // ============== ICONS ==============
 const Icon = ({ name, size = 22 }) => {
@@ -346,8 +378,24 @@ function App() {
   const [tab, setTab] = useState('home'); // home | supplements | meals | weather | house | settings
   const [settingsTab, setSettingsTab] = useState('supplements');
   const [houseTab, setHouseTab] = useState('cleaning');
+  const initialLoad = React.useRef(true);
 
-  useEffect(() => { saveData(data); }, [data]);
+  // On mount: try to load from server (overrides localStorage if server has data)
+  useEffect(() => {
+    fetchServerData().then(serverData => {
+      if (serverData) {
+        setData(serverData);
+        saveData(serverData);
+      }
+    });
+  }, []);
+
+  // On every change: save locally + push to server (debounced)
+  useEffect(() => {
+    if (initialLoad.current) { initialLoad.current = false; return; }
+    saveData(data);
+    pushServerData(data);
+  }, [data]);
 
   // Очистка отметок старше сегодняшнего дня
   useEffect(() => {
@@ -417,7 +465,7 @@ function App() {
         {tab === 'home' && <HomeView data={data} setTab={setTab} setHouseTab={setHouseTab} />}
         {tab === 'supplements' && <SupplementsView data={data} setData={setData} />}
         {tab === 'meals' && <MealsView data={data} />}
-        {tab === 'weather' && <WeatherView />}
+        {tab === 'weather' && <WeatherView settings={data.settings} />}
         {tab === 'house' && <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />}
         {tab === 'settings' && (
           <SettingsView
@@ -824,35 +872,60 @@ function MiniWeatherCard({ onClick }) {
   useEffect(() => {
     let cancelled = false;
 
+    const fetchByCoords = async (loc) => {
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat}&longitude=${loc.lon}` +
+        `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m` +
+        `&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('Ошибка загрузки');
+      const weather = await res.json();
+      localStorage.setItem(WEATHER_MINI_CACHE_KEY, JSON.stringify({ ts: Date.now(), weather, location: loc }));
+      if (!cancelled) setState({ loading: false, error: null, data: weather, location: loc });
+    };
+
     const load = async () => {
       try {
+        // Читаем город из настроек
+        const weatherCity = (() => {
+          try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            return JSON.parse(raw || '{}')?.settings?.weatherCity || '';
+          } catch { return ''; }
+        })();
+
+        // Кэш: использовать только если совпадает источник (с городом или без)
         const cached = JSON.parse(localStorage.getItem(WEATHER_MINI_CACHE_KEY) || 'null');
         if (cached && Date.now() - cached.ts < 30 * 60 * 1000) {
           if (!cancelled) setState({ loading: false, error: null, data: cached.weather, location: cached.location });
           return;
         }
-        const savedLoc = JSON.parse(localStorage.getItem(WEATHER_LOC_KEY) || 'null');
-        if (!savedLoc) {
-          if (!cancelled) setState({ loading: false, error: 'Откройте Погоду один раз', data: null, location: null });
+
+        if (weatherCity) {
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(weatherCity)}&format=json&limit=1`,
+            { headers: { 'Accept-Language': 'ru' } }
+          );
+          const results = res.ok ? await res.json() : [];
+          if (!results.length) throw new Error(`Город «${weatherCity}» не найден`);
+          const { lat, lon, display_name } = results[0];
+          const loc = { lat: parseFloat(lat), lon: parseFloat(lon), name: display_name.split(',')[0].trim() };
+          await fetchByCoords(loc);
           return;
         }
-        const url = `https://api.open-meteo.com/v1/forecast?latitude=${savedLoc.lat}&longitude=${savedLoc.lon}` +
-          `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m` +
-          `&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1`;
-        const res = await fetch(url);
-        if (!res.ok) throw new Error('Ошибка загрузки');
-        const weather = await res.json();
-        localStorage.setItem(WEATHER_MINI_CACHE_KEY, JSON.stringify({
-          ts: Date.now(), weather, location: savedLoc
-        }));
-        if (!cancelled) setState({ loading: false, error: null, data: weather, location: savedLoc });
+
+        const savedLoc = JSON.parse(localStorage.getItem(WEATHER_LOC_KEY) || 'null');
+        if (!savedLoc) {
+          if (!cancelled) setState({ loading: false, error: 'Задайте город в Настройках → Общее', data: null, location: null });
+          return;
+        }
+        await fetchByCoords(savedLoc);
       } catch (e) {
         if (!cancelled) setState({ loading: false, error: e.message, data: null, location: null });
       }
     };
 
     load();
-    const interval = setInterval(load, 30 * 60 * 1000); // обновление каждые 30 мин
+    const interval = setInterval(load, 30 * 60 * 1000);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
@@ -1131,11 +1204,12 @@ function BossWidget({ data, onGo }) {
   );
 }
 
-function WeatherView() {
+function WeatherView({ settings }) {
   const [status, setStatus] = useState('loading'); // loading | ready | error | denied
   const [data, setData] = useState(null);
   const [location, setLocation] = useState(null);
   const [error, setError] = useState('');
+  const weatherCity = (settings || {}).weatherCity || '';
 
   const fetchWeather = async (lat, lon) => {
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
@@ -1174,6 +1248,30 @@ function WeatherView() {
     }
   };
 
+  const geocodeCity = async (cityName) => {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(cityName)}&format=json&limit=1&accept-language=ru`,
+      { headers: { 'Accept-Language': 'ru' } }
+    );
+    if (!res.ok) throw new Error('Не удалось геокодировать город');
+    const results = await res.json();
+    if (!results.length) throw new Error(`Город «${cityName}» не найден`);
+    const { lat, lon, display_name } = results[0];
+    const shortName = display_name.split(',')[0].trim();
+    return { lat: parseFloat(lat), lon: parseFloat(lon), name: shortName };
+  };
+
+  const loadByCity = async (cityName) => {
+    try {
+      setStatus('loading');
+      const coords = await geocodeCity(cityName);
+      await loadByCoords(coords.lat, coords.lon, coords.name);
+    } catch (e) {
+      setError(e.message);
+      setStatus('error');
+    }
+  };
+
   const loadByIP = async () => {
     try {
       setStatus('loading');
@@ -1189,6 +1287,7 @@ function WeatherView() {
   };
 
   const requestLocation = () => {
+    if (weatherCity) { loadByCity(weatherCity); return; }
     if (!navigator.geolocation) {
       setError('Геолокация не поддерживается. Попробуйте определить по IP.');
       setStatus('error');
@@ -1217,7 +1316,21 @@ function WeatherView() {
   };
 
   useEffect(() => {
-    // Сначала пробуем кэш (если свежее 30 мин)
+    // Если задан город в настройках — всегда загружаем по нему (кэш только если город не менялся)
+    if (weatherCity) {
+      try {
+        const cached = JSON.parse(localStorage.getItem(WEATHER_CACHE_KEY) || 'null');
+        if (cached && cached.location?.name && Date.now() - cached.ts < 30 * 60 * 1000) {
+          setData(cached.weather);
+          setLocation(cached.location);
+          setStatus('ready');
+          return;
+        }
+      } catch {}
+      loadByCity(weatherCity);
+      return;
+    }
+    // Иначе: кэш → сохранённые координаты → геолокация
     try {
       const cached = JSON.parse(localStorage.getItem(WEATHER_CACHE_KEY) || 'null');
       if (cached && Date.now() - cached.ts < 30 * 60 * 1000) {
@@ -1226,7 +1339,6 @@ function WeatherView() {
         setStatus('ready');
         return;
       }
-      // Если есть сохранённые координаты — обновляем по ним
       const savedLoc = JSON.parse(localStorage.getItem(WEATHER_LOC_KEY) || 'null');
       if (savedLoc) {
         loadByCoords(savedLoc.lat, savedLoc.lon, savedLoc.name);
@@ -1234,7 +1346,7 @@ function WeatherView() {
       }
     } catch {}
     requestLocation();
-  }, []);
+  }, [weatherCity]);
 
   return (
     <div className="fade-in">
@@ -1556,6 +1668,27 @@ function GeneralSettings({ data, setData }) {
           </p>
         </div>
       )}
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div>
+          <h3 className="font-display text-lg mb-1">Погода</h3>
+          <p className="text-sm text-[var(--text-muted)]">
+            Фиксированный город для виджета погоды. Если не задан — определяется автоматически.
+          </p>
+        </div>
+        <div>
+          <label>Город</label>
+          <input
+            type="text"
+            value={settings.weatherCity}
+            onChange={e => updateSetting('weatherCity', e.target.value)}
+            placeholder="Например, Москва или Frankfurt"
+          />
+          <p className="text-xs text-[var(--text-subtle)] mt-2">
+            Работает на всех устройствах без разрешения геолокации.
+          </p>
+        </div>
+      </div>
 
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
         <div>
