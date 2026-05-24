@@ -1,0 +1,2709 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>Jarvis</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  :root {
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --border: #e8e8e8;
+    --border-strong: #d4d4d4;
+    --text: #0a0a0a;
+    --text-muted: #6b6b6b;
+    --text-subtle: #9a9a9a;
+    --accent: #0a0a0a;
+  }
+  * { -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+  }
+  .font-display { font-family: 'Fraunces', serif; font-optical-sizing: auto; letter-spacing: -0.02em; }
+  .font-body { font-family: 'Inter', sans-serif; }
+
+  /* Чекбокс */
+  .check-box {
+    width: 28px;
+    height: 28px;
+    border: 1.5px solid var(--border-strong);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+    background: var(--surface);
+  }
+  .check-box.checked {
+    background: var(--text);
+    border-color: var(--text);
+  }
+  .check-box svg { opacity: 0; transition: opacity 0.2s ease; }
+  .check-box.checked svg { opacity: 1; }
+
+  /* Анимации */
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .fade-in { animation: fadeIn 0.3s ease both; }
+
+  @keyframes slideDown {
+    from { opacity: 0; max-height: 0; }
+    to { opacity: 1; max-height: 1000px; }
+  }
+  .slide-down { animation: slideDown 0.3s ease both; overflow: hidden; }
+
+  /* Скрыть скроллбар */
+  .scrollbar-hide::-webkit-scrollbar { display: none; }
+  .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+  /* Инпуты */
+  input, select, textarea {
+    font-family: 'Inter', sans-serif;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-size: 15px;
+    color: var(--text);
+    width: 100%;
+    transition: border-color 0.15s ease;
+    outline: none;
+  }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--text);
+  }
+  label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    display: block;
+    font-weight: 500;
+  }
+
+  /* Кнопки */
+  .btn-primary {
+    background: var(--text);
+    color: white;
+    padding: 14px 20px;
+    border-radius: 10px;
+    font-weight: 500;
+    transition: opacity 0.15s ease;
+    border: none;
+    cursor: pointer;
+  }
+  .btn-primary:hover { opacity: 0.85; }
+  .btn-secondary {
+    background: var(--surface);
+    color: var(--text);
+    padding: 14px 20px;
+    border-radius: 10px;
+    font-weight: 500;
+    border: 1px solid var(--border-strong);
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .btn-secondary:hover { background: #f3f3f3; }
+  .btn-ghost {
+    color: var(--text-muted);
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: color 0.15s ease;
+  }
+  .btn-ghost:hover { color: var(--text); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+// ============== STORAGE ==============
+const STORAGE_KEY = 'assistant_data_v1';
+
+const DEFAULT_SETTINGS = {
+  weatherAutoSwitch: true,
+  weatherAutoSwitchMinutes: 2,
+  homeAddress: '',
+  workAddress: '',
+  tomtomKey: '',
+  telegramToken: '',
+};
+
+const loadData = () => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { supplements: [], meals: [], taken: {}, settings: { ...DEFAULT_SETTINGS } };
+    const parsed = JSON.parse(raw);
+    parsed.settings = { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) };
+    return parsed;
+  } catch {
+    return { supplements: [], meals: [], taken: {}, settings: { ...DEFAULT_SETTINGS } };
+  }
+};
+
+const saveData = (data) => {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+};
+
+// ============== ICONS ==============
+const Icon = ({ name, size = 22 }) => {
+  const icons = {
+    pill: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m10.5 20.5 10-10a4.95 4.95 0 1 0-7-7l-10 10a4.95 4.95 0 1 0 7 7Z"/><path d="m8.5 8.5 7 7"/></svg>,
+    plate: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/></svg>,
+    settings: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>,
+    sun: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>,
+    moon: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>,
+    dumbbell: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14.4 14.4 9.6 9.6"/><path d="M18.657 21.485a2 2 0 1 1-2.829-2.828l-1.767 1.768a2 2 0 1 1-2.829-2.829l6.364-6.364a2 2 0 1 1 2.829 2.829l-1.768 1.767a2 2 0 1 1 2.828 2.829z"/><path d="m21.5 21.5-1.4-1.4"/><path d="M3.9 3.9 2.5 2.5"/><path d="M6.404 12.768a2 2 0 1 1-2.829-2.829l1.768-1.767a2 2 0 1 1-2.828-2.829l2.828-2.828a2 2 0 1 1 2.829 2.828l1.767-1.768a2 2 0 1 1 2.829 2.829z"/></svg>,
+    check: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>,
+    plus: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5v14"/></svg>,
+    trash: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>,
+    edit: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>,
+    archive: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/></svg>,
+    chevronDown: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>,
+    x: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>,
+    restore: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>,
+    cloud: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>,
+    cloudRain: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M16 14v6M8 14v6M12 16v6"/></svg>,
+    cloudSnow: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M8 15h.01M8 19h.01M12 17h.01M12 21h.01M16 15h.01M16 19h.01"/></svg>,
+    cloudFog: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M16 17H7M17 21H9"/></svg>,
+    cloudLightning: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 16.326A7 7 0 1 1 18 10h-1.05A5.5 5.5 0 0 1 18 20.4"/><path d="m13 12-3 5h4l-3 5"/></svg>,
+    cloudSun: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v2M5.22 5.22l1.42 1.42M20 12h2M15.97 12.5A4 4 0 0 0 9.5 8.88"/><path d="M13 22H7a5 5 0 1 1 4.9-6h1.1a3.5 3.5 0 0 1 0 7Z"/></svg>,
+    droplet: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/></svg>,
+    wind: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17.7 7.7a2.5 2.5 0 1 1 1.8 4.3H2M9.6 4.6A2 2 0 1 1 11 8H2M12.6 19.4A2 2 0 1 0 14 16H2"/></svg>,
+    thermometer: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/></svg>,
+    sunrise: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v8M5.2 11.2l1.4 1.4M2 18h2M20 18h2M17.4 12.6l1.4-1.4M22 22H2M16 18a4 4 0 0 0-8 0M8 6l4-4 4 4"/></svg>,
+    sunset: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 10V2M5.2 11.2l1.4 1.4M2 18h2M20 18h2M17.4 12.6l1.4-1.4M22 22H2M16 18a4 4 0 0 0-8 0M16 5l-4 4-4-4"/></svg>,
+    mapPin: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>,
+    car: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/></svg>,
+    home: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
+    layout: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18M9 21V9"/></svg>,
+    bell: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>,
+    download: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
+  };
+  return icons[name] || null;
+};
+
+// ============== CONSTANTS ==============
+const FORMS = ['Таблетки', 'Капсулы', 'Капли', 'Порошок', 'Сироп', 'Жидкость', 'Жевательные', 'Спрей'];
+
+const FREQUENCIES = [
+  { id: 'daily_morning', label: 'Ежедневно — утром' },
+  { id: 'daily_evening', label: 'Ежедневно — вечером' },
+  { id: 'daily_both', label: 'Ежедневно — утром и вечером' },
+  { id: 'every_other_morning', label: 'Через день — утром' },
+  { id: 'every_other_evening', label: 'Через день — вечером' },
+  { id: 'weekdays_morning', label: 'По будням — утром' },
+  { id: 'weekdays_evening', label: 'По будням — вечером' },
+  { id: 'weekends_morning', label: 'По выходным — утром' },
+  { id: 'weekends_evening', label: 'По выходным — вечером' },
+  { id: 'weekly_morning', label: 'Раз в неделю — утром (выбрать день)' },
+  { id: 'weekly_evening', label: 'Раз в неделю — вечером (выбрать день)' },
+];
+
+const WEEKDAYS = [
+  { id: 1, label: 'Пн' },
+  { id: 2, label: 'Вт' },
+  { id: 3, label: 'Ср' },
+  { id: 4, label: 'Чт' },
+  { id: 5, label: 'Пт' },
+  { id: 6, label: 'Сб' },
+  { id: 0, label: 'Вс' },
+];
+
+// ============== HELPERS ==============
+// Утро: 6:00–12:00, Вечер: 18:00–23:00
+const getCurrentPeriod = () => {
+  const h = new Date().getHours();
+  if (h >= 6 && h < 12) return 'morning';
+  if (h >= 18 && h < 23) return 'evening';
+  // Между периодами — показываем ближайший
+  if (h >= 12 && h < 18) return 'evening';
+  return 'morning';
+};
+
+const getTodayKey = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+
+// Сколько дней прошло с эпохи (для "через день")
+const getDayNumber = () => {
+  return Math.floor(new Date().setHours(0,0,0,0) / 86400000);
+};
+
+const isSupplementForPeriod = (supp, period) => {
+  if (supp.archived) return false;
+  const f = supp.frequency;
+  const today = new Date().getDay(); // 0=вс, 1=пн ...
+  const isWeekend = today === 0 || today === 6;
+  const isWeekday = !isWeekend;
+  const dayNum = getDayNumber();
+  const isEvenDay = dayNum % 2 === 0;
+
+  if (period === 'morning') {
+    if (f === 'daily_morning' || f === 'daily_both') return true;
+    if (f === 'every_other_morning') return isEvenDay;
+    if (f === 'weekdays_morning') return isWeekday;
+    if (f === 'weekends_morning') return isWeekend;
+    if (f === 'weekly_morning') return today === supp.weekday;
+  }
+  if (period === 'evening') {
+    if (f === 'daily_evening' || f === 'daily_both') return true;
+    if (f === 'every_other_evening') return isEvenDay;
+    if (f === 'weekdays_evening') return isWeekday;
+    if (f === 'weekends_evening') return isWeekend;
+    if (f === 'weekly_evening') return today === supp.weekday;
+  }
+  return false;
+};
+
+const getFrequencyLabel = (id) => FREQUENCIES.find(f => f.id === id)?.label || id;
+
+const CHORE_FREQUENCIES = [
+  { id: 'daily',     label: 'Каждый день',      days: 1 },
+  { id: 'every2',    label: 'Каждые 2 дня',     days: 2 },
+  { id: 'every3',    label: 'Каждые 3 дня',     days: 3 },
+  { id: 'weekly',    label: 'Раз в неделю',     days: 7 },
+  { id: 'biweekly',  label: 'Раз в 2 недели',   days: 14 },
+  { id: 'monthly',   label: 'Раз в месяц',      days: 30 },
+  { id: 'custom',    label: 'Своя периодичность', days: null },
+];
+
+const getChoreFrequencyDays = (chore) => {
+  if (chore.frequency === 'custom') return Math.max(1, chore.customDays || 7);
+  return CHORE_FREQUENCIES.find(f => f.id === chore.frequency)?.days || 7;
+};
+
+const getChoreNextDate = (chore) => {
+  const days = getChoreFrequencyDays(chore);
+  if (!chore.lastDone) {
+    const d = new Date(); d.setHours(0, 0, 0, 0); return d;
+  }
+  const last = new Date(chore.lastDone); last.setHours(0, 0, 0, 0);
+  last.setDate(last.getDate() + days);
+  return last;
+};
+
+const isChoreDueToday = (chore) => {
+  if (chore.archived) return false;
+  const next = getChoreNextDate(chore);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return next <= today;
+};
+
+const isChoreUpcoming = (chore) => {
+  if (chore.archived) return false;
+  const next = getChoreNextDate(chore);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const week = new Date(today); week.setDate(week.getDate() + 7);
+  return next > today && next <= week;
+};
+
+const getBossPeriod = () => {
+  const h = new Date().getHours();
+  if (h >= 5  && h < 13) return 'morning';
+  if (h >= 13 && h < 24) return 'evening';
+  return null;
+};
+
+const formatChoreDate = (dateStr) => {
+  if (!dateStr) return 'ещё не делалось';
+  const d = new Date(dateStr);
+  const months = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+  return `${d.getDate()} ${months[d.getMonth()]}`;
+};
+
+// ============== APP ==============
+function App() {
+  const [data, setData] = useState(loadData());
+  const [tab, setTab] = useState('home'); // home | supplements | meals | weather | house | settings
+  const [settingsTab, setSettingsTab] = useState('supplements');
+  const [houseTab, setHouseTab] = useState('cleaning');
+
+  useEffect(() => { saveData(data); }, [data]);
+
+  // Очистка отметок старше сегодняшнего дня
+  useEffect(() => {
+    const today = getTodayKey();
+    const cleaned = {};
+    Object.keys(data.taken || {}).forEach(k => {
+      if (k.startsWith(today)) cleaned[k] = data.taken[k];
+    });
+    if (Object.keys(cleaned).length !== Object.keys(data.taken || {}).length) {
+      setData(d => ({ ...d, taken: cleaned }));
+    }
+  }, []);
+
+  // Авто-переключение на Погоду при бездействии
+  const { weatherAutoSwitch, weatherAutoSwitchMinutes } = data.settings || DEFAULT_SETTINGS;
+  useEffect(() => {
+    if (!weatherAutoSwitch) return;
+    const intervalMs = Math.max(0.5, Number(weatherAutoSwitchMinutes) || 2) * 60 * 1000;
+    let timerId = null;
+
+    const reset = () => {
+      if (timerId) clearTimeout(timerId);
+      timerId = setTimeout(() => {
+        setTab(current => current === 'home' ? current : 'home');
+      }, intervalMs);
+    };
+
+    const events = ['mousedown', 'mousemove', 'keydown', 'touchstart', 'wheel', 'click'];
+    events.forEach(ev => window.addEventListener(ev, reset, { passive: true }));
+    reset();
+
+    return () => {
+      if (timerId) clearTimeout(timerId);
+      events.forEach(ev => window.removeEventListener(ev, reset));
+    };
+  }, [weatherAutoSwitch, weatherAutoSwitchMinutes]);
+
+  // Авто-синхронизация конфига уведомлений с jarvis.py
+  useEffect(() => {
+    const token = data.settings?.telegramToken;
+    if (!token) return;
+    const timer = setTimeout(() => {
+      const config = {
+        telegram: { token },
+        chores: (data.chores || []).filter(c => !c.archived).map(c => ({
+          name: c.name,
+          frequency: c.frequency,
+          customDays: c.customDays || null,
+          lastDone: c.lastDone || null,
+          notify: !!c.notify,
+          notifyTime: c.notifyTime || '09:00',
+        })),
+      };
+      fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      }).catch(() => {});
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [data.settings?.telegramToken, data.chores]);
+
+  return (
+    <div className="min-h-screen pb-20">
+      <Header tab={tab} setTab={setTab} />
+      <main className="max-w-3xl mx-auto px-6 pt-8">
+        {tab === 'home' && <HomeView data={data} setTab={setTab} setHouseTab={setHouseTab} />}
+        {tab === 'supplements' && <SupplementsView data={data} setData={setData} />}
+        {tab === 'meals' && <MealsView data={data} />}
+        {tab === 'weather' && <WeatherView />}
+        {tab === 'house' && <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />}
+        {tab === 'settings' && (
+          <SettingsView
+            data={data}
+            setData={setData}
+            settingsTab={settingsTab}
+            setSettingsTab={setSettingsTab}
+          />
+        )}
+      </main>
+    </div>
+  );
+}
+
+// ============== HEADER ==============
+function Header({ tab, setTab }) {
+  const items = [
+    { id: 'home', icon: 'layout', label: 'Главная' },
+    { id: 'supplements', icon: 'pill', label: 'БАДДы' },
+    { id: 'meals', icon: 'plate', label: 'Питание' },
+    { id: 'weather', icon: 'cloud', label: 'Погода' },
+    { id: 'house', icon: 'home', label: 'Дела' },
+    { id: 'settings', icon: 'settings', label: 'Настройки' },
+  ];
+  return (
+    <header className="sticky top-0 z-10 bg-[var(--bg)]/85 backdrop-blur-lg border-b border-[var(--border)]">
+      <div className="max-w-3xl mx-auto px-6 py-5 flex items-center justify-between">
+        <div className="font-display text-xl">Jarvis</div>
+        <nav className="flex items-center gap-1">
+          {items.map(item => (
+            <button
+              key={item.id}
+              onClick={() => setTab(item.id)}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl transition-all ${
+                tab === item.id
+                  ? 'bg-[var(--text)] text-white'
+                  : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-black/5'
+              }`}
+              title={item.label}
+            >
+              <Icon name={item.icon} size={20} />
+              <span className="hidden sm:inline text-sm font-medium">{item.label}</span>
+            </button>
+          ))}
+        </nav>
+      </div>
+    </header>
+  );
+}
+
+// ============== SUPPLEMENTS VIEW ==============
+function SupplementsView({ data, setData }) {
+  const [period, setPeriod] = useState(getCurrentPeriod());
+  const todayKey = getTodayKey();
+
+  const list = useMemo(() => {
+    if (period === 'workout') {
+      return (data.workoutSupplements || []).filter(s => !s.archived);
+    }
+    return (data.supplements || []).filter(s => isSupplementForPeriod(s, period));
+  }, [data.supplements, data.workoutSupplements, period]);
+
+  const isTaken = (id) => !!data.taken?.[`${todayKey}_${period}_${id}`];
+
+  const toggle = (id) => {
+    const key = `${todayKey}_${period}_${id}`;
+    setData(d => {
+      const taken = { ...(d.taken || {}) };
+      if (taken[key]) delete taken[key];
+      else taken[key] = Date.now();
+      return { ...d, taken };
+    });
+  };
+
+  const takeAll = () => {
+    setData(d => {
+      const taken = { ...(d.taken || {}) };
+      list.forEach(s => { taken[`${todayKey}_${period}_${s.id}`] = Date.now(); });
+      return { ...d, taken };
+    });
+  };
+
+  const remaining = list.filter(s => !isTaken(s.id));
+  const allTaken = list.length > 0 && remaining.length === 0;
+
+  const periodLabels = { morning: 'утро', evening: 'вечер', workout: 'тренировку' };
+  const emptyTexts = {
+    morning: 'Нет БАДДов на это время',
+    evening: 'Нет БАДДов на это время',
+    workout: 'Нет БАДДов для тренировки',
+  };
+
+  return (
+    <div className="fade-in">
+      <div className="mb-8">
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Сегодня</div>
+        <h1 className="font-display text-4xl">БАДДы</h1>
+      </div>
+
+      {/* Переключатель Утро/Вечер + Тренировки (отдельно) */}
+      <div className="flex flex-wrap gap-3 mb-8">
+        <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
+          <button
+            onClick={() => setPeriod('morning')}
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              period === 'morning' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+            }`}
+          >
+            <Icon name="sun" size={16} />
+            Утро
+          </button>
+          <button
+            onClick={() => setPeriod('evening')}
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              period === 'evening' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+            }`}
+          >
+            <Icon name="moon" size={16} />
+            Вечер
+          </button>
+        </div>
+        <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
+          <button
+            onClick={() => setPeriod('workout')}
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              period === 'workout' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+            }`}
+          >
+            <Icon name="dumbbell" size={16} />
+            Тренировки
+          </button>
+        </div>
+      </div>
+
+      {list.length === 0 ? (
+        <EmptyState
+          title={emptyTexts[period]}
+          text="Добавьте БАДДы в настройках"
+        />
+      ) : (
+        <>
+          {allTaken && (
+            <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6 text-center fade-in mb-6 flex items-center justify-center gap-3">
+              <div className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-[var(--text)] text-white">
+                <Icon name="check" size={18} />
+              </div>
+              <div className="font-display text-lg">Все БАДДы на {periodLabels[period]} приняты</div>
+            </div>
+          )}
+          <div className="space-y-3 mb-6">
+            {list.map(s => (
+              <SupplementCard
+                key={s.id}
+                supp={s}
+                taken={isTaken(s.id)}
+                onToggle={() => toggle(s.id)}
+              />
+            ))}
+          </div>
+          {!allTaken && (
+            <button onClick={takeAll} className="btn-primary w-full flex items-center justify-center gap-2">
+              <Icon name="check" size={18} />
+              Принял все
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function SupplementCard({ supp, taken, onToggle }) {
+  return (
+    <div
+      onClick={onToggle}
+      className={`bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 flex items-center gap-5 cursor-pointer transition-all hover:border-[var(--border-strong)] ${
+        taken ? 'opacity-50' : ''
+      }`}
+    >
+      <div className={`check-box ${taken ? 'checked' : ''}`}>
+        <Icon name="check" size={16} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-baseline gap-3 mb-1">
+          <h3 className={`font-display text-xl truncate ${taken ? 'line-through text-[var(--text-muted)]' : ''}`}>
+            {supp.name}
+          </h3>
+          <span className={`text-sm flex-shrink-0 ${taken ? 'line-through text-[var(--text-subtle)]' : 'text-[var(--text-muted)]'}`}>
+            {supp.dosage}
+          </span>
+        </div>
+        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wider">{supp.form}</div>
+        {supp.comment && (
+          <div className={`text-sm mt-2 italic ${taken ? 'text-[var(--text-subtle)]' : 'text-[var(--text-muted)]'}`}>
+            {supp.comment}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============== MEALS VIEW ==============
+function MealsView({ data }) {
+  const [expanded, setExpanded] = useState(null);
+  const meals = (data.meals || []).filter(m => !m.archived);
+
+  return (
+    <div className="fade-in">
+      <div className="mb-8">
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Рационы</div>
+        <h1 className="font-display text-4xl">План питания</h1>
+      </div>
+
+      {meals.length === 0 ? (
+        <EmptyState title="Нет рационов" text="Создайте рацион в настройках" />
+      ) : (
+        <div className="space-y-3">
+          {meals.map(meal => {
+            const isOpen = expanded === meal.id;
+            const summary = [
+              meal.breakfast && `Завтрак: ${meal.breakfast.split('\n')[0]}`,
+              meal.snack && `Перекус: ${meal.snack.split('\n')[0]}`,
+              meal.lunch && `Обед: ${meal.lunch.split('\n')[0]}`,
+              meal.dinner && `Ужин: ${meal.dinner.split('\n')[0]}`,
+            ].filter(Boolean).join(' · ');
+
+            return (
+              <div
+                key={meal.id}
+                className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden transition-all"
+              >
+                <button
+                  onClick={() => setExpanded(isOpen ? null : meal.id)}
+                  className="w-full p-5 text-left flex items-start gap-4"
+                >
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-display text-xl mb-2">{meal.name}</h3>
+                    <NutritionRow meal={meal} compact />
+                    {!isOpen && summary && (
+                      <div className="text-sm text-[var(--text-subtle)] truncate mt-2">{summary}</div>
+                    )}
+                  </div>
+                  <div className={`text-[var(--text-muted)] transition-transform ${isOpen ? 'rotate-180' : ''}`}>
+                    <Icon name="chevronDown" size={20} />
+                  </div>
+                </button>
+
+                {isOpen && (
+                  <div className="slide-down border-t border-[var(--border)] px-5 py-6 space-y-5">
+                    <NutritionRow meal={meal} />
+                    <MealSection title="Завтрак" content={meal.breakfast} />
+                    <MealSection title="Перекус" content={meal.snack} />
+                    <MealSection title="Обед" content={meal.lunch} />
+                    <MealSection title="Ужин" content={meal.dinner} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NutritionRow({ meal, compact }) {
+  const items = [
+    { label: 'ккал', value: meal.calories },
+    { label: 'Б', value: meal.protein, unit: 'г' },
+    { label: 'Ж', value: meal.fat, unit: 'г' },
+    { label: 'У', value: meal.carbs, unit: 'г' },
+  ];
+  const hasAny = items.some(i => i.value !== '' && i.value != null);
+  if (!hasAny) return null;
+
+  if (compact) {
+    return (
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+        {items.map(i => (
+          (i.value !== '' && i.value != null) ? (
+            <span key={i.label}>
+              <span className="text-[var(--text)] font-medium">{i.value}</span>
+              <span className="text-[var(--text-subtle)] ml-1">{i.label}</span>
+            </span>
+          ) : null
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid grid-cols-4 gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl p-4">
+      {items.map(i => (
+        <div key={i.label} className="text-center">
+          <div className="font-display text-2xl">
+            {i.value !== '' && i.value != null ? i.value : '—'}
+          </div>
+          <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wider mt-1">
+            {i.label}{i.unit ? `, ${i.unit}` : ''}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MealSection({ title, content }) {
+  if (!content?.trim()) return null;
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] mb-2 font-medium">{title}</div>
+      <div className="text-[var(--text)] whitespace-pre-line leading-relaxed">{content}</div>
+    </div>
+  );
+}
+
+// ============== WEATHER VIEW ==============
+const WEATHER_CACHE_KEY = 'weather_cache_v1';
+const WEATHER_MINI_CACHE_KEY = 'weather_mini_cache_v2';
+const WEATHER_LOC_KEY = 'weather_location_v1';
+const COMMUTE_CACHE_KEY = 'commute_cache_v1';
+
+// WMO Weather codes → иконка + описание
+const getWeatherInfo = (code) => {
+  if (code === 0) return { icon: 'sun', label: 'Ясно' };
+  if (code === 1) return { icon: 'cloudSun', label: 'Преимущественно ясно' };
+  if (code === 2) return { icon: 'cloudSun', label: 'Переменная облачность' };
+  if (code === 3) return { icon: 'cloud', label: 'Пасмурно' };
+  if (code === 45 || code === 48) return { icon: 'cloudFog', label: 'Туман' };
+  if (code >= 51 && code <= 57) return { icon: 'cloudRain', label: 'Морось' };
+  if (code >= 61 && code <= 67) return { icon: 'cloudRain', label: 'Дождь' };
+  if (code >= 71 && code <= 77) return { icon: 'cloudSnow', label: 'Снег' };
+  if (code >= 80 && code <= 82) return { icon: 'cloudRain', label: 'Ливень' };
+  if (code >= 85 && code <= 86) return { icon: 'cloudSnow', label: 'Снегопад' };
+  if (code >= 95 && code <= 99) return { icon: 'cloudLightning', label: 'Гроза' };
+  return { icon: 'cloud', label: 'Облачно' };
+};
+
+const WEEKDAY_SHORT = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+const WEEKDAY_FULL = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
+
+// ============== HOME VIEW ==============
+function HomeView({ data, setTab, setHouseTab }) {
+  const now = new Date();
+  const dateStr = `${now.getDate()} ${monthFullLower(now.getMonth())}, ${WEEKDAY_FULL[now.getDay()].toLowerCase()}`;
+
+  const goHouse = (sub) => { setHouseTab(sub); setTab('house'); };
+
+  return (
+    <div className="fade-in">
+      <div className="mb-8">
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Сегодня</div>
+        <h1 className="font-display text-4xl">Главная</h1>
+        <div className="text-[var(--text-muted)] mt-2 text-sm">{dateStr}</div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <MiniWeatherCard onClick={() => setTab('weather')} />
+        <CommuteCard settings={data.settings} />
+        <CleaningWidget data={data} onGo={() => goHouse('cleaning')} />
+        <BossWidget data={data} onGo={() => goHouse('boss')} />
+      </div>
+    </div>
+  );
+}
+
+function MiniWeatherCard({ onClick }) {
+  const [state, setState] = useState({ loading: true, error: null, data: null, location: null });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const cached = JSON.parse(localStorage.getItem(WEATHER_MINI_CACHE_KEY) || 'null');
+        if (cached && Date.now() - cached.ts < 30 * 60 * 1000) {
+          if (!cancelled) setState({ loading: false, error: null, data: cached.weather, location: cached.location });
+          return;
+        }
+        const savedLoc = JSON.parse(localStorage.getItem(WEATHER_LOC_KEY) || 'null');
+        if (!savedLoc) {
+          if (!cancelled) setState({ loading: false, error: 'Откройте Погоду один раз', data: null, location: null });
+          return;
+        }
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${savedLoc.lat}&longitude=${savedLoc.lon}` +
+          `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m` +
+          `&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('Ошибка загрузки');
+        const weather = await res.json();
+        localStorage.setItem(WEATHER_MINI_CACHE_KEY, JSON.stringify({
+          ts: Date.now(), weather, location: savedLoc
+        }));
+        if (!cancelled) setState({ loading: false, error: null, data: weather, location: savedLoc });
+      } catch (e) {
+        if (!cancelled) setState({ loading: false, error: e.message, data: null, location: null });
+      }
+    };
+
+    load();
+    const interval = setInterval(load, 30 * 60 * 1000); // обновление каждые 30 мин
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  return (
+    <div
+      onClick={onClick}
+      className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6 cursor-pointer transition-all hover:border-[var(--border-strong)]"
+    >
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] font-medium">Погода</div>
+        {state.location && (
+          <div className="flex items-center gap-1 text-xs text-[var(--text-subtle)]">
+            <Icon name="mapPin" size={12} />
+            <span className="truncate max-w-[120px]">{state.location.name}</span>
+          </div>
+        )}
+      </div>
+
+      {state.loading && (
+        <div className="text-[var(--text-muted)] text-sm py-6">Загрузка...</div>
+      )}
+
+      {!state.loading && state.error && (
+        <div className="py-2">
+          <div className="text-[var(--text-muted)] text-sm">{state.error}</div>
+          <div className="text-xs text-[var(--text-subtle)] mt-1">Нажмите чтобы открыть Погоду</div>
+        </div>
+      )}
+
+      {!state.loading && state.data && (() => {
+        const cur = state.data.current;
+        const daily = state.data.daily;
+        const info = getWeatherInfo(cur.weather_code);
+        return (
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="font-display text-6xl leading-none mb-2">
+                {Math.round(cur.temperature_2m)}°
+              </div>
+              <div className="text-[var(--text-muted)] text-sm">{info.label}</div>
+              <div className="text-xs text-[var(--text-subtle)] mt-1">
+                ↑ {Math.round(daily.temperature_2m_max[0])}° / ↓ {Math.round(daily.temperature_2m_min[0])}°
+              </div>
+              <div className="text-xs text-[var(--text-subtle)] mt-1 flex items-center gap-3">
+                <span>Ощущается {Math.round(cur.apparent_temperature)}°</span>
+                <span className="flex items-center gap-1">
+                  <Icon name="wind" size={11} />
+                  {Math.round(cur.wind_speed_10m)} км/ч
+                </span>
+              </div>
+            </div>
+            <div className="text-[var(--text)] opacity-90 flex-shrink-0">
+              <Icon name={info.icon} size={72} />
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+function CommuteCard({ settings }) {
+  const { homeAddress, workAddress, tomtomKey } = settings || {};
+  const [state, setState] = useState({ loading: true, error: null, data: null });
+
+  const isConfigured = homeAddress && workAddress && tomtomKey;
+
+  const fetchCommute = async () => {
+    setState(s => ({ ...s, loading: true, error: null }));
+    try {
+      // 1. Геокод обоих адресов через TomTom
+      const geocode = async (q) => {
+        const u = `https://api.tomtom.com/search/2/geocode/${encodeURIComponent(q)}.json?key=${tomtomKey}&limit=1`;
+        const r = await fetch(u);
+        if (!r.ok) throw new Error(`Геокод не удался (${r.status})`);
+        const j = await r.json();
+        if (!j.results?.length) throw new Error(`Адрес не найден: ${q}`);
+        return j.results[0].position; // {lat, lon}
+      };
+
+      const [from, to] = await Promise.all([geocode(homeAddress), geocode(workAddress)]);
+
+      // 2. Маршрут с пробками
+      const routeUrl = `https://api.tomtom.com/routing/1/calculateRoute/${from.lat},${from.lon}:${to.lat},${to.lon}/json` +
+        `?key=${tomtomKey}&traffic=true&travelMode=car&computeTravelTimeFor=all`;
+      const r = await fetch(routeUrl);
+      if (!r.ok) throw new Error(`Маршрут не удался (${r.status})`);
+      const j = await r.json();
+      if (!j.routes?.length) throw new Error('Маршрут не найден');
+
+      const summary = j.routes[0].summary;
+      const result = {
+        travelTimeSec: summary.travelTimeInSeconds, // с учётом пробок
+        noTrafficTimeSec: summary.noTrafficTravelTimeInSeconds,
+        distanceMeters: summary.lengthInMeters,
+        ts: Date.now(),
+      };
+      localStorage.setItem(COMMUTE_CACHE_KEY, JSON.stringify(result));
+      setState({ loading: false, error: null, data: result });
+    } catch (e) {
+      // Попробовать показать кэш
+      try {
+        const cached = JSON.parse(localStorage.getItem(COMMUTE_CACHE_KEY) || 'null');
+        if (cached) {
+          setState({ loading: false, error: e.message, data: { ...cached, stale: true } });
+          return;
+        }
+      } catch {}
+      setState({ loading: false, error: e.message, data: null });
+    }
+  };
+
+  useEffect(() => {
+    if (!isConfigured) {
+      setState({ loading: false, error: null, data: null });
+      return;
+    }
+    fetchCommute();
+    const interval = setInterval(fetchCommute, 10 * 60 * 1000); // 10 минут
+    return () => clearInterval(interval);
+  }, [homeAddress, workAddress, tomtomKey]);
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] font-medium">До работы</div>
+        <div className="text-[var(--text-muted)] flex-shrink-0">
+          <Icon name="car" size={18} />
+        </div>
+      </div>
+
+      {!isConfigured && (
+        <div className="py-2">
+          <div className="text-[var(--text-muted)] text-sm">Не настроено</div>
+          <div className="text-xs text-[var(--text-subtle)] mt-1">
+            Укажите адреса и TomTom API-ключ в Настройках → Общее
+          </div>
+        </div>
+      )}
+
+      {isConfigured && state.loading && (
+        <div className="text-[var(--text-muted)] text-sm py-6">Загрузка...</div>
+      )}
+
+      {isConfigured && !state.loading && state.data && (() => {
+        const min = Math.round(state.data.travelTimeSec / 60);
+        const noTrafficMin = Math.round(state.data.noTrafficTimeSec / 60);
+        const trafficDelay = min - noTrafficMin;
+        const km = (state.data.distanceMeters / 1000).toFixed(1);
+        return (
+          <div>
+            <div className="flex items-baseline gap-2 mb-2">
+              <div className="font-display text-6xl leading-none">{min}</div>
+              <div className="text-[var(--text-muted)] text-xl">мин</div>
+            </div>
+            <div className="text-[var(--text-muted)] text-sm">
+              {km} км · в пути ~{noTrafficMin} мин
+            </div>
+            {trafficDelay > 1 && (
+              <div className="text-sm mt-2" style={{ color: trafficDelay > 10 ? '#b00020' : 'var(--text-muted)' }}>
+                Пробки: +{trafficDelay} мин
+              </div>
+            )}
+            {trafficDelay <= 1 && (
+              <div className="text-sm mt-2 text-[var(--text-subtle)]">Без пробок</div>
+            )}
+            {state.data.stale && (
+              <div className="text-xs text-[var(--text-subtle)] mt-2 italic">Данные из кэша</div>
+            )}
+          </div>
+        );
+      })()}
+
+      {isConfigured && !state.loading && state.error && !state.data && (
+        <div className="py-2">
+          <div className="text-[var(--text-muted)] text-sm">Ошибка</div>
+          <div className="text-xs text-[var(--text-subtle)] mt-1 break-words">{state.error}</div>
+          <button onClick={fetchCommute} className="btn-ghost text-xs mt-2 p-0">Повторить</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ChevronRight = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 18l6-6-6-6"/>
+  </svg>
+);
+
+function CleaningWidget({ data, onGo }) {
+  const todayChores = (data.chores || [])
+    .filter(c => !c.archived)
+    .filter(isChoreDueToday);
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6">
+      <button
+        onClick={onGo}
+        className="w-full flex items-center justify-between mb-4 group"
+      >
+        <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] font-medium">Уборка</div>
+        <span className="text-[var(--text-subtle)] group-hover:text-[var(--text)] transition-colors">
+          <ChevronRight />
+        </span>
+      </button>
+
+      {todayChores.length === 0 ? (
+        <div className="text-[var(--text-muted)] text-sm">Всё сделано на сегодня</div>
+      ) : (
+        <div className="space-y-2">
+          {todayChores.map(c => (
+            <div key={c.id} className="flex items-center gap-2.5 text-sm">
+              <div className="w-1.5 h-1.5 rounded-full bg-[var(--text)] flex-shrink-0" />
+              <span>{c.name}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BossWidget({ data, onGo }) {
+  const period = getBossPeriod();
+  const today  = new Date().getDay();
+
+  const tasks = period
+    ? (data.bossTasks || []).filter(t =>
+        !t.archived && t.period === period && t.days.includes(today)
+      )
+    : [];
+
+  const periodLabel = period === 'morning' ? 'Утро' : period === 'evening' ? 'Вечер' : null;
+  const periodIcon  = period === 'morning' ? 'sun' : 'moon';
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6">
+      <button
+        onClick={onGo}
+        className="w-full flex items-center justify-between mb-4 group"
+      >
+        <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] font-medium">Босс</div>
+        <span className="text-[var(--text-subtle)] group-hover:text-[var(--text)] transition-colors">
+          <ChevronRight />
+        </span>
+      </button>
+
+      {!period ? (
+        <div className="text-[var(--text-muted)] text-sm">Нет задач сейчас</div>
+      ) : tasks.length === 0 ? (
+        <div>
+          <div className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] mb-2">
+            <Icon name={periodIcon} size={13} />
+            {periodLabel}
+          </div>
+          <div className="text-[var(--text-muted)] text-sm">Нет задач</div>
+        </div>
+      ) : (
+        <div>
+          <div className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] mb-3">
+            <Icon name={periodIcon} size={13} />
+            {periodLabel}
+          </div>
+          <div className="space-y-2">
+            {tasks.map(t => (
+              <div key={t.id} className="flex items-center gap-2.5 text-sm">
+                <div className="w-1.5 h-1.5 rounded-full bg-[var(--text)] flex-shrink-0" />
+                <span>{t.name}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WeatherView() {
+  const [status, setStatus] = useState('loading'); // loading | ready | error | denied
+  const [data, setData] = useState(null);
+  const [location, setLocation] = useState(null);
+  const [error, setError] = useState('');
+
+  const fetchWeather = async (lat, lon) => {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+      `&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m,is_day` +
+      `&hourly=temperature_2m,weather_code,precipitation_probability` +
+      `&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_probability_max,wind_speed_10m_max` +
+      `&timezone=auto&forecast_days=7`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Не удалось загрузить погоду');
+    return await res.json();
+  };
+
+  const reverseGeocode = async (lat, lon) => {
+    try {
+      const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=ru`);
+      if (!res.ok) return null;
+      const j = await res.json();
+      return j.address?.city || j.address?.town || j.address?.village || j.address?.county || null;
+    } catch { return null; }
+  };
+
+  const loadByCoords = async (lat, lon, cityName) => {
+    try {
+      const weather = await fetchWeather(lat, lon);
+      const name = cityName || await reverseGeocode(lat, lon) || `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
+      setData(weather);
+      setLocation({ lat, lon, name });
+      localStorage.setItem(WEATHER_LOC_KEY, JSON.stringify({ lat, lon, name }));
+      localStorage.setItem(WEATHER_CACHE_KEY, JSON.stringify({
+        ts: Date.now(), weather, location: { lat, lon, name }
+      }));
+      setStatus('ready');
+    } catch (e) {
+      setError(e.message);
+      setStatus('error');
+    }
+  };
+
+  const loadByIP = async () => {
+    try {
+      setStatus('loading');
+      const res = await fetch('https://ipapi.co/json/');
+      if (!res.ok) throw new Error('Не удалось определить местоположение по IP');
+      const j = await res.json();
+      if (!j.latitude || !j.longitude) throw new Error('IP-сервис не вернул координаты');
+      await loadByCoords(j.latitude, j.longitude, j.city || j.region || null);
+    } catch (e) {
+      setError(`Не удалось определить по IP: ${e.message}`);
+      setStatus('error');
+    }
+  };
+
+  const requestLocation = () => {
+    if (!navigator.geolocation) {
+      setError('Геолокация не поддерживается. Попробуйте определить по IP.');
+      setStatus('error');
+      return;
+    }
+    if (!window.isSecureContext) {
+      setError('Геолокация работает только по HTTPS. Откройте сайт через https:// или используйте IP.');
+      setStatus('error');
+      return;
+    }
+    setStatus('loading');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => loadByCoords(pos.coords.latitude, pos.coords.longitude),
+      (err) => {
+        const messages = {
+          1: 'Доступ к геолокации запрещён',
+          2: 'Местоположение недоступно (нет сигнала GPS/WiFi)',
+          3: 'Время ожидания истекло',
+        };
+        const msg = messages[err.code] || err.message || 'Неизвестная ошибка';
+        if (err.code === 1) setStatus('denied');
+        else { setError(`${msg} (код ${err.code})`); setStatus('error'); }
+      },
+      { enableHighAccuracy: false, timeout: 15000, maximumAge: 600000 }
+    );
+  };
+
+  useEffect(() => {
+    // Сначала пробуем кэш (если свежее 30 мин)
+    try {
+      const cached = JSON.parse(localStorage.getItem(WEATHER_CACHE_KEY) || 'null');
+      if (cached && Date.now() - cached.ts < 30 * 60 * 1000) {
+        setData(cached.weather);
+        setLocation(cached.location);
+        setStatus('ready');
+        return;
+      }
+      // Если есть сохранённые координаты — обновляем по ним
+      const savedLoc = JSON.parse(localStorage.getItem(WEATHER_LOC_KEY) || 'null');
+      if (savedLoc) {
+        loadByCoords(savedLoc.lat, savedLoc.lon, savedLoc.name);
+        return;
+      }
+    } catch {}
+    requestLocation();
+  }, []);
+
+  return (
+    <div className="fade-in">
+      <div className="mb-8 flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Прогноз</div>
+          <h1 className="font-display text-4xl">Погода</h1>
+          {location && (
+            <div className="flex items-center gap-1.5 text-[var(--text-muted)] mt-2">
+              <Icon name="mapPin" size={14} />
+              <span className="text-sm">{location.name}</span>
+            </div>
+          )}
+        </div>
+        {status === 'ready' && (
+          <button onClick={requestLocation} className="btn-ghost flex items-center gap-2 text-sm">
+            <Icon name="restore" size={14} />
+            Обновить
+          </button>
+        )}
+      </div>
+
+      {status === 'loading' && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-12 text-center">
+          <div className="text-[var(--text-muted)]">Загрузка...</div>
+        </div>
+      )}
+
+      {status === 'denied' && (
+        <div className="bg-[var(--surface)] border border-dashed border-[var(--border-strong)] rounded-2xl p-10 text-center">
+          <div className="font-display text-2xl mb-2">Нужен доступ к местоположению</div>
+          <div className="text-[var(--text-muted)] text-sm mb-6">Разрешите доступ в настройках браузера или определите по IP</div>
+          <div className="flex gap-3 justify-center flex-wrap">
+            <button onClick={requestLocation} className="btn-primary">Попробовать снова</button>
+            <button onClick={loadByIP} className="btn-secondary">По IP</button>
+          </div>
+        </div>
+      )}
+
+      {status === 'error' && (
+        <div className="bg-[var(--surface)] border border-dashed border-[var(--border-strong)] rounded-2xl p-10 text-center">
+          <div className="font-display text-2xl mb-2">Не удалось получить погоду</div>
+          <div className="text-[var(--text-muted)] text-sm mb-6 max-w-md mx-auto">{error}</div>
+          <div className="flex gap-3 justify-center flex-wrap">
+            <button onClick={requestLocation} className="btn-primary">Повторить</button>
+            <button onClick={loadByIP} className="btn-secondary">По IP</button>
+          </div>
+        </div>
+      )}
+
+      {status === 'ready' && data && (
+        <>
+          <WeatherCurrent data={data} />
+          <WeatherToday data={data} />
+          <WeatherWeek data={data} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function WeatherCurrent({ data }) {
+  const cur = data.current;
+  const today = data.daily;
+  const info = getWeatherInfo(cur.weather_code);
+  const tMax = Math.round(today.temperature_2m_max[0]);
+  const tMin = Math.round(today.temperature_2m_min[0]);
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6 mb-6">
+      <div className="flex items-center justify-between gap-6 mb-6">
+        <div>
+          <div className="font-display text-7xl leading-none mb-2">
+            {Math.round(cur.temperature_2m)}°
+          </div>
+          <div className="text-[var(--text-muted)] text-base">{info.label}</div>
+          <div className="text-[var(--text-subtle)] text-sm mt-1">
+            Ощущается как {Math.round(cur.apparent_temperature)}° · ↑ {tMax}° / ↓ {tMin}°
+          </div>
+        </div>
+        <div className="text-[var(--text)] opacity-90">
+          <Icon name={info.icon} size={88} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-5 border-t border-[var(--border)]">
+        <WeatherStat icon="droplet" label="Влажность" value={`${cur.relative_humidity_2m}%`} />
+        <WeatherStat icon="wind" label="Ветер" value={`${Math.round(cur.wind_speed_10m)} км/ч`} />
+        <WeatherStat icon="sunrise" label="Восход" value={formatTime(today.sunrise[0])} />
+        <WeatherStat icon="sunset" label="Закат" value={formatTime(today.sunset[0])} />
+      </div>
+    </div>
+  );
+}
+
+function WeatherStat({ icon, label, value }) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="text-[var(--text-muted)] flex-shrink-0"><Icon name={icon} size={20} /></div>
+      <div className="min-w-0">
+        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wider">{label}</div>
+        <div className="font-medium truncate">{value}</div>
+      </div>
+    </div>
+  );
+}
+
+function WeatherToday({ data }) {
+  const now = new Date();
+  const nowISO = now.toISOString().slice(0, 13);
+
+  // Берём 24 часа начиная с текущего
+  const hourly = data.hourly;
+  const startIdx = hourly.time.findIndex(t => t.slice(0, 13) >= nowISO);
+  const idx = startIdx === -1 ? 0 : startIdx;
+  const slice = hourly.time.slice(idx, idx + 24);
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 mb-6">
+      <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] mb-4 font-medium">Сегодня по часам</div>
+      <div className="overflow-x-auto scrollbar-hide -mx-5 px-5">
+        <div className="flex gap-2 pb-1" style={{ minWidth: 'min-content' }}>
+          {slice.map((t, i) => {
+            const realIdx = idx + i;
+            const hour = new Date(t).getHours();
+            const code = hourly.weather_code[realIdx];
+            const temp = Math.round(hourly.temperature_2m[realIdx]);
+            const pop = hourly.precipitation_probability[realIdx];
+            const info = getWeatherInfo(code);
+            const isNow = i === 0;
+            return (
+              <div
+                key={t}
+                className={`flex-shrink-0 w-16 rounded-xl py-3 px-1 text-center ${
+                  isNow ? 'bg-[var(--text)] text-white' : ''
+                }`}
+              >
+                <div className={`text-xs ${isNow ? 'text-white/70' : 'text-[var(--text-subtle)]'}`}>
+                  {isNow ? 'сейчас' : `${hour}:00`}
+                </div>
+                <div className={`my-2 flex justify-center ${isNow ? 'text-white' : 'text-[var(--text)]'}`}>
+                  <Icon name={info.icon} size={22} />
+                </div>
+                <div className={`font-medium text-sm ${isNow ? 'text-white' : ''}`}>{temp}°</div>
+                {pop > 10 && (
+                  <div className={`text-[10px] mt-1 ${isNow ? 'text-white/60' : 'text-[var(--text-subtle)]'}`}>
+                    {pop}%
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WeatherWeek({ data }) {
+  const d = data.daily;
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+      <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] mb-2 font-medium">На неделю</div>
+      <div className="divide-y divide-[var(--border)]">
+        {d.time.map((t, i) => {
+          const date = new Date(t);
+          const info = getWeatherInfo(d.weather_code[i]);
+          const max = Math.round(d.temperature_2m_max[i]);
+          const min = Math.round(d.temperature_2m_min[i]);
+          const pop = d.precipitation_probability_max[i];
+          const wind = Math.round(d.wind_speed_10m_max[i]);
+          const isToday = i === 0;
+          return (
+            <div key={t} className="py-3 flex items-center gap-4">
+              <div className="w-20 flex-shrink-0">
+                <div className={`font-medium ${isToday ? 'text-[var(--text)]' : ''}`}>
+                  {isToday ? 'Сегодня' : WEEKDAY_FULL[date.getDay()]}
+                </div>
+                <div className="text-xs text-[var(--text-subtle)]">
+                  {date.getDate()} {monthShort(date.getMonth())}
+                </div>
+              </div>
+              <div className="text-[var(--text)] flex-shrink-0">
+                <Icon name={info.icon} size={28} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm truncate">{info.label}</div>
+                <div className="text-xs text-[var(--text-subtle)] flex items-center gap-3">
+                  {pop > 10 && (
+                    <span className="flex items-center gap-1">
+                      <Icon name="droplet" size={11} />
+                      {pop}%
+                    </span>
+                  )}
+                  <span className="flex items-center gap-1">
+                    <Icon name="wind" size={11} />
+                    {wind} км/ч
+                  </span>
+                </div>
+              </div>
+              <div className="text-right flex-shrink-0">
+                <div className="font-medium">{max}°</div>
+                <div className="text-sm text-[var(--text-subtle)]">{min}°</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const formatTime = (iso) => {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+const monthShort = (m) => ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'][m];
+const monthFullLower = (m) => ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'][m];
+
+// ============== SETTINGS VIEW ==============
+function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
+  return (
+    <div className="fade-in">
+      <div className="mb-8">
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Управление</div>
+        <h1 className="font-display text-4xl">Настройки</h1>
+      </div>
+
+      <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8 flex-wrap">
+        <button
+          onClick={() => setSettingsTab('supplements')}
+          className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+            settingsTab === 'supplements' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+          }`}
+        >
+          БАДДы
+        </button>
+        <button
+          onClick={() => setSettingsTab('workout')}
+          className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+            settingsTab === 'workout' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+          }`}
+        >
+          Тренировки
+        </button>
+        <button
+          onClick={() => setSettingsTab('meals')}
+          className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+            settingsTab === 'meals' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+          }`}
+        >
+          Питание
+        </button>
+        <button
+          onClick={() => setSettingsTab('general')}
+          className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+            settingsTab === 'general' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+          }`}
+        >
+          Общее
+        </button>
+      </div>
+
+      {settingsTab === 'supplements' && <SupplementSettings data={data} setData={setData} />}
+      {settingsTab === 'workout' && <SupplementSettings data={data} setData={setData} isWorkout />}
+      {settingsTab === 'meals' && <MealSettings data={data} setData={setData} />}
+      {settingsTab === 'general' && <GeneralSettings data={data} setData={setData} />}
+    </div>
+  );
+}
+
+function GeneralSettings({ data, setData }) {
+  const settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
+
+  const updateSetting = (key, value) => {
+    setData(d => ({
+      ...d,
+      settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), [key]: value },
+    }));
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div className="flex items-start justify-between gap-4 mb-1">
+          <div className="flex-1 min-w-0">
+            <h3 className="font-display text-lg mb-1">Авто-переход на Главную</h3>
+            <p className="text-sm text-[var(--text-muted)]">
+              При бездействии возвращаться на Главную автоматически
+            </p>
+          </div>
+          <Toggle
+            checked={settings.weatherAutoSwitch}
+            onChange={v => updateSetting('weatherAutoSwitch', v)}
+          />
+        </div>
+      </div>
+
+      {settings.weatherAutoSwitch && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 fade-in">
+          <label>Интервал бездействия (минуты)</label>
+          <input
+            type="number"
+            min="0.5"
+            step="0.5"
+            value={settings.weatherAutoSwitchMinutes}
+            onChange={e => {
+              const val = e.target.value === '' ? '' : Number(e.target.value);
+              updateSetting('weatherAutoSwitchMinutes', val);
+            }}
+            onBlur={e => {
+              const v = Number(e.target.value);
+              if (!v || v < 0.5) updateSetting('weatherAutoSwitchMinutes', 2);
+            }}
+          />
+          <p className="text-xs text-[var(--text-subtle)] mt-2">
+            Изменения применяются сразу. Минимум 0.5 минуты.
+          </p>
+        </div>
+      )}
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div>
+          <h3 className="font-display text-lg mb-1">Дорога до работы</h3>
+          <p className="text-sm text-[var(--text-muted)]">
+            Время в пути с учётом пробок. Обновляется каждые 10 минут.
+          </p>
+        </div>
+
+        <div>
+          <label>Адрес откуда (дом)</label>
+          <input
+            type="text"
+            value={settings.homeAddress}
+            onChange={e => updateSetting('homeAddress', e.target.value)}
+            placeholder="Например, Frankfurter Allee 1, Frankfurt"
+          />
+        </div>
+
+        <div>
+          <label>Адрес куда (работа)</label>
+          <input
+            type="text"
+            value={settings.workAddress}
+            onChange={e => updateSetting('workAddress', e.target.value)}
+            placeholder="Например, Bockenheimer Landstraße 50, Frankfurt"
+          />
+        </div>
+
+        <div>
+          <label>TomTom API-ключ</label>
+          <input
+            type="password"
+            value={settings.tomtomKey}
+            onChange={e => updateSetting('tomtomKey', e.target.value)}
+            placeholder="Вставьте ключ"
+            autoComplete="off"
+          />
+          <p className="text-xs text-[var(--text-subtle)] mt-2">
+            Зарегистрируйтесь на <span className="font-mono">developer.tomtom.com</span> → создайте бесплатный проект → скопируйте API-ключ. 2500 запросов в день бесплатно.
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div>
+          <h3 className="font-display text-lg mb-1">Telegram уведомления</h3>
+          <p className="text-sm text-[var(--text-muted)]">
+            Уведомления получат все, кто напишет боту хотя бы одно сообщение. Chat ID указывать не нужно.
+          </p>
+        </div>
+
+        <div>
+          <label>Bot Token</label>
+          <input
+            type="password"
+            value={settings.telegramToken}
+            onChange={e => updateSetting('telegramToken', e.target.value)}
+            placeholder="1234567890:ABCdef..."
+            autoComplete="off"
+          />
+          <p className="text-xs text-[var(--text-subtle)] mt-1">
+            Создайте бота через @BotFather в Telegram → скопируйте токен.
+          </p>
+        </div>
+
+        <p className="text-xs text-[var(--text-subtle)]">
+          При использовании <span className="font-mono">jarvis.py</span> конфиг синхронизируется автоматически — экспорт не нужен.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function Toggle({ checked, onChange }) {
+  return (
+    <button
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-7 w-12 flex-shrink-0 rounded-full transition-colors ${
+        checked ? 'bg-[var(--text)]' : 'bg-[var(--border-strong)]'
+      }`}
+    >
+      <span
+        className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+          checked ? 'translate-x-6' : 'translate-x-1'
+        }`}
+        style={{ marginTop: '4px' }}
+      />
+    </button>
+  );
+}
+
+// ============== SUPPLEMENT SETTINGS ==============
+function SupplementSettings({ data, setData, isWorkout }) {
+  const [editing, setEditing] = useState(null); // объект или null
+  const [showArchive, setShowArchive] = useState(false);
+  const storageKey = isWorkout ? 'workoutSupplements' : 'supplements';
+
+  const active = (data[storageKey] || []).filter(s => !s.archived);
+  const archived = (data[storageKey] || []).filter(s => s.archived);
+
+  const save = (supp) => {
+    setData(d => {
+      const list = d[storageKey] || [];
+      const exists = list.find(s => s.id === supp.id);
+      const updated = exists
+        ? list.map(s => s.id === supp.id ? supp : s)
+        : [...list, supp];
+      return { ...d, [storageKey]: updated };
+    });
+    setEditing(null);
+  };
+
+  const remove = (id) => {
+    if (!confirm('Удалить БАДД полностью?')) return;
+    setData(d => ({ ...d, [storageKey]: (d[storageKey] || []).filter(s => s.id !== id) }));
+  };
+
+  const toggleArchive = (id) => {
+    setData(d => ({
+      ...d,
+      [storageKey]: (d[storageKey] || []).map(s =>
+        s.id === id ? { ...s, archived: !s.archived } : s
+      ),
+    }));
+  };
+
+  return (
+    <div>
+      <button
+        onClick={() => setEditing({
+          id: crypto.randomUUID(),
+          name: '', dosage: '', form: 'Таблетки',
+          frequency: 'daily_morning', weekday: 1, comment: '',
+          archived: false,
+        })}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-6"
+      >
+        <Icon name="plus" size={18} />
+        Добавить БАДД
+      </button>
+
+      <div className="space-y-3 mb-8">
+        {active.length === 0 && (
+          <div className="text-center py-8 text-[var(--text-subtle)] text-sm">Нет активных БАДДов</div>
+        )}
+        {active.map(s => (
+          <SettingsSupplementRow
+            key={s.id} supp={s} hideFrequency={isWorkout}
+            onEdit={() => setEditing(s)}
+            onArchive={() => toggleArchive(s.id)}
+            onDelete={() => remove(s.id)}
+          />
+        ))}
+      </div>
+
+      {archived.length > 0 && (
+        <div>
+          <button
+            onClick={() => setShowArchive(!showArchive)}
+            className="flex items-center gap-2 text-[var(--text-muted)] hover:text-[var(--text)] mb-4 text-sm"
+          >
+            <Icon name="archive" size={16} />
+            Архив ({archived.length})
+            <span className={`transition-transform ${showArchive ? 'rotate-180' : ''}`}>
+              <Icon name="chevronDown" size={16} />
+            </span>
+          </button>
+          {showArchive && (
+            <div className="space-y-3 fade-in">
+              {archived.map(s => (
+                <SettingsSupplementRow
+                  key={s.id} supp={s} archived hideFrequency={isWorkout}
+                  onEdit={() => setEditing(s)}
+                  onArchive={() => toggleArchive(s.id)}
+                  onDelete={() => remove(s.id)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {editing && (
+        <SupplementModal
+          supp={editing}
+          hideFrequency={isWorkout}
+          onSave={save}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function SettingsSupplementRow({ supp, archived, hideFrequency, onEdit, onArchive, onDelete }) {
+  return (
+    <div className={`bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 ${archived ? 'opacity-60' : ''}`}>
+      <div className="flex items-start justify-between gap-4 mb-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-3 mb-1">
+            <h3 className="font-display text-lg truncate">{supp.name}</h3>
+            <span className="text-sm text-[var(--text-muted)]">{supp.dosage}</span>
+          </div>
+          <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wider mb-1">{supp.form}</div>
+          {!hideFrequency && (
+            <div className="text-sm text-[var(--text-muted)]">{getFrequencyLabel(supp.frequency)}</div>
+          )}
+          {supp.comment && <div className="text-sm text-[var(--text-muted)] italic mt-2">{supp.comment}</div>}
+        </div>
+        <div className="flex gap-1 flex-shrink-0">
+          <button onClick={onEdit} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать">
+            <Icon name="edit" size={18} />
+          </button>
+          <button onClick={onArchive} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title={archived ? 'Восстановить' : 'В архив'}>
+            <Icon name={archived ? 'restore' : 'archive'} size={18} />
+          </button>
+          <button onClick={onDelete} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Удалить">
+            <Icon name="trash" size={18} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SupplementModal({ supp, hideFrequency, onSave, onClose }) {
+  const [form, setForm] = useState(supp);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const needsWeekday = !hideFrequency && (form.frequency === 'weekly_morning' || form.frequency === 'weekly_evening');
+
+  const submit = () => {
+    if (!form.name.trim()) return alert('Введите название');
+    onSave(form);
+  };
+
+  return (
+    <Modal onClose={onClose} title={supp.name ? 'Редактировать БАДД' : 'Новый БАДД'}>
+      <div className="space-y-4">
+        <div>
+          <label>Название</label>
+          <input value={form.name} onChange={e => set('name', e.target.value)} placeholder="Например, Витамин D3" />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label>Дозировка</label>
+            <input value={form.dosage} onChange={e => set('dosage', e.target.value)} placeholder="5000 МЕ" />
+          </div>
+          <div>
+            <label>Вид</label>
+            <select value={form.form} onChange={e => set('form', e.target.value)}>
+              {FORMS.map(f => <option key={f}>{f}</option>)}
+            </select>
+          </div>
+        </div>
+        {!hideFrequency && (
+          <div>
+            <label>Частота</label>
+            <select value={form.frequency} onChange={e => set('frequency', e.target.value)}>
+              {FREQUENCIES.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+            </select>
+          </div>
+        )}
+        {needsWeekday && (
+          <div>
+            <label>День недели</label>
+            <div className="flex gap-2 flex-wrap">
+              {WEEKDAYS.map(d => (
+                <button
+                  key={d.id}
+                  onClick={() => set('weekday', d.id)}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium border transition-all ${
+                    form.weekday === d.id
+                      ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                      : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-muted)]'
+                  }`}
+                >
+                  {d.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        <div>
+          <label>Комментарий</label>
+          <textarea
+            value={form.comment}
+            onChange={e => set('comment', e.target.value)}
+            rows={2}
+            placeholder="Принимать с едой..."
+          />
+        </div>
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============== MEAL SETTINGS ==============
+function MealSettings({ data, setData }) {
+  const [editing, setEditing] = useState(null);
+  const [showArchive, setShowArchive] = useState(false);
+
+  const active = (data.meals || []).filter(m => !m.archived);
+  const archived = (data.meals || []).filter(m => m.archived);
+
+  const save = (meal) => {
+    setData(d => {
+      const list = d.meals || [];
+      const exists = list.find(m => m.id === meal.id);
+      const updated = exists
+        ? list.map(m => m.id === meal.id ? meal : m)
+        : [...list, meal];
+      return { ...d, meals: updated };
+    });
+    setEditing(null);
+  };
+
+  const remove = (id) => {
+    if (!confirm('Удалить рацион полностью?')) return;
+    setData(d => ({ ...d, meals: (d.meals || []).filter(m => m.id !== id) }));
+  };
+
+  const toggleArchive = (id) => {
+    setData(d => ({
+      ...d,
+      meals: (d.meals || []).map(m =>
+        m.id === id ? { ...m, archived: !m.archived } : m
+      ),
+    }));
+  };
+
+  return (
+    <div>
+      <button
+        onClick={() => setEditing({
+          id: crypto.randomUUID(),
+          name: '', breakfast: '', snack: '', lunch: '', dinner: '',
+          calories: '', protein: '', fat: '', carbs: '',
+          archived: false,
+        })}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-6"
+      >
+        <Icon name="plus" size={18} />
+        Создать рацион
+      </button>
+
+      <div className="space-y-3 mb-8">
+        {active.length === 0 && (
+          <div className="text-center py-8 text-[var(--text-subtle)] text-sm">Нет активных рационов</div>
+        )}
+        {active.map(m => (
+          <SettingsMealRow
+            key={m.id} meal={m}
+            onEdit={() => setEditing(m)}
+            onArchive={() => toggleArchive(m.id)}
+            onDelete={() => remove(m.id)}
+          />
+        ))}
+      </div>
+
+      {archived.length > 0 && (
+        <div>
+          <button
+            onClick={() => setShowArchive(!showArchive)}
+            className="flex items-center gap-2 text-[var(--text-muted)] hover:text-[var(--text)] mb-4 text-sm"
+          >
+            <Icon name="archive" size={16} />
+            Архив ({archived.length})
+            <span className={`transition-transform ${showArchive ? 'rotate-180' : ''}`}>
+              <Icon name="chevronDown" size={16} />
+            </span>
+          </button>
+          {showArchive && (
+            <div className="space-y-3 fade-in">
+              {archived.map(m => (
+                <SettingsMealRow
+                  key={m.id} meal={m} archived
+                  onEdit={() => setEditing(m)}
+                  onArchive={() => toggleArchive(m.id)}
+                  onDelete={() => remove(m.id)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {editing && (
+        <MealModal meal={editing} onSave={save} onClose={() => setEditing(null)} />
+      )}
+    </div>
+  );
+}
+
+function SettingsMealRow({ meal, archived, onEdit, onArchive, onDelete }) {
+  return (
+    <div className={`bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 ${archived ? 'opacity-60' : ''}`}>
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-1 min-w-0">
+          <h3 className="font-display text-lg truncate mb-1">{meal.name}</h3>
+          <NutritionRow meal={meal} compact />
+        </div>
+        <div className="flex gap-1 flex-shrink-0">
+          <button onClick={onEdit} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать">
+            <Icon name="edit" size={18} />
+          </button>
+          <button onClick={onArchive} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title={archived ? 'Восстановить' : 'В архив'}>
+            <Icon name={archived ? 'restore' : 'archive'} size={18} />
+          </button>
+          <button onClick={onDelete} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Удалить">
+            <Icon name="trash" size={18} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MealModal({ meal, onSave, onClose }) {
+  const [form, setForm] = useState(meal);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const submit = () => {
+    if (!form.name.trim()) return alert('Введите название рациона');
+    onSave(form);
+  };
+
+  return (
+    <Modal onClose={onClose} title={meal.name ? 'Редактировать рацион' : 'Новый рацион'}>
+      <div className="space-y-4">
+        <div>
+          <label>Название рациона</label>
+          <input value={form.name} onChange={e => set('name', e.target.value)} placeholder="Например, Высокобелковый день" />
+        </div>
+
+        <div>
+          <label>КБЖУ на день</label>
+          <div className="grid grid-cols-4 gap-2">
+            <div>
+              <input
+                type="number" inputMode="decimal" min="0"
+                value={form.calories ?? ''}
+                onChange={e => set('calories', e.target.value)}
+                placeholder="ккал"
+                style={{ textAlign: 'center' }}
+              />
+              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">ккал</div>
+            </div>
+            <div>
+              <input
+                type="number" inputMode="decimal" min="0"
+                value={form.protein ?? ''}
+                onChange={e => set('protein', e.target.value)}
+                placeholder="Б"
+                style={{ textAlign: 'center' }}
+              />
+              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">Белки</div>
+            </div>
+            <div>
+              <input
+                type="number" inputMode="decimal" min="0"
+                value={form.fat ?? ''}
+                onChange={e => set('fat', e.target.value)}
+                placeholder="Ж"
+                style={{ textAlign: 'center' }}
+              />
+              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">Жиры</div>
+            </div>
+            <div>
+              <input
+                type="number" inputMode="decimal" min="0"
+                value={form.carbs ?? ''}
+                onChange={e => set('carbs', e.target.value)}
+                placeholder="У"
+                style={{ textAlign: 'center' }}
+              />
+              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">Углеводы</div>
+            </div>
+          </div>
+        </div>
+
+        {[
+          { key: 'breakfast', label: 'Завтрак' },
+          { key: 'snack', label: 'Перекус' },
+          { key: 'lunch', label: 'Обед' },
+          { key: 'dinner', label: 'Ужин' },
+        ].map(({ key, label }) => (
+          <div key={key}>
+            <label>{label}</label>
+            <textarea
+              value={form[key]}
+              onChange={e => set(key, e.target.value)}
+              rows={3}
+              placeholder="Каждое блюдо с новой строки..."
+            />
+          </div>
+        ))}
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============== HOUSE VIEW ==============
+function HouseView({ data, setData, houseTab, setHouseTab }) {
+
+  const tabs = [
+    { id: 'cleaning', label: 'Уборка' },
+    { id: 'boss', label: 'Босс' },
+  ];
+
+  return (
+    <div className="fade-in">
+      <div className="mb-8">
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Дела</div>
+        <h1 className="font-display text-4xl">Дела</h1>
+      </div>
+
+      <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8">
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setHouseTab(t.id)}
+            className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              houseTab === t.id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {houseTab === 'cleaning' && (
+        <ChoreSection data={data} setData={setData} dataKey="chores" title="Уборка" />
+      )}
+      {houseTab === 'boss' && (
+        <BossView data={data} setData={setData} />
+      )}
+    </div>
+  );
+}
+
+function ChoreSection({ data, setData, dataKey, title }) {
+  const [showSettings, setShowSettings] = useState(false);
+
+  const chores = (data[dataKey] || []).filter(c => !c.archived);
+  const todayChores = chores.filter(isChoreDueToday);
+  const upcomingChores = chores
+    .filter(isChoreUpcoming)
+    .sort((a, b) => getChoreNextDate(a) - getChoreNextDate(b));
+
+  const markDone = (id) => {
+    setData(d => ({
+      ...d,
+      [dataKey]: (d[dataKey] || []).map(c => c.id === id ? { ...c, lastDone: getTodayKey() } : c),
+    }));
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="font-display text-2xl">{title}</h2>
+        <button
+          onClick={() => setShowSettings(s => !s)}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all border ${
+            showSettings
+              ? 'bg-[var(--text)] text-white border-[var(--text)]'
+              : 'border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)]'
+          }`}
+        >
+          <Icon name="settings" size={16} />
+          Управление
+        </button>
+      </div>
+
+      {showSettings ? (
+        <ChoreSettings data={data} setData={setData} dataKey={dataKey} />
+      ) : (
+        <>
+          <div className="mb-8">
+            <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] mb-3 font-medium">Сегодня</div>
+            {todayChores.length === 0 ? (
+              <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-8 text-center">
+                <div className="font-display text-xl mb-1">Всё сделано</div>
+                <div className="text-sm text-[var(--text-muted)]">Дел на сегодня нет</div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {todayChores.map(c => (
+                  <ChoreCard key={c.id} chore={c} onDone={() => markDone(c.id)} />
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] mb-3 font-medium">Ближайшие 7 дней</div>
+            {upcomingChores.length === 0 ? (
+              <div className="text-center py-6 text-[var(--text-subtle)] text-sm">Нет запланированных дел</div>
+            ) : (
+              <div className="space-y-3">
+                {upcomingChores.map(c => (
+                  <ChoreCard key={c.id} chore={c} upcoming />
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ChoreCard({ chore, onDone, upcoming }) {
+  const next = getChoreNextDate(chore);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const daysUntil = Math.round((next - today) / 86400000);
+  const freqEntry = CHORE_FREQUENCIES.find(f => f.id === chore.frequency);
+  const freqLabel = chore.frequency === 'custom'
+    ? `Каждые ${chore.customDays} дн.`
+    : freqEntry?.label || '';
+
+  return (
+    <div
+      onClick={!upcoming ? onDone : undefined}
+      className={`bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 flex items-center gap-5 transition-all ${
+        !upcoming ? 'cursor-pointer hover:border-[var(--border-strong)]' : ''
+      }`}
+    >
+      {upcoming ? (
+        <div className="w-12 text-center flex-shrink-0">
+          <div className="font-display text-3xl leading-none">{daysUntil}</div>
+          <div className="text-xs text-[var(--text-subtle)] mt-0.5">дн.</div>
+        </div>
+      ) : (
+        <div className="check-box flex-shrink-0">
+          <Icon name="check" size={16} />
+        </div>
+      )}
+      <div className="flex-1 min-w-0">
+        <div className="font-display text-xl mb-1">{chore.name}</div>
+        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wider">{freqLabel}</div>
+        <div className="text-xs text-[var(--text-muted)] mt-1">
+          Последний раз: {formatChoreDate(chore.lastDone)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChoreSettings({ data, setData, dataKey }) {
+  const [editing, setEditing] = useState(null);
+  const [showArchive, setShowArchive] = useState(false);
+
+  const active = (data[dataKey] || []).filter(c => !c.archived);
+  const archived = (data[dataKey] || []).filter(c => c.archived);
+
+  const save = (chore) => {
+    setData(d => {
+      const list = d[dataKey] || [];
+      const exists = list.find(c => c.id === chore.id);
+      const updated = exists
+        ? list.map(c => c.id === chore.id ? chore : c)
+        : [...list, chore];
+      return { ...d, [dataKey]: updated };
+    });
+    setEditing(null);
+  };
+
+  const remove = (id) => {
+    if (!confirm('Удалить дело полностью?')) return;
+    setData(d => ({ ...d, [dataKey]: (d[dataKey] || []).filter(c => c.id !== id) }));
+  };
+
+  const toggleArchive = (id) => {
+    setData(d => ({
+      ...d,
+      [dataKey]: (d[dataKey] || []).map(c => c.id === id ? { ...c, archived: !c.archived } : c),
+    }));
+  };
+
+  return (
+    <div>
+      <button
+        onClick={() => setEditing({
+          id: crypto.randomUUID(),
+          name: '', frequency: 'weekly', customDays: 7, lastDone: null,
+          notify: false, notifyTime: '09:00', archived: false,
+        })}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-6"
+      >
+        <Icon name="plus" size={18} />
+        Добавить дело
+      </button>
+
+      <div className="space-y-3 mb-8">
+        {active.length === 0 && (
+          <div className="text-center py-8 text-[var(--text-subtle)] text-sm">Нет активных дел</div>
+        )}
+        {active.map(c => (
+          <ChoreSettingsRow
+            key={c.id} chore={c}
+            onEdit={() => setEditing(c)}
+            onArchive={() => toggleArchive(c.id)}
+            onDelete={() => remove(c.id)}
+          />
+        ))}
+      </div>
+
+      {archived.length > 0 && (
+        <div>
+          <button
+            onClick={() => setShowArchive(s => !s)}
+            className="flex items-center gap-2 text-[var(--text-muted)] hover:text-[var(--text)] mb-4 text-sm"
+          >
+            <Icon name="archive" size={16} />
+            Архив ({archived.length})
+            <span className={`transition-transform ${showArchive ? 'rotate-180' : ''}`}>
+              <Icon name="chevronDown" size={16} />
+            </span>
+          </button>
+          {showArchive && (
+            <div className="space-y-3 fade-in">
+              {archived.map(c => (
+                <ChoreSettingsRow
+                  key={c.id} chore={c} archived
+                  onEdit={() => setEditing(c)}
+                  onArchive={() => toggleArchive(c.id)}
+                  onDelete={() => remove(c.id)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {editing && (
+        <ChoreModal chore={editing} onSave={save} onClose={() => setEditing(null)} />
+      )}
+    </div>
+  );
+}
+
+function ChoreSettingsRow({ chore, archived, onEdit, onArchive, onDelete }) {
+  const freqEntry = CHORE_FREQUENCIES.find(f => f.id === chore.frequency);
+  const freqLabel = chore.frequency === 'custom'
+    ? `Каждые ${chore.customDays} дн.`
+    : freqEntry?.label || '';
+
+  return (
+    <div className={`bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 ${archived ? 'opacity-60' : ''}`}>
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <div className="font-display text-lg truncate">{chore.name}</div>
+            {chore.notify && (
+              <span className="text-[var(--text-subtle)] flex-shrink-0" title={`Уведомление в ${chore.notifyTime}`}>
+                <Icon name="bell" size={14} />
+              </span>
+            )}
+          </div>
+          <div className="text-sm text-[var(--text-muted)]">{freqLabel}</div>
+          {chore.notify && chore.notifyTime && (
+            <div className="text-xs text-[var(--text-subtle)] mt-0.5">Напоминание в {chore.notifyTime}</div>
+          )}
+          {chore.lastDone && (
+            <div className="text-xs text-[var(--text-subtle)] mt-0.5">
+              Последний раз: {formatChoreDate(chore.lastDone)}
+            </div>
+          )}
+        </div>
+        <div className="flex gap-1 flex-shrink-0">
+          <button onClick={onEdit} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать">
+            <Icon name="edit" size={18} />
+          </button>
+          <button onClick={onArchive} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title={archived ? 'Восстановить' : 'В архив'}>
+            <Icon name={archived ? 'restore' : 'archive'} size={18} />
+          </button>
+          <button onClick={onDelete} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Удалить">
+            <Icon name="trash" size={18} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChoreModal({ chore, onSave, onClose }) {
+  const [form, setForm] = useState(chore);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const submit = () => {
+    if (!form.name.trim()) return alert('Введите название');
+    onSave(form);
+  };
+
+  return (
+    <Modal onClose={onClose} title={chore.name ? 'Редактировать дело' : 'Новое дело'}>
+      <div className="space-y-4">
+        <div>
+          <label>Название</label>
+          <input value={form.name} onChange={e => set('name', e.target.value)} placeholder="Например, Пылесосить" />
+        </div>
+        <div>
+          <label>Периодичность</label>
+          <select value={form.frequency} onChange={e => set('frequency', e.target.value)}>
+            {CHORE_FREQUENCIES.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+          </select>
+        </div>
+        {form.frequency === 'custom' && (
+          <div>
+            <label>Каждые N дней</label>
+            <input
+              type="number" min="1"
+              value={form.customDays || ''}
+              onChange={e => set('customDays', Math.max(1, parseInt(e.target.value) || 1))}
+              placeholder="7"
+            />
+          </div>
+        )}
+        <div>
+          <label>Последний раз выполнено</label>
+          <input
+            type="date"
+            value={form.lastDone || ''}
+            onChange={e => set('lastDone', e.target.value || null)}
+          />
+          <p className="text-xs text-[var(--text-subtle)] mt-1">Оставьте пустым — появится в «Сегодня» сразу</p>
+        </div>
+
+        <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Icon name="bell" size={16} />
+              <span className="text-sm font-medium">Уведомление в Telegram</span>
+            </div>
+            <Toggle checked={!!form.notify} onChange={v => set('notify', v)} />
+          </div>
+          {form.notify && (
+            <div className="fade-in">
+              <label>Время напоминания</label>
+              <input
+                type="time"
+                value={form.notifyTime || '09:00'}
+                onChange={e => set('notifyTime', e.target.value)}
+              />
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============== BOSS VIEW ==============
+function BossView({ data, setData }) {
+  const [showSettings, setShowSettings] = useState(false);
+  const tasks = (data.bossTasks || []).filter(t => !t.archived);
+  const today = new Date().getDay();
+
+  const getCell = (dayId, period) =>
+    tasks.filter(t => t.period === period && t.days.includes(dayId));
+
+  const periods = [
+    { id: 'morning', label: 'Утро',  icon: 'sun'  },
+    { id: 'evening', label: 'Вечер', icon: 'moon' },
+  ];
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="font-display text-2xl">Босс</h2>
+        <button
+          onClick={() => setShowSettings(s => !s)}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all border ${
+            showSettings
+              ? 'bg-[var(--text)] text-white border-[var(--text)]'
+              : 'border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)]'
+          }`}
+        >
+          <Icon name="settings" size={16} />
+          Управление
+        </button>
+      </div>
+
+      {showSettings ? (
+        <BossSettings data={data} setData={setData} />
+      ) : (
+        <div className="overflow-x-auto -mx-6 px-6 scrollbar-hide">
+          <div style={{ minWidth: '540px' }}>
+            {/* Шапка с днями */}
+            <div className="grid mb-2" style={{ gridTemplateColumns: '64px repeat(7, 1fr)', gap: '6px' }}>
+              <div />
+              {WEEKDAYS.map(d => (
+                <div
+                  key={d.id}
+                  className={`text-center text-xs font-medium uppercase tracking-wider py-2 rounded-lg ${
+                    today === d.id
+                      ? 'bg-[var(--text)] text-white'
+                      : 'text-[var(--text-subtle)]'
+                  }`}
+                >
+                  {d.label}
+                </div>
+              ))}
+            </div>
+
+            {/* Строки Утро / Вечер */}
+            {periods.map(p => (
+              <div
+                key={p.id}
+                className="grid mb-2"
+                style={{ gridTemplateColumns: '64px repeat(7, 1fr)', gap: '6px' }}
+              >
+                <div className="flex flex-col items-center justify-center gap-1 text-[var(--text-muted)] py-2">
+                  <Icon name={p.icon} size={15} />
+                  <span className="text-xs">{p.label}</span>
+                </div>
+                {WEEKDAYS.map(d => {
+                  const cellTasks = getCell(d.id, p.id);
+                  const isToday = today === d.id;
+                  return (
+                    <div
+                      key={d.id}
+                      className={`rounded-xl border p-1.5 min-h-[56px] ${
+                        isToday
+                          ? 'border-[var(--border-strong)] bg-[var(--surface)]'
+                          : 'border-[var(--border)] bg-[var(--surface)]'
+                      }`}
+                    >
+                      {cellTasks.map(t => (
+                        <div
+                          key={t.id}
+                          className="text-[10px] leading-tight mb-1 last:mb-0 px-1 py-0.5 rounded bg-[var(--bg)] text-[var(--text)]"
+                        >
+                          {t.name}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BossSettings({ data, setData }) {
+  const [editing, setEditing] = useState(null);
+  const [showArchive, setShowArchive] = useState(false);
+
+  const active   = (data.bossTasks || []).filter(t => !t.archived);
+  const archived = (data.bossTasks || []).filter(t => t.archived);
+
+  const dayLabel = { 1:'Пн', 2:'Вт', 3:'Ср', 4:'Чт', 5:'Пт', 6:'Сб', 0:'Вс' };
+
+  const save = (task) => {
+    setData(d => {
+      const list = d.bossTasks || [];
+      const exists = list.find(t => t.id === task.id);
+      const updated = exists
+        ? list.map(t => t.id === task.id ? task : t)
+        : [...list, task];
+      return { ...d, bossTasks: updated };
+    });
+    setEditing(null);
+  };
+
+  const remove = (id) => {
+    if (!confirm('Удалить задачу?')) return;
+    setData(d => ({ ...d, bossTasks: (d.bossTasks || []).filter(t => t.id !== id) }));
+  };
+
+  const toggleArchive = (id) => {
+    setData(d => ({
+      ...d,
+      bossTasks: (d.bossTasks || []).map(t => t.id === id ? { ...t, archived: !t.archived } : t),
+    }));
+  };
+
+  const BossRow = ({ task, arc }) => (
+    <div className={`bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 ${arc ? 'opacity-60' : ''}`}>
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-1 min-w-0">
+          <div className="font-display text-lg truncate mb-1">{task.name}</div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-[var(--text-muted)]">
+              {task.period === 'morning' ? 'Утро' : 'Вечер'}
+            </span>
+            {task.days.map(d => (
+              <span key={d} className="text-xs bg-[var(--bg)] border border-[var(--border)] rounded px-1.5 py-0.5">
+                {dayLabel[d]}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex gap-1 flex-shrink-0">
+          {!arc && (
+            <button onClick={() => setEditing(task)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+              <Icon name="edit" size={18} />
+            </button>
+          )}
+          <button onClick={() => toggleArchive(task.id)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+            <Icon name={arc ? 'restore' : 'archive'} size={18} />
+          </button>
+          <button onClick={() => remove(task.id)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+            <Icon name="trash" size={18} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div>
+      <button
+        onClick={() => setEditing({ id: crypto.randomUUID(), name: '', period: 'morning', days: [], archived: false })}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-6"
+      >
+        <Icon name="plus" size={18} />
+        Добавить задачу
+      </button>
+
+      <div className="space-y-3 mb-8">
+        {active.length === 0 && (
+          <div className="text-center py-8 text-[var(--text-subtle)] text-sm">Нет задач</div>
+        )}
+        {active.map(t => <BossRow key={t.id} task={t} />)}
+      </div>
+
+      {archived.length > 0 && (
+        <div>
+          <button
+            onClick={() => setShowArchive(s => !s)}
+            className="flex items-center gap-2 text-[var(--text-muted)] hover:text-[var(--text)] mb-4 text-sm"
+          >
+            <Icon name="archive" size={16} />
+            Архив ({archived.length})
+            <span className={`transition-transform ${showArchive ? 'rotate-180' : ''}`}>
+              <Icon name="chevronDown" size={16} />
+            </span>
+          </button>
+          {showArchive && (
+            <div className="space-y-3 fade-in">
+              {archived.map(t => <BossRow key={t.id} task={t} arc />)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {editing && (
+        <BossTaskModal task={editing} onSave={save} onClose={() => setEditing(null)} />
+      )}
+    </div>
+  );
+}
+
+function BossTaskModal({ task, onSave, onClose }) {
+  const [form, setForm] = useState(task);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const toggleDay = (id) => setForm(f => ({
+    ...f,
+    days: f.days.includes(id) ? f.days.filter(d => d !== id) : [...f.days, id],
+  }));
+
+  const submit = () => {
+    if (!form.name.trim()) return alert('Введите название');
+    if (!form.days.length)  return alert('Выберите хотя бы один день');
+    onSave(form);
+  };
+
+  return (
+    <Modal onClose={onClose} title={task.name ? 'Редактировать задачу' : 'Новая задача'}>
+      <div className="space-y-4">
+        <div>
+          <label>Название</label>
+          <input value={form.name} onChange={e => set('name', e.target.value)} placeholder="Например, Проверить почту" />
+        </div>
+
+        <div>
+          <label>Время</label>
+          <div className="flex gap-2">
+            {[{ id: 'morning', label: 'Утро' }, { id: 'evening', label: 'Вечер' }].map(p => (
+              <button
+                key={p.id}
+                onClick={() => set('period', p.id)}
+                className={`flex-1 py-2.5 rounded-lg text-sm font-medium border transition-all ${
+                  form.period === p.id
+                    ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                    : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-muted)]'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label>Дни недели</label>
+          <div className="flex gap-2 flex-wrap">
+            {WEEKDAYS.map(d => (
+              <button
+                key={d.id}
+                onClick={() => toggleDay(d.id)}
+                className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${
+                  form.days.includes(d.id)
+                    ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                    : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-muted)]'
+                }`}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============== SHARED ==============
+function Modal({ title, children, onClose }) {
+  useEffect(() => {
+    const handler = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', handler);
+    return () => {
+      window.removeEventListener('keydown', handler);
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 overflow-y-auto bg-black/30 backdrop-blur-sm fade-in"
+      onClick={onClose}
+    >
+      <div className="min-h-full flex items-start justify-center p-4 sm:py-10">
+        <div
+          onClick={e => e.stopPropagation()}
+          className="bg-[var(--bg)] w-full max-w-lg rounded-2xl my-auto"
+        >
+          <div className="bg-[var(--bg)] px-6 py-5 flex items-center justify-between border-b border-[var(--border)] rounded-t-2xl">
+            <h2 className="font-display text-2xl">{title}</h2>
+            <button onClick={onClose} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+              <Icon name="x" size={20} />
+            </button>
+          </div>
+          <div className="p-6">{children}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({ title, text }) {
+  return (
+    <div className="bg-[var(--surface)] border border-dashed border-[var(--border-strong)] rounded-2xl p-12 text-center">
+      <div className="font-display text-2xl mb-2">{title}</div>
+      <div className="text-[var(--text-muted)] text-sm">{text}</div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

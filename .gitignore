@@ -1,0 +1,5 @@
+jarvis_notify_config.json
+jarvis_subscribers.json
+__pycache__/
+*.pyc
+.env
