@@ -74,6 +74,10 @@
   .scrollbar-hide::-webkit-scrollbar { display: none; }
   .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
 
+  /* iOS safe area */
+  .pb-safe { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+  .bottom-nav { padding-bottom: env(safe-area-inset-bottom, 0); }
+
   /* Инпуты */
   input, select, textarea {
     font-family: 'Inter', sans-serif;
@@ -407,9 +411,9 @@ function App() {
   }, [data.settings?.telegramToken, data.chores]);
 
   return (
-    <div className="min-h-screen pb-20">
+    <div className="min-h-screen pb-24 md:pb-8">
       <Header tab={tab} setTab={setTab} />
-      <main className="max-w-3xl mx-auto px-6 pt-8">
+      <main className="max-w-3xl mx-auto px-4 sm:px-6 pt-6 md:pt-8">
         {tab === 'home' && <HomeView data={data} setTab={setTab} setHouseTab={setHouseTab} />}
         {tab === 'supplements' && <SupplementsView data={data} setData={setData} />}
         {tab === 'meals' && <MealsView data={data} />}
@@ -424,6 +428,7 @@ function App() {
           />
         )}
       </main>
+      <BottomNav tab={tab} setTab={setTab} />
     </div>
   );
 }
@@ -440,9 +445,9 @@ function Header({ tab, setTab }) {
   ];
   return (
     <header className="sticky top-0 z-10 bg-[var(--bg)]/85 backdrop-blur-lg border-b border-[var(--border)]">
-      <div className="max-w-3xl mx-auto px-6 py-5 flex items-center justify-between">
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-4 md:py-5 flex items-center justify-between">
         <div className="font-display text-xl">Jarvis</div>
-        <nav className="flex items-center gap-1">
+        <nav className="hidden md:flex items-center gap-1">
           {items.map(item => (
             <button
               key={item.id}
@@ -461,6 +466,38 @@ function Header({ tab, setTab }) {
         </nav>
       </div>
     </header>
+  );
+}
+
+// ============== BOTTOM NAV (mobile) ==============
+function BottomNav({ tab, setTab }) {
+  const items = [
+    { id: 'home',        icon: 'layout',   label: 'Главная'  },
+    { id: 'supplements', icon: 'pill',     label: 'БАДДы'    },
+    { id: 'meals',       icon: 'plate',    label: 'Питание'  },
+    { id: 'weather',     icon: 'cloud',    label: 'Погода'   },
+    { id: 'house',       icon: 'home',     label: 'Дела'     },
+    { id: 'settings',    icon: 'settings', label: 'Настройки'},
+  ];
+  return (
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 bg-[var(--bg)]/90 backdrop-blur-xl border-t border-[var(--border)] bottom-nav">
+      <div className="flex items-center justify-around px-1 pt-2 pb-safe">
+        {items.map(item => (
+          <button
+            key={item.id}
+            onClick={() => setTab(item.id)}
+            className={`flex flex-col items-center gap-1 px-2 py-1 rounded-xl transition-all min-w-0 flex-1 ${
+              tab === item.id ? 'text-[var(--text)]' : 'text-[var(--text-subtle)]'
+            }`}
+          >
+            <div className={`p-1.5 rounded-xl transition-all ${tab === item.id ? 'bg-[var(--text)] text-white' : ''}`}>
+              <Icon name={item.icon} size={20} />
+            </div>
+            <span className="text-[9px] font-medium leading-none truncate w-full text-center">{item.label}</span>
+          </button>
+        ))}
+      </div>
+    </nav>
   );
 }
 
@@ -510,7 +547,7 @@ function SupplementsView({ data, setData }) {
     <div className="fade-in">
       <div className="mb-8">
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Сегодня</div>
-        <h1 className="font-display text-4xl">БАДДы</h1>
+        <h1 className="font-display text-3xl md:text-4xl">БАДДы</h1>
       </div>
 
       {/* Переключатель Утро/Вечер + Тренировки (отдельно) */}
@@ -625,7 +662,7 @@ function MealsView({ data }) {
     <div className="fade-in">
       <div className="mb-8">
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Рационы</div>
-        <h1 className="font-display text-4xl">План питания</h1>
+        <h1 className="font-display text-3xl md:text-4xl">План питания</h1>
       </div>
 
       {meals.length === 0 ? (
@@ -767,7 +804,7 @@ function HomeView({ data, setTab, setHouseTab }) {
     <div className="fade-in">
       <div className="mb-8">
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Сегодня</div>
-        <h1 className="font-display text-4xl">Главная</h1>
+        <h1 className="font-display text-3xl md:text-4xl">Главная</h1>
         <div className="text-[var(--text-muted)] mt-2 text-sm">{dateStr}</div>
       </div>
 
@@ -1204,7 +1241,7 @@ function WeatherView() {
       <div className="mb-8 flex items-end justify-between gap-4 flex-wrap">
         <div>
           <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Прогноз</div>
-          <h1 className="font-display text-4xl">Погода</h1>
+          <h1 className="font-display text-3xl md:text-4xl">Погода</h1>
           {location && (
             <div className="flex items-center gap-1.5 text-[var(--text-muted)] mt-2">
               <Icon name="mapPin" size={14} />
@@ -1270,7 +1307,7 @@ function WeatherCurrent({ data }) {
     <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6 mb-6">
       <div className="flex items-center justify-between gap-6 mb-6">
         <div>
-          <div className="font-display text-7xl leading-none mb-2">
+          <div className="font-display text-5xl sm:text-7xl leading-none mb-2">
             {Math.round(cur.temperature_2m)}°
           </div>
           <div className="text-[var(--text-muted)] text-base">{info.label}</div>
@@ -1279,7 +1316,8 @@ function WeatherCurrent({ data }) {
           </div>
         </div>
         <div className="text-[var(--text)] opacity-90">
-          <Icon name={info.icon} size={88} />
+          <span className="hidden sm:block"><Icon name={info.icon} size={88} /></span>
+          <span className="sm:hidden"><Icon name={info.icon} size={64} /></span>
         </div>
       </div>
 
@@ -1423,10 +1461,10 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
     <div className="fade-in">
       <div className="mb-8">
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Управление</div>
-        <h1 className="font-display text-4xl">Настройки</h1>
+        <h1 className="font-display text-3xl md:text-4xl">Настройки</h1>
       </div>
 
-      <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8 flex-wrap">
+      <div className="flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8 overflow-x-auto gap-0 w-full sm:w-auto sm:inline-flex">
         <button
           onClick={() => setSettingsTab('supplements')}
           className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
@@ -2041,7 +2079,7 @@ function HouseView({ data, setData, houseTab, setHouseTab }) {
     <div className="fade-in">
       <div className="mb-8">
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Дела</div>
-        <h1 className="font-display text-4xl">Дела</h1>
+        <h1 className="font-display text-3xl md:text-4xl">Дела</h1>
       </div>
 
       <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8">
