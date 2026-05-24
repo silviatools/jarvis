@@ -2771,14 +2771,14 @@ function BossView({ data, setData }) {
         <BossSettings data={data} setData={setData} />
       ) : (
         <div className="overflow-x-auto -mx-6 px-6 scrollbar-hide">
-          <div style={{ minWidth: '540px' }}>
+          <div style={{ minWidth: '560px' }}>
             {/* Шапка с днями */}
-            <div className="grid mb-2" style={{ gridTemplateColumns: '64px repeat(7, 1fr)', gap: '6px' }}>
+            <div className="grid mb-2" style={{ gridTemplateColumns: '52px repeat(7, minmax(0, 1fr))', gap: '4px' }}>
               <div />
               {WEEKDAYS.map(d => (
                 <div
                   key={d.id}
-                  className={`text-center text-xs font-medium uppercase tracking-wider py-2 rounded-lg ${
+                  className={`text-center text-xs font-medium uppercase tracking-wider py-2 rounded-lg min-w-0 ${
                     today === d.id
                       ? 'bg-[var(--text)] text-white'
                       : 'text-[var(--text-subtle)]'
@@ -2794,11 +2794,11 @@ function BossView({ data, setData }) {
               <div
                 key={p.id}
                 className="grid mb-2"
-                style={{ gridTemplateColumns: '64px repeat(7, 1fr)', gap: '6px' }}
+                style={{ gridTemplateColumns: '52px repeat(7, minmax(0, 1fr))', gap: '4px' }}
               >
-                <div className="flex flex-col items-center justify-center gap-1 text-[var(--text-muted)] py-2">
-                  <Icon name={p.icon} size={15} />
-                  <span className="text-xs">{p.label}</span>
+                <div className="flex flex-col items-center justify-center gap-1 text-[var(--text-muted)] py-2 flex-shrink-0">
+                  <Icon name={p.icon} size={14} />
+                  <span className="text-[10px]">{p.label}</span>
                 </div>
                 {WEEKDAYS.map(d => {
                   const cellTasks = getCell(d.id, p.id);
@@ -2806,7 +2806,7 @@ function BossView({ data, setData }) {
                   return (
                     <div
                       key={d.id}
-                      className={`rounded-xl border p-1.5 min-h-[56px] ${
+                      className={`rounded-xl border p-1.5 min-h-[56px] min-w-0 overflow-hidden ${
                         isToday
                           ? 'border-[var(--border-strong)] bg-[var(--surface)]'
                           : 'border-[var(--border)] bg-[var(--surface)]'
@@ -2815,7 +2815,7 @@ function BossView({ data, setData }) {
                       {cellTasks.map(t => (
                         <div
                           key={t.id}
-                          className="text-[10px] leading-tight mb-1 last:mb-0 px-1 py-0.5 rounded bg-[var(--bg)] text-[var(--text)]"
+                          className="text-[10px] leading-tight mb-1 last:mb-0 px-1 py-0.5 rounded bg-[var(--bg)] text-[var(--text)] break-words overflow-hidden"
                         >
                           {t.name}
                         </div>
