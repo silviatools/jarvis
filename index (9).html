@@ -159,7 +159,7 @@ const DEFAULT_SETTINGS = {
   telegramToken: '',
 };
 
-const DEFAULT_DATA = () => ({ supplements: [], meals: [], taken: {}, settings: { ...DEFAULT_SETTINGS } });
+const DEFAULT_DATA = () => ({ supplements: [], meals: [], taken: {}, rationStock: 0, settings: { ...DEFAULT_SETTINGS } });
 
 const loadData = () => {
   try {
@@ -378,6 +378,7 @@ function App() {
   const [tab, setTab] = useState('home'); // home | supplements | meals | weather | house | settings
   const [settingsTab, setSettingsTab] = useState('supplements');
   const [houseTab, setHouseTab] = useState('cleaning');
+  const [mealTab, setMealTab] = useState('plan');
   const initialLoad = React.useRef(true);
 
   // On mount: try to load from server (overrides localStorage if server has data)
@@ -462,9 +463,9 @@ function App() {
     <div className="min-h-screen pb-24 md:pb-8">
       <Header tab={tab} setTab={setTab} />
       <main className="max-w-3xl mx-auto px-4 sm:px-6 pt-6 md:pt-8">
-        {tab === 'home' && <HomeView data={data} setTab={setTab} setHouseTab={setHouseTab} />}
+        {tab === 'home' && <HomeView data={data} setData={setData} setTab={setTab} setHouseTab={setHouseTab} setMealTab={setMealTab} />}
         {tab === 'supplements' && <SupplementsView data={data} setData={setData} />}
-        {tab === 'meals' && <MealsView data={data} />}
+        {tab === 'meals' && <MealsView data={data} setData={setData} mealTab={mealTab} setMealTab={setMealTab} />}
         {tab === 'weather' && <WeatherView settings={data.settings} />}
         {tab === 'house' && <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />}
         {tab === 'settings' && (
@@ -702,65 +703,187 @@ function SupplementCard({ supp, taken, onToggle }) {
 }
 
 // ============== MEALS VIEW ==============
-function MealsView({ data }) {
-  const [expanded, setExpanded] = useState(null);
-  const meals = (data.meals || []).filter(m => !m.archived);
-
+function MealsView({ data, setData, mealTab, setMealTab }) {
   return (
     <div className="fade-in">
       <div className="mb-8">
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Рационы</div>
-        <h1 className="font-display text-3xl md:text-4xl">План питания</h1>
+        <h1 className="font-display text-3xl md:text-4xl">Питание</h1>
       </div>
 
-      {meals.length === 0 ? (
-        <EmptyState title="Нет рационов" text="Создайте рацион в настройках" />
-      ) : (
-        <div className="space-y-3">
-          {meals.map(meal => {
-            const isOpen = expanded === meal.id;
-            const summary = [
-              meal.breakfast && `Завтрак: ${meal.breakfast.split('\n')[0]}`,
-              meal.snack && `Перекус: ${meal.snack.split('\n')[0]}`,
-              meal.lunch && `Обед: ${meal.lunch.split('\n')[0]}`,
-              meal.dinner && `Ужин: ${meal.dinner.split('\n')[0]}`,
-            ].filter(Boolean).join(' · ');
+      <div className="flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8 w-full sm:inline-flex overflow-x-auto">
+        {[{ id: 'plan', label: 'План' }, { id: 'counter', label: 'Счётчик' }].map(t => (
+          <button
+            key={t.id}
+            onClick={() => setMealTab(t.id)}
+            className={`flex-1 sm:flex-none px-5 py-2.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
+              mealTab === t.id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
 
-            return (
-              <div
-                key={meal.id}
-                className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden transition-all"
-              >
-                <button
-                  onClick={() => setExpanded(isOpen ? null : meal.id)}
-                  className="w-full p-5 text-left flex items-start gap-4"
-                >
-                  <div className="flex-1 min-w-0">
-                    <h3 className="font-display text-xl mb-2">{meal.name}</h3>
-                    <NutritionRow meal={meal} compact />
-                    {!isOpen && summary && (
-                      <div className="text-sm text-[var(--text-subtle)] truncate mt-2">{summary}</div>
-                    )}
-                  </div>
-                  <div className={`text-[var(--text-muted)] transition-transform ${isOpen ? 'rotate-180' : ''}`}>
-                    <Icon name="chevronDown" size={20} />
-                  </div>
-                </button>
+      {mealTab === 'plan' && <MealPlanView data={data} />}
+      {mealTab === 'counter' && <RationCounter data={data} setData={setData} />}
+    </div>
+  );
+}
 
-                {isOpen && (
-                  <div className="slide-down border-t border-[var(--border)] px-5 py-6 space-y-5">
-                    <NutritionRow meal={meal} />
-                    <MealSection title="Завтрак" content={meal.breakfast} />
-                    <MealSection title="Перекус" content={meal.snack} />
-                    <MealSection title="Обед" content={meal.lunch} />
-                    <MealSection title="Ужин" content={meal.dinner} />
-                  </div>
+function MealPlanView({ data }) {
+  const [expanded, setExpanded] = useState(null);
+  const meals = (data.meals || []).filter(m => !m.archived);
+
+  if (meals.length === 0) return <EmptyState title="Нет рационов" text="Создайте рацион в настройках" />;
+
+  return (
+    <div className="space-y-3">
+      {meals.map(meal => {
+        const isOpen = expanded === meal.id;
+        const summary = [
+          meal.breakfast && `Завтрак: ${meal.breakfast.split('\n')[0]}`,
+          meal.snack && `Перекус: ${meal.snack.split('\n')[0]}`,
+          meal.lunch && `Обед: ${meal.lunch.split('\n')[0]}`,
+          meal.dinner && `Ужин: ${meal.dinner.split('\n')[0]}`,
+        ].filter(Boolean).join(' · ');
+
+        return (
+          <div
+            key={meal.id}
+            className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden transition-all"
+          >
+            <button
+              onClick={() => setExpanded(isOpen ? null : meal.id)}
+              className="w-full p-5 text-left flex items-start gap-4"
+            >
+              <div className="flex-1 min-w-0">
+                <h3 className="font-display text-xl mb-2">{meal.name}</h3>
+                <NutritionRow meal={meal} compact />
+                {!isOpen && summary && (
+                  <div className="text-sm text-[var(--text-subtle)] truncate mt-2">{summary}</div>
                 )}
               </div>
-            );
-          })}
+              <div className={`text-[var(--text-muted)] transition-transform ${isOpen ? 'rotate-180' : ''}`}>
+                <Icon name="chevronDown" size={20} />
+              </div>
+            </button>
+
+            {isOpen && (
+              <div className="slide-down border-t border-[var(--border)] px-5 py-6 space-y-5">
+                <NutritionRow meal={meal} />
+                <MealSection title="Завтрак" content={meal.breakfast} />
+                <MealSection title="Перекус" content={meal.snack} />
+                <MealSection title="Обед" content={meal.lunch} />
+                <MealSection title="Ужин" content={meal.dinner} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function RationCounter({ data, setData }) {
+  const rations = data.rationStock ?? 0;
+  const RATIONS_PER_DAY = 2;
+  const daysLeft = rations / RATIONS_PER_DAY;
+  const wholeDays = Math.floor(daysLeft);
+  const halfDay = (rations % RATIONS_PER_DAY) > 0;
+
+  const [inputVal, setInputVal] = useState('');
+  const [showAdd, setShowAdd] = useState(false);
+
+  const consume = () => {
+    if (rations <= 0) return;
+    setData(d => ({ ...d, rationStock: (d.rationStock ?? 0) - 1 }));
+  };
+
+  const addRations = (n) => {
+    if (!n || n <= 0) return;
+    setData(d => ({ ...d, rationStock: (d.rationStock ?? 0) + n }));
+    setInputVal('');
+    setShowAdd(false);
+  };
+
+  const daysLabel = () => {
+    if (rations === 0) return 'Рационов нет';
+    const parts = [];
+    if (wholeDays > 0) parts.push(`${wholeDays} ${wholeDays === 1 ? 'день' : wholeDays < 5 ? 'дня' : 'дней'}`);
+    if (halfDay) parts.push('½ дня');
+    return `Хватит на ${parts.join(' и ')}`;
+  };
+
+  const urgencyColor = rations === 0
+    ? 'text-red-500'
+    : wholeDays < 2
+    ? 'text-amber-500'
+    : 'text-[var(--text)]';
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-8 text-center">
+        <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] mb-4">Остаток рационов</div>
+
+        <div className={`font-display text-8xl leading-none mb-3 ${urgencyColor}`}>
+          {rations}
         </div>
-      )}
+        <div className={`text-base mb-8 ${rations === 0 ? 'text-red-400' : wholeDays < 2 ? 'text-amber-500' : 'text-[var(--text-muted)]'}`}>
+          {daysLabel()}
+        </div>
+
+        <button
+          onClick={consume}
+          disabled={rations <= 0}
+          className={`w-full py-4 rounded-2xl font-medium text-base transition-all ${
+            rations > 0
+              ? 'bg-[var(--text)] text-white active:scale-95'
+              : 'bg-[var(--border)] text-[var(--text-subtle)] cursor-not-allowed'
+          }`}
+        >
+          Съел рацион  −1
+        </button>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        {!showAdd ? (
+          <button
+            onClick={() => setShowAdd(true)}
+            className="w-full flex items-center justify-center gap-2 py-2 text-[var(--text-muted)] text-sm font-medium hover:text-[var(--text)] transition-colors"
+          >
+            <Icon name="plus" size={16} />
+            Добавить рационы
+          </button>
+        ) : (
+          <div className="flex gap-2">
+            <input
+              type="number"
+              inputMode="numeric"
+              min="1"
+              value={inputVal}
+              onChange={e => setInputVal(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addRations(parseInt(inputVal))}
+              placeholder="Сколько рационов приготовил?"
+              autoFocus
+              className="flex-1"
+            />
+            <button
+              onClick={() => addRations(parseInt(inputVal))}
+              className="px-4 py-2 bg-[var(--text)] text-white rounded-xl text-sm font-medium"
+            >
+              Добавить
+            </button>
+            <button
+              onClick={() => { setShowAdd(false); setInputVal(''); }}
+              className="px-3 py-2 border border-[var(--border)] rounded-xl text-[var(--text-muted)]"
+            >
+              <Icon name="x" size={16} />
+            </button>
+          </div>
+        )}
+        <p className="text-xs text-[var(--text-subtle)] text-center mt-3">1 день = {RATIONS_PER_DAY} рациона</p>
+      </div>
     </div>
   );
 }
@@ -842,11 +965,12 @@ const WEEKDAY_SHORT = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
 const WEEKDAY_FULL = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
 
 // ============== HOME VIEW ==============
-function HomeView({ data, setTab, setHouseTab }) {
+function HomeView({ data, setData, setTab, setHouseTab, setMealTab }) {
   const now = new Date();
   const dateStr = `${now.getDate()} ${monthFullLower(now.getMonth())}, ${WEEKDAY_FULL[now.getDay()].toLowerCase()}`;
 
   const goHouse = (sub) => { setHouseTab(sub); setTab('house'); };
+  const goCounter = () => { setMealTab('counter'); setTab('meals'); };
 
   return (
     <div className="fade-in">
@@ -859,6 +983,7 @@ function HomeView({ data, setTab, setHouseTab }) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <MiniWeatherCard onClick={() => setTab('weather')} />
         <CommuteCard settings={data.settings} />
+        <RationWidget data={data} setData={setData} onGo={goCounter} />
         <CleaningWidget data={data} onGo={() => goHouse('cleaning')} />
         <BossWidget data={data} onGo={() => goHouse('boss')} />
       </div>
@@ -1115,6 +1240,61 @@ const ChevronRight = () => (
     <path d="M9 18l6-6-6-6"/>
   </svg>
 );
+
+function RationWidget({ data, setData, onGo }) {
+  const rations = data.rationStock ?? 0;
+  const RATIONS_PER_DAY = 2;
+  const wholeDays = Math.floor(rations / RATIONS_PER_DAY);
+  const halfDay = (rations % RATIONS_PER_DAY) > 0;
+
+  const consume = (e) => {
+    e.stopPropagation();
+    if (rations <= 0) return;
+    setData(d => ({ ...d, rationStock: (d.rationStock ?? 0) - 1 }));
+  };
+
+  const daysLabel = () => {
+    if (rations === 0) return 'Рационов нет';
+    const parts = [];
+    if (wholeDays > 0) parts.push(`${wholeDays} ${wholeDays === 1 ? 'день' : wholeDays < 5 ? 'дня' : 'дней'}`);
+    if (halfDay) parts.push('½ дня');
+    return `На ${parts.join(' и ')}`;
+  };
+
+  const urgency = rations === 0 ? '#ef4444' : wholeDays < 2 ? '#f59e0b' : 'var(--text)';
+
+  return (
+    <div
+      onClick={onGo}
+      className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6 cursor-pointer transition-all hover:border-[var(--border-strong)]"
+    >
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] font-medium">Счётчик рационов</div>
+        <Icon name="plate" size={16} />
+      </div>
+
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <div className="font-display text-5xl leading-none mb-1" style={{ color: urgency }}>{rations}</div>
+          <div className="text-sm" style={{ color: urgency === 'var(--text)' ? 'var(--text-muted)' : urgency }}>
+            {daysLabel()}
+          </div>
+        </div>
+        <button
+          onClick={consume}
+          disabled={rations <= 0}
+          className={`flex-shrink-0 w-14 h-14 rounded-2xl flex items-center justify-center text-2xl font-bold transition-all ${
+            rations > 0
+              ? 'bg-[var(--text)] text-white active:scale-90'
+              : 'bg-[var(--border)] text-[var(--text-subtle)] cursor-not-allowed'
+          }`}
+        >
+          −1
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function CleaningWidget({ data, onGo }) {
   const todayChores = (data.chores || [])
