@@ -3314,6 +3314,19 @@ function applyVoiceTask(parsed, setData) {
   }
 }
 
+function speak(text) {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'ru-RU';
+  u.rate = 1.05;
+  // Try to pick a Russian voice if available
+  const voices = window.speechSynthesis.getVoices();
+  const ruVoice = voices.find(v => v.lang.startsWith('ru'));
+  if (ruVoice) u.voice = ruVoice;
+  window.speechSynthesis.speak(u);
+}
+
 function VoiceButton({ data, setData, settings }) {
   const [phase, setPhase] = useState('idle'); // idle|recording|processing|clarifying|success|error
   const [transcript, setTranscript] = useState('');
@@ -3391,12 +3404,16 @@ function VoiceButton({ data, setData, settings }) {
         const parsed = await callAI(newMessages, settings);
         if (parsed.action === 'add') {
           applyVoiceTask(parsed, setData);
-          setLastAdded(parsed.name || 'задача');
+          const name = parsed.name || 'задача';
+          setLastAdded(name);
+          speak(`Добавлено: ${name}`);
           setPhase('success');
           setTimeout(() => { setPhase('idle'); setMessages([]); }, 2500);
         } else if (parsed.action === 'clarify') {
-          setClarifyQuestion(parsed.question || 'Уточните запрос');
-          setMessages([...newMessages, { role: 'assistant', content: parsed.question }]);
+          const q = parsed.question || 'Уточните запрос';
+          setClarifyQuestion(q);
+          setMessages([...newMessages, { role: 'assistant', content: q }]);
+          speak(q);
           setPhase('clarifying');
         } else {
           setErrorMsg('Непонятный ответ ИИ. Попробуйте ещё раз.');
@@ -3429,12 +3446,16 @@ function VoiceButton({ data, setData, settings }) {
       const parsed = await callAI(newMessages, settings);
       if (parsed.action === 'add') {
         applyVoiceTask(parsed, setData);
-        setLastAdded(parsed.name || 'задача');
+        const name = parsed.name || 'задача';
+        setLastAdded(name);
+        speak(`Добавлено: ${name}`);
         setPhase('success');
         setTimeout(() => { setPhase('idle'); setMessages([]); }, 2500);
       } else if (parsed.action === 'clarify') {
-        setClarifyQuestion(parsed.question || 'Уточните запрос');
-        setMessages([...newMessages, { role: 'assistant', content: parsed.question }]);
+        const q = parsed.question || 'Уточните запрос';
+        setClarifyQuestion(q);
+        setMessages([...newMessages, { role: 'assistant', content: q }]);
+        speak(q);
         setPhase('clarifying');
       } else {
         setErrorMsg('Непонятный ответ ИИ.');
@@ -3449,6 +3470,7 @@ function VoiceButton({ data, setData, settings }) {
   };
 
   const cancel = () => {
+    window.speechSynthesis?.cancel();
     stopRecording();
     setPhase('idle');
     setMessages([]);
