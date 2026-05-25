@@ -210,6 +210,26 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif self.path == "/api/subscribers":
             subs = load_subscribers()
             self._json(200, {"count": len(subs["chat_ids"])})
+        elif self.path == "/api/debug":
+            token = get_token()
+            subs = load_subscribers()
+            chores = []
+            if CONFIG_FILE.exists():
+                try:
+                    cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+                    chores = cfg.get("chores", [])
+                except Exception:
+                    pass
+            now = datetime.now()
+            self._json(200, {
+                "server_time": now.strftime("%H:%M:%S"),
+                "server_date": now.strftime("%Y-%m-%d"),
+                "token_present": bool(token),
+                "token_prefix": token[:10] + "..." if token else "",
+                "subscribers": len(subs["chat_ids"]),
+                "config_file_exists": CONFIG_FILE.exists(),
+                "chores": [{"name": c.get("name"), "notifyTime": c.get("notifyTime"), "notify": c.get("notify"), "lastDone": c.get("lastDone")} for c in chores],
+            })
         elif self.path == "/api/data":
             if APP_DATA_FILE.exists():
                 try:

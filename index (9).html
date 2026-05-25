@@ -983,7 +983,6 @@ function HomeView({ data, setData, setTab, setHouseTab, setMealTab }) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <MiniWeatherCard onClick={() => setTab('weather')} />
         <CommuteCard settings={data.settings} />
-        <RationWidget data={data} setData={setData} onGo={goCounter} />
         <CleaningWidget data={data} onGo={() => goHouse('cleaning')} />
         <BossWidget data={data} onGo={() => goHouse('boss')} />
       </div>
