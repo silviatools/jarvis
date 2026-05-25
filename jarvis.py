@@ -25,6 +25,14 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
+# Set timezone from env var (TZ) or default to Europe/Moscow
+_tz = os.environ.get("TZ", "Europe/Moscow")
+os.environ["TZ"] = _tz
+try:
+    time.tzset()
+except AttributeError:
+    pass  # Windows doesn't have tzset
+
 try:
     import requests
 except ImportError:
@@ -54,10 +62,18 @@ WELCOME_TEXT = (
 # ── helpers ────────────────────────────────────────────────────────────────
 
 def get_token() -> str:
-    """Token from env var takes priority over config file."""
+    """Token priority: env var → app data file → config file."""
     env_token = os.environ.get("TELEGRAM_TOKEN", "").strip()
     if env_token:
         return env_token
+    if APP_DATA_FILE.exists():
+        try:
+            app_data = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
+            token = app_data.get("settings", {}).get("telegramToken", "").strip()
+            if token:
+                return token
+        except Exception:
+            pass
     if CONFIG_FILE.exists():
         try:
             cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
@@ -169,14 +185,20 @@ def _tick():
     subs = load_subscribers()
     changed = poll_updates(token, subs)
 
-    if CONFIG_FILE.exists():
+    # Read chores from app data (source of truth), fall back to config file
+    chores = []
+    if APP_DATA_FILE.exists():
+        try:
+            app_data = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
+            chores = [c for c in app_data.get("chores", []) if not c.get("archived")]
+        except Exception:
+            pass
+    if not chores and CONFIG_FILE.exists():
         try:
             config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             chores = config.get("chores", [])
         except Exception:
-            chores = []
-    else:
-        chores = []
+            pass
 
     now_str = datetime.now().strftime("%H:%M")
     for chore in chores:
@@ -224,10 +246,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {
                 "server_time": now.strftime("%H:%M:%S"),
                 "server_date": now.strftime("%Y-%m-%d"),
+                "timezone": os.environ.get("TZ", "not set"),
                 "token_present": bool(token),
                 "token_prefix": token[:10] + "..." if token else "",
                 "subscribers": len(subs["chat_ids"]),
                 "config_file_exists": CONFIG_FILE.exists(),
+                "app_data_file_exists": APP_DATA_FILE.exists(),
                 "chores": [{"name": c.get("name"), "notifyTime": c.get("notifyTime"), "notify": c.get("notify"), "lastDone": c.get("lastDone")} for c in chores],
             })
         elif self.path == "/api/data":
