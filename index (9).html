@@ -3335,111 +3335,14 @@ function VoiceButton({ data, setData, settings }) {
   const [lastAdded, setLastAdded] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const recogRef = React.useRef(null);
+  const transcriptRef = React.useRef(''); // kept in sync for onend closure
 
-  const startRecording = (existingMessages) => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) {
-      setErrorMsg('Браузер не поддерживает распознавание речи');
-      setPhase('error');
-      setTimeout(() => setPhase('idle'), 3000);
+  const processTranscript = async (text, existingMessages) => {
+    if (!text) {
+      setPhase(existingMessages.length > 0 ? 'clarifying' : 'idle');
       return;
     }
-    const r = new SR();
-    r.lang = 'ru-RU';
-    r.interimResults = true;
-    r.maxAlternatives = 1;
-    recogRef.current = r;
-
-    r.onresult = (e) => {
-      const t = Array.from(e.results).map(res => res[0].transcript).join('');
-      setTranscript(t);
-    };
-
-    r.onerror = (e) => {
-      if (e.error === 'no-speech') {
-        setPhase('idle');
-        return;
-      }
-      setErrorMsg(`Ошибка записи: ${e.error}`);
-      setPhase('error');
-      setTimeout(() => setPhase('idle'), 3000);
-    };
-
-    r.onend = () => {
-      // handled by stopRecording
-    };
-
-    r.start();
-    setPhase('recording');
-    setTranscript('');
-  };
-
-  const stopRecording = () => {
-    if (recogRef.current) {
-      recogRef.current.onend = null;
-      recogRef.current.stop();
-      recogRef.current = null;
-    }
-  };
-
-  const handleMainButton = async () => {
-    if (phase === 'idle') {
-      const key = (settings?.voiceApiKey || '').trim();
-      if (!key) {
-        setErrorMsg('Настройте API-ключ в Настройках → Ассистент');
-        setPhase('error');
-        setTimeout(() => setPhase('idle'), 4000);
-        return;
-      }
-      setMessages([]);
-      startRecording([]);
-    } else if (phase === 'recording') {
-      stopRecording();
-      const text = transcript.trim();
-      if (!text) { setPhase('idle'); return; }
-      const newMessages = [...messages, { role: 'user', content: text }];
-      setMessages(newMessages);
-      setPhase('processing');
-      try {
-        const parsed = await callAI(newMessages, settings);
-        if (parsed.action === 'add') {
-          applyVoiceTask(parsed, setData);
-          const name = parsed.name || 'задача';
-          setLastAdded(name);
-          speak(`Добавлено: ${name}`);
-          setPhase('success');
-          setTimeout(() => { setPhase('idle'); setMessages([]); }, 2500);
-        } else if (parsed.action === 'clarify') {
-          const q = parsed.question || 'Уточните запрос';
-          setClarifyQuestion(q);
-          setMessages([...newMessages, { role: 'assistant', content: q }]);
-          speak(q);
-          setPhase('clarifying');
-        } else {
-          setErrorMsg('Непонятный ответ ИИ. Попробуйте ещё раз.');
-          setPhase('error');
-          setTimeout(() => setPhase('idle'), 3000);
-        }
-      } catch (e) {
-        const msg = e.message === 'no_key'
-          ? 'Настройте API-ключ в Настройках → Ассистент'
-          : `Ошибка: ${e.message}`;
-        setErrorMsg(msg);
-        setPhase('error');
-        setTimeout(() => setPhase('idle'), 4000);
-      }
-    } else if (phase === 'clarifying') {
-      startRecording(messages);
-    } else if (phase === 'processing') {
-      // do nothing
-    }
-  };
-
-  const handleClarifyVoiceStop = async () => {
-    stopRecording();
-    const text = transcript.trim();
-    if (!text) { setPhase('clarifying'); return; }
-    const newMessages = [...messages, { role: 'user', content: text }];
+    const newMessages = [...existingMessages, { role: 'user', content: text }];
     setMessages(newMessages);
     setPhase('processing');
     try {
@@ -3458,20 +3361,85 @@ function VoiceButton({ data, setData, settings }) {
         speak(q);
         setPhase('clarifying');
       } else {
-        setErrorMsg('Непонятный ответ ИИ.');
+        setErrorMsg('Непонятный ответ ИИ. Попробуйте ещё раз.');
         setPhase('error');
         setTimeout(() => setPhase('idle'), 3000);
       }
     } catch (e) {
-      setErrorMsg(`Ошибка: ${e.message}`);
+      const msg = e.message === 'no_key'
+        ? 'Настройте API-ключ в Настройках → Ассистент'
+        : `Ошибка: ${e.message}`;
+      setErrorMsg(msg);
       setPhase('error');
       setTimeout(() => setPhase('idle'), 4000);
     }
   };
 
+  const startRecording = (existingMessages) => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      setErrorMsg('Браузер не поддерживает распознавание речи');
+      setPhase('error');
+      setTimeout(() => setPhase('idle'), 3000);
+      return;
+    }
+    const r = new SR();
+    r.lang = 'ru-RU';
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+    // continuous=false (default): auto-stops after a natural speech pause
+    transcriptRef.current = '';
+    recogRef.current = r;
+
+    r.onresult = (e) => {
+      let t = '';
+      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+      transcriptRef.current = t;
+      setTranscript(t);
+    };
+
+    r.onerror = (e) => {
+      recogRef.current = null;
+      if (e.error === 'no-speech') { setPhase('idle'); return; }
+      setErrorMsg(`Ошибка записи: ${e.error}`);
+      setPhase('error');
+      setTimeout(() => setPhase('idle'), 3000);
+    };
+
+    // Auto-triggered when user stops speaking (or manually via r.stop())
+    r.onend = () => {
+      recogRef.current = null;
+      processTranscript(transcriptRef.current.trim(), existingMessages);
+    };
+
+    r.start();
+    setPhase('recording');
+    setTranscript('');
+  };
+
+  const handleMainButton = () => {
+    if (phase === 'idle') {
+      const key = (settings?.voiceApiKey || '').trim();
+      if (!key) {
+        setErrorMsg('Настройте API-ключ в Настройках → Ассистент');
+        setPhase('error');
+        setTimeout(() => setPhase('idle'), 4000);
+        return;
+      }
+      setMessages([]);
+      startRecording([]);
+    } else if (phase === 'recording') {
+      // Manual early stop — triggers onend which calls processTranscript
+      if (recogRef.current) recogRef.current.stop();
+    } else if (phase === 'clarifying') {
+      startRecording(messages);
+    }
+    // processing/success/error: do nothing
+  };
+
   const cancel = () => {
     window.speechSynthesis?.cancel();
-    stopRecording();
+    if (recogRef.current) { recogRef.current.onend = null; recogRef.current.stop(); recogRef.current = null; }
     setPhase('idle');
     setMessages([]);
     setTranscript('');
@@ -3497,12 +3465,12 @@ function VoiceButton({ data, setData, settings }) {
             <div>
               <div className="text-xs text-red-500 font-medium mb-1 flex items-center gap-1">
                 <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse inline-block"></span>
-                Запись...
+                Слушаю...
               </div>
               <div className="text-sm text-[var(--text)] min-h-[40px] leading-snug">
                 {transcript || <span className="text-[var(--text-subtle)]">Говорите...</span>}
               </div>
-              <div className="text-xs text-[var(--text-subtle)] mt-2">Нажмите ещё раз чтобы остановить</div>
+              <div className="text-xs text-[var(--text-subtle)] mt-2">Остановится автоматически после паузы</div>
             </div>
           )}
           {phase === 'processing' && (
@@ -3517,7 +3485,7 @@ function VoiceButton({ data, setData, settings }) {
               <div className="text-sm text-[var(--text)] mb-3">{clarifyQuestion}</div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={phase === 'recording' ? handleClarifyVoiceStop : () => startRecording(messages)}
+                  onClick={() => startRecording(messages)}
                   className="flex-1 flex items-center justify-center gap-1.5 bg-blue-500 text-white rounded-xl py-2 text-sm font-medium"
                 >
                   <Icon name="mic" size={16} />
@@ -3546,8 +3514,8 @@ function VoiceButton({ data, setData, settings }) {
 
       {/* Main button */}
       <button
-        onClick={phase === 'clarifying' ? undefined : handleMainButton}
-        disabled={phase === 'processing'}
+        onClick={handleMainButton}
+        disabled={phase === 'processing' || phase === 'success'}
         className={`w-14 h-14 rounded-full shadow-lg flex items-center justify-center transition-all ${btnBg} ${phase === 'recording' ? 'voice-pulse' : ''} ${phase === 'processing' ? 'opacity-70' : ''}`}
         title="Голосовой ассистент"
       >
