@@ -178,6 +178,7 @@ const DEFAULT_SETTINGS = {
   voiceProvider: 'claude',
   voiceApiKey: '',
   voiceModel: '',
+  voiceTtsVoice: 'nova',
 };
 
 const DEFAULT_DATA = () => ({ supplements: [], meals: [], taken: {}, rationStock: 0, settings: { ...DEFAULT_SETTINGS } });
@@ -2088,6 +2089,24 @@ function VoiceAssistantSettings({ data, setData }) {
             autoComplete="off"
           />
         </div>
+
+        <div>
+          <label>Голос озвучки (OpenAI TTS)</label>
+          <select
+            value={settings.voiceTtsVoice || 'nova'}
+            onChange={e => updateSetting('voiceTtsVoice', e.target.value)}
+          >
+            <option value="nova">Nova — женский, живой</option>
+            <option value="shimmer">Shimmer — женский, мягкий</option>
+            <option value="alloy">Alloy — нейтральный</option>
+            <option value="echo">Echo — мужской</option>
+            <option value="onyx">Onyx — мужской, глубокий</option>
+            <option value="fable">Fable — мужской, выразительный</option>
+          </select>
+          <p className="text-xs text-[var(--text-subtle)] mt-1">
+            Используется API-ключ OpenAI. Если ключ не задан — будет встроенный голос браузера.
+          </p>
+        </div>
       </div>
 
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
@@ -3314,13 +3333,43 @@ function applyVoiceTask(parsed, setData) {
   }
 }
 
-function speak(text) {
+let _currentAudio = null;
+
+async function speak(text, settings) {
+  // Stop any currently playing audio
+  if (_currentAudio) { _currentAudio.pause(); _currentAudio = null; }
+  window.speechSynthesis?.cancel();
+
+  const key = (settings?.voiceApiKey || '').trim();
+  if (key) {
+    // OpenAI TTS API (works for both openai and claude providers if key is set)
+    try {
+      const voice = settings?.voiceTtsVoice || 'nova';
+      const res = await fetch('https://api.openai.com/v1/audio/speech', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${key}`,
+        },
+        body: JSON.stringify({ model: 'tts-1', voice, input: text }),
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        _currentAudio = audio;
+        audio.onended = () => { URL.revokeObjectURL(url); _currentAudio = null; };
+        audio.play().catch(() => {});
+        return;
+      }
+    } catch (_) {}
+  }
+
+  // Fallback: browser SpeechSynthesis
   if (!window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
   u.lang = 'ru-RU';
   u.rate = 1.05;
-  // Try to pick a Russian voice if available
   const voices = window.speechSynthesis.getVoices();
   const ruVoice = voices.find(v => v.lang.startsWith('ru'));
   if (ruVoice) u.voice = ruVoice;
@@ -3351,14 +3400,14 @@ function VoiceButton({ data, setData, settings }) {
         applyVoiceTask(parsed, setData);
         const name = parsed.name || 'задача';
         setLastAdded(name);
-        speak(`Добавлено: ${name}`);
+        speak(`Добавлено: ${name}`, settings);
         setPhase('success');
         setTimeout(() => { setPhase('idle'); setMessages([]); }, 2500);
       } else if (parsed.action === 'clarify') {
         const q = parsed.question || 'Уточните запрос';
         setClarifyQuestion(q);
         setMessages([...newMessages, { role: 'assistant', content: q }]);
-        speak(q);
+        speak(q, settings);
         setPhase('clarifying');
       } else {
         setErrorMsg('Непонятный ответ ИИ. Попробуйте ещё раз.');
@@ -3439,6 +3488,7 @@ function VoiceButton({ data, setData, settings }) {
 
   const cancel = () => {
     window.speechSynthesis?.cancel();
+    if (_currentAudio) { _currentAudio.pause(); _currentAudio = null; }
     if (recogRef.current) { recogRef.current.onend = null; recogRef.current.stop(); recogRef.current = null; }
     setPhase('idle');
     setMessages([]);
