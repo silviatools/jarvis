@@ -3335,45 +3335,50 @@ function applyVoiceTask(parsed, setData) {
 
 let _currentAudio = null;
 
-async function speak(text, settings) {
+function speak(text, settings) {
   // Stop any currently playing audio
   if (_currentAudio) { _currentAudio.pause(); _currentAudio = null; }
   window.speechSynthesis?.cancel();
 
   const key = (settings?.voiceApiKey || '').trim();
   if (key) {
-    // OpenAI TTS API (works for both openai and claude providers if key is set)
-    try {
-      const voice = settings?.voiceTtsVoice || 'nova';
-      const res = await fetch('https://api.openai.com/v1/audio/speech', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${key}`,
-        },
-        body: JSON.stringify({ model: 'tts-1', voice, input: text }),
+    // OpenAI TTS — returns promise that resolves when audio finishes
+    const voice = settings?.voiceTtsVoice || 'nova';
+    return fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`,
+      },
+      body: JSON.stringify({ model: 'tts-1', voice, input: text }),
+    }).then(res => {
+      if (!res.ok) throw new Error('tts_fail');
+      return res.blob();
+    }).then(blob => {
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      _currentAudio = audio;
+      return new Promise(resolve => {
+        audio.onended = () => { URL.revokeObjectURL(url); _currentAudio = null; resolve(); };
+        audio.onerror = () => { URL.revokeObjectURL(url); _currentAudio = null; resolve(); };
+        audio.play().catch(resolve);
       });
-      if (res.ok) {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        _currentAudio = audio;
-        audio.onended = () => { URL.revokeObjectURL(url); _currentAudio = null; };
-        audio.play().catch(() => {});
-        return;
-      }
-    } catch (_) {}
+    }).catch(() => Promise.resolve());
   }
 
-  // Fallback: browser SpeechSynthesis
-  if (!window.speechSynthesis) return;
+  // Fallback: browser SpeechSynthesis — returns promise that resolves when done
+  if (!window.speechSynthesis) return Promise.resolve();
   const u = new SpeechSynthesisUtterance(text);
   u.lang = 'ru-RU';
   u.rate = 1.05;
   const voices = window.speechSynthesis.getVoices();
   const ruVoice = voices.find(v => v.lang.startsWith('ru'));
   if (ruVoice) u.voice = ruVoice;
-  window.speechSynthesis.speak(u);
+  return new Promise(resolve => {
+    u.onend = resolve;
+    u.onerror = resolve;
+    window.speechSynthesis.speak(u);
+  });
 }
 
 function VoiceButton({ data, setData, settings }) {
@@ -3405,10 +3410,12 @@ function VoiceButton({ data, setData, settings }) {
         setTimeout(() => { setPhase('idle'); setMessages([]); }, 2500);
       } else if (parsed.action === 'clarify') {
         const q = parsed.question || 'Уточните запрос';
+        const updatedMessages = [...newMessages, { role: 'assistant', content: q }];
         setClarifyQuestion(q);
-        setMessages([...newMessages, { role: 'assistant', content: q }]);
-        speak(q, settings);
+        setMessages(updatedMessages);
         setPhase('clarifying');
+        await speak(q, settings);
+        startRecording(updatedMessages);
       } else {
         setErrorMsg('Непонятный ответ ИИ. Попробуйте ещё раз.');
         setPhase('error');
