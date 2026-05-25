@@ -985,6 +985,8 @@ function HomeView({ data, setData, setTab, setHouseTab, setMealTab }) {
         <CleaningWidget data={data} onGo={() => goHouse('cleaning')} />
         <BossWidget data={data} onGo={() => goHouse('boss')} />
       </div>
+
+      <RationBanner data={data} setData={setData} onGo={goCounter} />
     </div>
   );
 }
@@ -1290,6 +1292,50 @@ function RationWidget({ data, setData, onGo }) {
           −1
         </button>
       </div>
+    </div>
+  );
+}
+
+function RationBanner({ data, setData, onGo }) {
+  const rations = data.rationStock ?? 0;
+  const daysLeft = Math.floor(rations / 2);
+  const half = rations % 2 > 0;
+
+  const consume = (e) => {
+    e.stopPropagation();
+    if (rations <= 0) return;
+    setData(d => ({ ...d, rationStock: (d.rationStock ?? 0) - 1 }));
+  };
+
+  const urgency = rations === 0 ? '#ef4444' : daysLeft < 2 ? '#f59e0b' : 'var(--text)';
+
+  const daysStr = rations === 0
+    ? 'Рационов нет'
+    : `${daysLeft > 0 ? `${daysLeft} ${daysLeft === 1 ? 'день' : daysLeft < 5 ? 'дня' : 'дней'}` : ''}${half ? (daysLeft > 0 ? ' и ½' : '½ дня') : ''}`;
+
+  return (
+    <div
+      onClick={onGo}
+      className="mt-4 bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-5 py-4 cursor-pointer transition-all hover:border-[var(--border-strong)] flex items-center gap-4"
+    >
+      <div className="flex-1 min-w-0">
+        <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] font-medium mb-1">Рационы</div>
+        <div className="flex items-baseline gap-2">
+          <span className="font-display text-3xl leading-none" style={{ color: urgency }}>{rations}</span>
+          <span className="text-sm" style={{ color: urgency === 'var(--text)' ? 'var(--text-muted)' : urgency }}>{daysStr}</span>
+        </div>
+      </div>
+      <button
+        onClick={consume}
+        disabled={rations <= 0}
+        className={`flex-shrink-0 h-12 px-5 rounded-xl font-medium text-sm transition-all ${
+          rations > 0
+            ? 'bg-[var(--text)] text-white active:scale-95'
+            : 'bg-[var(--border)] text-[var(--text-subtle)] cursor-not-allowed'
+        }`}
+      >
+        Съел  −1
+      </button>
     </div>
   );
 }
