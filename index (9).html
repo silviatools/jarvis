@@ -3225,33 +3225,66 @@ function BossTaskModal({ task, onSave, onClose }) {
 
 // ============== VOICE ASSISTANT ==============
 
-const VOICE_SYSTEM_PROMPT = `Ты помощник приложения Jarvis. Твоя задача — добавить дело в один из разделов.
+function buildVoiceSystemPrompt(appData) {
+  const DAY_NAMES = ['вс','пн','вт','ср','чт','пт','сб'];
+  const PERIOD_NAMES = { morning: 'утро', evening: 'вечер', allday: 'весь день' };
+  const FREQ_LABELS = { daily:'каждый день', every2:'каждые 2 дня', every3:'каждые 3 дня', weekly:'раз в неделю', biweekly:'раз в 2 нед', monthly:'раз в месяц', custom:'своя' };
 
-РАЗДЕЛЫ:
-1. "chores" (По дому) — регулярные домашние дела с периодичностью.
-   Поля: name (string), frequency (daily|every2|every3|weekly|biweekly|monthly|custom), customDays (int только если custom)
-   Примеры: пылесосить, мыть посуду, стирка, мыть окна
+  const today = new Date();
+  const todayStr = today.toISOString().split('T')[0];
+  const todayDayName = DAY_NAMES[today.getDay()];
 
-2. "boss" (Босс) — задачи по расписанию (утро/вечер/весь день × дни недели).
-   Поля: name (string), period (morning|evening|allday), days (array: 0=вс,1=пн,2=вт,3=ср,4=чт,5=пт,6=сб)
-   Примеры: проверить почту, зарядка, планёрка, медитация
+  const chores = (appData.chores || []).filter(c => !c.archived);
+  const bossTasks = (appData.bossTasks || []).filter(t => !t.archived);
 
-ПРАВИЛА:
-- Если не уверен в разделе или параметрах — верни action="clarify" с коротким вопросом на русском языке.
-- Если всё понятно — верни action="add" с заполненными полями.
-- ФОРМАТ ОТВЕТА: только JSON, без markdown, без пояснений, без блоков кода.
+  const choreLines = chores.length
+    ? chores.map(c => {
+        const next = getChoreNextDate(c);
+        const nextStr = isChoreDueToday(c) ? 'СЕГОДНЯ' : next.toISOString().split('T')[0];
+        const freq = FREQ_LABELS[c.frequency] || c.frequency;
+        const custom = c.frequency === 'custom' ? ` (${c.customDays} дн)` : '';
+        return `  • ${c.name} | ${freq}${custom} | последний раз: ${c.lastDone || 'никогда'} | следующий: ${nextStr}`;
+      }).join('\n')
+    : '  (пусто)';
 
-ПРИМЕРЫ:
-Запрос: "пропылесосить раз в неделю"
-Ответ: {"action":"add","section":"chores","name":"Пропылесосить","frequency":"weekly","customDays":null}
+  const bossLines = bossTasks.length
+    ? bossTasks.map(t => {
+        const days = (t.days || []).map(d => DAY_NAMES[d]).join(',');
+        return `  • ${t.name} | ${PERIOD_NAMES[t.period] || t.period} | дни: ${days}`;
+      }).join('\n')
+    : '  (пусто)';
 
-Запрос: "зарядка каждое утро кроме воскресенья"
-Ответ: {"action":"add","section":"boss","name":"Зарядка","period":"morning","days":[1,2,3,4,5,6]}
+  return `Ты голосовой помощник приложения Jarvis. Отвечай кратко, по-русски.
 
-Запрос: "проверить почту"
-Ответ: {"action":"clarify","question":"Это регулярная домашняя задача или задача по расписанию (утро/вечер/весь день)?"}`;
+СЕГОДНЯ: ${todayStr} (${todayDayName})
 
-async function callAI(messages, settings) {
+РАЗДЕЛ "ПО ДОМУ" — регулярные домашние дела:
+${choreLines}
+
+РАЗДЕЛ "БОСС" — задачи по расписанию:
+${bossLines}
+
+ТЫ УМЕЕШЬ:
+1. Ответить на любой вопрос о делах пользователя (что сегодня, что просрочено, когда последний раз, что на этой неделе и т.д.)
+2. Добавить новое дело в один из разделов
+
+ФОРМАТ ОТВЕТА — только JSON, без markdown, без пояснений:
+
+Ответить на вопрос:
+{"action":"answer","text":"краткий разговорный ответ на русском"}
+
+Добавить в "По дому":
+{"action":"add","section":"chores","name":"...","frequency":"daily|every2|every3|weekly|biweekly|monthly|custom","customDays":null}
+
+Добавить в "Босс":
+{"action":"add","section":"boss","name":"...","period":"morning|evening|allday","days":[1,2,3,4,5]}
+
+Уточнить (если непонятно):
+{"action":"clarify","question":"короткий вопрос"}`;
+}
+
+async function callAI(messages, settings, appData) {
+  const systemPrompt = buildVoiceSystemPrompt(appData || {});
   const provider = settings.voiceProvider || 'claude';
   const key = (settings.voiceApiKey || '').trim();
   if (!key) throw new Error('no_key');
@@ -3270,8 +3303,8 @@ async function callAI(messages, settings) {
       },
       body: JSON.stringify({
         model,
-        max_tokens: 300,
-        system: VOICE_SYSTEM_PROMPT,
+        max_tokens: 400,
+        system: systemPrompt,
         messages,
       }),
     });
@@ -3279,8 +3312,8 @@ async function callAI(messages, settings) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err?.error?.message || `Claude API ${res.status}`);
     }
-    const data = await res.json();
-    const text = data.content?.[0]?.text || '';
+    const resp = await res.json();
+    const text = resp.content?.[0]?.text || '';
     return JSON.parse(text);
   } else {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -3291,16 +3324,16 @@ async function callAI(messages, settings) {
       },
       body: JSON.stringify({
         model,
-        max_tokens: 300,
-        messages: [{ role: 'system', content: VOICE_SYSTEM_PROMPT }, ...messages],
+        max_tokens: 400,
+        messages: [{ role: 'system', content: systemPrompt }, ...messages],
       }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err?.error?.message || `OpenAI API ${res.status}`);
     }
-    const data = await res.json();
-    const text = data.choices?.[0]?.message?.content || '';
+    const resp = await res.json();
+    const text = resp.choices?.[0]?.message?.content || '';
     return JSON.parse(text);
   }
 }
@@ -3382,11 +3415,12 @@ function speak(text, settings) {
 }
 
 function VoiceButton({ data, setData, settings }) {
-  const [phase, setPhase] = useState('idle'); // idle|recording|processing|clarifying|success|error
+  const [phase, setPhase] = useState('idle'); // idle|recording|processing|clarifying|success|answered|error
   const [transcript, setTranscript] = useState('');
   const [clarifyQuestion, setClarifyQuestion] = useState('');
   const [messages, setMessages] = useState([]);
   const [lastAdded, setLastAdded] = useState('');
+  const [answerText, setAnswerText] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const recogRef = React.useRef(null);
   const transcriptRef = React.useRef(''); // kept in sync for onend closure
@@ -3400,7 +3434,7 @@ function VoiceButton({ data, setData, settings }) {
     setMessages(newMessages);
     setPhase('processing');
     try {
-      const parsed = await callAI(newMessages, settings);
+      const parsed = await callAI(newMessages, settings, data);
       if (parsed.action === 'add') {
         applyVoiceTask(parsed, setData);
         const name = parsed.name || 'задача';
@@ -3408,6 +3442,13 @@ function VoiceButton({ data, setData, settings }) {
         speak(`Добавлено: ${name}`, settings);
         setPhase('success');
         setTimeout(() => { setPhase('idle'); setMessages([]); }, 2500);
+      } else if (parsed.action === 'answer') {
+        const answerStr = parsed.text || 'Готово';
+        setAnswerText(answerStr);
+        setPhase('answered');
+        await speak(answerStr, settings);
+        setPhase('idle');
+        setMessages([]);
       } else if (parsed.action === 'clarify') {
         const q = parsed.question || 'Уточните запрос';
         const updatedMessages = [...newMessages, { role: 'assistant', content: q }];
@@ -3509,6 +3550,7 @@ function VoiceButton({ data, setData, settings }) {
     recording: 'bg-red-500 text-white',
     processing: 'bg-[var(--text)] text-white',
     clarifying: 'bg-blue-500 text-white',
+    answered: 'bg-blue-500 text-white',
     success: 'bg-green-500 text-white',
     error: 'bg-red-500 text-white',
   }[phase] || 'bg-[var(--text)] text-white';
@@ -3558,6 +3600,15 @@ function VoiceButton({ data, setData, settings }) {
             <div className="flex items-center gap-2">
               <span className="text-green-500"><Icon name="check" size={18} /></span>
               <span className="text-sm text-[var(--text)]">Добавлено: <b>{lastAdded}</b></span>
+            </div>
+          )}
+          {phase === 'answered' && (
+            <div>
+              <div className="text-xs text-blue-500 font-medium mb-1 flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse inline-block"></span>
+                Ответ
+              </div>
+              <div className="text-sm text-[var(--text)] leading-snug">{answerText}</div>
             </div>
           )}
           {phase === 'error' && (
