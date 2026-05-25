@@ -377,7 +377,7 @@ function App() {
   const [data, setData] = useState(loadData());
   const [tab, setTab] = useState('home'); // home | supplements | meals | weather | house | settings
   const [settingsTab, setSettingsTab] = useState('supplements');
-  const [houseTab, setHouseTab] = useState('cleaning');
+  const [houseTab, setHouseTab] = useState('boss');
   const [mealTab, setMealTab] = useState('plan');
   const initialLoad = React.useRef(true);
 
@@ -2383,8 +2383,8 @@ function MealModal({ meal, onSave, onClose }) {
 function HouseView({ data, setData, houseTab, setHouseTab }) {
 
   const tabs = [
-    { id: 'cleaning', label: 'Уборка' },
     { id: 'boss', label: 'Босс' },
+    { id: 'cleaning', label: 'Уборка' },
   ];
 
   return (
@@ -2770,14 +2770,44 @@ function BossView({ data, setData }) {
         <BossSettings data={data} setData={setData} />
       ) : (
         <div className="overflow-x-auto -mx-6 px-6 scrollbar-hide">
-          <div style={{ minWidth: '560px' }}>
-            {/* Шапка с днями */}
-            <div className="grid mb-2" style={{ gridTemplateColumns: '52px repeat(7, minmax(0, 1fr))', gap: '4px' }}>
+          {/* Сегодня — крупная карточка сверху */}
+          <div className="mb-4 space-y-2">
+            {periods.map(p => {
+              const cellTasks = getCell(today, p.id);
+              return (
+                <div
+                  key={p.id}
+                  className="rounded-2xl border-2 border-[var(--border-strong)] bg-[var(--surface)] p-4"
+                >
+                  <div className="flex items-center gap-2 mb-2 text-[var(--text-muted)]">
+                    <Icon name={p.icon} size={16} />
+                    <span className="text-sm font-medium">{p.label}</span>
+                    <span className="text-xs text-[var(--text-subtle)] ml-auto">сегодня</span>
+                  </div>
+                  {cellTasks.length === 0 ? (
+                    <div className="text-sm text-[var(--text-subtle)]">Нет задач</div>
+                  ) : (
+                    <div className="space-y-1">
+                      {cellTasks.map(t => (
+                        <div key={t.id} className="text-sm font-medium text-[var(--text)] px-2 py-1.5 rounded-lg bg-[var(--bg)] break-words">
+                          {t.name}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Остальные дни — компактная таблица */}
+          <div style={{ minWidth: '480px' }}>
+            <div className="grid mb-1" style={{ gridTemplateColumns: '44px repeat(7, minmax(0, 1fr))', gap: '3px' }}>
               <div />
               {WEEKDAYS.map(d => (
                 <div
                   key={d.id}
-                  className={`text-center text-xs font-medium uppercase tracking-wider py-2 rounded-lg min-w-0 ${
+                  className={`text-center text-[10px] font-medium uppercase tracking-wider py-1.5 rounded-lg min-w-0 ${
                     today === d.id
                       ? 'bg-[var(--text)] text-white'
                       : 'text-[var(--text-subtle)]'
@@ -2788,16 +2818,15 @@ function BossView({ data, setData }) {
               ))}
             </div>
 
-            {/* Строки Утро / Вечер */}
             {periods.map(p => (
               <div
                 key={p.id}
-                className="grid mb-2"
-                style={{ gridTemplateColumns: '52px repeat(7, minmax(0, 1fr))', gap: '4px' }}
+                className="grid mb-1"
+                style={{ gridTemplateColumns: '44px repeat(7, minmax(0, 1fr))', gap: '3px' }}
               >
-                <div className="flex flex-col items-center justify-center gap-1 text-[var(--text-muted)] py-2 flex-shrink-0">
-                  <Icon name={p.icon} size={14} />
-                  <span className="text-[10px]">{p.label}</span>
+                <div className="flex flex-col items-center justify-center gap-0.5 text-[var(--text-muted)] py-1">
+                  <Icon name={p.icon} size={12} />
+                  <span className="text-[9px]">{p.label}</span>
                 </div>
                 {WEEKDAYS.map(d => {
                   const cellTasks = getCell(d.id, p.id);
@@ -2805,16 +2834,16 @@ function BossView({ data, setData }) {
                   return (
                     <div
                       key={d.id}
-                      className={`rounded-xl border p-1.5 min-h-[56px] min-w-0 overflow-hidden ${
+                      className={`rounded-lg border min-h-[40px] min-w-0 overflow-hidden p-1 ${
                         isToday
-                          ? 'border-[var(--border-strong)] bg-[var(--surface)]'
+                          ? 'border-[var(--border-strong)] bg-[var(--text)]/5'
                           : 'border-[var(--border)] bg-[var(--surface)]'
                       }`}
                     >
                       {cellTasks.map(t => (
                         <div
                           key={t.id}
-                          className="text-[10px] leading-tight mb-1 last:mb-0 px-1 py-0.5 rounded bg-[var(--bg)] text-[var(--text)] break-words overflow-hidden"
+                          className="text-[9px] leading-tight mb-0.5 last:mb-0 px-0.5 py-0.5 rounded bg-[var(--bg)] text-[var(--text)] break-words overflow-hidden"
                         >
                           {t.name}
                         </div>
