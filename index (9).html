@@ -974,10 +974,9 @@ function HomeView({ data, setData, setTab, setHouseTab, setMealTab }) {
 
   return (
     <div className="fade-in">
-      <div className="mb-8">
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Сегодня</div>
-        <h1 className="font-display text-3xl md:text-4xl">Главная</h1>
-        <div className="text-[var(--text-muted)] mt-2 text-sm">{dateStr}</div>
+      <div className="mb-4 flex items-baseline justify-between gap-4">
+        <div className="font-display text-2xl">{dateStr}</div>
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Сегодня</div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
