@@ -1306,7 +1306,7 @@ function CleaningWidget({ data, onGo }) {
         onClick={onGo}
         className="w-full flex items-center justify-between mb-4 group"
       >
-        <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] font-medium">Уборка</div>
+        <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] font-medium">По дому</div>
         <span className="text-[var(--text-subtle)] group-hover:text-[var(--text)] transition-colors">
           <ChevronRight />
         </span>
@@ -2384,7 +2384,7 @@ function HouseView({ data, setData, houseTab, setHouseTab }) {
 
   const tabs = [
     { id: 'boss', label: 'Босс' },
-    { id: 'cleaning', label: 'Уборка' },
+    { id: 'cleaning', label: "По дому" },
   ];
 
   return (
@@ -2409,7 +2409,7 @@ function HouseView({ data, setData, houseTab, setHouseTab }) {
       </div>
 
       {houseTab === 'cleaning' && (
-        <ChoreSection data={data} setData={setData} dataKey="chores" title="Уборка" />
+        <ChoreSection data={data} setData={setData} dataKey="chores" title="По дому" />
       )}
       {houseTab === 'boss' && (
         <BossView data={data} setData={setData} />
