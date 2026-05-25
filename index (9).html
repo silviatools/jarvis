@@ -2742,7 +2742,7 @@ function BossView({ data, setData }) {
   const today = new Date().getDay();
 
   const getCell = (dayId, period) =>
-    tasks.filter(t => t.period === period && t.days.includes(dayId));
+    tasks.filter(t => (t.period === period || t.period === 'allday') && t.days.includes(dayId));
 
   const periods = [
     { id: 'morning', label: 'Утро',  icon: 'sun'  },
@@ -2900,7 +2900,7 @@ function BossSettings({ data, setData }) {
           <div className="font-display text-lg truncate mb-1">{task.name}</div>
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs text-[var(--text-muted)]">
-              {task.period === 'morning' ? 'Утро' : 'Вечер'}
+              {task.period === 'morning' ? 'Утро' : task.period === 'evening' ? 'Вечер' : 'Весь день'}
             </span>
             {task.days.map(d => (
               <span key={d} className="text-xs bg-[var(--bg)] border border-[var(--border)] rounded px-1.5 py-0.5">
@@ -2996,7 +2996,7 @@ function BossTaskModal({ task, onSave, onClose }) {
         <div>
           <label>Время</label>
           <div className="flex gap-2">
-            {[{ id: 'morning', label: 'Утро' }, { id: 'evening', label: 'Вечер' }].map(p => (
+            {[{ id: 'morning', label: 'Утро' }, { id: 'evening', label: 'Вечер' }, { id: 'allday', label: 'Весь день' }].map(p => (
               <button
                 key={p.id}
                 onClick={() => set('period', p.id)}
