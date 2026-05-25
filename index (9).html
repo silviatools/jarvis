@@ -138,6 +138,24 @@
     transition: color 0.15s ease;
   }
   .btn-ghost:hover { color: var(--text); }
+
+  /* Voice button pulse animation */
+  @keyframes pulse-ring {
+    0% { transform: scale(1); opacity: 0.6; }
+    100% { transform: scale(1.6); opacity: 0; }
+  }
+  .voice-pulse {
+    position: relative;
+  }
+  .voice-pulse::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px;
+    background: #ef4444;
+    animation: pulse-ring 1.2s ease-out infinite;
+    pointer-events: none;
+  }
 </style>
 </head>
 <body>
@@ -157,6 +175,9 @@ const DEFAULT_SETTINGS = {
   workAddress: '',
   tomtomKey: '',
   telegramToken: '',
+  voiceProvider: 'claude',
+  voiceApiKey: '',
+  voiceModel: '',
 };
 
 const DEFAULT_DATA = () => ({ supplements: [], meals: [], taken: {}, rationStock: 0, settings: { ...DEFAULT_SETTINGS } });
@@ -238,6 +259,8 @@ const Icon = ({ name, size = 22 }) => {
     layout: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18M9 21V9"/></svg>,
     bell: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>,
     download: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
+    mic: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>,
+    micOff: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="2" y1="2" x2="22" y2="22"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 4.93"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><line x1="12" y1="19" x2="12" y2="22"/></svg>,
   };
   return icons[name] || null;
 };
@@ -478,6 +501,7 @@ function App() {
         )}
       </main>
       <BottomNav tab={tab} setTab={setTab} />
+      <VoiceButton data={data} setData={setData} settings={data.settings} />
     </div>
   );
 }
@@ -1833,12 +1857,21 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
         >
           Общее
         </button>
+        <button
+          onClick={() => setSettingsTab('voice')}
+          className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+            settingsTab === 'voice' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+          }`}
+        >
+          Ассистент
+        </button>
       </div>
 
       {settingsTab === 'supplements' && <SupplementSettings data={data} setData={setData} />}
       {settingsTab === 'workout' && <SupplementSettings data={data} setData={setData} isWorkout />}
       {settingsTab === 'meals' && <MealSettings data={data} setData={setData} />}
       {settingsTab === 'general' && <GeneralSettings data={data} setData={setData} />}
+      {settingsTab === 'voice' && <VoiceAssistantSettings data={data} setData={setData} />}
     </div>
   );
 }
@@ -1981,6 +2014,92 @@ function GeneralSettings({ data, setData }) {
 
         <p className="text-xs text-[var(--text-subtle)]">
           При использовании <span className="font-mono">jarvis.py</span> конфиг синхронизируется автоматически — экспорт не нужен.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function VoiceAssistantSettings({ data, setData }) {
+  const settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
+
+  const updateSetting = (key, value) => {
+    setData(d => ({
+      ...d,
+      settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), [key]: value },
+    }));
+  };
+
+  const providerPlaceholders = {
+    claude: { model: 'claude-sonnet-4-6', key: 'sk-ant-api03-...' },
+    openai: { model: 'gpt-4o', key: 'sk-...' },
+  };
+  const ph = providerPlaceholders[settings.voiceProvider] || providerPlaceholders.claude;
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div>
+          <h3 className="font-display text-lg mb-1">Голосовой ассистент</h3>
+          <p className="text-sm text-[var(--text-muted)]">
+            Добавляйте дела голосом. Нажмите кнопку микрофона внизу экрана, скажите что сделать — ИИ разберёт и добавит в нужный раздел.
+          </p>
+        </div>
+
+        <div>
+          <label>AI-провайдер</label>
+          <select
+            value={settings.voiceProvider}
+            onChange={e => updateSetting('voiceProvider', e.target.value)}
+          >
+            <option value="claude">Claude (Anthropic)</option>
+            <option value="openai">OpenAI (ChatGPT)</option>
+          </select>
+        </div>
+
+        <div>
+          <label>API-ключ</label>
+          <input
+            type="password"
+            value={settings.voiceApiKey}
+            onChange={e => updateSetting('voiceApiKey', e.target.value)}
+            placeholder={ph.key}
+            autoComplete="off"
+          />
+          {settings.voiceProvider === 'claude' && (
+            <p className="text-xs text-[var(--text-subtle)] mt-1">
+              Получите ключ на <span className="font-mono">console.anthropic.com</span>
+            </p>
+          )}
+          {settings.voiceProvider === 'openai' && (
+            <p className="text-xs text-[var(--text-subtle)] mt-1">
+              Получите ключ на <span className="font-mono">platform.openai.com</span>
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label>Модель (необязательно)</label>
+          <input
+            type="text"
+            value={settings.voiceModel}
+            onChange={e => updateSetting('voiceModel', e.target.value)}
+            placeholder={`По умолчанию: ${ph.model}`}
+            autoComplete="off"
+          />
+        </div>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <h3 className="font-display text-base mb-2">Как пользоваться</h3>
+        <ol className="text-sm text-[var(--text-muted)] space-y-1 list-decimal list-inside">
+          <li>Нажмите кнопку микрофона (внизу справа)</li>
+          <li>Скажите что нужно сделать и как часто</li>
+          <li>Нажмите снова — ИИ добавит дело</li>
+          <li>Если непонятно — ИИ спросит уточнение</li>
+        </ol>
+        <p className="text-xs text-[var(--text-subtle)] mt-3">
+          Примеры: «Добавь задачу пылесосить раз в неделю», «Добавь зарядку каждое утро кроме воскресенья»
         </p>
       </div>
     </div>
@@ -3082,6 +3201,343 @@ function BossTaskModal({ task, onSave, onClose }) {
         </div>
       </div>
     </Modal>
+  );
+}
+
+// ============== VOICE ASSISTANT ==============
+
+const VOICE_SYSTEM_PROMPT = `Ты помощник приложения Jarvis. Твоя задача — добавить дело в один из разделов.
+
+РАЗДЕЛЫ:
+1. "chores" (По дому) — регулярные домашние дела с периодичностью.
+   Поля: name (string), frequency (daily|every2|every3|weekly|biweekly|monthly|custom), customDays (int только если custom)
+   Примеры: пылесосить, мыть посуду, стирка, мыть окна
+
+2. "boss" (Босс) — задачи по расписанию (утро/вечер/весь день × дни недели).
+   Поля: name (string), period (morning|evening|allday), days (array: 0=вс,1=пн,2=вт,3=ср,4=чт,5=пт,6=сб)
+   Примеры: проверить почту, зарядка, планёрка, медитация
+
+ПРАВИЛА:
+- Если не уверен в разделе или параметрах — верни action="clarify" с коротким вопросом на русском языке.
+- Если всё понятно — верни action="add" с заполненными полями.
+- ФОРМАТ ОТВЕТА: только JSON, без markdown, без пояснений, без блоков кода.
+
+ПРИМЕРЫ:
+Запрос: "пропылесосить раз в неделю"
+Ответ: {"action":"add","section":"chores","name":"Пропылесосить","frequency":"weekly","customDays":null}
+
+Запрос: "зарядка каждое утро кроме воскресенья"
+Ответ: {"action":"add","section":"boss","name":"Зарядка","period":"morning","days":[1,2,3,4,5,6]}
+
+Запрос: "проверить почту"
+Ответ: {"action":"clarify","question":"Это регулярная домашняя задача или задача по расписанию (утро/вечер/весь день)?"}`;
+
+async function callAI(messages, settings) {
+  const provider = settings.voiceProvider || 'claude';
+  const key = (settings.voiceApiKey || '').trim();
+  if (!key) throw new Error('no_key');
+
+  const model = (settings.voiceModel || '').trim() ||
+    (provider === 'claude' ? 'claude-sonnet-4-6' : 'gpt-4o');
+
+  if (provider === 'claude') {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 300,
+        system: VOICE_SYSTEM_PROMPT,
+        messages,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || `Claude API ${res.status}`);
+    }
+    const data = await res.json();
+    const text = data.content?.[0]?.text || '';
+    return JSON.parse(text);
+  } else {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 300,
+        messages: [{ role: 'system', content: VOICE_SYSTEM_PROMPT }, ...messages],
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || `OpenAI API ${res.status}`);
+    }
+    const data = await res.json();
+    const text = data.choices?.[0]?.message?.content || '';
+    return JSON.parse(text);
+  }
+}
+
+function applyVoiceTask(parsed, setData) {
+  if (parsed.section === 'chores') {
+    setData(d => ({
+      ...d,
+      chores: [...(d.chores || []), {
+        id: crypto.randomUUID(),
+        name: parsed.name,
+        frequency: parsed.frequency || 'weekly',
+        customDays: parsed.customDays || null,
+        notify: false,
+        notifyTime: '09:00',
+        archived: false,
+      }],
+    }));
+  } else if (parsed.section === 'boss') {
+    setData(d => ({
+      ...d,
+      bossTasks: [...(d.bossTasks || []), {
+        id: crypto.randomUUID(),
+        name: parsed.name,
+        period: parsed.period || 'morning',
+        days: parsed.days || [1, 2, 3, 4, 5],
+        archived: false,
+      }],
+    }));
+  }
+}
+
+function VoiceButton({ data, setData, settings }) {
+  const [phase, setPhase] = useState('idle'); // idle|recording|processing|clarifying|success|error
+  const [transcript, setTranscript] = useState('');
+  const [clarifyQuestion, setClarifyQuestion] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [lastAdded, setLastAdded] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+  const recogRef = React.useRef(null);
+
+  const startRecording = (existingMessages) => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      setErrorMsg('Браузер не поддерживает распознавание речи');
+      setPhase('error');
+      setTimeout(() => setPhase('idle'), 3000);
+      return;
+    }
+    const r = new SR();
+    r.lang = 'ru-RU';
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+    recogRef.current = r;
+
+    r.onresult = (e) => {
+      const t = Array.from(e.results).map(res => res[0].transcript).join('');
+      setTranscript(t);
+    };
+
+    r.onerror = (e) => {
+      if (e.error === 'no-speech') {
+        setPhase('idle');
+        return;
+      }
+      setErrorMsg(`Ошибка записи: ${e.error}`);
+      setPhase('error');
+      setTimeout(() => setPhase('idle'), 3000);
+    };
+
+    r.onend = () => {
+      // handled by stopRecording
+    };
+
+    r.start();
+    setPhase('recording');
+    setTranscript('');
+  };
+
+  const stopRecording = () => {
+    if (recogRef.current) {
+      recogRef.current.onend = null;
+      recogRef.current.stop();
+      recogRef.current = null;
+    }
+  };
+
+  const handleMainButton = async () => {
+    if (phase === 'idle') {
+      const key = (settings?.voiceApiKey || '').trim();
+      if (!key) {
+        setErrorMsg('Настройте API-ключ в Настройках → Ассистент');
+        setPhase('error');
+        setTimeout(() => setPhase('idle'), 4000);
+        return;
+      }
+      setMessages([]);
+      startRecording([]);
+    } else if (phase === 'recording') {
+      stopRecording();
+      const text = transcript.trim();
+      if (!text) { setPhase('idle'); return; }
+      const newMessages = [...messages, { role: 'user', content: text }];
+      setMessages(newMessages);
+      setPhase('processing');
+      try {
+        const parsed = await callAI(newMessages, settings);
+        if (parsed.action === 'add') {
+          applyVoiceTask(parsed, setData);
+          setLastAdded(parsed.name || 'задача');
+          setPhase('success');
+          setTimeout(() => { setPhase('idle'); setMessages([]); }, 2500);
+        } else if (parsed.action === 'clarify') {
+          setClarifyQuestion(parsed.question || 'Уточните запрос');
+          setMessages([...newMessages, { role: 'assistant', content: parsed.question }]);
+          setPhase('clarifying');
+        } else {
+          setErrorMsg('Непонятный ответ ИИ. Попробуйте ещё раз.');
+          setPhase('error');
+          setTimeout(() => setPhase('idle'), 3000);
+        }
+      } catch (e) {
+        const msg = e.message === 'no_key'
+          ? 'Настройте API-ключ в Настройках → Ассистент'
+          : `Ошибка: ${e.message}`;
+        setErrorMsg(msg);
+        setPhase('error');
+        setTimeout(() => setPhase('idle'), 4000);
+      }
+    } else if (phase === 'clarifying') {
+      startRecording(messages);
+    } else if (phase === 'processing') {
+      // do nothing
+    }
+  };
+
+  const handleClarifyVoiceStop = async () => {
+    stopRecording();
+    const text = transcript.trim();
+    if (!text) { setPhase('clarifying'); return; }
+    const newMessages = [...messages, { role: 'user', content: text }];
+    setMessages(newMessages);
+    setPhase('processing');
+    try {
+      const parsed = await callAI(newMessages, settings);
+      if (parsed.action === 'add') {
+        applyVoiceTask(parsed, setData);
+        setLastAdded(parsed.name || 'задача');
+        setPhase('success');
+        setTimeout(() => { setPhase('idle'); setMessages([]); }, 2500);
+      } else if (parsed.action === 'clarify') {
+        setClarifyQuestion(parsed.question || 'Уточните запрос');
+        setMessages([...newMessages, { role: 'assistant', content: parsed.question }]);
+        setPhase('clarifying');
+      } else {
+        setErrorMsg('Непонятный ответ ИИ.');
+        setPhase('error');
+        setTimeout(() => setPhase('idle'), 3000);
+      }
+    } catch (e) {
+      setErrorMsg(`Ошибка: ${e.message}`);
+      setPhase('error');
+      setTimeout(() => setPhase('idle'), 4000);
+    }
+  };
+
+  const cancel = () => {
+    stopRecording();
+    setPhase('idle');
+    setMessages([]);
+    setTranscript('');
+  };
+
+  const showPanel = phase !== 'idle';
+
+  const btnBg = {
+    idle: 'bg-[var(--text)] text-white',
+    recording: 'bg-red-500 text-white',
+    processing: 'bg-[var(--text)] text-white',
+    clarifying: 'bg-blue-500 text-white',
+    success: 'bg-green-500 text-white',
+    error: 'bg-red-500 text-white',
+  }[phase] || 'bg-[var(--text)] text-white';
+
+  return (
+    <div className="fixed bottom-24 right-4 z-30 flex flex-col items-end gap-2 md:bottom-8">
+      {/* Mini panel */}
+      {showPanel && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl shadow-lg p-4 max-w-[260px] w-[260px] fade-in">
+          {phase === 'recording' && (
+            <div>
+              <div className="text-xs text-red-500 font-medium mb-1 flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse inline-block"></span>
+                Запись...
+              </div>
+              <div className="text-sm text-[var(--text)] min-h-[40px] leading-snug">
+                {transcript || <span className="text-[var(--text-subtle)]">Говорите...</span>}
+              </div>
+              <div className="text-xs text-[var(--text-subtle)] mt-2">Нажмите ещё раз чтобы остановить</div>
+            </div>
+          )}
+          {phase === 'processing' && (
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 border-2 border-[var(--text)] border-t-transparent rounded-full animate-spin flex-shrink-0"></div>
+              <span className="text-sm text-[var(--text-muted)]">Обрабатываю...</span>
+            </div>
+          )}
+          {phase === 'clarifying' && (
+            <div>
+              <div className="text-xs text-blue-500 font-medium mb-1">Уточнение</div>
+              <div className="text-sm text-[var(--text)] mb-3">{clarifyQuestion}</div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={phase === 'recording' ? handleClarifyVoiceStop : () => startRecording(messages)}
+                  className="flex-1 flex items-center justify-center gap-1.5 bg-blue-500 text-white rounded-xl py-2 text-sm font-medium"
+                >
+                  <Icon name="mic" size={16} />
+                  Ответить
+                </button>
+                <button onClick={cancel} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]">
+                  <Icon name="x" size={18} />
+                </button>
+              </div>
+            </div>
+          )}
+          {phase === 'success' && (
+            <div className="flex items-center gap-2">
+              <span className="text-green-500"><Icon name="check" size={18} /></span>
+              <span className="text-sm text-[var(--text)]">Добавлено: <b>{lastAdded}</b></span>
+            </div>
+          )}
+          {phase === 'error' && (
+            <div>
+              <div className="text-xs text-red-500 font-medium mb-1">Ошибка</div>
+              <div className="text-sm text-[var(--text-muted)]">{errorMsg}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Main button */}
+      <button
+        onClick={phase === 'clarifying' ? undefined : handleMainButton}
+        disabled={phase === 'processing'}
+        className={`w-14 h-14 rounded-full shadow-lg flex items-center justify-center transition-all ${btnBg} ${phase === 'recording' ? 'voice-pulse' : ''} ${phase === 'processing' ? 'opacity-70' : ''}`}
+        title="Голосовой ассистент"
+      >
+        {phase === 'processing' ? (
+          <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+        ) : phase === 'success' ? (
+          <Icon name="check" size={24} />
+        ) : (
+          <Icon name="mic" size={24} />
+        )}
+      </button>
+    </div>
   );
 }
 
