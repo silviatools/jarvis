@@ -261,6 +261,8 @@ const Icon = ({ name, size = 22 }) => {
     bell: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>,
     download: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
     mic: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>,
+    moreHorizontal: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>,
+    user: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
     micOff: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="2" y1="2" x2="22" y2="22"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 4.93"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><line x1="12" y1="19" x2="12" y2="22"/></svg>,
   };
   return icons[name] || null;
@@ -492,6 +494,7 @@ function App() {
         {tab === 'meals' && <MealsView data={data} setData={setData} mealTab={mealTab} setMealTab={setMealTab} />}
         {tab === 'weather' && <WeatherView settings={data.settings} />}
         {tab === 'house' && <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />}
+        {tab === 'body' && <BodyView data={data} setData={setData} />}
         {tab === 'settings' && (
           <SettingsView
             data={data}
@@ -510,12 +513,13 @@ function App() {
 // ============== HEADER ==============
 function Header({ tab, setTab }) {
   const items = [
-    { id: 'home', icon: 'layout', label: 'Главная' },
-    { id: 'supplements', icon: 'pill', label: 'БАДДы' },
-    { id: 'meals', icon: 'plate', label: 'Питание' },
-    { id: 'weather', icon: 'cloud', label: 'Погода' },
-    { id: 'house', icon: 'home', label: 'Дела' },
-    { id: 'settings', icon: 'settings', label: 'Настройки' },
+    { id: 'home',        icon: 'layout',   label: 'Главная'   },
+    { id: 'supplements', icon: 'pill',     label: 'БАДДы'     },
+    { id: 'meals',       icon: 'plate',    label: 'Питание'   },
+    { id: 'weather',     icon: 'cloud',    label: 'Погода'    },
+    { id: 'house',       icon: 'home',     label: 'Дела'      },
+    { id: 'body',        icon: 'user',     label: 'Моё тело'  },
+    { id: 'settings',    icon: 'settings', label: 'Настройки' },
   ];
   return (
     <header className="sticky top-0 z-10 bg-[var(--bg)]/85 backdrop-blur-lg border-b border-[var(--border)]">
@@ -545,33 +549,89 @@ function Header({ tab, setTab }) {
 
 // ============== BOTTOM NAV (mobile) ==============
 function BottomNav({ tab, setTab }) {
-  const items = [
-    { id: 'home',        icon: 'layout',   label: 'Главная'  },
-    { id: 'supplements', icon: 'pill',     label: 'БАДДы'    },
-    { id: 'meals',       icon: 'plate',    label: 'Питание'  },
-    { id: 'weather',     icon: 'cloud',    label: 'Погода'   },
-    { id: 'house',       icon: 'home',     label: 'Дела'     },
-    { id: 'settings',    icon: 'settings', label: 'Настройки'},
+  const [showMore, setShowMore] = useState(false);
+
+  const mainItems = [
+    { id: 'home',        icon: 'layout',   label: 'Главная'   },
+    { id: 'supplements', icon: 'pill',     label: 'БАДДы'     },
+    { id: 'meals',       icon: 'plate',    label: 'Питание'   },
+    { id: 'weather',     icon: 'cloud',    label: 'Погода'    },
+    { id: 'house',       icon: 'home',     label: 'Дела'      },
+    { id: 'settings',    icon: 'settings', label: 'Настройки' },
   ];
+
+  const moreItems = [
+    { id: 'body', icon: 'user', label: 'Моё тело' },
+  ];
+
+  const moreActive = moreItems.some(i => i.id === tab);
+
+  const goTo = (id) => { setTab(id); setShowMore(false); };
+
   return (
-    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 bg-[var(--bg)]/90 backdrop-blur-xl border-t border-[var(--border)] bottom-nav">
-      <div className="flex items-center justify-around px-1 pt-2 pb-safe">
-        {items.map(item => (
+    <>
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 bg-[var(--bg)]/90 backdrop-blur-xl border-t border-[var(--border)] bottom-nav">
+        <div className="flex items-center justify-around px-1 pt-2 pb-safe">
+          {mainItems.map(item => (
+            <button
+              key={item.id}
+              onClick={() => goTo(item.id)}
+              className={`flex flex-col items-center gap-0.5 px-1 py-1 rounded-xl transition-all min-w-0 flex-1 ${
+                tab === item.id ? 'text-[var(--text)]' : 'text-[var(--text-subtle)]'
+              }`}
+            >
+              <div className={`p-1 rounded-xl transition-all ${tab === item.id ? 'bg-[var(--text)] text-white' : ''}`}>
+                <Icon name={item.icon} size={18} />
+              </div>
+              <span className="text-[8px] font-medium leading-none truncate w-full text-center">{item.label}</span>
+            </button>
+          ))}
+          {/* Ещё */}
           <button
-            key={item.id}
-            onClick={() => setTab(item.id)}
-            className={`flex flex-col items-center gap-1 px-2 py-1 rounded-xl transition-all min-w-0 flex-1 ${
-              tab === item.id ? 'text-[var(--text)]' : 'text-[var(--text-subtle)]'
+            onClick={() => setShowMore(v => !v)}
+            className={`flex flex-col items-center gap-0.5 px-1 py-1 rounded-xl transition-all min-w-0 flex-1 ${
+              moreActive || showMore ? 'text-[var(--text)]' : 'text-[var(--text-subtle)]'
             }`}
           >
-            <div className={`p-1.5 rounded-xl transition-all ${tab === item.id ? 'bg-[var(--text)] text-white' : ''}`}>
-              <Icon name={item.icon} size={20} />
+            <div className={`p-1 rounded-xl transition-all ${(moreActive || showMore) ? 'bg-[var(--text)] text-white' : ''}`}>
+              <Icon name="moreHorizontal" size={18} />
             </div>
-            <span className="text-[9px] font-medium leading-none truncate w-full text-center">{item.label}</span>
+            <span className="text-[8px] font-medium leading-none truncate w-full text-center">Ещё</span>
           </button>
-        ))}
-      </div>
-    </nav>
+        </div>
+      </nav>
+
+      {/* Backdrop */}
+      {showMore && (
+        <div
+          className="md:hidden fixed inset-0 z-30 bg-black/30 backdrop-blur-sm"
+          onClick={() => setShowMore(false)}
+        />
+      )}
+
+      {/* Bottom sheet */}
+      {showMore && (
+        <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[var(--bg)] rounded-t-2xl shadow-xl pb-safe fade-in">
+          <div className="w-10 h-1 bg-[var(--border-strong)] rounded-full mx-auto mt-3 mb-4" />
+          <div className="px-4 pb-6 space-y-1">
+            {moreItems.map(item => (
+              <button
+                key={item.id}
+                onClick={() => goTo(item.id)}
+                className={`w-full flex items-center gap-4 px-4 py-3.5 rounded-2xl transition-all ${
+                  tab === item.id
+                    ? 'bg-[var(--text)] text-white'
+                    : 'text-[var(--text)] hover:bg-black/5'
+                }`}
+              >
+                <Icon name={item.icon} size={22} />
+                <span className="text-base font-medium">{item.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -3635,6 +3695,22 @@ function VoiceButton({ data, setData, settings }) {
           <Icon name="mic" size={24} />
         )}
       </button>
+    </div>
+  );
+}
+
+// ============== BODY VIEW ==============
+function BodyView({ data, setData }) {
+  return (
+    <div className="fade-in">
+      <div className="mb-8">
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Раздел</div>
+        <h1 className="font-display text-3xl md:text-4xl">Моё тело</h1>
+      </div>
+      <div className="bg-[var(--surface)] border border-dashed border-[var(--border-strong)] rounded-2xl p-12 text-center">
+        <div className="font-display text-2xl mb-2">Скоро</div>
+        <div className="text-[var(--text-muted)] text-sm">Раздел в разработке — здесь появятся фото, замеры и прогресс</div>
+      </div>
     </div>
   );
 }
