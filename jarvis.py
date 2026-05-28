@@ -224,7 +224,24 @@ class JarvisHandler(SimpleHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(200)
         self._cors()
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.end_headers()
+
+    def do_DELETE(self):
+        if self.path.startswith("/api/photos/"):
+            filename = self.path[len("/api/photos/"):]
+            if "/" in filename or ".." in filename or not filename:
+                self._json(400, {"error": "invalid"})
+                return
+            photo_path = DATA_DIR / "photos" / filename
+            if photo_path.exists():
+                photo_path.unlink()
+                self._json(200, {"ok": True})
+            else:
+                self._json(404, {"error": "not found"})
+        else:
+            self.send_response(404)
+            self.end_headers()
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
@@ -254,6 +271,26 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 "app_data_file_exists": APP_DATA_FILE.exists(),
                 "chores": [{"name": c.get("name"), "notifyTime": c.get("notifyTime"), "notify": c.get("notify"), "lastDone": c.get("lastDone")} for c in chores],
             })
+        elif self.path.startswith("/api/photos/"):
+            filename = self.path[len("/api/photos/"):]
+            if "/" in filename or ".." in filename or not filename:
+                self._json(400, {"error": "invalid"})
+                return
+            photo_path = DATA_DIR / "photos" / filename
+            if photo_path.exists():
+                ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+                ct = {"jpg":"image/jpeg","jpeg":"image/jpeg","png":"image/png",
+                      "webp":"image/webp","heic":"image/heic","gif":"image/gif"}.get(ext, "application/octet-stream")
+                content = photo_path.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", ct)
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Cache-Control", "public, max-age=31536000")
+                self._cors()
+                self.end_headers()
+                self.wfile.write(content)
+            else:
+                self._json(404, {"error": "not found"})
         elif self.path == "/api/data":
             if APP_DATA_FILE.exists():
                 try:
@@ -285,6 +322,26 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(200, {"ok": True})
             except Exception as e:
                 self._json(400, {"error": str(e)})
+        elif self.path.startswith("/api/photos"):
+            import uuid as _uuid
+            ext = "jpg"
+            if "?" in self.path:
+                for part in self.path.split("?", 1)[1].split("&"):
+                    if part.startswith("ext="):
+                        raw = part[4:].lower()[:5]
+                        if raw in ("jpg", "jpeg", "png", "webp", "heic", "gif"):
+                            ext = raw
+                        break
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            if not body:
+                self._json(400, {"error": "empty body"})
+                return
+            filename = str(_uuid.uuid4()) + "." + ext
+            photos_dir = DATA_DIR / "photos"
+            photos_dir.mkdir(parents=True, exist_ok=True)
+            (photos_dir / filename).write_bytes(body)
+            self._json(200, {"filename": filename})
         elif self.path == "/api/data":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)

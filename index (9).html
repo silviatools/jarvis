@@ -181,7 +181,36 @@ const DEFAULT_SETTINGS = {
   voiceTtsVoice: 'nova',
 };
 
-const DEFAULT_DATA = () => ({ supplements: [], meals: [], taken: {}, rationStock: 0, settings: { ...DEFAULT_SETTINGS } });
+const DEFAULT_BODY_FIELDS = [
+  { id: 'weight',       label: 'Вес',               unit: 'кг'  },
+  { id: 'bodyFat',      label: 'Жир',               unit: '%'   },
+  { id: 'muscleMass',   label: 'Мышцы',             unit: '%'   },
+  { id: 'water',        label: 'Вода',               unit: '%'   },
+  { id: 'bmi',          label: 'BMI',                unit: ''    },
+  { id: 'visceralFat',  label: 'Висцеральный жир',  unit: 'ур.' },
+  { id: 'waist',        label: 'Талия',             unit: 'см'  },
+  { id: 'chest',        label: 'Грудь',             unit: 'см'  },
+  { id: 'hips',         label: 'Бёдра',             unit: 'см'  },
+  { id: 'bicep',        label: 'Бицепс',            unit: 'см'  },
+  { id: 'thigh',        label: 'Бедро',             unit: 'см'  },
+];
+
+const PRESET_BODY_FIELDS = [
+  { id: 'neck',          label: 'Шея',              unit: 'см'   },
+  { id: 'boneMass',      label: 'Кости',            unit: 'кг'   },
+  { id: 'metabolicAge',  label: 'Метаб. возраст',   unit: 'лет'  },
+  { id: 'calories',      label: 'Базовый обмен',    unit: 'ккал' },
+  { id: 'calf',          label: 'Икра',             unit: 'см'   },
+  { id: 'shoulder',      label: 'Плечи',            unit: 'см'   },
+  { id: 'proteinPct',    label: 'Белок',            unit: '%'    },
+];
+
+const DEFAULT_DATA = () => ({
+  supplements: [], meals: [], taken: {}, rationStock: 0,
+  bodyFields: DEFAULT_BODY_FIELDS.map(f => ({ ...f })),
+  bodyEntries: [],
+  settings: { ...DEFAULT_SETTINGS },
+});
 
 const loadData = () => {
   try {
@@ -512,15 +541,23 @@ function App() {
 
 // ============== HEADER ==============
 function Header({ tab, setTab }) {
+  const [showMore, setShowMore] = useState(false);
+
   const items = [
     { id: 'home',        icon: 'layout',   label: 'Главная'   },
     { id: 'supplements', icon: 'pill',     label: 'БАДДы'     },
     { id: 'meals',       icon: 'plate',    label: 'Питание'   },
     { id: 'weather',     icon: 'cloud',    label: 'Погода'    },
     { id: 'house',       icon: 'home',     label: 'Дела'      },
-    { id: 'body',        icon: 'user',     label: 'Моё тело'  },
     { id: 'settings',    icon: 'settings', label: 'Настройки' },
   ];
+
+  const moreItems = [
+    { id: 'body', icon: 'user', label: 'Моё тело' },
+  ];
+
+  const moreActive = moreItems.some(i => i.id === tab);
+
   return (
     <header className="sticky top-0 z-10 bg-[var(--bg)]/85 backdrop-blur-lg border-b border-[var(--border)]">
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-4 md:py-5 flex items-center justify-between">
@@ -541,6 +578,43 @@ function Header({ tab, setTab }) {
               <span className="hidden sm:inline text-sm font-medium">{item.label}</span>
             </button>
           ))}
+
+          {/* Ещё — dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setShowMore(v => !v)}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl transition-all ${
+                moreActive || showMore
+                  ? 'bg-[var(--text)] text-white'
+                  : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-black/5'
+              }`}
+            >
+              <Icon name="moreHorizontal" size={20} />
+              <span className="hidden sm:inline text-sm font-medium">Ещё</span>
+            </button>
+
+            {showMore && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setShowMore(false)} />
+                <div className="absolute right-0 top-full mt-2 z-20 bg-[var(--surface)] border border-[var(--border)] rounded-2xl shadow-lg py-2 min-w-[180px] fade-in">
+                  {moreItems.map(item => (
+                    <button
+                      key={item.id}
+                      onClick={() => { setTab(item.id); setShowMore(false); }}
+                      className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium transition-all ${
+                        tab === item.id
+                          ? 'text-[var(--text)] bg-black/5'
+                          : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-black/5'
+                      }`}
+                    >
+                      <Icon name={item.icon} size={18} />
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </nav>
       </div>
     </header>
@@ -3700,16 +3774,443 @@ function VoiceButton({ data, setData, settings }) {
 }
 
 // ============== BODY VIEW ==============
+
+function formatBodyDate(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  const months = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+  const days = ['вс','пн','вт','ср','чт','пт','сб'];
+  return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()} (${days[d.getDay()]})`;
+}
+
+async function uploadPhoto(file) {
+  const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+  const safeExt = ['jpg','jpeg','png','webp','heic','gif'].includes(ext) ? ext : 'jpg';
+  const res = await fetch(`/api/photos?ext=${safeExt}`, {
+    method: 'POST',
+    headers: { 'Content-Type': file.type || 'image/jpeg' },
+    body: file,
+  });
+  if (!res.ok) throw new Error('upload failed');
+  return (await res.json()).filename;
+}
+
+async function deletePhoto(filename) {
+  await fetch(`/api/photos/${filename}`, { method: 'DELETE' }).catch(() => {});
+}
+
 function BodyView({ data, setData }) {
+  const [bodyTab, setBodyTab] = useState('history');
+  const [editEntry, setEditEntry] = useState(null); // null=list, 'new'=new, object=edit
+
+  const fields = data.bodyFields || DEFAULT_BODY_FIELDS;
+  const entries = [...(data.bodyEntries || [])].sort((a, b) => b.date.localeCompare(a.date));
+
+  const saveEntry = (entry) => {
+    setData(d => {
+      const list = d.bodyEntries || [];
+      if (entry.id && list.find(e => e.id === entry.id)) {
+        return { ...d, bodyEntries: list.map(e => e.id === entry.id ? entry : e) };
+      }
+      return { ...d, bodyEntries: [...list, { ...entry, id: crypto.randomUUID() }] };
+    });
+    setEditEntry(null);
+  };
+
+  const deleteEntry = (id) => {
+    const entry = entries.find(e => e.id === id);
+    (entry?.photos || []).forEach(f => deletePhoto(f));
+    setData(d => ({ ...d, bodyEntries: (d.bodyEntries || []).filter(e => e.id !== id) }));
+  };
+
+  if (editEntry !== null) {
+    return (
+      <BodyEntryForm
+        entry={editEntry === 'new' ? null : editEntry}
+        fields={fields}
+        onSave={saveEntry}
+        onCancel={() => setEditEntry(null)}
+      />
+    );
+  }
+
   return (
     <div className="fade-in">
-      <div className="mb-8">
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Раздел</div>
-        <h1 className="font-display text-3xl md:text-4xl">Моё тело</h1>
+      <div className="mb-6 flex items-end justify-between">
+        <div>
+          <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Раздел</div>
+          <h1 className="font-display text-3xl md:text-4xl">Моё тело</h1>
+        </div>
+        {bodyTab === 'history' && (
+          <button onClick={() => setEditEntry('new')} className="btn-primary flex items-center gap-2 text-sm">
+            <Icon name="plus" size={16} /> Запись
+          </button>
+        )}
       </div>
-      <div className="bg-[var(--surface)] border border-dashed border-[var(--border-strong)] rounded-2xl p-12 text-center">
-        <div className="font-display text-2xl mb-2">Скоро</div>
-        <div className="text-[var(--text-muted)] text-sm">Раздел в разработке — здесь появятся фото, замеры и прогресс</div>
+
+      <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6 gap-0">
+        {[{id:'history',label:'История'},{id:'progress',label:'Прогресс'},{id:'fields',label:'Поля'}].map(t => (
+          <button key={t.id} onClick={() => setBodyTab(t.id)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${bodyTab===t.id?'bg-[var(--text)] text-white':'text-[var(--text-muted)]'}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {bodyTab === 'history'  && <BodyHistory entries={entries} fields={fields} onEdit={setEditEntry} onDelete={deleteEntry} />}
+      {bodyTab === 'progress' && <BodyProgress entries={entries} fields={fields} />}
+      {bodyTab === 'fields'   && <BodyFieldsSettings data={data} setData={setData} />}
+    </div>
+  );
+}
+
+function BodyEntryForm({ entry, fields, onSave, onCancel }) {
+  const today = new Date().toISOString().split('T')[0];
+  const [date, setDate] = useState(entry?.date || today);
+  const [values, setValues] = useState(entry?.values || {});
+  const [photos, setPhotos] = useState(entry?.photos || []);
+  const [pending, setPending] = useState([]); // {file, preview}
+  const [notes, setNotes] = useState(entry?.notes || '');
+  const [uploading, setUploading] = useState(false);
+
+  const handleFiles = (e) => {
+    const files = Array.from(e.target.files);
+    setPending(p => [...p, ...files.map(f => ({ file: f, preview: URL.createObjectURL(f) }))]);
+    e.target.value = '';
+  };
+
+  const removePending = (i) => {
+    setPending(p => { URL.revokeObjectURL(p[i].preview); return p.filter((_,j) => j!==i); });
+  };
+
+  const removeExisting = async (filename) => {
+    await deletePhoto(filename);
+    setPhotos(p => p.filter(f => f !== filename));
+  };
+
+  const handleSave = async () => {
+    setUploading(true);
+    try {
+      const newFilenames = await Promise.all(pending.map(p => uploadPhoto(p.file)));
+      pending.forEach(p => URL.revokeObjectURL(p.preview));
+      onSave({ ...entry, date, values, photos: [...photos, ...newFilenames], notes });
+    } catch(e) {
+      alert('Ошибка загрузки фото: ' + e.message);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div className="fade-in">
+      <div className="mb-6 flex items-center gap-3">
+        <button onClick={onCancel} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]">
+          <Icon name="x" size={20} />
+        </button>
+        <h2 className="font-display text-2xl">{entry ? 'Редактировать запись' : 'Новая запись'}</h2>
+      </div>
+
+      <div className="space-y-4">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <label>Дата</label>
+          <input type="date" value={date} max={today} onChange={e => setDate(e.target.value)} />
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <h3 className="font-display text-lg mb-4">Показатели</h3>
+          <div className="grid grid-cols-2 gap-4">
+            {fields.map(f => (
+              <div key={f.id}>
+                <label>{f.label}{f.unit ? ` (${f.unit})` : ''}</label>
+                <input type="number" step="0.1" placeholder="—"
+                  value={values[f.id] ?? ''}
+                  onChange={e => setValues(v => ({
+                    ...v,
+                    [f.id]: e.target.value === '' ? undefined : parseFloat(e.target.value)
+                  }))}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <h3 className="font-display text-lg mb-3">Фото</h3>
+          <div className="flex flex-wrap gap-2">
+            {photos.map(f => (
+              <div key={f} className="relative">
+                <img src={`/api/photos/${f}`} className="w-20 h-20 object-cover rounded-xl" />
+                <button onClick={() => removeExisting(f)}
+                  className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center">×</button>
+              </div>
+            ))}
+            {pending.map((p, i) => (
+              <div key={i} className="relative">
+                <img src={p.preview} className="w-20 h-20 object-cover rounded-xl opacity-60" />
+                <button onClick={() => removePending(i)}
+                  className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center">×</button>
+              </div>
+            ))}
+            <label className="w-20 h-20 border-2 border-dashed border-[var(--border-strong)] rounded-xl flex items-center justify-center cursor-pointer hover:bg-black/5 text-[var(--text-subtle)]">
+              <input type="file" accept="image/*" multiple className="hidden" onChange={handleFiles} />
+              <Icon name="plus" size={22} />
+            </label>
+          </div>
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <label>Заметки</label>
+          <textarea value={notes} rows={2} placeholder="Необязательно..."
+            onChange={e => setNotes(e.target.value)}
+            style={{ resize:'vertical' }} />
+        </div>
+
+        <div className="flex gap-3 pb-8">
+          <button onClick={handleSave} disabled={uploading} className="btn-primary flex-1">
+            {uploading ? 'Загружаю фото...' : 'Сохранить'}
+          </button>
+          <button onClick={onCancel} className="btn-secondary">Отмена</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BodyHistory({ entries, fields, onEdit, onDelete }) {
+  const [lightbox, setLightbox] = useState(null);
+
+  if (!entries.length) return <EmptyState title="Нет записей" text="Нажмите «Запись» чтобы внести первые данные" />;
+
+  return (
+    <div className="space-y-3">
+      {entries.map((entry, idx) => {
+        const prev = entries[idx + 1];
+        const filled = fields.filter(f => entry.values?.[f.id] !== undefined);
+        return (
+          <div key={entry.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+            <div className="flex items-start justify-between mb-3">
+              <div>
+                <div className="font-display text-lg">{formatBodyDate(entry.date)}</div>
+                {entry.notes && <div className="text-sm text-[var(--text-muted)] mt-0.5">{entry.notes}</div>}
+              </div>
+              <div className="flex gap-1 flex-shrink-0">
+                <button onClick={() => onEdit(entry)} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]">
+                  <Icon name="edit" size={16} />
+                </button>
+                <button onClick={() => { if(confirm('Удалить запись?')) onDelete(entry.id); }}
+                  className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]">
+                  <Icon name="trash" size={16} />
+                </button>
+              </div>
+            </div>
+
+            {filled.length > 0 && (
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-3">
+                {filled.map(f => {
+                  const val = entry.values[f.id];
+                  const prevVal = prev?.values?.[f.id];
+                  const delta = prevVal !== undefined ? val - prevVal : null;
+                  return (
+                    <div key={f.id} className="bg-[var(--bg)] rounded-xl p-2 text-center">
+                      <div className="text-[9px] text-[var(--text-subtle)] uppercase tracking-wide leading-tight mb-0.5">{f.label}</div>
+                      <div className="text-sm font-semibold leading-tight">
+                        {val}<span className="text-[9px] font-normal text-[var(--text-subtle)]">{f.unit ? ' '+f.unit : ''}</span>
+                      </div>
+                      {delta !== null && delta !== 0 && (
+                        <div className={`text-[9px] font-medium ${delta < 0 ? 'text-green-500' : 'text-red-400'}`}>
+                          {delta > 0 ? '+' : ''}{delta.toFixed(1)}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {entry.photos?.length > 0 && (
+              <div className="flex gap-2 flex-wrap">
+                {entry.photos.map(f => (
+                  <img key={f} src={`/api/photos/${f}`}
+                    className="w-16 h-16 object-cover rounded-xl cursor-pointer hover:opacity-90 transition-opacity"
+                    onClick={() => setLightbox(`/api/photos/${f}`)} />
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {lightbox && (
+        <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4" onClick={() => setLightbox(null)}>
+          <img src={lightbox} className="max-w-full max-h-full rounded-2xl object-contain" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BodyProgress({ entries, fields }) {
+  if (entries.length < 2) return <EmptyState title="Мало данных" text="Добавьте хотя бы 2 записи чтобы увидеть прогресс" />;
+
+  const sorted = [...entries].sort((a, b) => a.date.localeCompare(b.date));
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+
+  const activeFields = fields.filter(f =>
+    sorted.some(e => e.values?.[f.id] !== undefined)
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <h3 className="font-display text-lg mb-1">Изменения за весь период</h3>
+        <div className="text-xs text-[var(--text-muted)] mb-4">{formatBodyDate(first.date)} → {formatBodyDate(last.date)}</div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {activeFields.map(f => {
+            const fv = first.values?.[f.id];
+            const lv = last.values?.[f.id];
+            if (fv === undefined || lv === undefined) return null;
+            const delta = lv - fv;
+            return (
+              <div key={f.id} className="bg-[var(--bg)] rounded-xl p-3">
+                <div className="text-[10px] text-[var(--text-subtle)] uppercase tracking-wide mb-1">{f.label}</div>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-lg font-semibold">{lv}</span>
+                  <span className="text-xs text-[var(--text-subtle)]">{f.unit}</span>
+                </div>
+                {delta !== 0 && (
+                  <div className={`text-xs font-medium mt-0.5 ${delta < 0 ? 'text-green-500' : 'text-red-400'}`}>
+                    {delta > 0 ? '+' : ''}{delta.toFixed(1)} от начала
+                  </div>
+                )}
+                <div className="text-[10px] text-[var(--text-subtle)] mt-0.5">было: {fv} {f.unit}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 overflow-x-auto">
+        <h3 className="font-display text-lg mb-3">Все записи</h3>
+        <table className="w-full text-sm" style={{ minWidth: Math.max(320, activeFields.length * 80 + 120) }}>
+          <thead>
+            <tr className="text-left border-b border-[var(--border)]">
+              <th className="pb-2 pr-4 text-[10px] uppercase tracking-wide text-[var(--text-subtle)] font-medium">Дата</th>
+              {activeFields.map(f => (
+                <th key={f.id} className="pb-2 pr-3 text-right text-[10px] uppercase tracking-wide text-[var(--text-subtle)] font-medium whitespace-nowrap">
+                  {f.label}{f.unit ? ` (${f.unit})` : ''}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[...sorted].reverse().map((entry, idx, arr) => {
+              const prev = arr[idx + 1];
+              return (
+                <tr key={entry.id} className="border-b border-[var(--border)] last:border-0">
+                  <td className="py-2 pr-4 text-xs text-[var(--text-muted)] whitespace-nowrap">{formatBodyDate(entry.date)}</td>
+                  {activeFields.map(f => {
+                    const val = entry.values?.[f.id];
+                    const prevVal = prev?.values?.[f.id];
+                    const delta = val !== undefined && prevVal !== undefined ? val - prevVal : null;
+                    return (
+                      <td key={f.id} className="py-2 pr-3 text-right">
+                        {val !== undefined ? (
+                          <span>
+                            {val}
+                            {delta !== null && delta !== 0 && (
+                              <span className={`text-[9px] ml-1 ${delta < 0 ? 'text-green-500' : 'text-red-400'}`}>
+                                {delta > 0 ? '+' : ''}{delta.toFixed(1)}
+                              </span>
+                            )}
+                          </span>
+                        ) : <span className="text-[var(--text-subtle)]">—</span>}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function BodyFieldsSettings({ data, setData }) {
+  const [customLabel, setCustomLabel] = useState('');
+  const [customUnit, setCustomUnit] = useState('');
+
+  const fields = data.bodyFields || DEFAULT_BODY_FIELDS;
+  const setFields = (f) => setData(d => ({ ...d, bodyFields: f }));
+
+  const remove = (id) => setFields(fields.filter(f => f.id !== id));
+  const move = (idx, dir) => {
+    const arr = [...fields];
+    const to = idx + dir;
+    if (to < 0 || to >= arr.length) return;
+    [arr[idx], arr[to]] = [arr[to], arr[idx]];
+    setFields(arr);
+  };
+  const addPreset = (p) => { if (!fields.find(f => f.id === p.id)) setFields([...fields, { ...p }]); };
+  const addCustom = () => {
+    if (!customLabel.trim()) return;
+    setFields([...fields, { id: 'custom_' + Date.now(), label: customLabel.trim(), unit: customUnit.trim() }]);
+    setCustomLabel(''); setCustomUnit('');
+  };
+
+  const available = [...DEFAULT_BODY_FIELDS, ...PRESET_BODY_FIELDS].filter(p => !fields.find(f => f.id === p.id));
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <h3 className="font-display text-lg mb-3">Текущие поля</h3>
+        <div className="space-y-2">
+          {fields.map((f, i) => (
+            <div key={f.id} className="flex items-center gap-2 bg-[var(--bg)] rounded-xl px-3 py-2.5">
+              <div className="flex-1 text-sm">
+                <span className="font-medium">{f.label}</span>
+                {f.unit && <span className="text-[var(--text-muted)] ml-1 text-xs">({f.unit})</span>}
+              </div>
+              <button onClick={() => move(i,-1)} disabled={i===0} className="p-1 text-[var(--text-subtle)] disabled:opacity-25 text-base leading-none">↑</button>
+              <button onClick={() => move(i, 1)} disabled={i===fields.length-1} className="p-1 text-[var(--text-subtle)] disabled:opacity-25 text-base leading-none">↓</button>
+              <button onClick={() => remove(f.id)} className="p-1 text-red-400 hover:text-red-600">
+                <Icon name="trash" size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {available.length > 0 && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <h3 className="font-display text-lg mb-3">Добавить стандартное поле</h3>
+          <div className="flex flex-wrap gap-2">
+            {available.map(p => (
+              <button key={p.id} onClick={() => addPreset(p)}
+                className="flex items-center gap-1 px-3 py-1.5 bg-[var(--bg)] border border-[var(--border)] rounded-xl text-sm hover:bg-black/5">
+                <Icon name="plus" size={13} /> {p.label}{p.unit ? ` (${p.unit})` : ''}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <h3 className="font-display text-lg mb-3">Своё поле</h3>
+        <div className="flex gap-3 flex-wrap">
+          <div className="flex-1 min-w-[140px]">
+            <label>Название</label>
+            <input type="text" value={customLabel} onChange={e => setCustomLabel(e.target.value)} placeholder="Например, Давление" />
+          </div>
+          <div style={{width:100}}>
+            <label>Ед. изм.</label>
+            <input type="text" value={customUnit} onChange={e => setCustomUnit(e.target.value)} placeholder="мм рт." />
+          </div>
+          <div className="flex items-end">
+            <button onClick={addCustom} disabled={!customLabel.trim()} className="btn-primary">Добавить</button>
+          </div>
+        </div>
       </div>
     </div>
   );
