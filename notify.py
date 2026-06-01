@@ -148,7 +148,7 @@ def send_notifications(token: str, subs: dict, config: dict):
         return
 
     for chore in due_chores:
-        text = f"🧹 <b>Уборка — напоминание</b>\n\n{chore.get('name', 'Дело')}"
+        text = f"🏠 <b>По дому — напоминание</b>\n\n{chore.get('name', 'Дело')}"
         print(f"[{now_str}] Notifying {len(subs['chat_ids'])} subscriber(s): {chore['name']}")
         for chat_id in subs["chat_ids"]:
             send_message(token, chat_id, text)

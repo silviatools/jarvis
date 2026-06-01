@@ -208,7 +208,7 @@ def _tick():
             continue
         if not is_due_today(chore):
             continue
-        text = f"🧹 <b>Уборка — напоминание</b>\n\n{chore.get('name', 'Дело')}"
+        text = f"🏠 <b>По дому — напоминание</b>\n\n{chore.get('name', 'Дело')}"
         print(f"[{now_str}] → {chore['name']} ({len(subs['chat_ids'])} subscriber(s))")
         for cid in subs["chat_ids"]:
             send_message(token, cid, text)
