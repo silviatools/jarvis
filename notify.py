@@ -137,19 +137,33 @@ def poll_updates(token: str, subs: dict) -> bool:
 
 
 def send_notifications(token: str, subs: dict, config: dict):
+    if not subs["chat_ids"]:
+        return
     now_str = datetime.now().strftime("%H:%M")
+
     due_chores = [
         c for c in config.get("chores", [])
         if c.get("notify")
         and c.get("notifyTime", "") == now_str
         and is_due_today(c)
     ]
-    if not due_chores or not subs["chat_ids"]:
-        return
-
     for chore in due_chores:
         text = f"🏠 <b>По дому — напоминание</b>\n\n{chore.get('name', 'Дело')}"
         print(f"[{now_str}] Notifying {len(subs['chat_ids'])} subscriber(s): {chore['name']}")
+        for chat_id in subs["chat_ids"]:
+            send_message(token, chat_id, text)
+
+    # Boss tasks: days stored as JS getDay() (0=Sun, 1=Mon .. 6=Sat)
+    today_js = date.today().isoweekday() % 7
+    due_boss = [
+        t for t in config.get("bossTasks", [])
+        if t.get("notify")
+        and t.get("notifyTime", "") == now_str
+        and today_js in (t.get("days") or [])
+    ]
+    for task in due_boss:
+        text = f"💼 <b>Босс — напоминание</b>\n\n{task.get('name', 'Задача')}"
+        print(f"[{now_str}] Notifying {len(subs['chat_ids'])} subscriber(s): {task['name']}")
         for chat_id in subs["chat_ids"]:
             send_message(token, chat_id, text)
 

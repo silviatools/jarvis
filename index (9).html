@@ -3234,7 +3234,15 @@ function BossSettings({ data, setData }) {
                 {dayLabel[d]}
               </span>
             ))}
+            {task.notify && (
+              <span className="text-[var(--text-subtle)] flex-shrink-0" title={`Уведомление в ${task.notifyTime}`}>
+                <Icon name="bell" size={12} />
+              </span>
+            )}
           </div>
+          {task.notify && task.notifyTime && (
+            <div className="text-xs text-[var(--text-subtle)] mt-0.5">Напоминание в {task.notifyTime}</div>
+          )}
         </div>
         <div className="flex gap-1 flex-shrink-0">
           {!arc && (
@@ -3256,7 +3264,7 @@ function BossSettings({ data, setData }) {
   return (
     <div>
       <button
-        onClick={() => setEditing({ id: crypto.randomUUID(), name: '', period: 'morning', days: [], archived: false })}
+        onClick={() => setEditing({ id: crypto.randomUUID(), name: '', period: 'morning', days: [], archived: false, notify: false, notifyTime: '09:00' })}
         className="btn-primary w-full flex items-center justify-center gap-2 mb-6"
       >
         <Icon name="plus" size={18} />
@@ -3356,6 +3364,26 @@ function BossTaskModal({ task, onSave, onClose }) {
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Icon name="bell" size={16} />
+              <span className="text-sm font-medium">Уведомление в Telegram</span>
+            </div>
+            <Toggle checked={!!form.notify} onChange={v => set('notify', v)} />
+          </div>
+          {form.notify && (
+            <div className="fade-in">
+              <label>Время напоминания</label>
+              <input
+                type="time"
+                value={form.notifyTime || '09:00'}
+                onChange={e => set('notifyTime', e.target.value)}
+              />
+            </div>
+          )}
         </div>
 
         <div className="flex gap-3 pt-2">

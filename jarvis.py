@@ -213,6 +213,27 @@ def _tick():
         for cid in subs["chat_ids"]:
             send_message(token, cid, text)
 
+    # Boss tasks: days stored as JS getDay() (0=Sun,1=Mon..6=Sat)
+    today_js = date.today().isoweekday() % 7
+    boss_tasks = []
+    if APP_DATA_FILE.exists():
+        try:
+            app_data_raw = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
+            boss_tasks = [t for t in app_data_raw.get("bossTasks", []) if not t.get("archived")]
+        except Exception:
+            pass
+    for task in boss_tasks:
+        if not task.get("notify"):
+            continue
+        if task.get("notifyTime", "") != now_str:
+            continue
+        if today_js not in (task.get("days") or []):
+            continue
+        text = f"💼 <b>Босс — напоминание</b>\n\n{task.get('name', 'Задача')}"
+        print(f"[{now_str}] → boss: {task['name']} ({len(subs['chat_ids'])} subscriber(s))")
+        for cid in subs["chat_ids"]:
+            send_message(token, cid, text)
+
     if changed:
         save_subscribers(subs)
 
