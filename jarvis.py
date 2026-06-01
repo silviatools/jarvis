@@ -333,9 +333,16 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                             ext = raw
                         break
             length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length)
+            MAX_PHOTO = 20 * 1024 * 1024  # 20 MB hard cap
+            if length > MAX_PHOTO:
+                self._json(413, {"error": "file too large"})
+                return
+            body = self.rfile.read(length) if length else self.rfile.read(MAX_PHOTO)
             if not body:
                 self._json(400, {"error": "empty body"})
+                return
+            if len(body) > MAX_PHOTO:
+                self._json(413, {"error": "file too large"})
                 return
             filename = str(_uuid.uuid4()) + "." + ext
             photos_dir = DATA_DIR / "photos"

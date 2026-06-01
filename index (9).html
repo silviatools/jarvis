@@ -205,12 +205,20 @@ const PRESET_BODY_FIELDS = [
   { id: 'proteinPct',    label: 'Белок',            unit: '%'    },
 ];
 
+const DEFAULT_BODY_PHOTO_CATEGORIES = ['Спереди', 'Сбоку', 'Спина'];
+
 const DEFAULT_DATA = () => ({
   supplements: [], meals: [], taken: {}, rationStock: 0,
   bodyFields: DEFAULT_BODY_FIELDS.map(f => ({ ...f })),
   bodyEntries: [],
+  bodyPhotoCategories: [...DEFAULT_BODY_PHOTO_CATEGORIES],
+  cars: [],
+  serviceRecords: [],
   settings: { ...DEFAULT_SETTINGS },
 });
+
+// backward compat: photos were stored as strings, now as {filename, category}
+const normalizePhoto = (p) => typeof p === 'string' ? { filename: p, category: '' } : p;
 
 const loadData = () => {
   try {
@@ -293,6 +301,7 @@ const Icon = ({ name, size = 22 }) => {
     moreHorizontal: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>,
     user: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
     micOff: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="2" y1="2" x2="22" y2="22"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 4.93"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><line x1="12" y1="19" x2="12" y2="22"/></svg>,
+    wrench: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>,
   };
   return icons[name] || null;
 };
@@ -524,6 +533,7 @@ function App() {
         {tab === 'weather' && <WeatherView settings={data.settings} />}
         {tab === 'house' && <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />}
         {tab === 'body' && <BodyView data={data} setData={setData} />}
+        {tab === 'cars' && <CarsView data={data} setData={setData} />}
         {tab === 'settings' && (
           <SettingsView
             data={data}
@@ -554,6 +564,7 @@ function Header({ tab, setTab }) {
 
   const moreItems = [
     { id: 'body', icon: 'user', label: 'Моё тело' },
+    { id: 'cars', icon: 'car',  label: 'Автомобили' },
   ];
 
   const moreActive = moreItems.some(i => i.id === tab);
@@ -636,6 +647,7 @@ function BottomNav({ tab, setTab }) {
 
   const moreItems = [
     { id: 'body', icon: 'user', label: 'Моё тело' },
+    { id: 'cars', icon: 'car',  label: 'Автомобили' },
   ];
 
   const moreActive = moreItems.some(i => i.id === tab);
@@ -3782,13 +3794,38 @@ function formatBodyDate(dateStr) {
   return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()} (${days[d.getDay()]})`;
 }
 
+async function compressImage(file, maxPx = 1200, quality = 0.85) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let { width, height } = img;
+      if (width > maxPx || height > maxPx) {
+        if (width > height) { height = Math.round(height * maxPx / width); width = maxPx; }
+        else { width = Math.round(width * maxPx / height); height = maxPx; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('compress failed')), 'image/jpeg', quality);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('load failed')); };
+    img.src = url;
+  });
+}
+
 async function uploadPhoto(file) {
-  const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
-  const safeExt = ['jpg','jpeg','png','webp','heic','gif'].includes(ext) ? ext : 'jpg';
-  const res = await fetch(`/api/photos?ext=${safeExt}`, {
+  let blob;
+  try {
+    blob = await compressImage(file);
+  } catch {
+    blob = file;
+  }
+  const res = await fetch('/api/photos?ext=jpg', {
     method: 'POST',
-    headers: { 'Content-Type': file.type || 'image/jpeg' },
-    body: file,
+    headers: { 'Content-Type': 'image/jpeg' },
+    body: blob,
   });
   if (!res.ok) throw new Error('upload failed');
   return (await res.json()).filename;
@@ -3800,9 +3837,10 @@ async function deletePhoto(filename) {
 
 function BodyView({ data, setData }) {
   const [bodyTab, setBodyTab] = useState('history');
-  const [editEntry, setEditEntry] = useState(null); // null=list, 'new'=new, object=edit
+  const [editEntry, setEditEntry] = useState(null);
 
   const fields = data.bodyFields || DEFAULT_BODY_FIELDS;
+  const categories = data.bodyPhotoCategories || DEFAULT_BODY_PHOTO_CATEGORIES;
   const entries = [...(data.bodyEntries || [])].sort((a, b) => b.date.localeCompare(a.date));
 
   const saveEntry = (entry) => {
@@ -3818,7 +3856,7 @@ function BodyView({ data, setData }) {
 
   const deleteEntry = (id) => {
     const entry = entries.find(e => e.id === id);
-    (entry?.photos || []).forEach(f => deletePhoto(f));
+    (entry?.photos || []).map(normalizePhoto).forEach(p => deletePhoto(p.filename));
     setData(d => ({ ...d, bodyEntries: (d.bodyEntries || []).filter(e => e.id !== id) }));
   };
 
@@ -3827,11 +3865,19 @@ function BodyView({ data, setData }) {
       <BodyEntryForm
         entry={editEntry === 'new' ? null : editEntry}
         fields={fields}
+        categories={categories}
         onSave={saveEntry}
         onCancel={() => setEditEntry(null)}
       />
     );
   }
+
+  const tabs = [
+    { id: 'history',  label: 'История'  },
+    { id: 'photos',   label: 'Фото'     },
+    { id: 'progress', label: 'Прогресс' },
+    { id: 'fields',   icon: 'settings'  },
+  ];
 
   return (
     <div className="fade-in">
@@ -3847,34 +3893,37 @@ function BodyView({ data, setData }) {
         )}
       </div>
 
-      <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6 gap-0">
-        {[{id:'history',label:'История'},{id:'progress',label:'Прогресс'},{id:'fields',label:'Поля'}].map(t => (
+      <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6 gap-0 overflow-x-auto">
+        {tabs.map(t => (
           <button key={t.id} onClick={() => setBodyTab(t.id)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${bodyTab===t.id?'bg-[var(--text)] text-white':'text-[var(--text-muted)]'}`}>
-            {t.label}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex items-center justify-center ${bodyTab===t.id?'bg-[var(--text)] text-white':'text-[var(--text-muted)]'}`}>
+            {t.icon ? <Icon name={t.icon} size={16} /> : t.label}
           </button>
         ))}
       </div>
 
-      {bodyTab === 'history'  && <BodyHistory entries={entries} fields={fields} onEdit={setEditEntry} onDelete={deleteEntry} />}
+      {bodyTab === 'history'  && <BodyHistory entries={entries} fields={fields} categories={categories} onEdit={setEditEntry} onDelete={deleteEntry} />}
+      {bodyTab === 'photos'   && <BodyPhotoGallery entries={entries} categories={categories} />}
       {bodyTab === 'progress' && <BodyProgress entries={entries} fields={fields} />}
       {bodyTab === 'fields'   && <BodyFieldsSettings data={data} setData={setData} />}
     </div>
   );
 }
 
-function BodyEntryForm({ entry, fields, onSave, onCancel }) {
+function BodyEntryForm({ entry, fields, categories, onSave, onCancel }) {
   const today = new Date().toISOString().split('T')[0];
   const [date, setDate] = useState(entry?.date || today);
   const [values, setValues] = useState(entry?.values || {});
-  const [photos, setPhotos] = useState(entry?.photos || []);
-  const [pending, setPending] = useState([]); // {file, preview}
+  const [photos, setPhotos] = useState((entry?.photos || []).map(normalizePhoto));
+  const [pending, setPending] = useState([]); // {file, preview, category}
   const [notes, setNotes] = useState(entry?.notes || '');
   const [uploading, setUploading] = useState(false);
 
+  const cats = categories || DEFAULT_BODY_PHOTO_CATEGORIES;
+
   const handleFiles = (e) => {
     const files = Array.from(e.target.files);
-    setPending(p => [...p, ...files.map(f => ({ file: f, preview: URL.createObjectURL(f) }))]);
+    setPending(p => [...p, ...files.map(f => ({ file: f, preview: URL.createObjectURL(f), category: '' }))]);
     e.target.value = '';
   };
 
@@ -3882,23 +3931,49 @@ function BodyEntryForm({ entry, fields, onSave, onCancel }) {
     setPending(p => { URL.revokeObjectURL(p[i].preview); return p.filter((_,j) => j!==i); });
   };
 
+  const setPendingCategory = (i, cat) => {
+    setPending(p => p.map((item, j) => j === i ? { ...item, category: cat } : item));
+  };
+
+  const setExistingCategory = (filename, cat) => {
+    setPhotos(p => p.map(ph => ph.filename === filename ? { ...ph, category: cat } : ph));
+  };
+
   const removeExisting = async (filename) => {
     await deletePhoto(filename);
-    setPhotos(p => p.filter(f => f !== filename));
+    setPhotos(p => p.filter(ph => ph.filename !== filename));
   };
 
   const handleSave = async () => {
     setUploading(true);
     try {
-      const newFilenames = await Promise.all(pending.map(p => uploadPhoto(p.file)));
+      const uploaded = await Promise.all(pending.map(async p => {
+        const filename = await uploadPhoto(p.file);
+        return { filename, category: p.category || '' };
+      }));
       pending.forEach(p => URL.revokeObjectURL(p.preview));
-      onSave({ ...entry, date, values, photos: [...photos, ...newFilenames], notes });
+      onSave({ ...entry, date, values, photos: [...photos, ...uploaded], notes });
     } catch(e) {
       alert('Ошибка загрузки фото: ' + e.message);
     } finally {
       setUploading(false);
     }
   };
+
+  const PhotoCategoryPills = ({ value, onChange }) => (
+    <div className="flex flex-wrap gap-1 mt-1.5">
+      <button onClick={() => onChange('')}
+        className={`px-2 py-0.5 rounded-full text-[10px] font-medium border transition-all ${!value ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
+        Без категории
+      </button>
+      {cats.map(c => (
+        <button key={c} onClick={() => onChange(c)}
+          className={`px-2 py-0.5 rounded-full text-[10px] font-medium border transition-all ${value===c ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
+          {c}
+        </button>
+      ))}
+    </div>
+  );
 
   return (
     <div className="fade-in">
@@ -3935,24 +4010,37 @@ function BodyEntryForm({ entry, fields, onSave, onCancel }) {
 
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
           <h3 className="font-display text-lg mb-3">Фото</h3>
-          <div className="flex flex-wrap gap-2">
-            {photos.map(f => (
-              <div key={f} className="relative">
-                <img src={`/api/photos/${f}`} className="w-20 h-20 object-cover rounded-xl" />
-                <button onClick={() => removeExisting(f)}
-                  className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center">×</button>
+          <div className="space-y-3">
+            {photos.map(ph => (
+              <div key={ph.filename} className="flex gap-3 items-start bg-[var(--bg)] rounded-xl p-2">
+                <div className="relative flex-shrink-0">
+                  <img src={`/api/photos/${ph.filename}`} className="w-16 h-16 object-cover rounded-xl" />
+                  <button onClick={() => removeExisting(ph.filename)}
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center">×</button>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-[var(--text-muted)] mb-0.5">Категория:</div>
+                  <PhotoCategoryPills value={ph.category} onChange={cat => setExistingCategory(ph.filename, cat)} />
+                </div>
               </div>
             ))}
             {pending.map((p, i) => (
-              <div key={i} className="relative">
-                <img src={p.preview} className="w-20 h-20 object-cover rounded-xl opacity-60" />
-                <button onClick={() => removePending(i)}
-                  className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center">×</button>
+              <div key={i} className="flex gap-3 items-start bg-[var(--bg)] rounded-xl p-2">
+                <div className="relative flex-shrink-0">
+                  <img src={p.preview} className="w-16 h-16 object-cover rounded-xl opacity-70" />
+                  <button onClick={() => removePending(i)}
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center">×</button>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-[var(--text-muted)] mb-0.5">Категория:</div>
+                  <PhotoCategoryPills value={p.category} onChange={cat => setPendingCategory(i, cat)} />
+                </div>
               </div>
             ))}
-            <label className="w-20 h-20 border-2 border-dashed border-[var(--border-strong)] rounded-xl flex items-center justify-center cursor-pointer hover:bg-black/5 text-[var(--text-subtle)]">
+            <label className="flex items-center gap-2 px-3 py-2.5 border-2 border-dashed border-[var(--border-strong)] rounded-xl cursor-pointer hover:bg-black/5 text-[var(--text-subtle)]">
               <input type="file" accept="image/*" multiple className="hidden" onChange={handleFiles} />
-              <Icon name="plus" size={22} />
+              <Icon name="plus" size={18} />
+              <span className="text-sm">Добавить фото</span>
             </label>
           </div>
         </div>
@@ -3975,7 +4063,7 @@ function BodyEntryForm({ entry, fields, onSave, onCancel }) {
   );
 }
 
-function BodyHistory({ entries, fields, onEdit, onDelete }) {
+function BodyHistory({ entries, fields, categories, onEdit, onDelete }) {
   const [lightbox, setLightbox] = useState(null);
 
   if (!entries.length) return <EmptyState title="Нет записей" text="Нажмите «Запись» чтобы внести первые данные" />;
@@ -3985,6 +4073,7 @@ function BodyHistory({ entries, fields, onEdit, onDelete }) {
       {entries.map((entry, idx) => {
         const prev = entries[idx + 1];
         const filled = fields.filter(f => entry.values?.[f.id] !== undefined);
+        const photos = (entry.photos || []).map(normalizePhoto);
         return (
           <div key={entry.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
             <div className="flex items-start justify-between mb-3">
@@ -4026,12 +4115,19 @@ function BodyHistory({ entries, fields, onEdit, onDelete }) {
               </div>
             )}
 
-            {entry.photos?.length > 0 && (
+            {photos.length > 0 && (
               <div className="flex gap-2 flex-wrap">
-                {entry.photos.map(f => (
-                  <img key={f} src={`/api/photos/${f}`}
-                    className="w-16 h-16 object-cover rounded-xl cursor-pointer hover:opacity-90 transition-opacity"
-                    onClick={() => setLightbox(`/api/photos/${f}`)} />
+                {photos.map(ph => (
+                  <div key={ph.filename} className="flex flex-col items-center gap-0.5">
+                    <img src={`/api/photos/${ph.filename}`}
+                      className="w-16 h-16 object-cover rounded-xl cursor-pointer hover:opacity-90 transition-opacity"
+                      onClick={() => setLightbox(`/api/photos/${ph.filename}`)} />
+                    {ph.category && (
+                      <span className="text-[9px] font-medium text-[var(--text-subtle)] bg-[var(--bg)] px-1.5 py-0.5 rounded-full border border-[var(--border)] leading-tight">
+                        {ph.category}
+                      </span>
+                    )}
+                  </div>
                 ))}
               </div>
             )}
@@ -4137,12 +4233,80 @@ function BodyProgress({ entries, fields }) {
   );
 }
 
+function BodyPhotoGallery({ entries, categories }) {
+  const [filter, setFilter] = useState('');
+  const [lightbox, setLightbox] = useState(null);
+
+  const cats = categories || DEFAULT_BODY_PHOTO_CATEGORIES;
+
+  const allPhotos = entries.flatMap(entry =>
+    (entry.photos || []).map(normalizePhoto).map(ph => ({ ...ph, date: entry.date, entryId: entry.id }))
+  ).filter(ph => !filter || ph.category === filter);
+
+  const formatDate = (d) => {
+    try {
+      return new Date(d + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
+    } catch { return d; }
+  };
+
+  return (
+    <div>
+      <div className="flex gap-2 flex-wrap mb-4">
+        <button onClick={() => setFilter('')}
+          className={`px-3 py-1.5 rounded-full text-sm font-medium border transition-all ${!filter ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
+          Все
+        </button>
+        {cats.map(c => (
+          <button key={c} onClick={() => setFilter(c)}
+            className={`px-3 py-1.5 rounded-full text-sm font-medium border transition-all ${filter===c ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
+            {c}
+          </button>
+        ))}
+      </div>
+
+      {allPhotos.length === 0 ? (
+        <EmptyState title="Нет фото" text={filter ? `Нет фото с категорией «${filter}»` : 'Добавьте фото при создании записи'} />
+      ) : (
+        <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+          {allPhotos.map((ph, i) => (
+            <div key={ph.filename + i} className="flex flex-col">
+              <img src={`/api/photos/${ph.filename}`}
+                className="w-full aspect-square object-cover rounded-xl cursor-pointer hover:opacity-90 transition-opacity"
+                onClick={() => setLightbox(ph)} />
+              <div className="text-[9px] text-[var(--text-subtle)] text-center mt-0.5 leading-tight">
+                {formatDate(ph.date)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {lightbox && (
+        <div className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center p-4" onClick={() => setLightbox(null)}>
+          <img src={`/api/photos/${lightbox.filename}`} className="max-w-full max-h-[80vh] rounded-2xl object-contain" onClick={e => e.stopPropagation()} />
+          <div className="mt-3 text-center" onClick={e => e.stopPropagation()}>
+            {lightbox.category && (
+              <span className="inline-block px-3 py-1 rounded-full bg-white/20 text-white text-sm font-medium mr-2">{lightbox.category}</span>
+            )}
+            <span className="text-white/70 text-sm">{formatDate(lightbox.date)}</span>
+          </div>
+          <button className="mt-3 text-white/50 text-sm" onClick={() => setLightbox(null)}>Закрыть</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BodyFieldsSettings({ data, setData }) {
   const [customLabel, setCustomLabel] = useState('');
   const [customUnit, setCustomUnit] = useState('');
+  const [newCatName, setNewCatName] = useState('');
 
   const fields = data.bodyFields || DEFAULT_BODY_FIELDS;
   const setFields = (f) => setData(d => ({ ...d, bodyFields: f }));
+
+  const cats = data.bodyPhotoCategories || DEFAULT_BODY_PHOTO_CATEGORIES;
+  const setCats = (c) => setData(d => ({ ...d, bodyPhotoCategories: c }));
 
   const remove = (id) => setFields(fields.filter(f => f.id !== id));
   const move = (idx, dir) => {
@@ -4157,6 +4321,21 @@ function BodyFieldsSettings({ data, setData }) {
     if (!customLabel.trim()) return;
     setFields([...fields, { id: 'custom_' + Date.now(), label: customLabel.trim(), unit: customUnit.trim() }]);
     setCustomLabel(''); setCustomUnit('');
+  };
+
+  const removeCat = (c) => setCats(cats.filter(x => x !== c));
+  const moveCat = (idx, dir) => {
+    const arr = [...cats];
+    const to = idx + dir;
+    if (to < 0 || to >= arr.length) return;
+    [arr[idx], arr[to]] = [arr[to], arr[idx]];
+    setCats(arr);
+  };
+  const addCat = () => {
+    const name = newCatName.trim();
+    if (!name || cats.includes(name)) return;
+    setCats([...cats, name]);
+    setNewCatName('');
   };
 
   const available = [...DEFAULT_BODY_FIELDS, ...PRESET_BODY_FIELDS].filter(p => !fields.find(f => f.id === p.id));
@@ -4210,6 +4389,31 @@ function BodyFieldsSettings({ data, setData }) {
           <div className="flex items-end">
             <button onClick={addCustom} disabled={!customLabel.trim()} className="btn-primary">Добавить</button>
           </div>
+        </div>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <h3 className="font-display text-lg mb-3">Категории фото</h3>
+        <div className="space-y-2 mb-3">
+          {cats.map((c, i) => (
+            <div key={c} className="flex items-center gap-2 bg-[var(--bg)] rounded-xl px-3 py-2.5">
+              <div className="flex-1 text-sm font-medium">{c}</div>
+              <button onClick={() => moveCat(i,-1)} disabled={i===0} className="p-1 text-[var(--text-subtle)] disabled:opacity-25 text-base leading-none">↑</button>
+              <button onClick={() => moveCat(i, 1)} disabled={i===cats.length-1} className="p-1 text-[var(--text-subtle)] disabled:opacity-25 text-base leading-none">↓</button>
+              <button onClick={() => removeCat(c)} className="p-1 text-red-400 hover:text-red-600">
+                <Icon name="trash" size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input type="text" value={newCatName} onChange={e => setNewCatName(e.target.value)}
+            placeholder="Новая категория..."
+            onKeyDown={e => e.key === 'Enter' && addCat()}
+            style={{ flex:1 }} />
+          <button onClick={addCat} disabled={!newCatName.trim() || cats.includes(newCatName.trim())} className="btn-primary whitespace-nowrap">
+            Добавить
+          </button>
         </div>
       </div>
     </div>
