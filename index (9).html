@@ -4598,15 +4598,20 @@ function ServiceHistoryView({ data, setData }) {
   const cars = (data.cars || []).filter(c => !c.archived);
   const allRecords = data.serviceRecords || [];
 
+  // Нормализация: старые записи имели service+price на верхнем уровне
+  const getItems = (r) =>
+    r.items || (r.service ? [{ id: 'legacy', service: r.service, price: r.price || 0 }] : []);
+
   const visibleServiceNames = [...new Set(
     allRecords
       .filter(r => filterCar === 'all' || r.carId === filterCar)
-      .map(r => r.service).filter(Boolean)
+      .flatMap(r => getItems(r).map(i => i.service))
+      .filter(Boolean)
   )].sort();
 
   const filtered = allRecords
     .filter(r => filterCar === 'all' || r.carId === filterCar)
-    .filter(r => !filterService || r.service === filterService)
+    .filter(r => !filterService || getItems(r).some(i => i.service === filterService))
     .sort((a, b) => b.date.localeCompare(a.date));
 
   const getCarName = (carId) => (data.cars || []).find(c => c.id === carId)?.name || '—';
@@ -4634,13 +4639,14 @@ function ServiceHistoryView({ data, setData }) {
 
   const fmtMoney = (n) => n ? new Intl.NumberFormat('ru-RU').format(n) + ' ₽' : null;
   const fmtKm    = (n) => n ? new Intl.NumberFormat('ru-RU').format(n) + ' км' : null;
-  const totalCost = filtered.reduce((s, r) => s + (Number(r.price) || 0), 0);
+  const totalCost = filtered.reduce((s, r) => s + getItems(r).reduce((a, i) => a + (Number(i.price) || 0), 0), 0);
 
   const newRecord = () => ({
     id: crypto.randomUUID(),
     carId: filterCar !== 'all' ? filterCar : cars[0].id,
     date: new Date().toISOString().split('T')[0],
-    service: '', price: '', mileage: '', notes: '',
+    items: [{ id: crypto.randomUUID(), service: '', price: '' }],
+    mileage: '', notes: '',
   });
 
   if (cars.length === 0) {
@@ -4694,34 +4700,55 @@ function ServiceHistoryView({ data, setData }) {
         <EmptyState title="Нет записей" text="Нажмите «Добавить» чтобы внести первое обслуживание" />
       ) : (
         <div className="space-y-3">
-          {filtered.map(record => (
-            <div key={record.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex-1 min-w-0">
-                  <div className="font-display text-lg mb-1">{record.service}</div>
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-[var(--text-muted)] mb-2">
-                    <span>{fmtDate(record.date)}</span>
-                    {filterCar === 'all' && (
-                      <span className="text-[var(--text-subtle)]">{getCarName(record.carId)}</span>
-                    )}
+          {filtered.map(record => {
+            const items = getItems(record);
+            const recTotal = items.reduce((s, i) => s + (Number(i.price) || 0), 0);
+            return (
+              <div key={record.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    {/* Шапка: дата, авто, пробег */}
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm mb-3">
+                      <span className="font-medium text-[var(--text)]">{fmtDate(record.date)}</span>
+                      {filterCar === 'all' && (
+                        <span className="text-[var(--text-subtle)]">{getCarName(record.carId)}</span>
+                      )}
+                      {record.mileage > 0 && (
+                        <span className="text-[var(--text-muted)]">{fmtKm(record.mileage)}</span>
+                      )}
+                    </div>
+                    {/* Таблица работ */}
+                    <div className="border border-[var(--border)] rounded-xl overflow-hidden text-sm">
+                      {items.map((item, idx) => (
+                        <div key={item.id || idx}
+                          className={`flex items-center gap-3 px-3 py-2 ${idx > 0 ? 'border-t border-[var(--border)]' : ''}`}>
+                          <span className="flex-1">{item.service}</span>
+                          {Number(item.price) > 0 && (
+                            <span className="text-[var(--text-muted)] flex-shrink-0 tabular-nums">{fmtMoney(item.price)}</span>
+                          )}
+                        </div>
+                      ))}
+                      {items.length > 1 && recTotal > 0 && (
+                        <div className="flex items-center gap-3 px-3 py-2 border-t border-[var(--border-strong)] bg-[var(--bg)]">
+                          <span className="flex-1 text-xs uppercase tracking-wide text-[var(--text-subtle)]">Итого</span>
+                          <span className="font-semibold flex-shrink-0 tabular-nums">{fmtMoney(recTotal)}</span>
+                        </div>
+                      )}
+                    </div>
+                    {record.notes && <div className="text-sm text-[var(--text-muted)] mt-2 italic">{record.notes}</div>}
                   </div>
-                  <div className="flex flex-wrap gap-x-4 gap-y-1">
-                    {record.price > 0 && <span className="text-sm font-medium">{fmtMoney(record.price)}</span>}
-                    {record.mileage > 0 && <span className="text-sm text-[var(--text-muted)]">{fmtKm(record.mileage)}</span>}
+                  <div className="flex gap-1 flex-shrink-0">
+                    <button onClick={() => setEditRecord(record)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+                      <Icon name="edit" size={16} />
+                    </button>
+                    <button onClick={() => deleteRecord(record.id)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+                      <Icon name="trash" size={16} />
+                    </button>
                   </div>
-                  {record.notes && <div className="text-sm text-[var(--text-muted)] mt-2 italic">{record.notes}</div>}
-                </div>
-                <div className="flex gap-1 flex-shrink-0">
-                  <button onClick={() => setEditRecord(record)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
-                    <Icon name="edit" size={16} />
-                  </button>
-                  <button onClick={() => deleteRecord(record.id)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
-                    <Icon name="trash" size={16} />
-                  </button>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -4729,7 +4756,9 @@ function ServiceHistoryView({ data, setData }) {
         <ServiceRecordModal
           record={editRecord}
           cars={cars}
-          allServiceNames={[...new Set((data.serviceRecords || []).map(r => r.service).filter(Boolean))].sort()}
+          allServiceNames={[...new Set((data.serviceRecords || []).flatMap(r =>
+            (r.items || (r.service ? [{ service: r.service }] : [])).map(i => i.service)
+          ).filter(Boolean))].sort()}
           onSave={saveRecord}
           onClose={() => setEditRecord(null)}
         />
@@ -4739,68 +4768,127 @@ function ServiceHistoryView({ data, setData }) {
 }
 
 function ServiceRecordModal({ record, cars, allServiceNames, onSave, onClose }) {
-  const [form, setForm] = useState(record);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const initItems = () =>
+    record.items
+      ? record.items.map(i => ({ ...i }))
+      : record.service
+        ? [{ id: crypto.randomUUID(), service: record.service, price: record.price || '' }]
+        : [{ id: crypto.randomUUID(), service: '', price: '' }];
 
-  const suggestions = allServiceNames.filter(s =>
-    s !== form.service && s.toLowerCase().includes((form.service || '').toLowerCase())
-  );
+  const [carId,   setCarId]   = useState(record.carId);
+  const [date,    setDate]    = useState(record.date);
+  const [mileage, setMileage] = useState(record.mileage || '');
+  const [notes,   setNotes]   = useState(record.notes || '');
+  const [items,   setItems]   = useState(initItems);
+  const [activeSuggId, setActiveSuggId] = useState(null);
+
+  const addItem    = () => setItems(it => [...it, { id: crypto.randomUUID(), service: '', price: '' }]);
+  const removeItem = (id) => setItems(it => it.filter(i => i.id !== id));
+  const updateItem = (id, key, val) => setItems(it => it.map(i => i.id === id ? { ...i, [key]: val } : i));
+
+  const getSugg = (service) =>
+    allServiceNames
+      .filter(s => s !== service && s.toLowerCase().includes((service || '').toLowerCase()))
+      .slice(0, 5);
+
+  const total = items.reduce((s, i) => s + (Number(i.price) || 0), 0);
 
   const submit = () => {
-    if (!form.carId)           return alert('Выберите автомобиль');
-    if (!form.service?.trim()) return alert('Введите вид работ');
-    if (!form.date)            return alert('Укажите дату');
-    onSave({ ...form, service: form.service.trim(), price: Number(form.price) || 0, mileage: Number(form.mileage) || 0 });
+    if (!carId) return alert('Выберите автомобиль');
+    if (!date)  return alert('Укажите дату');
+    const filled = items.filter(i => i.service.trim());
+    if (!filled.length) return alert('Добавьте хотя бы одну работу');
+    onSave({
+      id: record.id,
+      carId, date, notes,
+      mileage: Number(mileage) || 0,
+      items: filled.map(i => ({ ...i, service: i.service.trim(), price: Number(i.price) || 0 })),
+    });
   };
 
+  const isNew = !record.items && !record.service;
+
   return (
-    <Modal onClose={onClose} title={record.service ? 'Редактировать запись' : 'Новая запись'}>
+    <Modal onClose={onClose} title={isNew ? 'Новая запись' : 'Редактировать запись'}>
       <div className="space-y-4">
         <div>
           <label>Автомобиль</label>
-          <select value={form.carId} onChange={e => set('carId', e.target.value)}>
+          <select value={carId} onChange={e => setCarId(e.target.value)}>
             {cars.map(c => <option key={c.id} value={c.id}>{c.name}{c.year ? ` (${c.year})` : ''}</option>)}
           </select>
         </div>
-        <div>
-          <label>Дата</label>
-          <input type="date" value={form.date} max={new Date().toISOString().split('T')[0]} onChange={e => set('date', e.target.value)} />
-        </div>
-        <div className="relative">
-          <label>Вид работ</label>
-          <input
-            value={form.service}
-            onChange={e => { set('service', e.target.value); setShowSuggestions(true); }}
-            onFocus={() => setShowSuggestions(true)}
-            onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-            placeholder="Замена масла, ТО, шиномонтаж..."
-          />
-          {showSuggestions && suggestions.length > 0 && (
-            <div className="absolute left-0 right-0 top-full mt-1 bg-[var(--surface)] border border-[var(--border)] rounded-xl shadow-lg z-10 overflow-hidden">
-              {suggestions.slice(0, 6).map(s => (
-                <button key={s}
-                  onMouseDown={() => { set('service', s); setShowSuggestions(false); }}
-                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-black/5 text-[var(--text)]">
-                  {s}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label>Стоимость (₽)</label>
-            <input type="number" min="0" value={form.price} onChange={e => set('price', e.target.value)} placeholder="0" />
+            <label>Дата</label>
+            <input type="date" value={date} max={new Date().toISOString().split('T')[0]} onChange={e => setDate(e.target.value)} />
           </div>
           <div>
             <label>Пробег (км)</label>
-            <input type="number" min="0" value={form.mileage} onChange={e => set('mileage', e.target.value)} placeholder="50000" />
+            <input type="number" min="0" value={mileage} onChange={e => setMileage(e.target.value)} placeholder="50000" />
           </div>
         </div>
+
+        {/* Таблица работ */}
+        <div>
+          <label>Работы</label>
+          <div className="space-y-2">
+            {items.map((item, idx) => (
+              <div key={item.id} className="flex gap-2 items-start">
+                <div className="flex-1 relative">
+                  <input
+                    value={item.service}
+                    onChange={e => { updateItem(item.id, 'service', e.target.value); setActiveSuggId(item.id); }}
+                    onFocus={() => setActiveSuggId(item.id)}
+                    onBlur={() => setTimeout(() => setActiveSuggId(null), 150)}
+                    placeholder={`Работа ${idx + 1}...`}
+                  />
+                  {activeSuggId === item.id && getSugg(item.service).length > 0 && (
+                    <div className="absolute left-0 right-0 top-full mt-1 bg-[var(--surface)] border border-[var(--border)] rounded-xl shadow-lg z-20 overflow-hidden">
+                      {getSugg(item.service).map(s => (
+                        <button key={s}
+                          onMouseDown={() => { updateItem(item.id, 'service', s); setActiveSuggId(null); }}
+                          className="w-full text-left px-4 py-2.5 text-sm hover:bg-black/5 text-[var(--text)]">
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div style={{ width: 100, flexShrink: 0 }}>
+                  <input
+                    type="number" min="0"
+                    value={item.price}
+                    onChange={e => updateItem(item.id, 'price', e.target.value)}
+                    placeholder="₽"
+                  />
+                </div>
+                {items.length > 1 && (
+                  <button onClick={() => removeItem(item.id)}
+                    className="flex-shrink-0 p-2.5 text-[var(--text-subtle)] hover:text-red-400 transition-colors mt-0.5">
+                    <Icon name="x" size={16} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {total > 0 && (
+            <div className="flex justify-between items-center px-1 pt-2 text-sm">
+              <span className="text-[var(--text-subtle)]">Итого</span>
+              <span className="font-semibold tabular-nums">{new Intl.NumberFormat('ru-RU').format(total)} ₽</span>
+            </div>
+          )}
+
+          <button onClick={addItem}
+            className="mt-2 flex items-center gap-1.5 text-sm text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">
+            <Icon name="plus" size={15} />
+            Добавить работу
+          </button>
+        </div>
+
         <div>
           <label>Заметки</label>
-          <textarea value={form.notes} onChange={e => set('notes', e.target.value)} rows={2} placeholder="Сервис, мастер, бренд запчасти..." />
+          <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Сервис, мастер, бренд запчасти..." />
         </div>
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
