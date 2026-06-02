@@ -540,13 +540,14 @@ function App() {
       <Header tab={tab} setTab={setTab} />
       {tab === 'english' ? (
         <EngErrorBoundary><EnglishView /></EngErrorBoundary>
+      ) : tab === 'house' ? (
+        <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />
       ) : (
         <main className="max-w-3xl mx-auto px-4 sm:px-6 pt-6 md:pt-8">
           {tab === 'home' && <HomeView data={data} setData={setData} setTab={setTab} setHouseTab={setHouseTab} setMealTab={setMealTab} />}
           {tab === 'supplements' && <SupplementsView data={data} setData={setData} />}
           {tab === 'meals' && <MealsView data={data} setData={setData} mealTab={mealTab} setMealTab={setMealTab} />}
           {tab === 'weather' && <WeatherView settings={data.settings} />}
-          {tab === 'house' && <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />}
           {tab === 'body' && <BodyView data={data} setData={setData} />}
           {tab === 'cars' && <CarsView data={data} setData={setData} />}
           {tab === 'settings' && (
@@ -3016,43 +3017,41 @@ function KanbanView({ data, setData }) {
 
 // ============== HOUSE VIEW ==============
 function HouseView({ data, setData, houseTab, setHouseTab }) {
-
   const tabs = [
-    { id: 'boss',     label: 'Босс'     },
-    { id: 'tasks',    label: 'Задачи'   },
-    { id: 'cleaning', label: 'По дому'  },
+    { id: 'boss',     label: 'Босс'    },
+    { id: 'tasks',    label: 'Задачи'  },
+    { id: 'cleaning', label: 'По дому' },
   ];
 
-  return (
-    <div className="fade-in">
-      <div className="mb-8">
+  const HouseTabs = () => (
+    <div className="mb-6">
+      <div className="mb-6">
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Дела</div>
         <h1 className="font-display text-3xl md:text-4xl">Дела</h1>
       </div>
-
-      <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8">
+      <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
         {tabs.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setHouseTab(t.id)}
-            className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-              houseTab === t.id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
-            }`}
-          >
+          <button key={t.id} onClick={() => setHouseTab(t.id)}
+            className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${houseTab === t.id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
             {t.label}
           </button>
         ))}
       </div>
+    </div>
+  );
 
-      {houseTab === 'cleaning' && (
-        <ChoreSection data={data} setData={setData} dataKey="chores" title="По дому" />
-      )}
-      {houseTab === 'boss' && (
-        <BossView data={data} setData={setData} />
-      )}
-      {houseTab === 'tasks' && (
-        <KanbanView data={data} setData={setData} />
-      )}
+  if (houseTab === 'tasks') return (
+    <div className="fade-in pb-24 md:pb-8">
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 pt-6 md:pt-8"><HouseTabs /></div>
+      <div className="px-4 sm:px-6"><KanbanView data={data} setData={setData} /></div>
+    </div>
+  );
+
+  return (
+    <div className="fade-in max-w-3xl mx-auto px-4 sm:px-6 pt-6 md:pt-8 pb-24 md:pb-8">
+      <HouseTabs />
+      {houseTab === 'cleaning' && <ChoreSection data={data} setData={setData} dataKey="chores" title="По дому" />}
+      {houseTab === 'boss' && <BossView data={data} setData={setData} />}
     </div>
   );
 }
