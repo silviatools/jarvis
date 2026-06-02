@@ -455,6 +455,17 @@ function App() {
     });
   }, []);
 
+  // Auto-reload at midnight (iPad screen always on, JS never frozen)
+  useEffect(() => {
+    const todayAtMount = new Date().toISOString().slice(0, 10);
+    const timer = setInterval(() => {
+      if (new Date().toISOString().slice(0, 10) !== todayAtMount) {
+        window.location.reload();
+      }
+    }, 60 * 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   // On every change: save locally + push to server (debounced)
   useEffect(() => {
     if (initialLoad.current) { initialLoad.current = false; return; }
@@ -1348,8 +1359,15 @@ function CommuteCard({ settings }) {
     <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6">
       <div className="flex items-center justify-between mb-4">
         <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] font-medium">До работы</div>
-        <div className="text-[var(--text-muted)] flex-shrink-0">
-          <Icon name="car" size={18} />
+        <div className="flex items-center gap-3">
+          {isConfigured && !state.loading && (
+            <button onClick={fetchCommute} className="text-[10px] text-[var(--text-subtle)] hover:text-[var(--text-muted)] transition-colors leading-none">
+              обновить
+            </button>
+          )}
+          <div className="text-[var(--text-muted)] flex-shrink-0">
+            <Icon name="car" size={18} />
+          </div>
         </div>
       </div>
 
