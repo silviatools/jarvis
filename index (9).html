@@ -538,24 +538,27 @@ function App() {
   return (
     <div className="min-h-screen pb-24 md:pb-8">
       <Header tab={tab} setTab={setTab} />
-      <main className="max-w-3xl mx-auto px-4 sm:px-6 pt-6 md:pt-8">
-        {tab === 'home' && <HomeView data={data} setData={setData} setTab={setTab} setHouseTab={setHouseTab} setMealTab={setMealTab} />}
-        {tab === 'supplements' && <SupplementsView data={data} setData={setData} />}
-        {tab === 'meals' && <MealsView data={data} setData={setData} mealTab={mealTab} setMealTab={setMealTab} />}
-        {tab === 'weather' && <WeatherView settings={data.settings} />}
-        {tab === 'house' && <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />}
-        {tab === 'body' && <BodyView data={data} setData={setData} />}
-        {tab === 'cars' && <CarsView data={data} setData={setData} />}
-        {tab === 'settings' && (
-          <SettingsView
-            data={data}
-            setData={setData}
-            settingsTab={settingsTab}
-            setSettingsTab={setSettingsTab}
-          />
-        )}
-        {tab === 'english' && <EnglishView />}
-      </main>
+      {tab === 'english' ? (
+        <EnglishView />
+      ) : (
+        <main className="max-w-3xl mx-auto px-4 sm:px-6 pt-6 md:pt-8">
+          {tab === 'home' && <HomeView data={data} setData={setData} setTab={setTab} setHouseTab={setHouseTab} setMealTab={setMealTab} />}
+          {tab === 'supplements' && <SupplementsView data={data} setData={setData} />}
+          {tab === 'meals' && <MealsView data={data} setData={setData} mealTab={mealTab} setMealTab={setMealTab} />}
+          {tab === 'weather' && <WeatherView settings={data.settings} />}
+          {tab === 'house' && <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />}
+          {tab === 'body' && <BodyView data={data} setData={setData} />}
+          {tab === 'cars' && <CarsView data={data} setData={setData} />}
+          {tab === 'settings' && (
+            <SettingsView
+              data={data}
+              setData={setData}
+              settingsTab={settingsTab}
+              setSettingsTab={setSettingsTab}
+            />
+          )}
+        </main>
+      )}
       <BottomNav tab={tab} setTab={setTab} />
       <VoiceButton data={data} setData={setData} settings={data.settings} />
     </div>
@@ -3419,16 +3422,638 @@ function BossTaskModal({ task, onSave, onClose }) {
   );
 }
 
-// ============== ENGLISH VIEW ==============
-function EnglishView() {
-  return (
-    <div className="-mx-4 sm:-mx-6 -mt-6 md:-mt-8" style={{ height: 'calc(100dvh - 64px)' }}>
-      <iframe
-        src="/english"
-        title="English Cards"
-        style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
-        allow="microphone"
-      />
+// ============== ENGLISH CARDS ==============
+
+const _ENG_RU_MON = {'январ':0,'феврал':1,'март':2,'апрел':3,'мая':4,'май':4,'июн':5,'июл':6,'август':7,'сентябр':8,'октябр':9,'ноябр':10,'декабр':11};
+function engParseDate(s,inferYear){
+  if(s===null||s===undefined||s==='') return null;
+  if(typeof s==='number'){const d=new Date((s-25569)*86400000);return isNaN(d)?null:d;}
+  const str=String(s).trim();
+  const iso=new Date(str);if(!isNaN(iso)&&/\d{4}/.test(str)) return iso;
+  const ru=str.match(/(\d{1,2})\s+([а-яё]+)\s*(\d{4})?/i);
+  if(ru){let mon=-1;const ms=ru[2].toLowerCase();for(const k in _ENG_RU_MON)if(ms.startsWith(k)){mon=_ENG_RU_MON[k];break;}if(mon>=0)return new Date(ru[3]?+ru[3]:(inferYear||new Date().getFullYear()),mon,+ru[1]);}
+  const m=str.match(/(\d{1,4})[./-](\d{1,2})[./-](\d{1,4})/);
+  if(m){const[,a,b,c]=m;return a.length===4?new Date(+a,+b-1,+c):new Date(+c,+b-1,+a);}
+  return null;
+}
+function engParseRows(rows){
+  return rows.slice(1).filter(r=>r&&r[1]).map((r,i)=>({
+    rowIndex:i+2,date:r[0]||'',en:String(r[1]||'').trim(),ru:String(r[2]||'').trim(),
+    syn:String(r[3]||'').trim(),sentence:String(r[4]||'').trim(),
+    showNew:!!r[5],showTrans:!!r[6],showSent:!!r[7],hard:!!r[8]
+  }));
+}
+function engLev(a,b){
+  const m=a.length,n=b.length,dp=Array.from({length:m+1},(_,i)=>Array.from({length:n+1},(_,j)=>i===0?j:j===0?i:0));
+  for(let i=1;i<=m;i++)for(let j=1;j<=n;j++)dp[i][j]=a[i-1]===b[j-1]?dp[i-1][j-1]:1+Math.min(dp[i-1][j],dp[i][j-1],dp[i-1][j-1]);
+  return dp[m][n];
+}
+function engEscRe(s){return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
+function engHighlight(sentence,word){
+  if(!word) return sentence;
+  return sentence.replace(new RegExp('\\b('+engEscRe(word.split(' ')[0])+'\\w*)','ig'),'<b>$1</b>');
+}
+async function engCallAI(ai,prompt){
+  if(ai.provider==='anthropic'){
+    if(!ai.anthropicKey) throw new Error('Нет Anthropic API ключа');
+    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':ai.anthropicKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:ai.anthropicModel,max_tokens:1500,messages:[{role:'user',content:prompt}]})});
+    if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'HTTP '+r.status);}
+    return(await r.json()).content?.[0]?.text||'';
+  }
+  if(ai.provider==='openai'){
+    if(!ai.openaiKey) throw new Error('Нет OpenAI API ключа');
+    const r=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+ai.openaiKey},body:JSON.stringify({model:ai.openaiModel,max_tokens:1500,messages:[{role:'user',content:prompt}]})});
+    if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'HTTP '+r.status);}
+    return(await r.json()).choices?.[0]?.message?.content||'';
+  }
+  if(ai.provider==='ollama'){
+    const r=await fetch(ai.ollamaUrl+'/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:ai.ollamaModel,prompt,stream:false})});
+    if(!r.ok) throw new Error('Ollama HTTP '+r.status);
+    return(await r.json()).response||'';
+  }
+  throw new Error('Unknown provider');
+}
+
+function EngCfgModal({cfg,onSave,onClose}){
+  const [f,setF]=useState({...cfg});
+  return(
+    <Modal onClose={onClose} title="Google Sheets">
+      <div className="space-y-4">
+        <div><label>API Key (чтение)</label><input type="password" value={f.apiKey} onChange={e=>setF(x=>({...x,apiKey:e.target.value}))} placeholder="AIzaSy..."/></div>
+        <div><label>OAuth Client ID (запись, необязательно)</label><input value={f.clientId} onChange={e=>setF(x=>({...x,clientId:e.target.value}))} placeholder="...apps.googleusercontent.com"/></div>
+        <div><label>Spreadsheet ID</label><input value={f.sheetId} onChange={e=>setF(x=>({...x,sheetId:e.target.value}))}/><p className="text-xs text-[var(--text-subtle)] mt-1">ID в URL: spreadsheets/d/<b>ID</b>/edit</p></div>
+        <div><label>Название листа</label><input value={f.sheetName} onChange={e=>setF(x=>({...x,sheetName:e.target.value}))}/></div>
+        <div className="flex gap-3 pt-2"><button onClick={onClose} className="btn-secondary flex-1">Отмена</button><button onClick={()=>onSave(f)} className="btn-primary flex-1">Сохранить</button></div>
+      </div>
+    </Modal>
+  );
+}
+
+function EngAIModal({ai,onSave,onClose}){
+  const [f,setF]=useState({...ai});
+  return(
+    <Modal onClose={onClose} title="AI Provider">
+      <div className="space-y-4">
+        <div><label>Provider</label>
+          <div className="flex gap-2 mt-1">
+            {['anthropic','openai','ollama'].map(p=>(
+              <button key={p} onClick={()=>setF(x=>({...x,provider:p}))} className={`flex-1 py-2.5 rounded-lg text-sm font-medium border transition-all ${f.provider===p?'bg-[var(--text)] text-white border-[var(--text)]':'border-[var(--border)] text-[var(--text-muted)]'}`}>
+                {p==='anthropic'?'Anthropic':p==='openai'?'OpenAI':'Ollama'}
+              </button>
+            ))}
+          </div>
+        </div>
+        {f.provider==='anthropic'&&<>
+          <div><label>API Key</label><input type="password" value={f.anthropicKey} onChange={e=>setF(x=>({...x,anthropicKey:e.target.value}))} placeholder="sk-ant-..."/></div>
+          <div><label>Модель</label><select value={f.anthropicModel} onChange={e=>setF(x=>({...x,anthropicModel:e.target.value}))}>
+            <option value="claude-opus-4-5">claude-opus-4-5 (мощный)</option>
+            <option value="claude-sonnet-4-6">claude-sonnet-4-6 (рекомендуется)</option>
+            <option value="claude-haiku-4-5-20251001">claude-haiku-4-5 (быстрый)</option>
+          </select></div>
+        </>}
+        {f.provider==='openai'&&<>
+          <div><label>API Key</label><input type="password" value={f.openaiKey} onChange={e=>setF(x=>({...x,openaiKey:e.target.value}))} placeholder="sk-..."/></div>
+          <div><label>Модель</label><select value={f.openaiModel} onChange={e=>setF(x=>({...x,openaiModel:e.target.value}))}>
+            <option value="gpt-4.1">gpt-4.1</option><option value="gpt-4o">gpt-4o</option><option value="gpt-4o-mini">gpt-4o-mini</option>
+          </select></div>
+        </>}
+        {f.provider==='ollama'&&<>
+          <div><label>Ollama URL</label><input value={f.ollamaUrl} onChange={e=>setF(x=>({...x,ollamaUrl:e.target.value}))}/></div>
+          <div><label>Модель</label><input value={f.ollamaModel} onChange={e=>setF(x=>({...x,ollamaModel:e.target.value}))} placeholder="llama3"/></div>
+        </>}
+        <div className="flex gap-3 pt-2"><button onClick={onClose} className="btn-secondary flex-1">Отмена</button><button onClick={()=>onSave(f)} className="btn-primary flex-1">Сохранить</button></div>
+      </div>
+    </Modal>
+  );
+}
+
+const ENG_CARD_S={
+  wrap:{perspective:'1200px'},
+  card:(fl)=>({width:'100%',height:'280px',position:'relative',transformStyle:'preserve-3d',transition:'transform .55s cubic-bezier(.4,0,.2,1)',transform:fl?'rotateY(180deg)':'none',cursor:'pointer'}),
+  face:{position:'absolute',inset:0,backfaceVisibility:'hidden',WebkitBackfaceVisibility:'hidden',borderRadius:'1rem',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'28px',textAlign:'center',background:'var(--surface)',border:'1px solid var(--border)'},
+  back:{transform:'rotateY(180deg)'},
+};
+
+function EngSyncBtn({cfg,toMark,toUnmark,rawData,tcRef,atRef}){
+  const [st,setSt]=useState('idle');const [msg,setMsg]=useState('');
+  const sync=async()=>{
+    if(!cfg.clientId){alert('OAuth Client ID не настроен в ⚙ настройках');return;}
+    setSt('loading');setMsg('Авторизация...');
+    const doSync=async()=>{
+      try{
+        setMsg('Запись...');
+        const data=[...toMark.map(i=>({range:`${cfg.sheetName}!I${i}`,values:[[true]]})),...toUnmark.map(i=>({range:`${cfg.sheetName}!I${i}`,values:[[false]]}))];
+        const r=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values:batchUpdate`,{method:'POST',headers:{'Authorization':'Bearer '+atRef.current,'Content-Type':'application/json'},body:JSON.stringify({valueInputOption:'USER_ENTERED',data})});
+        if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'HTTP '+r.status);}
+        setSt('done');setMsg(`✓ ${toMark.length?'+'+toMark.length+' помечено':''}${toUnmark.length?' −'+toUnmark.length+' снято':''}`);
+      }catch(e){setSt('err');setMsg('✗ '+e.message);}
+    };
+    if(atRef.current){await doSync();return;}
+    if(!tcRef.current){alert('OAuth не готов');setSt('idle');return;}
+    tcRef.current.requestAccessToken({prompt:'consent'});
+    let tries=0;
+    const wait=setInterval(async()=>{if(atRef.current){clearInterval(wait);await doSync();}else if(++tries>30){clearInterval(wait);setSt('err');setMsg('Таймаут');}},500);
+  };
+  return(
+    <div>
+      <button onClick={sync} disabled={st==='loading'||st==='done'} className="btn-primary w-full py-3">
+        {st==='loading'?'⏳ '+msg:st==='done'?msg:'↻ Синхронизировать с таблицей'}
+      </button>
+      {st==='err'&&<p className="text-xs text-red-500 mt-1">{msg}</p>}
+    </div>
+  );
+}
+
+function FlashcardsTab({rawData,cfg}){
+  const [phase,setPhase]=useState('setup');
+  const [settings,setSettings]=useState({direction:'en-ru',count:20,order:'random',filter:'all',dateRange:'all',sentence:true,synonyms:true,tts:false,hide:true,repeat:true,auto:false});
+  const [sess,setSess]=useState(null);
+  const sessRef=useRef(null);
+  useEffect(()=>{sessRef.current=sess;},[sess]);
+  const tcRef=useRef(null);const atRef=useRef(null);
+
+  useEffect(()=>{
+    if(!cfg.clientId) return;
+    const load=()=>{
+      if(!window.google?.accounts) return;
+      try{tcRef.current=window.google.accounts.oauth2.initTokenClient({client_id:cfg.clientId,scope:'https://www.googleapis.com/auth/spreadsheets',callback:(r)=>{if(r.access_token)atRef.current=r.access_token;}});}catch(e){}
+    };
+    if(window.google?.accounts){load();return;}
+    const s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';s.onload=()=>setTimeout(load,300);document.head.appendChild(s);
+  },[cfg.clientId]);
+
+  useEffect(()=>{
+    const h=(e)=>{
+      const s=sessRef.current;if(!s||phase!=='study') return;
+      if(e.code==='Space'){e.preventDefault();setSess(x=>x?{...x,flipped:!x.flipped}:x);}
+      else if(e.key==='h'||e.key==='H') toggleHard();
+      else if(s.flipped&&['1','2','3','4'].includes(e.key)){doAnswer({'1':'again','2':'hard','3':'good','4':'easy'}[e.key]);}
+      else if(!s.flipped){
+        if(e.key==='ArrowRight') setSess(x=>x?{...x,cur:x.cur+1}:x);
+        else if(e.key==='ArrowLeft'&&s.cur>0) setSess(x=>x?{...x,cur:x.cur-1,flipped:false}:x);
+      }
+    };
+    window.addEventListener('keydown',h);return()=>window.removeEventListener('keydown',h);
+  },[phase]);
+
+  const autoRef=useRef(null);
+  useEffect(()=>{
+    if(autoRef.current) clearTimeout(autoRef.current);
+    if(!sess||sess.flipped||!settings.auto||phase!=='study') return;
+    autoRef.current=setTimeout(()=>setSess(s=>s?{...s,flipped:true}:s),5000);
+    return()=>clearTimeout(autoRef.current);
+  },[sess?.cur,sess?.flipped,settings.auto,phase]);
+
+  const getIY=(data)=>{const ys=data.map(w=>engParseDate(w.date)?.getFullYear()).filter(Boolean);return ys.length?Math.max(...ys):new Date().getFullYear();};
+
+  const startSession=()=>{
+    if(!rawData?.length) return;
+    const iy=getIY(rawData);
+    let pool=rawData.slice();
+    if(settings.filter==='hard') pool=pool.filter(w=>w.hard);
+    else if(settings.filter==='not-hard') pool=pool.filter(w=>!w.hard);
+    else if(settings.filter==='not-shown') pool=pool.filter(w=>!w.showNew);
+    if(settings.dateRange!=='all'){
+      const days=parseInt(settings.dateRange);
+      const times=rawData.map(w=>engParseDate(w.date,iy)).filter(Boolean).map(d=>d.getTime());
+      const ref=times.length?Math.max(...times):Date.now();
+      pool=pool.filter(w=>{const d=engParseDate(w.date,iy);return d&&d.getTime()>=ref-(days-1)*86400000;});
+    }
+    if(!pool.length){alert('Нет слов по выбранным фильтрам');return;}
+    if(settings.order==='random') pool.sort(()=>Math.random()-.5);
+    else if(settings.order==='newest') pool.sort((a,b)=>(engParseDate(b.date,iy)?.getTime()||0)-(engParseDate(a.date,iy)?.getTime()||0));
+    else if(settings.order==='oldest') pool.sort((a,b)=>(engParseDate(a.date,iy)?.getTime()||0)-(engParseDate(b.date,iy)?.getTime()||0));
+    const pd=()=>settings.direction==='mixed'?(Math.random()<.5?'en-ru':'ru-en'):settings.direction;
+    const cnt=settings.count>0&&settings.count<pool.length?settings.count:pool.length;
+    setSess({queue:pool.slice(0,cnt).map(w=>({...w,_dir:pd()})),again:[],done:[],cur:0,flipped:false,markHard:new Set(),unmarkHard:new Set(),stats:{again:0,hard:0,good:0,easy:0},iy});
+    setPhase('study');
+  };
+
+  const toggleHard=()=>setSess(s=>{
+    if(!s) return s;
+    const w=s.queue[s.cur];if(!w) return s;
+    const idx=w.rowIndex;const nm=new Set(s.markHard),nu=new Set(s.unmarkHard);
+    if(w.hard){nu.has(idx)?nu.delete(idx):nu.add(idx);}else{nm.has(idx)?nm.delete(idx):nm.add(idx);}
+    return{...s,markHard:nm,unmarkHard:nu};
+  });
+
+  const doAnswer=(type)=>setSess(s=>{
+    if(!s) return s;
+    const w=s.queue[s.cur];
+    const ns={...s.stats,[type]:s.stats[type]+1};
+    const na=(type==='again'||type==='hard')?[...s.again,{...w}]:s.again;
+    const nd=[...s.done,w];let nq=[...s.queue];nq.splice(s.cur,1);let nc=s.cur;
+    if(nc>=nq.length){
+      if(settings.repeat&&na.length) return{...s,queue:na,again:[],done:nd,cur:0,flipped:false,stats:ns};
+      setTimeout(()=>setPhase('finish'),0);
+      return{...s,queue:nq,again:na,done:nd,cur:nc,stats:ns};
+    }
+    return{...s,queue:nq,again:na,done:nd,cur:nc,flipped:false,stats:ns};
+  });
+
+  if(!rawData?.length) return(
+    <div className="text-center py-20 text-[var(--text-subtle)]">
+      <div className="font-display text-5xl mb-4">A↻</div><p>Загрузите слова из Google Sheets</p>
+    </div>
+  );
+
+  // --- SETUP ---
+  if(phase==='setup') return(
+    <div className="max-w-lg mx-auto space-y-5 pb-8">
+      <div><label>Направление</label>
+        <div className="flex gap-2 mt-1">
+          {[['en-ru','EN → RU'],['ru-en','RU → EN'],['mixed','Mixed']].map(([v,l])=>(
+            <button key={v} onClick={()=>setSettings(s=>({...s,direction:v}))} className={`flex-1 py-2.5 rounded-lg text-sm font-medium border transition-all ${settings.direction===v?'bg-[var(--text)] text-white border-[var(--text)]':'border-[var(--border)] text-[var(--text-muted)]'}`}>{l}</button>
+          ))}
+        </div>
+      </div>
+      <div><label>Количество карточек</label><input type="number" min="0" max="500" value={settings.count||''} onChange={e=>setSettings(s=>({...s,count:parseInt(e.target.value)||0}))} placeholder="0 = все"/><p className="text-xs text-[var(--text-subtle)] mt-1">0 = все подходящие</p></div>
+      <div><label>Порядок</label><select value={settings.order} onChange={e=>setSettings(s=>({...s,order:e.target.value}))}><option value="random">Случайный</option><option value="newest">Новые сначала</option><option value="oldest">Старые сначала</option></select></div>
+      <div><label>Фильтр</label><select value={settings.filter} onChange={e=>setSettings(s=>({...s,filter:e.target.value}))}><option value="all">Все слова</option><option value="hard">Только сложные ★</option><option value="not-hard">Без сложных</option><option value="not-shown">Не изученные</option></select></div>
+      <div><label>Период</label><select value={settings.dateRange} onChange={e=>setSettings(s=>({...s,dateRange:e.target.value}))}><option value="all">Все время</option><option value="7">Последние 7 дней</option><option value="14">Последние 14 дней</option><option value="30">Последние 30 дней</option></select></div>
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 space-y-3">
+        {[['sentence','Показывать пример'],['synonyms','Показывать синонимы'],['hide','Скрыть слово в примере'],['repeat','Повторять ошибки'],['auto','Авто-переворот (5 сек)'],['tts','TTS произношение']].map(([k,l])=>(
+          <div key={k} className="flex items-center justify-between"><span className="text-sm">{l}</span><Toggle checked={!!settings[k]} onChange={v=>setSettings(s=>({...s,[k]:v}))}/></div>
+        ))}
+      </div>
+      <button onClick={startSession} className="btn-primary w-full py-3.5 flex items-center justify-center gap-2">▶ Начать сессию ({rawData.length} слов)</button>
+    </div>
+  );
+
+  // --- FINISH ---
+  if(phase==='finish'&&sess){
+    const s=sess.stats;const correct=s.good+s.easy,total=s.again+s.hard+s.good+s.easy;
+    const pct=total?Math.round(correct/total*100):0;
+    const toMark=[...sess.markHard],toUnmark=[...sess.unmarkHard];
+    const wFor=(idx)=>{const w=rawData.find(x=>x.rowIndex===idx);return w?w.en:`row ${idx}`;};
+    return(
+      <div className="text-center py-8 max-w-lg mx-auto pb-12">
+        <div className="font-display text-7xl font-bold mb-1">{pct}%</div>
+        <h2 className="font-display text-2xl mb-1">Сессия завершена</h2>
+        <p className="text-[var(--text-muted)] mb-6">{correct} из {total} с первого раза</p>
+        <div className="flex justify-center gap-3 mb-8 flex-wrap">
+          {[['again',s.again,'text-red-500'],['hard',s.hard,'text-amber-500'],['good',s.good,'text-green-500'],['easy',s.easy,'text-green-600']].map(([l,v,c])=>(
+            <div key={l} className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3 min-w-[64px]">
+              <div className={`font-display text-2xl font-bold ${c}`}>{v}</div>
+              <div className="text-xs text-[var(--text-subtle)] mt-1">{l}</div>
+            </div>
+          ))}
+        </div>
+        {(toMark.length>0||toUnmark.length>0)&&(
+          <div className="mb-6 text-left space-y-3">
+            {toMark.length>0&&<div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4"><div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-2">+ Отметить как сложные ({toMark.length})</div><div className="text-sm">{toMark.map(wFor).join(', ')}</div></div>}
+            {toUnmark.length>0&&<div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4"><div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-2">− Снять отметку ({toUnmark.length})</div><div className="text-sm">{toUnmark.map(wFor).join(', ')}</div></div>}
+            <EngSyncBtn cfg={cfg} toMark={toMark} toUnmark={toUnmark} rawData={rawData} tcRef={tcRef} atRef={atRef}/>
+          </div>
+        )}
+        <button onClick={()=>{setSess(null);setPhase('setup');}} className="btn-primary px-8 py-3">↻ Новая сессия</button>
+      </div>
+    );
+  }
+
+  // --- STUDY ---
+  if(!sess||sess.cur>=sess.queue.length) return null;
+  const w=sess.queue[sess.cur];const dir=w._dir;
+  const front=dir==='en-ru'?w.en:w.ru;const back=dir==='en-ru'?w.ru:w.en;
+  const total=sess.queue.length+sess.done.length;
+  const prog=sess.done.length/Math.max(total,1)*100;
+  const isHard=sess.markHard.has(w.rowIndex)?'marking':(sess.unmarkHard.has(w.rowIndex)?'unmarking':(w.hard?'hard':'none'));
+  let sentF=w.sentence;
+  if(settings.hide&&dir==='en-ru'&&sentF) sentF=sentF.replace(new RegExp('\\b'+engEscRe(w.en.split(' ')[0])+'\\w*','ig'),'___');
+  if(settings.tts&&!sess.flipped){const u=new SpeechSynthesisUtterance(dir==='en-ru'?w.en:'');u.lang='en-US';u.rate=.9;window.speechSynthesis?.cancel();window.speechSynthesis?.speak(u);}
+
+  return(
+    <div className="max-w-2xl mx-auto space-y-4 pb-8">
+      <div className="h-1.5 bg-[var(--surface)] rounded-full overflow-hidden"><div className="h-full bg-[var(--text)] rounded-full transition-all" style={{width:prog+'%'}}/></div>
+      <div className="flex gap-2 text-xs flex-wrap">
+        {[['карт',`${sess.done.length+1}/${total}`,''],[' again',sess.stats.again,'text-red-500'],['hard',sess.stats.hard,'text-amber-500'],['good',sess.stats.good+sess.stats.easy,'text-green-500'],['очередь',sess.again.length,'']].map(([l,v,c],i)=>(
+          <div key={i} className={`bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1 ${c}`}>{l} <span className="font-semibold">{v}</span></div>
+        ))}
+      </div>
+      <div style={ENG_CARD_S.wrap} onClick={()=>setSess(s=>s?{...s,flipped:!s.flipped}:s)}>
+        <div style={ENG_CARD_S.card(sess.flipped)}>
+          <div style={ENG_CARD_S.face}>
+            <div className="absolute top-3 left-4 text-[10px] uppercase tracking-widest text-[var(--text-subtle)]">{dir==='en-ru'?'ENGLISH':'RUSSIAN'}</div>
+            <button onClick={e=>{e.stopPropagation();toggleHard();}} className={`absolute top-2 right-3 text-xs px-2.5 py-1 rounded-full border transition-all ${isHard==='hard'||isHard==='marking'?'border-amber-400 text-amber-500':'border-[var(--border)] text-[var(--text-subtle)]'}`}>
+              {isHard==='marking'?'★ +hard':isHard==='unmarking'?'✕ −hard':isHard==='hard'?'★ hard':'☆ hard'}
+            </button>
+            <div className="font-display text-4xl sm:text-5xl font-bold leading-tight mb-3">{front}</div>
+            {settings.sentence&&sentF&&<div className="text-sm text-[var(--text-muted)] italic max-w-sm leading-relaxed">{sentF}</div>}
+            <div className="absolute bottom-3 text-[10px] text-[var(--text-subtle)]">↻ нажмите или Space</div>
+          </div>
+          <div style={{...ENG_CARD_S.face,...ENG_CARD_S.back}}>
+            <div className="absolute top-3 left-4 text-[10px] uppercase tracking-widest text-[var(--text-subtle)]">{dir==='en-ru'?'RUSSIAN':'ENGLISH'}</div>
+            <button onClick={e=>{e.stopPropagation();toggleHard();}} className={`absolute top-2 right-3 text-xs px-2.5 py-1 rounded-full border transition-all ${isHard==='hard'||isHard==='marking'?'border-amber-400 text-amber-500':'border-[var(--border)] text-[var(--text-subtle)]'}`}>
+              {isHard==='marking'?'★ +hard':isHard==='hard'?'★ hard':'☆ hard'}
+            </button>
+            <div className="font-display text-4xl sm:text-5xl font-bold leading-tight mb-3">{back}</div>
+            {settings.sentence&&w.sentence&&<div className="text-sm text-[var(--text-muted)] italic max-w-sm leading-relaxed" dangerouslySetInnerHTML={{__html:engHighlight(w.sentence,w.en)}}/>}
+            {settings.synonyms&&w.syn&&<div className="text-xs text-[var(--text-subtle)] mt-2">syn: {w.syn}</div>}
+            <div className="absolute bottom-3 text-[10px] text-[var(--text-subtle)]">оцените ниже · 1–4</div>
+          </div>
+        </div>
+      </div>
+      {sess.flipped?(
+        <div className="grid grid-cols-4 gap-2">
+          {[['again','Снова','1','border-red-300 text-red-500 hover:bg-red-500/5'],['hard','Сложно','2','border-amber-300 text-amber-500 hover:bg-amber-500/5'],['good','Хорошо','3','border-green-300 text-green-500 hover:bg-green-500/5'],['easy','Легко','4','bg-green-500 text-white border-green-500']].map(([t,l,k,cls])=>(
+            <button key={t} onClick={()=>doAnswer(t)} className={`py-3 rounded-xl text-sm font-semibold border transition-all flex flex-col items-center gap-0.5 ${cls}`}>
+              {l}<span className="text-[10px] opacity-60 font-normal">{k}</span>
+            </button>
+          ))}
+        </div>
+      ):(
+        <div className="flex gap-2 justify-between">
+          <button onClick={()=>setSess(s=>s&&s.cur>0?{...s,cur:s.cur-1,flipped:false}:s)} disabled={sess.cur===0} className="btn-secondary text-sm px-4">← Назад</button>
+          <div className="flex gap-2">
+            <button onClick={()=>setSess(s=>s?{...s,flipped:true}:s)} className="btn-primary text-sm px-4">Показать (Space)</button>
+            <button onClick={()=>setSess(s=>s?{...s,cur:s.cur+1}:s)} className="btn-secondary text-sm px-3">Пропустить →</button>
+            <button onClick={()=>setPhase('finish')} className="btn-secondary text-sm px-3 text-red-500">Завершить</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FillTab({rawData,ai}){
+  const [filter,setFilter]=useState('random');
+  const [count,setCount]=useState(0);
+  const [hideWords,setHideWords]=useState(false);
+  const [words,setWords]=useState([]);
+  const [sentences,setSentences]=useState([]);
+  const [genPhase,setGenPhase]=useState('idle'); // idle|loading|done
+  const [answers,setAnswers]=useState({});
+
+  const getPool=()=>{
+    if(!rawData) return [];
+    let pool=rawData.slice();
+    if(filter==='hard') pool=pool.filter(w=>w.hard);
+    if(filter==='oldest') pool.sort((a,b)=>(engParseDate(a.date)?.getTime()||0)-(engParseDate(b.date)?.getTime()||0));
+    else if(filter==='newest') pool.sort((a,b)=>(engParseDate(b.date)?.getTime()||0)-(engParseDate(a.date)?.getTime()||0));
+    else pool.sort(()=>Math.random()-.5);
+    return pool;
+  };
+
+  const generate=async()=>{
+    if(!rawData){alert('Загрузите данные');return;}
+    const pool=getPool();if(!pool.length){alert('Нет слов');return;}
+    const n=count>0?Math.min(count,pool.length):pool.length;
+    if(n>50&&!confirm(`Сгенерировать ${n} предложений?`)) return;
+    const batch=pool.slice(0,n);setWords(batch);setGenPhase('loading');setSentences([]);setAnswers({});
+    const prompt=`English teacher. For each word create ONE natural B2-C1 sentence. Return ONLY valid JSON array, no markdown.\nWords:\n${batch.map(w=>`- "${w.en}" (${w.ru})`).join('\n')}\nFormat: [{"word":"word1","sentence":"..."},...]`;
+    try{
+      const raw=await engCallAI(ai,prompt);
+      const match=raw.match(/\[[\s\S]*\]/);if(!match) throw new Error('Неверный формат');
+      const items=JSON.parse(match[0]);if(!Array.isArray(items)||!items.length) throw new Error('Пустой ответ');
+      const result=items.map((item,idx)=>{
+        const wo=batch.find(w=>w.en.toLowerCase()===(item.word||'').toLowerCase())||batch[idx]||batch[0];
+        const sentence=item.sentence||'';
+        const m=sentence.match(new RegExp('\\b('+engEscRe(wo.en.split(' ')[0])+'\\w*)','i'));
+        return{word:wo,sentence,exactForm:m?m[1]:wo.en};
+      });
+      setSentences(result);setGenPhase('done');
+    }catch(e){alert('Ошибка AI: '+e.message);setGenPhase('idle');}
+  };
+
+  const check=(i)=>{
+    const item=sentences[i];if(!item) return;
+    const val=(answers[i]?.val||'').trim().toLowerCase();
+    const target=(item.exactForm||item.word.en).toLowerCase();
+    const ok=engLev(val,target)<=1;
+    setAnswers(a=>({...a,[i]:{...a[i],checked:true,ok}}));
+  };
+  const reveal=(i)=>{
+    const item=sentences[i];if(!item) return;
+    setAnswers(a=>({...a,[i]:{val:item.exactForm||item.word.en,checked:true,ok:true,revealed:true}}));
+  };
+
+  const pool=rawData?getPool():[];const avail=count>0?Math.min(count,pool.length):pool.length;
+
+  return(
+    <div className="space-y-5 pb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div><label>Фильтр слов</label>
+          <div className="flex flex-col gap-1.5 mt-1">
+            {[['random','🔀 Случайный'],['oldest','📅 Старые сначала'],['newest','🆕 Новые сначала'],['hard','★ Только сложные']].map(([f,l])=>(
+              <button key={f} onClick={()=>setFilter(f)} className={`text-left px-3 py-2 rounded-lg text-sm border transition-all ${filter===f?'bg-[var(--text)] text-white border-[var(--text)]':'border-[var(--border)] text-[var(--text-muted)]'}`}>{l}</button>
+            ))}
+          </div>
+        </div>
+        <div className="space-y-4">
+          <div><label>Количество (0 = все)</label><input type="number" min="0" max="500" value={count||''} onChange={e=>setCount(parseInt(e.target.value)||0)} placeholder="0"/><p className="text-xs text-[var(--text-subtle)] mt-1">{avail} слов доступно</p></div>
+          <div className="flex items-center justify-between"><span className="text-sm">Скрыть список слов</span><Toggle checked={hideWords} onChange={setHideWords}/></div>
+          <button onClick={generate} disabled={genPhase==='loading'||!rawData} className="btn-primary w-full py-3">{genPhase==='loading'?'⏳ Генерирую...':'✨ Сгенерировать'}</button>
+        </div>
+      </div>
+      {words.length>0&&(
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4">
+          <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-3">Слова в сессии</div>
+          <div className="flex flex-wrap gap-2">
+            {words.map((w,i)=><span key={i} className={`px-2.5 py-1 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-sm ${hideWords?'blur-sm select-none':''}`}>{w.en}</span>)}
+          </div>
+        </div>
+      )}
+      {sentences.map((item,i)=>{
+        const ans=answers[i]||{};
+        const blank=item.sentence.replace(new RegExp('\\b'+engEscRe(item.word.en.split(' ')[0])+'\\w*','i'),'___');
+        return(
+          <div key={i} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-3">
+            <div className="text-xs text-[var(--text-subtle)]">№{i+1} · <span className="cursor-pointer blur-sm hover:blur-none transition-all select-none" onClick={e=>e.currentTarget.classList.remove('blur-sm')}>{item.word.en} — {item.word.ru}</span></div>
+            <div className="font-display text-lg italic">{ans.checked?item.sentence:blank}</div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input className={`w-44 ${ans.checked?(ans.ok?'border-green-400':'border-red-400'):''}`} value={ans.val||''} onChange={e=>setAnswers(a=>({...a,[i]:{...a[i],val:e.target.value}}))} onKeyDown={e=>e.key==='Enter'&&check(i)} placeholder="введите слово..." disabled={ans.checked}/>
+              {!ans.checked&&<><button onClick={()=>check(i)} className="btn-primary py-2 px-3 text-sm">Проверить</button><button onClick={()=>reveal(i)} className="btn-secondary py-2 px-3 text-sm">Подсказка</button></>}
+              {ans.checked&&<span className={`text-sm font-medium ${ans.ok?'text-green-500':'text-red-500'}`}>{ans.ok?'✓ Верно!':ans.revealed?`Слово: ${item.exactForm||item.word.en}`:`✗ Ответ: ${item.exactForm||item.word.en}`}</span>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function TypingTab({rawData,ai}){
+  const [filter,setFilter]=useState('random');
+  const [count,setCount]=useState(20);
+  const [aiMode,setAiMode]=useState('always');
+  const [phase,setPhase]=useState('setup');
+  const [queue,setQueue]=useState([]);
+  const [cur,setCur]=useState(0);
+  const [stats,setStats]=useState({correct:0,close:0,wrong:0});
+  const [answer,setAnswer]=useState('');
+  const [result,setResult]=useState(null);
+  const inputRef=useRef(null);
+  useEffect(()=>{if(phase==='study'&&inputRef.current)inputRef.current.focus();},[cur,phase]);
+  useEffect(()=>{
+    if(phase!=='study'||result) return;
+    const h=(e)=>{if(e.key==='Enter'&&answer.trim())check();};
+    window.addEventListener('keydown',h);return()=>window.removeEventListener('keydown',h);
+  },[phase,result,answer]);
+
+  const start=()=>{
+    if(!rawData){alert('Загрузите данные');return;}
+    let pool=rawData.slice();
+    if(filter==='hard') pool=pool.filter(w=>w.hard);
+    else if(filter==='oldest') pool.sort((a,b)=>(engParseDate(a.date)?.getTime()||0)-(engParseDate(b.date)?.getTime()||0));
+    else if(filter==='newest') pool.sort((a,b)=>(engParseDate(b.date)?.getTime()||0)-(engParseDate(a.date)?.getTime()||0));
+    else pool.sort(()=>Math.random()-.5);
+    const n=count>0?Math.min(count,pool.length):pool.length;
+    if(!n){alert('Нет слов');return;}
+    setQueue(pool.slice(0,n));setCur(0);setStats({correct:0,close:0,wrong:0});setAnswer('');setResult(null);setPhase('study');
+  };
+
+  const check=async()=>{
+    if(!answer.trim()) return;
+    const w=queue[cur];const dist=engLev(answer.trim().toLowerCase(),w.en.toLowerCase());
+    const type=dist===0?'correct':dist<=2?'close':'wrong';
+    setStats(s=>({...s,[type]:s[type]+1}));
+    const needAI=aiMode==='always'||(aiMode==='wrong'&&type!=='correct');
+    setResult({type,comment:null,loading:needAI});
+    if(needAI){
+      const prompt=`English teacher feedback. Student shown "${w.ru}", typed "${answer}", correct is "${w.en}".${w.sentence?`\nExample: "${w.sentence}"`:''}${w.syn?`\nSynonyms: ${w.syn}`:''}\nShort comment (2-3 sentences, English, friendly, no markdown).`;
+      try{const c=await engCallAI(ai,prompt);setResult(r=>r?{...r,comment:c,loading:false}:r);}
+      catch(e){setResult(r=>r?{...r,comment:'(AI недоступен)',loading:false}:r);}
+    }
+  };
+
+  const next=()=>{setAnswer('');setResult(null);if(cur+1>=queue.length){setPhase('finish');return;}setCur(c=>c+1);};
+
+  if(!rawData) return <div className="text-center py-20 text-[var(--text-subtle)]"><p>Загрузите данные из Google Sheets</p></div>;
+
+  if(phase==='setup') return(
+    <div className="max-w-lg mx-auto space-y-5 pb-8">
+      <div><label>Фильтр</label>
+        <div className="flex flex-col gap-1.5 mt-1">
+          {[['random','🔀 Случайный'],['oldest','📅 Старые сначала'],['newest','🆕 Новые сначала'],['hard','★ Только сложные']].map(([f,l])=>(
+            <button key={f} onClick={()=>setFilter(f)} className={`text-left px-3 py-2 rounded-lg text-sm border transition-all ${filter===f?'bg-[var(--text)] text-white border-[var(--text)]':'border-[var(--border)] text-[var(--text-muted)]'}`}>{l}</button>
+          ))}
+        </div>
+      </div>
+      <div><label>Количество слов (0 = все)</label><input type="number" min="0" max="500" value={count||''} onChange={e=>setCount(parseInt(e.target.value)||0)}/></div>
+      <div><label>AI комментарии</label>
+        <div className="flex gap-2 mt-1">
+          {[['always','Всегда'],['wrong','Только ошибки'],['never','Выкл']].map(([v,l])=>(
+            <button key={v} onClick={()=>setAiMode(v)} className={`flex-1 py-2.5 rounded-lg text-sm font-medium border transition-all ${aiMode===v?'bg-[var(--text)] text-white border-[var(--text)]':'border-[var(--border)] text-[var(--text-muted)]'}`}>{l}</button>
+          ))}
+        </div>
+      </div>
+      <button onClick={start} className="btn-primary w-full py-3.5">▶ Начать</button>
+    </div>
+  );
+
+  if(phase==='finish'){
+    const total=stats.correct+stats.close+stats.wrong;const pct=total?Math.round((stats.correct+stats.close)/total*100):0;
+    return(
+      <div className="text-center py-8 max-w-lg mx-auto pb-12">
+        <div className="font-display text-7xl font-bold mb-1">{pct}%</div>
+        <h2 className="font-display text-2xl mb-6">Typing mode завершён</h2>
+        <div className="flex justify-center gap-3 mb-8 flex-wrap">
+          {[['correct',stats.correct,'text-green-500'],['close',stats.close,'text-amber-500'],['errors',stats.wrong,'text-red-500']].map(([l,v,c])=>(
+            <div key={l} className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3"><div className={`font-display text-2xl font-bold ${c}`}>{v}</div><div className="text-xs text-[var(--text-subtle)] mt-1">{l}</div></div>
+          ))}
+        </div>
+        <button onClick={()=>setPhase('setup')} className="btn-primary px-8 py-3">↻ Повторить</button>
+      </div>
+    );
+  }
+
+  const w=queue[cur];const total=queue.length;const pct=Math.round(cur/total*100);
+  return(
+    <div className="max-w-2xl mx-auto space-y-4 pb-8">
+      <div className="h-1.5 bg-[var(--surface)] rounded-full overflow-hidden"><div className="h-full bg-[var(--text)] transition-all" style={{width:pct+'%'}}/></div>
+      <div className="flex gap-2 text-xs flex-wrap">
+        {[['карт',`${cur+1}/${total}`,''],['верно',stats.correct,'text-green-500'],['близко',stats.close,'text-amber-500'],['ошибок',stats.wrong,'text-red-500']].map(([l,v,c],i)=>(
+          <div key={i} className={`bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1 ${c}`}>{l} <b>{v}</b></div>
+        ))}
+      </div>
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-8 text-center">
+        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-4">RU → EN</div>
+        <div className="font-display text-4xl sm:text-5xl font-bold mb-3">{w.ru}</div>
+        {w.syn&&<div className="text-sm text-[var(--text-muted)]">syn: {w.syn}</div>}
+      </div>
+      {!result?(
+        <div className="flex gap-2">
+          <input ref={inputRef} value={answer} onChange={e=>setAnswer(e.target.value)} placeholder="введите по-английски..." className="flex-1 text-lg" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"/>
+          <button onClick={check} disabled={!answer.trim()} className="btn-primary px-5">Проверить</button>
+          <button onClick={next} className="btn-secondary px-4">→</button>
+        </div>
+      ):(
+        <div className="space-y-3">
+          <div className={`bg-[var(--surface)] border rounded-xl p-4 ${result.type==='correct'?'border-green-400':result.type==='close'?'border-amber-400':'border-red-400'}`}>
+            <div className={`font-semibold mb-2 ${result.type==='correct'?'text-green-500':result.type==='close'?'text-amber-500':'text-red-500'}`}>
+              {result.type==='correct'?'✓ Верно!':result.type==='close'?`~ Почти! Правильно: ${w.en}`:`✗ Ошибка. Правильно: ${w.en}`}
+            </div>
+            {result.loading&&<div className="text-sm text-[var(--text-muted)]">⏳ AI анализирует...</div>}
+            {result.comment&&<div className="text-sm text-[var(--text-muted)]">{result.comment}</div>}
+          </div>
+          <button onClick={next} className="btn-primary w-full py-3">Следующее слово →</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EnglishView(){
+  const [cfg,setCfg]=useState(()=>({apiKey:localStorage.getItem('eng_api_key')||'',clientId:localStorage.getItem('eng_client_id')||'',sheetId:localStorage.getItem('eng_sheet_id')||'13njpnDojuZKWO5xOXm7WBPcnTIhkm0-Wt60SdjqDUns',sheetName:localStorage.getItem('eng_sheet_name')||'words b3 anki'}));
+  const [ai,setAi]=useState(()=>({provider:localStorage.getItem('ai_provider')||'anthropic',anthropicKey:localStorage.getItem('ai_anthropic_key')||'',anthropicModel:localStorage.getItem('ai_anthropic_model')||'claude-sonnet-4-6',openaiKey:localStorage.getItem('ai_openai_key')||'',openaiModel:localStorage.getItem('ai_openai_model')||'gpt-4o-mini',ollamaUrl:localStorage.getItem('ai_ollama_url')||'http://localhost:11434',ollamaModel:localStorage.getItem('ai_ollama_model')||'llama3'}));
+  const [rawData,setRawData]=useState(()=>JSON.parse(localStorage.getItem('eng_raw_data')||'null'));
+  const [loading,setLoading]=useState(false);
+  const initStatus=()=>{const d=localStorage.getItem('eng_raw_data');return d?{type:'ok',text:`${JSON.parse(d).length} слов`}:{type:'',text:'Загрузите из Google Sheets'};};
+  const [status,setStatus]=useState(initStatus);
+  const [engTab,setEngTab]=useState('cards');
+  const [showCfg,setShowCfg]=useState(false);
+  const [showAI,setShowAI]=useState(false);
+
+  const saveCfg=(c)=>{setCfg(c);localStorage.setItem('eng_api_key',c.apiKey);localStorage.setItem('eng_client_id',c.clientId);localStorage.setItem('eng_sheet_id',c.sheetId);localStorage.setItem('eng_sheet_name',c.sheetName);};
+  const saveAI=(a)=>{setAi(a);localStorage.setItem('ai_provider',a.provider);localStorage.setItem('ai_anthropic_key',a.anthropicKey);localStorage.setItem('ai_anthropic_model',a.anthropicModel);localStorage.setItem('ai_openai_key',a.openaiKey);localStorage.setItem('ai_openai_model',a.openaiModel);localStorage.setItem('ai_ollama_url',a.ollamaUrl);localStorage.setItem('ai_ollama_model',a.ollamaModel);};
+
+  const loadSheets=async()=>{
+    if(!cfg.apiKey){setShowCfg(true);return;}
+    setLoading(true);setStatus({type:'loading',text:'Загрузка...'});
+    try{
+      const r=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent(cfg.sheetName)}?key=${cfg.apiKey}&dateTimeRenderOption=FORMATTED_STRING&valueRenderOption=UNFORMATTED_VALUE`);
+      if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'HTTP '+r.status);}
+      const data=await r.json();
+      if((data.values||[]).length<2) throw new Error('Нет данных в таблице');
+      const parsed=engParseRows(data.values);
+      localStorage.setItem('eng_raw_data',JSON.stringify(parsed));localStorage.setItem('eng_raw_at',new Date().toISOString());
+      setRawData(parsed);setStatus({type:'ok',text:`Загружено ${parsed.length} слов`});
+    }catch(e){setStatus({type:'err',text:'Ошибка: '+e.message});}
+    finally{setLoading(false);}
+  };
+
+  useEffect(()=>{if(!cfg.apiKey)setTimeout(()=>setShowCfg(true),400);},[]);
+
+  return(
+    <div className="pb-24 md:pb-8">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6">
+        <div className="pt-5 pb-4 border-b border-[var(--border)] flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <h1 className="font-display text-2xl">English Cards</h1>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              <div className={`w-2 h-2 rounded-full flex-shrink-0 ${status.type==='ok'?'bg-green-500':status.type==='err'?'bg-red-500':status.type==='loading'?'bg-amber-400 animate-pulse':'bg-[var(--border-strong)]'}`}/>
+              <span className={`text-xs ${status.type==='ok'?'text-green-500':status.type==='err'?'text-red-500':'text-[var(--text-subtle)]'}`}>{status.text}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={()=>setShowAI(true)} className="btn-secondary text-sm py-2 px-3">🤖 {ai.provider==='anthropic'?'Anthropic':ai.provider==='openai'?'OpenAI':'Ollama'}</button>
+            <button onClick={()=>setShowCfg(true)} className="btn-secondary text-sm py-2 px-3"><Icon name="settings" size={15}/></button>
+            <button onClick={loadSheets} disabled={loading} className="btn-primary text-sm py-2 px-4">{loading?'⏳':'↻'} Загрузить</button>
+          </div>
+        </div>
+        <div className="flex gap-2 py-3 border-b border-[var(--border)]">
+          {[['cards','🃏 Карточки'],['fill','✍ Вставить слово'],['typing','⌨ Печать']].map(([id,l])=>(
+            <button key={id} onClick={()=>setEngTab(id)} className={`px-3 py-2 rounded-xl text-sm font-medium transition-all ${engTab===id?'bg-[var(--text)] text-white':'text-[var(--text-muted)] hover:text-[var(--text)]'}`}>{l}</button>
+          ))}
+        </div>
+        <div className="pt-6">
+          {engTab==='cards'&&<FlashcardsTab rawData={rawData} cfg={cfg}/>}
+          {engTab==='fill'&&<FillTab rawData={rawData} ai={ai}/>}
+          {engTab==='typing'&&<TypingTab rawData={rawData} ai={ai}/>}
+        </div>
+      </div>
+      {showCfg&&<EngCfgModal cfg={cfg} onSave={(c)=>{saveCfg(c);setShowCfg(false);}} onClose={()=>setShowCfg(false)}/>}
+      {showAI&&<EngAIModal ai={ai} onSave={(a)=>{saveAI(a);setShowAI(false);}} onClose={()=>setShowAI(false)}/>}
     </div>
   );
 }
