@@ -18,7 +18,11 @@ import json
 import sys
 import time
 import argparse
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
+
+MSK = timezone(timedelta(hours=3))
+def now_msk() -> datetime: return datetime.now(timezone.utc).astimezone(MSK)
+def today_msk() -> date: return now_msk().date()
 from pathlib import Path
 
 try:
@@ -80,7 +84,7 @@ def is_due_today(chore: dict) -> bool:
     if not last_done:
         return True
     last_date = date.fromisoformat(last_done)
-    return last_date + timedelta(days=get_frequency_days(chore)) <= date.today()
+    return last_date + timedelta(days=get_frequency_days(chore)) <= today_msk()
 
 
 def api_post(token: str, method: str, payload: dict) -> dict | None:
@@ -139,7 +143,7 @@ def poll_updates(token: str, subs: dict) -> bool:
 def send_notifications(token: str, subs: dict, config: dict):
     if not subs["chat_ids"]:
         return
-    now_str = datetime.now().strftime("%H:%M")
+    now_str = now_msk().strftime("%H:%M")
 
     due_chores = [
         c for c in config.get("chores", [])
@@ -149,12 +153,12 @@ def send_notifications(token: str, subs: dict, config: dict):
     ]
     for chore in due_chores:
         text = f"🏠 <b>По дому — напоминание</b>\n\n{chore.get('name', 'Дело')}"
-        print(f"[{now_str}] Notifying {len(subs['chat_ids'])} subscriber(s): {chore['name']}")
+        print(f"[{now_str} MSK] Notifying {len(subs['chat_ids'])} subscriber(s): {chore['name']}")
         for chat_id in subs["chat_ids"]:
             send_message(token, chat_id, text)
 
     # Boss tasks: days stored as JS getDay() (0=Sun, 1=Mon .. 6=Sat)
-    today_js = date.today().isoweekday() % 7
+    today_js = today_msk().isoweekday() % 7
     due_boss = [
         t for t in config.get("bossTasks", [])
         if t.get("notify")
@@ -163,7 +167,7 @@ def send_notifications(token: str, subs: dict, config: dict):
     ]
     for task in due_boss:
         text = f"💼 <b>Босс — напоминание</b>\n\n{task.get('name', 'Задача')}"
-        print(f"[{now_str}] Notifying {len(subs['chat_ids'])} subscriber(s): {task['name']}")
+        print(f"[{now_str} MSK] Notifying {len(subs['chat_ids'])} subscriber(s): {task['name']}")
         for chat_id in subs["chat_ids"]:
             send_message(token, chat_id, text)
 

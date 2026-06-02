@@ -21,17 +21,18 @@ import json
 import os
 import time
 import threading
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-# Set timezone from env var (TZ) or default to Europe/Moscow
-_tz = os.environ.get("TZ", "Europe/Moscow")
-os.environ["TZ"] = _tz
-try:
-    time.tzset()
-except AttributeError:
-    pass  # Windows doesn't have tzset
+# Moscow time is UTC+3, no DST (since 2014) — reliable without tzdata
+MSK = timezone(timedelta(hours=3))
+
+def now_msk() -> datetime:
+    return datetime.now(timezone.utc).astimezone(MSK)
+
+def today_msk() -> date:
+    return now_msk().date()
 
 try:
     import requests
@@ -109,7 +110,7 @@ def is_due_today(chore: dict) -> bool:
     last = chore.get("lastDone")
     if not last:
         return True
-    return date.fromisoformat(last) + timedelta(days=freq_days(chore)) <= date.today()
+    return date.fromisoformat(last) + timedelta(days=freq_days(chore)) <= today_msk()
 
 
 # ── telegram ───────────────────────────────────────────────────────────────
@@ -200,7 +201,7 @@ def _tick():
         except Exception:
             pass
 
-    now_str = datetime.now().strftime("%H:%M")
+    now_str = now_msk().strftime("%H:%M")
     for chore in chores:
         if not chore.get("notify"):
             continue
@@ -209,12 +210,12 @@ def _tick():
         if not is_due_today(chore):
             continue
         text = f"🏠 <b>По дому — напоминание</b>\n\n{chore.get('name', 'Дело')}"
-        print(f"[{now_str}] → {chore['name']} ({len(subs['chat_ids'])} subscriber(s))")
+        print(f"[{now_str} MSK] → {chore['name']} ({len(subs['chat_ids'])} subscriber(s))")
         for cid in subs["chat_ids"]:
             send_message(token, cid, text)
 
     # Boss tasks: days stored as JS getDay() (0=Sun,1=Mon..6=Sat)
-    today_js = date.today().isoweekday() % 7
+    today_js = today_msk().isoweekday() % 7
     boss_tasks = []
     if APP_DATA_FILE.exists():
         try:
@@ -230,7 +231,7 @@ def _tick():
         if today_js not in (task.get("days") or []):
             continue
         text = f"💼 <b>Босс — напоминание</b>\n\n{task.get('name', 'Задача')}"
-        print(f"[{now_str}] → boss: {task['name']} ({len(subs['chat_ids'])} subscriber(s))")
+        print(f"[{now_str} MSK] → boss: {task['name']} ({len(subs['chat_ids'])} subscriber(s))")
         for cid in subs["chat_ids"]:
             send_message(token, cid, text)
 
@@ -289,11 +290,11 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                     chores = cfg.get("chores", [])
                 except Exception:
                     pass
-            now = datetime.now()
+            now = now_msk()
             self._json(200, {
                 "server_time": now.strftime("%H:%M:%S"),
                 "server_date": now.strftime("%Y-%m-%d"),
-                "timezone": os.environ.get("TZ", "not set"),
+                "timezone": "Europe/Moscow (UTC+3, hardcoded)",
                 "token_present": bool(token),
                 "token_prefix": token[:10] + "..." if token else "",
                 "subscribers": len(subs["chat_ids"]),
