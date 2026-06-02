@@ -267,6 +267,15 @@ class JarvisHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self._serve_html()
+        elif self.path in ("/english", "/english.html"):
+            p = Path(__file__).parent / "english.html"
+            content = p.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self._cors()
+            self.end_headers()
+            self.wfile.write(content)
         elif self.path == "/api/subscribers":
             subs = load_subscribers()
             self._json(200, {"count": len(subs["chat_ids"])})

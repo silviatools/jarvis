@@ -302,6 +302,7 @@ const Icon = ({ name, size = 22 }) => {
     user: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
     micOff: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="2" y1="2" x2="22" y2="22"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 4.93"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><line x1="12" y1="19" x2="12" y2="22"/></svg>,
     wrench: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>,
+    book: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>,
   };
   return icons[name] || null;
 };
@@ -553,6 +554,7 @@ function App() {
             setSettingsTab={setSettingsTab}
           />
         )}
+        {tab === 'english' && <EnglishView />}
       </main>
       <BottomNav tab={tab} setTab={setTab} />
       <VoiceButton data={data} setData={setData} settings={data.settings} />
@@ -575,6 +577,7 @@ function Header({ tab, setTab }) {
   const moreItems = [
     { id: 'body',     icon: 'user',     label: 'Моё тело'  },
     { id: 'cars',     icon: 'car',      label: 'Автомобили' },
+    { id: 'english',  icon: 'book',     label: 'English'   },
     { id: 'settings', icon: 'settings', label: 'Настройки' },
   ];
 
@@ -658,6 +661,7 @@ function BottomNav({ tab, setTab }) {
   const moreItems = [
     { id: 'body',     icon: 'user',     label: 'Моё тело'  },
     { id: 'cars',     icon: 'car',      label: 'Автомобили' },
+    { id: 'english',  icon: 'book',     label: 'English'   },
     { id: 'settings', icon: 'settings', label: 'Настройки' },
   ];
 
@@ -3412,6 +3416,20 @@ function BossTaskModal({ task, onSave, onClose }) {
         </div>
       </div>
     </Modal>
+  );
+}
+
+// ============== ENGLISH VIEW ==============
+function EnglishView() {
+  return (
+    <div className="-mx-4 sm:-mx-6 -mt-6 md:-mt-8" style={{ height: 'calc(100dvh - 64px)' }}>
+      <iframe
+        src="/english"
+        title="English Cards"
+        style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
+        allow="microphone"
+      />
+    </div>
   );
 }
 
