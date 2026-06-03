@@ -2973,8 +2973,11 @@ function KanbanView({ data, setData }) {
 
   return (
     <div>
-      <div className="flex justify-center mb-6">
-        <div className="flex items-center justify-between gap-8 mx-auto" style={{ width: 'fit-content', minWidth: '100%' }}>
+    <div className="overflow-x-auto pb-4">
+      <div className="mx-auto" style={{ width: 'fit-content' }}>
+
+        {/* Header */}
+        <div className="flex items-center justify-between gap-8 mb-6">
           <h2 className="font-display text-2xl">Задачи</h2>
           <div className="flex items-center gap-2">
             <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
@@ -2985,12 +2988,11 @@ function KanbanView({ data, setData }) {
                 </button>
               ))}
             </div>
-            <button onClick={() => setEditingCol('new')} className="btn-primary flex items-center gap-2 text-sm">
-              <Icon name="plus" size={16}/> Колонка
+            <button onClick={() => setEditingCol('new')} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--text)] text-white transition-all hover:opacity-80">
+              <Icon name="plus" size={13}/> Колонка
             </button>
           </div>
         </div>
-      </div>
 
       {columns.length === 0 ? (
         <div className="text-center py-16 text-[var(--text-subtle)]">
@@ -2998,8 +3000,7 @@ function KanbanView({ data, setData }) {
           <button onClick={() => setEditingCol('new')} className="btn-primary">+ Добавить колонку</button>
         </div>
       ) : (
-        <div className="overflow-x-auto pb-4">
-          <div className="flex gap-4 mx-auto" style={{ width: 'fit-content' }}>
+        <div className="flex gap-4">
             {columns.map((col, colIdx) => (
               <div key={col.id}
                 className={`w-72 flex-shrink-0 flex flex-col bg-[var(--surface)] border rounded-2xl overflow-hidden transition-all ${dragOverCol === col.id ? 'border-[var(--text)] ring-2 ring-[var(--text)]/10' : 'border-[var(--border)]'}`}
@@ -3059,8 +3060,10 @@ function KanbanView({ data, setData }) {
               </div>
             ))}
           </div>
-        </div>
       )}
+
+      </div>
+    </div>
 
       {editingTask && (
         <KanbanTaskModal
