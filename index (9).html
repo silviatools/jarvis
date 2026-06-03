@@ -2876,11 +2876,13 @@ function KanbanView({ data, setData }) {
     if (sort === 'priority') {
       arr.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 3) - (PRIORITY_ORDER[b.priority] ?? 3));
     } else if (sort === 'date') {
+      const sortKey = t => t.startDate || t.dueDate || null;
       arr.sort((a, b) => {
-        if (!a.dueDate && !b.dueDate) return 0;
-        if (!a.dueDate) return 1;
-        if (!b.dueDate) return -1;
-        return new Date(a.dueDate) - new Date(b.dueDate);
+        const da = sortKey(a), db = sortKey(b);
+        if (!da && !db) return 0;
+        if (!da) return 1;
+        if (!db) return -1;
+        return new Date(da) - new Date(db);
       });
     } else {
       arr.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
