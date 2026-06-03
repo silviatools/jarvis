@@ -296,6 +296,7 @@ const Icon = ({ name, size = 22 }) => {
     home: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
     layout: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18M9 21V9"/></svg>,
     bell: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>,
+    messageCircle: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>,
     download: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
     mic: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>,
     moreHorizontal: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>,
@@ -2824,7 +2825,7 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
         </div>
 
         <div className="flex gap-2 pt-2">
-          {!isNew && <button onClick={onDelete} className="btn-secondary px-3 text-red-500"><Icon name="trash" size={16}/></button>}
+          {!isNew && <button onClick={() => onDelete(f.id)} className="btn-secondary px-3 text-red-500"><Icon name="trash" size={16}/></button>}
           <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
           <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
         </div>
@@ -2848,6 +2849,13 @@ function KanbanColumnModal({ column, onSave, onClose }) {
   );
 }
 
+const KANBAN_SORT_OPTIONS = [
+  { id: 'default',  label: 'По умолчанию' },
+  { id: 'priority', label: 'По приоритету' },
+  { id: 'date',     label: 'По дате' },
+];
+const PRIORITY_ORDER = { high: 0, medium: 1, low: 2, none: 3 };
+
 function KanbanView({ data, setData }) {
   const columns = data.kanban?.columns || DEFAULT_KANBAN_COLUMNS;
   const setColumns = (cols) => setData(d => ({ ...d, kanban: { ...d.kanban, columns: cols } }));
@@ -2855,6 +2863,27 @@ function KanbanView({ data, setData }) {
   const [editingTask, setEditingTask] = useState(null); // { task, colId }
   const [editingCol, setEditingCol] = useState(null);   // column object or 'new'
   const [addingColIdx, setAddingColIdx] = useState(null);
+  const [dragging, setDragging] = useState(null);       // { taskId, fromColId }
+  const [dragOverCol, setDragOverCol] = useState(null);
+  const sort = data.kanban?.sort || 'default';
+  const setSort = (val) => setData(d => ({ ...d, kanban: { ...d.kanban, sort: val } }));
+
+  const sortTasks = (tasks) => {
+    const arr = [...tasks];
+    if (sort === 'priority') {
+      arr.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 3) - (PRIORITY_ORDER[b.priority] ?? 3));
+    } else if (sort === 'date') {
+      arr.sort((a, b) => {
+        if (!a.dueDate && !b.dueDate) return 0;
+        if (!a.dueDate) return 1;
+        if (!b.dueDate) return -1;
+        return new Date(a.dueDate) - new Date(b.dueDate);
+      });
+    } else {
+      arr.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    }
+    return arr;
+  };
 
   // ── columns ──
   const addColumn = (title) => {
@@ -2890,7 +2919,7 @@ function KanbanView({ data, setData }) {
     if (!targetCol) return;
     const exists = targetCol.tasks.find(t => t.id === task.id);
     if (exists) targetCol.tasks = targetCol.tasks.map(t => t.id === task.id ? task : t);
-    else targetCol.tasks.push(task);
+    else targetCol.tasks.unshift(task);
     setColumns(cols);
     setEditingTask(null);
   };
@@ -2914,6 +2943,22 @@ function KanbanView({ data, setData }) {
     }));
   };
 
+  const handleDragStart = (taskId, fromColId) => setDragging({ taskId, fromColId });
+  const handleDragEnd = () => { setDragging(null); setDragOverCol(null); };
+  const handleDrop = (toColId) => {
+    if (!dragging) return;
+    const { taskId, fromColId } = dragging;
+    if (fromColId === toColId) { handleDragEnd(); return; }
+    const task = columns.find(c => c.id === fromColId)?.tasks.find(t => t.id === taskId);
+    if (!task) { handleDragEnd(); return; }
+    setColumns(columns.map(c => {
+      if (c.id === fromColId) return { ...c, tasks: c.tasks.filter(t => t.id !== taskId) };
+      if (c.id === toColId)   return { ...c, tasks: [task, ...c.tasks] };
+      return c;
+    }));
+    handleDragEnd();
+  };
+
   const priInfo = (id) => KANBAN_PRIORITIES.find(p => p.id === id) || KANBAN_PRIORITIES[0];
   const formatDue = (d) => {
     if (!d) return null;
@@ -2928,11 +2973,23 @@ function KanbanView({ data, setData }) {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="font-display text-2xl">Задачи</h2>
-        <button onClick={() => setEditingCol('new')} className="btn-primary flex items-center gap-2 text-sm">
-          <Icon name="plus" size={16}/> Колонка
-        </button>
+      <div className="flex justify-center mb-6">
+        <div className="flex items-center justify-between gap-8 mx-auto" style={{ width: 'fit-content', minWidth: '100%' }}>
+          <h2 className="font-display text-2xl">Задачи</h2>
+          <div className="flex items-center gap-2">
+            <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
+              {KANBAN_SORT_OPTIONS.map(opt => (
+                <button key={opt.id} onClick={() => setSort(opt.id)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${sort === opt.id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text)]'}`}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setEditingCol('new')} className="btn-primary flex items-center gap-2 text-sm">
+              <Icon name="plus" size={16}/> Колонка
+            </button>
+          </div>
+        </div>
       </div>
 
       {columns.length === 0 ? (
@@ -2941,10 +2998,14 @@ function KanbanView({ data, setData }) {
           <button onClick={() => setEditingCol('new')} className="btn-primary">+ Добавить колонку</button>
         </div>
       ) : (
-        <div className="overflow-x-auto -mx-4 sm:-mx-6 px-4 sm:px-6 pb-4">
-          <div className="flex gap-4" style={{ minWidth: `${columns.length * 288}px` }}>
+        <div className="overflow-x-auto pb-4">
+          <div className="flex gap-4 mx-auto" style={{ width: 'fit-content' }}>
             {columns.map((col, colIdx) => (
-              <div key={col.id} className="w-72 flex-shrink-0 flex flex-col bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+              <div key={col.id}
+                className={`w-72 flex-shrink-0 flex flex-col bg-[var(--surface)] border rounded-2xl overflow-hidden transition-all ${dragOverCol === col.id ? 'border-[var(--text)] ring-2 ring-[var(--text)]/10' : 'border-[var(--border)]'}`}
+                onDragOver={e => { e.preventDefault(); setDragOverCol(col.id); }}
+                onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOverCol(null); }}
+                onDrop={() => handleDrop(col.id)}>
                 {/* Column header */}
                 <div className="flex items-center gap-2 px-4 pt-4 pb-3 border-b border-[var(--border)]">
                   <div className="flex-1 font-medium text-sm truncate">{col.title}</div>
@@ -2959,14 +3020,26 @@ function KanbanView({ data, setData }) {
                   <button onClick={() => deleteColumn(col.id)} className="p-1 rounded-lg hover:bg-black/5 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14}/></button>
                 </div>
 
+                {/* Add task */}
+                <div className="p-3 border-b border-[var(--border)]">
+                  <button onClick={() => setEditingTask({ task: newTask(), colId: col.id })}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg)] transition-all border border-dashed border-[var(--border)] hover:border-[var(--border-strong)]">
+                    <Icon name="plus" size={15}/> Добавить задачу
+                  </button>
+                </div>
+
                 {/* Tasks */}
                 <div className="flex-1 p-3 space-y-2 overflow-y-auto" style={{ maxHeight: '60vh' }}>
-                  {col.tasks.map(task => {
+                  {sortTasks(col.tasks).map(task => {
                     const p = priInfo(task.priority);
                     const due = formatDue(task.dueDate);
                     return (
-                      <div key={task.id} onClick={() => setEditingTask({ task, colId: col.id })}
-                        className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 cursor-pointer hover:border-[var(--border-strong)] transition-all group">
+                      <div key={task.id}
+                        draggable
+                        onDragStart={() => handleDragStart(task.id, col.id)}
+                        onDragEnd={handleDragEnd}
+                        onClick={() => setEditingTask({ task, colId: col.id })}
+                        className={`bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 cursor-grab active:cursor-grabbing hover:border-[var(--border-strong)] transition-all group select-none ${dragging?.taskId === task.id ? 'opacity-40' : ''}`}>
                         {task.priority !== 'none' && (
                           <div className={`text-[10px] font-semibold uppercase tracking-wide mb-1.5 ${p.color}`}>{p.label}</div>
                         )}
@@ -2975,21 +3048,13 @@ function KanbanView({ data, setData }) {
                           {due && <span className={`text-[10px] ${due.cls}`}>{due.label}</span>}
                           {task.comments?.length > 0 && (
                             <span className="text-[10px] text-[var(--text-subtle)] flex items-center gap-0.5">
-                              <Icon name="bell" size={10}/> {task.comments.length}
+                              <Icon name="messageCircle" size={10}/> {task.comments.length}
                             </span>
                           )}
                         </div>
                       </div>
                     );
                   })}
-                </div>
-
-                {/* Add task */}
-                <div className="p-3 border-t border-[var(--border)]">
-                  <button onClick={() => setEditingTask({ task: newTask(), colId: col.id })}
-                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg)] transition-all border border-dashed border-[var(--border)] hover:border-[var(--border-strong)]">
-                    <Icon name="plus" size={15}/> Добавить задачу
-                  </button>
                 </div>
               </div>
             ))}
