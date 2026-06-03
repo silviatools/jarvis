@@ -2749,7 +2749,7 @@ const DEFAULT_KANBAN_COLUMNS = [
 ];
 
 function newTask(overrides = {}) {
-  return { id: crypto.randomUUID(), title: '', dueDate: '', priority: 'none', description: '', comments: [], createdAt: new Date().toISOString(), ...overrides };
+  return { id: crypto.randomUUID(), title: '', startDate: '', dueDate: '', priority: 'none', description: '', comments: [], createdAt: new Date().toISOString(), ...overrides };
 }
 function newComment(text) {
   return { id: crypto.randomUUID(), text, createdAt: new Date().toISOString() };
@@ -2781,7 +2781,10 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
       <div className="space-y-4">
         <div><label>Заголовок</label><input value={f.title} onChange={e => set('title', e.target.value)} placeholder="Что нужно сделать?" autoFocus /></div>
 
-        <div><label>Дата выполнения</label><input type="date" value={f.dueDate || ''} onChange={e => set('dueDate', e.target.value)} /></div>
+        <div className="flex gap-3">
+          <div className="flex-1"><label>Дата начала</label><input type="date" value={f.startDate || ''} onChange={e => set('startDate', e.target.value)} /></div>
+          <div className="flex-1"><label>Дедлайн</label><input type="date" value={f.dueDate || ''} onChange={e => set('dueDate', e.target.value)} /></div>
+        </div>
 
         <div>
           <label>Приоритет</label>
@@ -2960,6 +2963,7 @@ function KanbanView({ data, setData }) {
   };
 
   const priInfo = (id) => KANBAN_PRIORITIES.find(p => p.id === id) || KANBAN_PRIORITIES[0];
+  const formatDate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }) : null;
   const formatDue = (d) => {
     if (!d) return null;
     const dt = new Date(d + 'T00:00:00');
@@ -3046,7 +3050,11 @@ function KanbanView({ data, setData }) {
                         )}
                         <div className="text-sm font-medium leading-snug mb-2">{task.title}</div>
                         <div className="flex items-center gap-2 flex-wrap">
-                          {due && <span className={`text-[10px] ${due.cls}`}>{due.label}</span>}
+                          {task.startDate && due ? (
+                            <span className="text-[10px] text-[var(--text-subtle)]">{formatDate(task.startDate)} <span className="opacity-50">→</span> <span className={due.cls}>{due.label}</span></span>
+                          ) : due ? (
+                            <span className={`text-[10px] ${due.cls}`}>{due.label}</span>
+                          ) : null}
                           {task.comments?.length > 0 && (
                             <span className="text-[10px] text-[var(--text-subtle)] flex items-center gap-0.5">
                               <Icon name="messageCircle" size={10}/> {task.comments.length}
