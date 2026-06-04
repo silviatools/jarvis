@@ -2905,12 +2905,13 @@ function KanbanView({ data, setData }) {
   const setSort = (val) => setData(d => ({ ...d, kanban: { ...d.kanban, sort: val } }));
 
   const sortTasks = (tasks) => {
-    const arr = [...tasks];
+    const open = tasks.filter(t => !t.closed);
+    const closed = tasks.filter(t => t.closed);
     if (sort === 'priority') {
-      arr.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 3) - (PRIORITY_ORDER[b.priority] ?? 3));
+      open.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 3) - (PRIORITY_ORDER[b.priority] ?? 3));
     } else if (sort === 'date') {
       const sortKey = t => t.startDate || t.dueDate || null;
-      arr.sort((a, b) => {
+      open.sort((a, b) => {
         const da = sortKey(a), db = sortKey(b);
         if (!da && !db) return 0;
         if (!da) return 1;
@@ -2918,9 +2919,9 @@ function KanbanView({ data, setData }) {
         return new Date(da) - new Date(db);
       });
     } else {
-      arr.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      open.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     }
-    return arr;
+    return [...open, ...closed];
   };
 
   // ── columns ──
@@ -2979,6 +2980,14 @@ function KanbanView({ data, setData }) {
       if (i === toIdx) return { ...c, tasks: [...c.tasks, task] };
       return c;
     }));
+  };
+
+  const toggleClose = (taskId, colId, e) => {
+    e.stopPropagation();
+    setColumns(columns.map(c => c.id === colId
+      ? { ...c, tasks: c.tasks.map(t => t.id === taskId ? { ...t, closed: !t.closed } : t) }
+      : c
+    ));
   };
 
   const handleDragStart = (taskId, fromColId) => setDragging({ taskId, fromColId });
@@ -3079,11 +3088,19 @@ function KanbanView({ data, setData }) {
                         onDragStart={() => handleDragStart(task.id, col.id)}
                         onDragEnd={handleDragEnd}
                         onClick={() => setEditingTask({ task, colId: col.id })}
-                        className={`bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 cursor-grab active:cursor-grabbing hover:border-[var(--border-strong)] transition-all group select-none ${dragging?.taskId === task.id ? 'opacity-40' : ''}`}>
+                        className={`bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 cursor-grab active:cursor-grabbing hover:border-[var(--border-strong)] transition-all group select-none ${dragging?.taskId === task.id ? 'opacity-40' : ''} ${task.closed ? 'opacity-50' : ''}`}>
                         {task.priority !== 'none' && (
                           <div className={`text-[10px] font-semibold uppercase tracking-wide mb-1.5 ${p.color}`}>{p.label}</div>
                         )}
-                        <div className="text-sm font-medium leading-snug mb-2">{task.title}</div>
+                        <div className="flex items-start gap-2 mb-2">
+                          <button
+                            onClick={(e) => toggleClose(task.id, col.id, e)}
+                            title={task.closed ? 'Открыть задачу' : 'Закрыть задачу'}
+                            className={`flex-shrink-0 mt-0.5 w-4 h-4 rounded border flex items-center justify-center transition-all ${task.closed ? 'bg-[var(--text)] border-[var(--text)]' : 'border-[var(--border-strong)] hover:border-[var(--text)]'}`}>
+                            {task.closed && <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg>}
+                          </button>
+                          <div className={`text-sm font-medium leading-snug flex-1 ${task.closed ? 'line-through text-[var(--text-subtle)]' : ''}`}>{task.title}</div>
+                        </div>
                         <div className="flex items-center gap-2 flex-wrap">
                           {task.startDate && due ? (
                             <span className="text-[10px] text-[var(--text-subtle)]">{formatDate(task.startDate)} <span className="opacity-50">→</span> <span className={due.cls}>{due.label}</span></span>
