@@ -6122,8 +6122,19 @@ function getDaysUntilHoliday(dateStr) {
   return Math.round((target - today) / 86400000);
 }
 
+const getAgeOnNextOccurrence = (dateStr, birthYear) => {
+  if (!birthYear || !dateStr) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const [mm, dd] = dateStr.split('-').map(Number);
+  let nextYear = today.getFullYear();
+  if (new Date(nextYear, mm - 1, dd) < today) nextYear++;
+  return nextYear - parseInt(birthYear);
+};
+
 function HolidaysView({ data, setData }) {
   const [editing, setEditing] = useState(null);
+  const [filter, setFilter] = useState('all');
+  const [sortBy, setSortBy] = useState('days');
 
   const holidays = (data.holidays || []).filter(h => !h.archived);
 
@@ -6149,6 +6160,7 @@ function HolidaysView({ data, setData }) {
   const newHoliday = () => setEditing({
     id: crypto.randomUUID(),
     name: '', type: 'birthday', date: '', description: '',
+    birthYear: '',
     notify: true,
     reminders: [
       { id: crypto.randomUUID(), daysBefore: 7, time: '09:00' },
@@ -6159,7 +6171,20 @@ function HolidaysView({ data, setData }) {
 
   const EMOJI = { birthday: '🎂', anniversary: '💑', other: '🎉' };
 
-  const sorted = [...holidays].sort((a, b) => getDaysUntilHoliday(a.date) - getDaysUntilHoliday(b.date));
+  const FILTERS = [
+    { id: 'all',         label: 'Все' },
+    { id: 'birthday',    label: '🎂 ДР' },
+    { id: 'anniversary', label: '💑 Юбилеи' },
+    { id: 'other',       label: '🎉 Другие' },
+  ];
+
+  const filtered = filter === 'all' ? holidays : holidays.filter(h => h.type === filter);
+
+  const sorted = [...filtered].sort((a, b) =>
+    sortBy === 'name'
+      ? a.name.localeCompare(b.name, 'ru')
+      : getDaysUntilHoliday(a.date) - getDaysUntilHoliday(b.date)
+  );
 
   return (
     <div className="fade-in">
@@ -6168,23 +6193,58 @@ function HolidaysView({ data, setData }) {
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">События</div>
       </div>
 
-      <button onClick={newHoliday} className="btn-primary w-full flex items-center justify-center gap-2 mb-6">
+      <button onClick={newHoliday} className="btn-primary w-full flex items-center justify-center gap-2 mb-4">
         <Icon name="plus" size={18} />
         Добавить событие
       </button>
 
-      {holidays.length === 0 ? (
-        <EmptyState title="Нет событий" text="Добавьте дни рождения, юбилеи и другие праздники" />
+      {holidays.length > 0 && (
+        <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+          <div className="flex gap-1.5 flex-wrap">
+            {FILTERS.map(f => (
+              <button
+                key={f.id}
+                onClick={() => setFilter(f.id)}
+                className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${
+                  filter === f.id
+                    ? 'bg-[var(--text)] text-white'
+                    : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'
+                }`}
+              >{f.label}</button>
+            ))}
+          </div>
+          <select
+            value={sortBy}
+            onChange={e => setSortBy(e.target.value)}
+            style={{ width: 'auto' }}
+            className="text-sm py-1.5 px-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)]"
+          >
+            <option value="days">По дате</option>
+            <option value="name">По имени</option>
+          </select>
+        </div>
+      )}
+
+      {sorted.length === 0 ? (
+        <EmptyState title="Нет событий" text={filter === 'all' ? 'Добавьте дни рождения, юбилеи и другие праздники' : 'Нет событий этого типа'} />
       ) : (
         <div className="space-y-3">
           {sorted.map(h => {
             const days = getDaysUntilHoliday(h.date);
             const daysText = days === 0 ? 'Сегодня!' : `через ${days} ${days === 1 ? 'день' : days < 5 ? 'дня' : 'дней'}`;
+            const age = h.type === 'birthday' ? getAgeOnNextOccurrence(h.date, h.birthYear) : null;
             return (
               <div key={h.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 flex items-start gap-3">
                 <div className="text-2xl flex-shrink-0 mt-0.5">{EMOJI[h.type] || '🎉'}</div>
                 <div className="flex-1 min-w-0">
-                  <div className="font-medium mb-0.5">{h.name}</div>
+                  <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                    <span className="font-medium">{h.name}</span>
+                    {age !== null && (
+                      <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-purple-50 text-purple-600">
+                        {age} лет
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm text-[var(--text-muted)]">{formatHolidayDate(h.date)}</span>
                     <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
@@ -6278,6 +6338,21 @@ function HolidayForm({ initial, onSave, onClose }) {
             onChange={e => set('date', e.target.value ? e.target.value.slice(5) : '')}
           />
         </div>
+
+        {form.type === 'birthday' && (
+          <div>
+            <label>Год рождения (необязательно — для отображения возраста)</label>
+            <input
+              type="number"
+              inputMode="numeric"
+              min="1900"
+              max={new Date().getFullYear()}
+              value={form.birthYear || ''}
+              onChange={e => set('birthYear', e.target.value)}
+              placeholder={`например, ${new Date().getFullYear() - 30}`}
+            />
+          </div>
+        )}
 
         <div>
           <label>Описание (необязательно)</label>
