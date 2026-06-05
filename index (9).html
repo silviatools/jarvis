@@ -304,6 +304,8 @@ const Icon = ({ name, size = 22 }) => {
     micOff: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="2" y1="2" x2="22" y2="22"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 4.93"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><line x1="12" y1="19" x2="12" y2="22"/></svg>,
     wrench: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>,
     book: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>,
+    star: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>,
+    starFilled: <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>,
   };
   return icons[name] || null;
 };
@@ -785,9 +787,9 @@ function SupplementsView({ data, setData }) {
 
   return (
     <div className="fade-in">
-      <div className="mb-8">
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Сегодня</div>
-        <h1 className="font-display text-3xl md:text-4xl">БАДДы</h1>
+      <div className="mb-6 flex items-baseline justify-between gap-4">
+        <div className="font-display text-2xl">БАДДы</div>
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Сегодня</div>
       </div>
 
       {/* Переключатель Утро/Вечер + Тренировки (отдельно) */}
@@ -897,9 +899,9 @@ function SupplementCard({ supp, taken, onToggle }) {
 function MealsView({ data, setData, mealTab, setMealTab }) {
   return (
     <div className="fade-in">
-      <div className="mb-8">
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Рационы</div>
-        <h1 className="font-display text-3xl md:text-4xl">Питание</h1>
+      <div className="mb-6 flex items-baseline justify-between gap-4">
+        <div className="font-display text-2xl">Питание</div>
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Рационы</div>
       </div>
 
       <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8">
@@ -916,22 +918,43 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
         ))}
       </div>
 
-      {mealTab === 'plan' && <MealPlanView data={data} />}
+      {mealTab === 'plan' && <MealPlanView data={data} setData={setData} />}
       {mealTab === 'counter' && <RationCounter data={data} setData={setData} />}
     </div>
   );
 }
 
-function MealPlanView({ data }) {
+function MealPlanView({ data, setData }) {
   const [expanded, setExpanded] = useState(null);
   const meals = (data.meals || []).filter(m => !m.archived);
+  const starredIds = data.starredMealIds || [];
 
-  if (meals.length === 0) return <EmptyState title="Нет рационов" text="Создайте рацион в настройках" />;
+  const toggleStar = (e, mealId) => {
+    e.stopPropagation();
+    setData(d => {
+      const ids = d.starredMealIds || [];
+      return {
+        ...d,
+        starredMealIds: ids.includes(mealId) ? ids.filter(id => id !== mealId) : [mealId, ...ids],
+      };
+    });
+  };
+
+  const sorted = [...meals].sort((a, b) => {
+    const aStarred = starredIds.includes(a.id);
+    const bStarred = starredIds.includes(b.id);
+    if (aStarred && !bStarred) return -1;
+    if (!aStarred && bStarred) return 1;
+    return 0;
+  });
+
+  if (sorted.length === 0) return <EmptyState title="Нет рационов" text="Создайте рацион в настройках" />;
 
   return (
     <div className="space-y-3">
-      {meals.map(meal => {
+      {sorted.map(meal => {
         const isOpen = expanded === meal.id;
+        const isStarred = starredIds.includes(meal.id);
         const summary = [
           meal.breakfast && `Завтрак: ${meal.breakfast.split('\n')[0]}`,
           meal.snack && `Перекус: ${meal.snack.split('\n')[0]}`,
@@ -942,21 +965,32 @@ function MealPlanView({ data }) {
         return (
           <div
             key={meal.id}
-            className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden transition-all"
+            className={`bg-[var(--surface)] border rounded-2xl overflow-hidden transition-all ${isStarred ? 'border-amber-400' : 'border-[var(--border)]'}`}
           >
             <button
               onClick={() => setExpanded(isOpen ? null : meal.id)}
               className="w-full p-5 text-left flex items-start gap-4"
             >
               <div className="flex-1 min-w-0">
-                <h3 className="font-display text-xl mb-2">{meal.name}</h3>
+                <div className="flex items-center gap-2 mb-2">
+                  <h3 className="font-display text-xl">{meal.name}</h3>
+                  {isStarred && <span className="text-xs font-medium text-amber-500 bg-amber-50 px-2 py-0.5 rounded-full shrink-0">Сегодня</span>}
+                </div>
                 <NutritionRow meal={meal} compact />
                 {!isOpen && summary && (
                   <div className="text-sm text-[var(--text-subtle)] truncate mt-2">{summary}</div>
                 )}
               </div>
-              <div className={`text-[var(--text-muted)] transition-transform ${isOpen ? 'rotate-180' : ''}`}>
-                <Icon name="chevronDown" size={20} />
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={(e) => toggleStar(e, meal.id)}
+                  className={`p-2 rounded-xl transition-all ${isStarred ? 'text-amber-400' : 'text-[var(--border-strong)] hover:text-amber-400'}`}
+                >
+                  <Icon name={isStarred ? 'starFilled' : 'star'} size={20} />
+                </button>
+                <div className={`text-[var(--text-muted)] transition-transform ${isOpen ? 'rotate-180' : ''}`}>
+                  <Icon name="chevronDown" size={20} />
+                </div>
               </div>
             </button>
 
@@ -1772,19 +1806,16 @@ function WeatherView({ settings }) {
 
   return (
     <div className="fade-in">
-      <div className="mb-8 flex items-end justify-between gap-4 flex-wrap">
-        <div>
-          <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Прогноз</div>
-          <h1 className="font-display text-3xl md:text-4xl">Погода</h1>
-          {location && (
-            <div className="flex items-center gap-1.5 text-[var(--text-muted)] mt-2">
-              <Icon name="mapPin" size={14} />
-              <span className="text-sm">{location.name}</span>
-            </div>
-          )}
+      <div className="mb-6 flex items-center justify-between gap-4">
+        <div className="flex items-baseline gap-3 min-w-0">
+          <div className="font-display text-2xl">Погода</div>
+          {location
+            ? <div className="flex items-center gap-1 text-[var(--text-subtle)] text-xs flex-shrink-0"><Icon name="mapPin" size={12} /><span>{location.name}</span></div>
+            : <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Прогноз</div>
+          }
         </div>
         {status === 'ready' && (
-          <button onClick={requestLocation} className="btn-ghost flex items-center gap-2 text-sm">
+          <button onClick={requestLocation} className="btn-ghost flex items-center gap-2 text-sm flex-shrink-0">
             <Icon name="restore" size={14} />
             Обновить
           </button>
@@ -3165,9 +3196,9 @@ function HouseView({ data, setData, houseTab, setHouseTab }) {
 
   const HouseTabs = () => (
     <div className="mb-6">
-      <div className="mb-6">
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Дела</div>
-        <h1 className="font-display text-3xl md:text-4xl">Дела</h1>
+      <div className="mb-4 flex items-baseline justify-between gap-4">
+        <div className="font-display text-2xl">Дела</div>
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Задачи</div>
       </div>
       <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
         {tabs.map(t => (
