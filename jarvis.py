@@ -235,6 +235,53 @@ def _tick():
         for cid in subs["chat_ids"]:
             send_message(token, cid, text)
 
+    # Holidays: date stored as "MM-DD", reminders have daysBefore + time
+    holidays = []
+    if APP_DATA_FILE.exists():
+        try:
+            app_data_raw = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
+            holidays = [h for h in app_data_raw.get("holidays", []) if not h.get("archived")]
+        except Exception:
+            pass
+    today_date = today_msk()
+    TYPE_EMOJI = {"birthday": "🎂", "anniversary": "💑", "other": "🎉"}
+    for holiday in holidays:
+        if not holiday.get("notify"):
+            continue
+        date_str = holiday.get("date", "")
+        if not date_str or date_str.count("-") != 1:
+            continue
+        try:
+            mm, dd = int(date_str.split("-")[0]), int(date_str.split("-")[1])
+        except (ValueError, IndexError):
+            continue
+        for reminder in holiday.get("reminders") or []:
+            if reminder.get("time", "") != now_str:
+                continue
+            days_before = int(reminder.get("daysBefore", 0))
+            # Check current year and next year to handle cross-year notifications
+            for year_offset in (0, 1):
+                try:
+                    holiday_date = date(today_date.year + year_offset, mm, dd)
+                    notify_date = holiday_date - timedelta(days=days_before)
+                    if notify_date != today_date.date():
+                        continue
+                    emoji = TYPE_EMOJI.get(holiday.get("type", "other"), "🎉")
+                    if days_before == 0:
+                        when = "сегодня!"
+                    elif days_before == 1:
+                        when = "завтра"
+                    elif 2 <= days_before <= 4:
+                        when = f"через {days_before} дня"
+                    else:
+                        when = f"через {days_before} дней"
+                    text = f"{emoji} <b>Праздник — напоминание</b>\n\n{holiday.get('name', 'Событие')}\n<i>{when}</i>"
+                    print(f"[{now_str} MSK] → holiday: {holiday['name']} in {days_before}d ({len(subs['chat_ids'])} subscriber(s))")
+                    for cid in subs["chat_ids"]:
+                        send_message(token, cid, text)
+                except (ValueError, OverflowError):
+                    pass
+
     if changed:
         save_subscribers(subs)
 
