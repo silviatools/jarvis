@@ -460,10 +460,9 @@ function App() {
     });
   }, []);
 
-  // Перезагрузка при смене дня
-  // Safari душит setInterval после нескольких часов без касания экрана,
-  // поэтому проверяем дату также при каждом касании — первый тап утром
-  // мгновенно обнаружит смену дня и перезагрузит страницу.
+  // Перезагрузка при смене дня через Web Worker.
+  // Worker работает в отдельном потоке — Safari его не throttleит
+  // даже при полном отсутствии активности на экране.
   useEffect(() => {
     const todayAtMount = new Date().toISOString().slice(0, 10);
 
@@ -473,22 +472,28 @@ function App() {
       }
     };
 
-    // Запасной тик раз в минуту
+    // Основной механизм: Web Worker тикает каждую минуту
+    let worker = null;
+    try {
+      const blob = new Blob(
+        [`setInterval(() => postMessage('tick'), 60000);`],
+        { type: 'application/javascript' }
+      );
+      const url = URL.createObjectURL(blob);
+      worker = new Worker(url);
+      worker.onmessage = checkDate;
+      URL.revokeObjectURL(url);
+    } catch (_) {}
+
+    // Страховки если Workers недоступны
     const timer = setInterval(checkDate, 60 * 1000);
-
-    // Главное: проверка при первом касании утром
-    window.addEventListener('touchstart', checkDate, { passive: true });
-    window.addEventListener('click', checkDate, { passive: true });
-
-    // Если вкладка всё же уходила в фон
     const onVisible = () => { if (document.visibilityState === 'visible') checkDate(); };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('pageshow', checkDate);
 
     return () => {
+      if (worker) worker.terminate();
       clearInterval(timer);
-      window.removeEventListener('touchstart', checkDate);
-      window.removeEventListener('click', checkDate);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('pageshow', checkDate);
     };
