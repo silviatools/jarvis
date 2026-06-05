@@ -981,12 +981,12 @@ function MealPlanView({ data, setData }) {
                   <div className="text-sm text-[var(--text-subtle)] truncate mt-2">{summary}</div>
                 )}
               </div>
-              <div className="flex items-center gap-1 shrink-0">
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   onClick={(e) => toggleStar(e, meal.id)}
-                  className={`p-2 rounded-xl transition-all ${isStarred ? 'text-amber-400' : 'text-[var(--border-strong)] hover:text-amber-400'}`}
+                  className={`w-12 h-12 flex items-center justify-center rounded-2xl transition-all active:scale-90 ${isStarred ? 'text-amber-400 bg-amber-50' : 'text-[var(--border-strong)] bg-[var(--bg)]'}`}
                 >
-                  <Icon name={isStarred ? 'starFilled' : 'star'} size={20} />
+                  <Icon name={isStarred ? 'starFilled' : 'star'} size={26} />
                 </button>
                 <div className={`text-[var(--text-muted)] transition-transform ${isOpen ? 'rotate-180' : ''}`}>
                   <Icon name="chevronDown" size={20} />
