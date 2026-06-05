@@ -306,6 +306,7 @@ const Icon = ({ name, size = 22 }) => {
     book: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>,
     star: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>,
     starFilled: <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>,
+    gift: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 12v10H4V12"/><path d="M2 7h20v5H2z"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>,
   };
   return icons[name] || null;
 };
@@ -459,15 +460,31 @@ function App() {
     });
   }, []);
 
-  // Auto-reload at midnight (iPad screen always on, JS never frozen)
+  // Перезагрузка при смене дня — работает даже после сна iPad
   useEffect(() => {
     const todayAtMount = new Date().toISOString().slice(0, 10);
-    const timer = setInterval(() => {
+
+    const checkDate = () => {
       if (new Date().toISOString().slice(0, 10) !== todayAtMount) {
         window.location.reload();
       }
-    }, 60 * 1000);
-    return () => clearInterval(timer);
+    };
+
+    // Запасной тик раз в минуту (пока JS не заморожен)
+    const timer = setInterval(checkDate, 60 * 1000);
+
+    // Срабатывает мгновенно когда экран просыпается / вкладка становится видимой
+    const onVisible = () => { if (document.visibilityState === 'visible') checkDate(); };
+    document.addEventListener('visibilitychange', onVisible);
+
+    // iOS Safari: восстановление из bfcache (свайп «назад»)
+    window.addEventListener('pageshow', checkDate);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('pageshow', checkDate);
+    };
   }, []);
 
   // On every change: save locally + push to server (debounced)
@@ -553,6 +570,7 @@ function App() {
           {tab === 'weather' && <WeatherView settings={data.settings} />}
           {tab === 'body' && <BodyView data={data} setData={setData} />}
           {tab === 'cars' && <CarsView data={data} setData={setData} />}
+          {tab === 'holidays' && <HolidaysView data={data} setData={setData} />}
           {tab === 'settings' && (
             <SettingsView
               data={data}
@@ -582,10 +600,11 @@ function Header({ tab, setTab }) {
   ];
 
   const moreItems = [
-    { id: 'body',     icon: 'user',     label: 'Моё тело'  },
+    { id: 'body',     icon: 'user',     label: 'Моё тело'   },
     { id: 'cars',     icon: 'car',      label: 'Автомобили' },
-    { id: 'english',  icon: 'book',     label: 'English'   },
-    { id: 'settings', icon: 'settings', label: 'Настройки' },
+    { id: 'holidays', icon: 'gift',     label: 'Праздники'  },
+    { id: 'english',  icon: 'book',     label: 'English'    },
+    { id: 'settings', icon: 'settings', label: 'Настройки'  },
   ];
 
   const moreActive = moreItems.some(i => i.id === tab);
@@ -666,10 +685,11 @@ function BottomNav({ tab, setTab }) {
   ];
 
   const moreItems = [
-    { id: 'body',     icon: 'user',     label: 'Моё тело'  },
+    { id: 'body',     icon: 'user',     label: 'Моё тело'   },
     { id: 'cars',     icon: 'car',      label: 'Автомобили' },
-    { id: 'english',  icon: 'book',     label: 'English'   },
-    { id: 'settings', icon: 'settings', label: 'Настройки' },
+    { id: 'holidays', icon: 'gift',     label: 'Праздники'  },
+    { id: 'english',  icon: 'book',     label: 'English'    },
+    { id: 'settings', icon: 'settings', label: 'Настройки'  },
   ];
 
   const moreActive = moreItems.some(i => i.id === tab);
@@ -6051,6 +6071,246 @@ function ServiceRecordModal({ record, cars, allServiceNames, onSave, onClose }) 
           <label>Заметки</label>
           <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Сервис, мастер, бренд запчасти..." />
         </div>
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============== HOLIDAYS VIEW ==============
+const HOLIDAY_MONTHS_SHORT = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+
+function formatHolidayDate(dateStr) {
+  if (!dateStr) return '';
+  const [mm, dd] = dateStr.split('-');
+  return `${parseInt(dd)} ${HOLIDAY_MONTHS_SHORT[parseInt(mm) - 1]}`;
+}
+
+function getDaysUntilHoliday(dateStr) {
+  if (!dateStr) return Infinity;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const [mm, dd] = dateStr.split('-').map(Number);
+  let target = new Date(today.getFullYear(), mm - 1, dd);
+  target.setHours(0,0,0,0);
+  if (target < today) target = new Date(today.getFullYear() + 1, mm - 1, dd);
+  return Math.round((target - today) / 86400000);
+}
+
+function HolidaysView({ data, setData }) {
+  const [editing, setEditing] = useState(null);
+
+  const holidays = (data.holidays || []).filter(h => !h.archived);
+
+  const save = (holiday) => {
+    setData(d => {
+      const list = d.holidays || [];
+      const exists = list.find(h => h.id === holiday.id);
+      return {
+        ...d,
+        holidays: exists
+          ? list.map(h => h.id === holiday.id ? holiday : h)
+          : [...list, holiday],
+      };
+    });
+    setEditing(null);
+  };
+
+  const remove = (id) => {
+    if (!confirm('Удалить событие?')) return;
+    setData(d => ({ ...d, holidays: (d.holidays || []).filter(h => h.id !== id) }));
+  };
+
+  const newHoliday = () => setEditing({
+    id: crypto.randomUUID(),
+    name: '', type: 'birthday', date: '', description: '',
+    notify: true,
+    reminders: [
+      { id: crypto.randomUUID(), daysBefore: 7, time: '09:00' },
+      { id: crypto.randomUUID(), daysBefore: 0, time: '09:00' },
+    ],
+    archived: false,
+  });
+
+  const EMOJI = { birthday: '🎂', anniversary: '💑', other: '🎉' };
+
+  const sorted = [...holidays].sort((a, b) => getDaysUntilHoliday(a.date) - getDaysUntilHoliday(b.date));
+
+  return (
+    <div className="fade-in">
+      <div className="mb-6 flex items-baseline justify-between gap-4">
+        <div className="font-display text-2xl">Праздники</div>
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">События</div>
+      </div>
+
+      <button onClick={newHoliday} className="btn-primary w-full flex items-center justify-center gap-2 mb-6">
+        <Icon name="plus" size={18} />
+        Добавить событие
+      </button>
+
+      {holidays.length === 0 ? (
+        <EmptyState title="Нет событий" text="Добавьте дни рождения, юбилеи и другие праздники" />
+      ) : (
+        <div className="space-y-3">
+          {sorted.map(h => {
+            const days = getDaysUntilHoliday(h.date);
+            const daysText = days === 0 ? 'Сегодня!' : `через ${days} ${days === 1 ? 'день' : days < 5 ? 'дня' : 'дней'}`;
+            return (
+              <div key={h.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 flex items-start gap-3">
+                <div className="text-2xl flex-shrink-0 mt-0.5">{EMOJI[h.type] || '🎉'}</div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium mb-0.5">{h.name}</div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm text-[var(--text-muted)]">{formatHolidayDate(h.date)}</span>
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                      days === 0 ? 'bg-red-100 text-red-700' :
+                      days <= 7 ? 'bg-amber-100 text-amber-700' :
+                      'bg-[var(--bg)] text-[var(--text-subtle)]'
+                    }`}>{daysText}</span>
+                  </div>
+                  {h.description ? <div className="text-xs text-[var(--text-muted)] mt-1">{h.description}</div> : null}
+                  {h.notify && h.reminders?.length > 0 ? (
+                    <div className="flex items-center gap-1 mt-1.5 text-xs text-[var(--text-subtle)]">
+                      <Icon name="bell" size={11} />
+                      {h.reminders.length} напом.
+                    </div>
+                  ) : null}
+                </div>
+                <div className="flex gap-1 flex-shrink-0">
+                  <button onClick={() => setEditing(h)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+                    <Icon name="edit" size={15} />
+                  </button>
+                  <button onClick={() => remove(h.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500">
+                    <Icon name="trash" size={15} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {editing && <HolidayForm key={editing.id} initial={editing} onSave={save} onClose={() => setEditing(null)} />}
+    </div>
+  );
+}
+
+function HolidayForm({ initial, onSave, onClose }) {
+  const [form, setForm] = useState(initial);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const addReminder = () => setForm(f => ({
+    ...f,
+    reminders: [...(f.reminders || []), { id: crypto.randomUUID(), daysBefore: 0, time: '09:00' }],
+  }));
+
+  const removeReminder = (id) => setForm(f => ({
+    ...f,
+    reminders: (f.reminders || []).filter(r => r.id !== id),
+  }));
+
+  const setReminder = (id, k, v) => setForm(f => ({
+    ...f,
+    reminders: (f.reminders || []).map(r => r.id === id ? { ...r, [k]: v } : r),
+  }));
+
+  const submit = () => {
+    if (!form.name.trim() || !form.date) return;
+    onSave(form);
+  };
+
+  const DAYS_OPTIONS = [
+    { value: 0,  label: 'В сам день'  },
+    { value: 1,  label: 'За 1 день'   },
+    { value: 3,  label: 'За 3 дня'    },
+    { value: 7,  label: 'За 7 дней'   },
+    { value: 14, label: 'За 2 недели' },
+    { value: 30, label: 'За месяц'    },
+  ];
+
+  return (
+    <Modal title={initial.name ? 'Редактировать' : 'Новое событие'} onClose={onClose}>
+      <div className="space-y-4">
+        <div>
+          <label>Название</label>
+          <input value={form.name} onChange={e => set('name', e.target.value)} placeholder="День рождения Мамы" />
+        </div>
+
+        <div>
+          <label>Тип</label>
+          <select value={form.type} onChange={e => set('type', e.target.value)}>
+            <option value="birthday">🎂 День рождения</option>
+            <option value="anniversary">💑 Юбилей / Годовщина</option>
+            <option value="other">🎉 Другое событие</option>
+          </select>
+        </div>
+
+        <div>
+          <label>Дата (год не учитывается, событие повторяется ежегодно)</label>
+          <input
+            type="date"
+            value={form.date ? `2000-${form.date}` : ''}
+            onChange={e => set('date', e.target.value ? e.target.value.slice(5) : '')}
+          />
+        </div>
+
+        <div>
+          <label>Описание (необязательно)</label>
+          <textarea
+            value={form.description || ''}
+            onChange={e => set('description', e.target.value)}
+            rows={2}
+            placeholder="Заметки..."
+          />
+        </div>
+
+        <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Icon name="bell" size={16} />
+              <span className="text-sm font-medium">Уведомления в Telegram</span>
+            </div>
+            <Toggle checked={!!form.notify} onChange={v => set('notify', v)} />
+          </div>
+
+          {form.notify && (
+            <div className="space-y-2 fade-in">
+              {(form.reminders || []).map(r => (
+                <div key={r.id} className="flex items-center gap-2">
+                  <select
+                    value={r.daysBefore}
+                    onChange={e => setReminder(r.id, 'daysBefore', parseInt(e.target.value))}
+                    style={{ flex: '1', minWidth: 0 }}
+                  >
+                    {DAYS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                  <input
+                    type="time"
+                    value={r.time}
+                    onChange={e => setReminder(r.id, 'time', e.target.value)}
+                    style={{ width: '110px', flexShrink: 0 }}
+                  />
+                  <button
+                    onClick={() => removeReminder(r.id)}
+                    className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-red-500 flex-shrink-0"
+                  >
+                    <Icon name="x" size={16} />
+                  </button>
+                </div>
+              ))}
+              <button
+                onClick={addReminder}
+                className="btn-secondary w-full flex items-center justify-center gap-2 text-sm"
+              >
+                <Icon name="plus" size={15} />
+                Добавить напоминание
+              </button>
+            </div>
+          )}
+        </div>
+
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
           <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
