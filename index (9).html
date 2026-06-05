@@ -445,7 +445,7 @@ const formatChoreDate = (dateStr) => {
 function App() {
   const [data, setData] = useState(loadData());
   const [tab, setTab] = useState('home'); // home | supplements | meals | weather | house | settings
-  const [settingsTab, setSettingsTab] = useState('supplements');
+  const [settingsTab, setSettingsTab] = useState('general');
   const [houseTab, setHouseTab] = useState('boss');
   const [mealTab, setMealTab] = useState('plan');
   const initialLoad = React.useRef(true);
@@ -778,6 +778,8 @@ function BottomNav({ tab, setTab }) {
 // ============== SUPPLEMENTS VIEW ==============
 function SupplementsView({ data, setData }) {
   const [period, setPeriod] = useState(getCurrentPeriod());
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsSubTab, setSettingsSubTab] = useState('supplements');
   const todayKey = getTodayKey();
 
   // Авто-переключение утро/вечер без участия пользователя
@@ -830,51 +832,81 @@ function SupplementsView({ data, setData }) {
 
   return (
     <div className="fade-in">
-      <div className="mb-6 flex items-baseline justify-between gap-4">
+      <div className="mb-6 flex items-center justify-between gap-4">
         <div className="font-display text-2xl">БАДДы</div>
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Сегодня</div>
+        <button
+          onClick={() => setShowSettings(s => !s)}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all border ${
+            showSettings
+              ? 'bg-[var(--text)] text-white border-[var(--text)]'
+              : 'border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)]'
+          }`}
+        >
+          <Icon name="settings" size={16} />
+          Управление
+        </button>
       </div>
 
-      {/* Переключатель Утро/Вечер + Тренировки (отдельно) */}
-      <div className="flex flex-wrap gap-3 mb-8">
-        <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
-          <button
-            onClick={() => setPeriod('morning')}
-            className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-              period === 'morning' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
-            }`}
-          >
-            <Icon name="sun" size={16} />
-            Утро
-          </button>
-          <button
-            onClick={() => setPeriod('evening')}
-            className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-              period === 'evening' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
-            }`}
-          >
-            <Icon name="moon" size={16} />
-            Вечер
-          </button>
+      {showSettings ? (
+        <div className="fade-in">
+          <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6">
+            <button
+              onClick={() => setSettingsSubTab('supplements')}
+              className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${settingsSubTab === 'supplements' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}
+            >
+              БАДДы
+            </button>
+            <button
+              onClick={() => setSettingsSubTab('workout')}
+              className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${settingsSubTab === 'workout' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}
+            >
+              Тренировки
+            </button>
+          </div>
+          <SupplementSettings data={data} setData={setData} isWorkout={settingsSubTab === 'workout'} />
         </div>
-        <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
-          <button
-            onClick={() => setPeriod('workout')}
-            className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-              period === 'workout' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
-            }`}
-          >
-            <Icon name="dumbbell" size={16} />
-            Тренировки
-          </button>
-        </div>
-      </div>
+      ) : (
+        <>
+          {/* Переключатель Утро/Вечер + Тренировки */}
+          <div className="flex flex-wrap gap-3 mb-8">
+            <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
+              <button
+                onClick={() => setPeriod('morning')}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                  period === 'morning' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+                }`}
+              >
+                <Icon name="sun" size={16} />
+                Утро
+              </button>
+              <button
+                onClick={() => setPeriod('evening')}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                  period === 'evening' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+                }`}
+              >
+                <Icon name="moon" size={16} />
+                Вечер
+              </button>
+            </div>
+            <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
+              <button
+                onClick={() => setPeriod('workout')}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                  period === 'workout' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+                }`}
+              >
+                <Icon name="dumbbell" size={16} />
+                Тренировки
+              </button>
+            </div>
+          </div>
 
-      {list.length === 0 ? (
-        <EmptyState
-          title={emptyTexts[period]}
-          text="Добавьте БАДДы в настройках"
-        />
+          {list.length === 0 ? (
+            <EmptyState
+              title={emptyTexts[period]}
+              text="Добавьте БАДДы через кнопку Управление"
+            />
       ) : (
         <>
           {allTaken && (
@@ -901,6 +933,8 @@ function SupplementsView({ data, setData }) {
               Принял все
             </button>
           )}
+        </>
+      )}
         </>
       )}
     </div>
@@ -940,29 +974,47 @@ function SupplementCard({ supp, taken, onToggle }) {
 
 // ============== MEALS VIEW ==============
 function MealsView({ data, setData, mealTab, setMealTab }) {
+  const [showSettings, setShowSettings] = useState(false);
+
   return (
     <div className="fade-in">
-      <div className="mb-6 flex items-baseline justify-between gap-4">
+      <div className="mb-6 flex items-center justify-between gap-4">
         <div className="font-display text-2xl">Питание</div>
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Рационы</div>
+        <button
+          onClick={() => setShowSettings(s => !s)}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all border ${
+            showSettings
+              ? 'bg-[var(--text)] text-white border-[var(--text)]'
+              : 'border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)]'
+          }`}
+        >
+          <Icon name="settings" size={16} />
+          Управление
+        </button>
       </div>
 
-      <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8">
-        {[{ id: 'plan', label: 'План' }, { id: 'counter', label: 'Счётчик' }].map(t => (
-          <button
-            key={t.id}
-            onClick={() => setMealTab(t.id)}
-            className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-              mealTab === t.id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {showSettings ? (
+        <div className="fade-in"><MealSettings data={data} setData={setData} /></div>
+      ) : (
+        <>
+          <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8">
+            {[{ id: 'plan', label: 'План' }, { id: 'counter', label: 'Счётчик' }].map(t => (
+              <button
+                key={t.id}
+                onClick={() => setMealTab(t.id)}
+                className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                  mealTab === t.id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
 
-      {mealTab === 'plan' && <MealPlanView data={data} setData={setData} />}
-      {mealTab === 'counter' && <RationCounter data={data} setData={setData} />}
+          {mealTab === 'plan' && <MealPlanView data={data} setData={setData} />}
+          {mealTab === 'counter' && <RationCounter data={data} setData={setData} />}
+        </>
+      )}
     </div>
   );
 }
@@ -2067,36 +2119,12 @@ const monthFullLower = (m) => ['января', 'февраля', 'марта', '
 function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
   return (
     <div className="fade-in">
-      <div className="mb-8">
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Управление</div>
-        <h1 className="font-display text-3xl md:text-4xl">Настройки</h1>
+      <div className="mb-6 flex items-baseline justify-between gap-4">
+        <div className="font-display text-2xl">Настройки</div>
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Общее</div>
       </div>
 
-      <div className="flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8 overflow-x-auto gap-0 w-full sm:w-auto sm:inline-flex">
-        <button
-          onClick={() => setSettingsTab('supplements')}
-          className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-            settingsTab === 'supplements' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
-          }`}
-        >
-          БАДДы
-        </button>
-        <button
-          onClick={() => setSettingsTab('workout')}
-          className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-            settingsTab === 'workout' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
-          }`}
-        >
-          Тренировки
-        </button>
-        <button
-          onClick={() => setSettingsTab('meals')}
-          className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-            settingsTab === 'meals' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
-          }`}
-        >
-          Питание
-        </button>
+      <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8">
         <button
           onClick={() => setSettingsTab('general')}
           className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
@@ -2115,9 +2143,6 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
         </button>
       </div>
 
-      {settingsTab === 'supplements' && <SupplementSettings data={data} setData={setData} />}
-      {settingsTab === 'workout' && <SupplementSettings data={data} setData={setData} isWorkout />}
-      {settingsTab === 'meals' && <MealSettings data={data} setData={setData} />}
       {settingsTab === 'general' && <GeneralSettings data={data} setData={setData} />}
       {settingsTab === 'voice' && <VoiceAssistantSettings data={data} setData={setData} />}
     </div>
