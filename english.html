@@ -1125,11 +1125,21 @@ function renderCard(){
 function flip(){
   if(!S.session) return;
   S.session.flipped = !S.session.flipped;
-  if(S.session.flipped && S.settings.tts){
+  const flipped = S.session.flipped;
+  if(flipped && S.settings.tts){
     const w = S.session.queue[S.session.cur];
     speak(w.en);
   }
-  renderCard();
+  const card = $('theCard');
+  if(card){
+    card.classList.toggle('flipped', flipped);
+    const ansRow = $('ansRow');
+    if(ansRow) ansRow.style.display = flipped ? 'grid' : 'none';
+    const navRow = document.querySelector('.nav-row');
+    if(navRow) navRow.style.display = flipped ? 'none' : 'flex';
+  } else {
+    renderCard();
+  }
 }
 
 function toggleHardCurrent(){
