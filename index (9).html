@@ -460,7 +460,10 @@ function App() {
     });
   }, []);
 
-  // Перезагрузка при смене дня — работает даже после сна iPad
+  // Перезагрузка при смене дня
+  // Safari душит setInterval после нескольких часов без касания экрана,
+  // поэтому проверяем дату также при каждом касании — первый тап утром
+  // мгновенно обнаружит смену дня и перезагрузит страницу.
   useEffect(() => {
     const todayAtMount = new Date().toISOString().slice(0, 10);
 
@@ -470,18 +473,22 @@ function App() {
       }
     };
 
-    // Запасной тик раз в минуту (пока JS не заморожен)
+    // Запасной тик раз в минуту
     const timer = setInterval(checkDate, 60 * 1000);
 
-    // Срабатывает мгновенно когда экран просыпается / вкладка становится видимой
+    // Главное: проверка при первом касании утром
+    window.addEventListener('touchstart', checkDate, { passive: true });
+    window.addEventListener('click', checkDate, { passive: true });
+
+    // Если вкладка всё же уходила в фон
     const onVisible = () => { if (document.visibilityState === 'visible') checkDate(); };
     document.addEventListener('visibilitychange', onVisible);
-
-    // iOS Safari: восстановление из bfcache (свайп «назад»)
     window.addEventListener('pageshow', checkDate);
 
     return () => {
       clearInterval(timer);
+      window.removeEventListener('touchstart', checkDate);
+      window.removeEventListener('click', checkDate);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('pageshow', checkDate);
     };
