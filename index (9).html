@@ -781,6 +781,17 @@ function SupplementsView({ data, setData }) {
   const [period, setPeriod] = useState(getCurrentPeriod());
   const todayKey = getTodayKey();
 
+  // Авто-переключение утро/вечер без участия пользователя
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setPeriod(prev => {
+        const current = getCurrentPeriod();
+        return current !== prev ? current : prev;
+      });
+    }, 60 * 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   const list = useMemo(() => {
     if (period === 'workout') {
       return (data.workoutSupplements || []).filter(s => !s.archived);
