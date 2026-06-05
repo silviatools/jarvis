@@ -6348,12 +6348,10 @@ function Modal({ title, children, onClose }) {
   useEffect(() => {
     const handler = (e) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', handler);
-    return () => {
-      window.removeEventListener('keydown', handler);
-    };
+    return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  return (
+  return ReactDOM.createPortal(
     <div
       className="fixed inset-0 z-50 overflow-y-auto bg-black/30 backdrop-blur-sm fade-in"
       onClick={onClose}
@@ -6372,7 +6370,8 @@ function Modal({ title, children, onClose }) {
           <div className="p-6">{children}</div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
