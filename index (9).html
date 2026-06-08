@@ -6147,13 +6147,14 @@ function getDaysUntilHoliday(dateStr) {
   return Math.round((target - today) / 86400000);
 }
 
-const getAgeOnNextOccurrence = (dateStr, birthYear) => {
+const getAge = (dateStr, birthYear) => {
   if (!birthYear || !dateStr) return null;
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const [mm, dd] = dateStr.split('-').map(Number);
-  let nextYear = today.getFullYear();
-  if (new Date(nextYear, mm - 1, dd) < today) nextYear++;
-  return nextYear - parseInt(birthYear);
+  const birthdayThisYear = new Date(today.getFullYear(), mm - 1, dd);
+  const age = today.getFullYear() - parseInt(birthYear);
+  // Если ДР ещё не было в этом году — человеку на 1 год меньше
+  return birthdayThisYear <= today ? age : age - 1;
 };
 
 function HolidaysView({ data, setData }) {
@@ -6257,7 +6258,7 @@ function HolidaysView({ data, setData }) {
           {sorted.map(h => {
             const days = getDaysUntilHoliday(h.date);
             const daysText = days === 0 ? 'Сегодня!' : `через ${days} ${days === 1 ? 'день' : days < 5 ? 'дня' : 'дней'}`;
-            const age = h.type === 'birthday' ? getAgeOnNextOccurrence(h.date, h.birthYear) : null;
+            const age = h.type === 'birthday' ? getAge(h.date, h.birthYear) : null;
             return (
               <div key={h.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 flex items-start gap-3">
                 <div className="text-2xl flex-shrink-0 mt-0.5">{EMOJI[h.type] || '🎉'}</div>
@@ -6309,6 +6310,34 @@ function HolidayForm({ initial, onSave, onClose }) {
   const [form, setForm] = useState(initial);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
+  // Инициализируем текстовое поле из сохранённых date + birthYear
+  const [dateInput, setDateInput] = useState(() => {
+    if (!initial.date) return '';
+    const [mm, dd] = initial.date.split('-');
+    if (initial.type === 'birthday' && initial.birthYear) return `${dd}.${mm}.${initial.birthYear}`;
+    return `${dd}.${mm}`;
+  });
+
+  const handleDateChange = (val) => {
+    setDateInput(val);
+    const parts = val.trim().split(/[.\-\/]+/);
+    if (parts.length >= 2 && parts[0] && parts[1]) {
+      const dd = parts[0].padStart(2, '0');
+      const mm = parts[1].padStart(2, '0');
+      const yyyy = (parts[2] || '').replace(/\D/g, '');
+      const d = parseInt(dd), m = parseInt(mm);
+      if (d >= 1 && d <= 31 && m >= 1 && m <= 12) {
+        setForm(f => ({
+          ...f,
+          date: `${mm}-${dd}`,
+          birthYear: yyyy.length === 4 ? yyyy : (yyyy ? f.birthYear : ''),
+        }));
+      }
+    } else if (!val.trim()) {
+      setForm(f => ({ ...f, date: '', birthYear: '' }));
+    }
+  };
+
   const addReminder = () => setForm(f => ({
     ...f,
     reminders: [...(f.reminders || []), { id: crypto.randomUUID(), daysBefore: 0, time: '09:00' }],
@@ -6356,28 +6385,21 @@ function HolidayForm({ initial, onSave, onClose }) {
         </div>
 
         <div>
-          <label>Дата (год не учитывается, событие повторяется ежегодно)</label>
+          <label>
+            {form.type === 'birthday' ? 'Дата рождения' : 'Дата события (повторяется ежегодно)'}
+          </label>
           <input
-            type="date"
-            value={form.date ? `2000-${form.date}` : ''}
-            onChange={e => set('date', e.target.value ? e.target.value.slice(5) : '')}
+            value={dateInput}
+            onChange={e => handleDateChange(e.target.value)}
+            inputMode="numeric"
+            placeholder={form.type === 'birthday' ? '20.04.2003' : '20.04'}
           />
+          <p className="text-xs text-[var(--text-subtle)] mt-1">
+            {form.type === 'birthday'
+              ? 'ДД.ММ.ГГГГ — год необязателен, но нужен для отображения возраста'
+              : 'ДД.ММ — год не нужен, событие повторяется ежегодно'}
+          </p>
         </div>
-
-        {form.type === 'birthday' && (
-          <div>
-            <label>Год рождения (необязательно — для отображения возраста)</label>
-            <input
-              type="number"
-              inputMode="numeric"
-              min="1900"
-              max={new Date().getFullYear()}
-              value={form.birthYear || ''}
-              onChange={e => set('birthYear', e.target.value)}
-              placeholder={`например, ${new Date().getFullYear() - 30}`}
-            />
-          </div>
-        )}
 
         <div>
           <label>Описание (необязательно)</label>
