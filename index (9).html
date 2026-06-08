@@ -6772,7 +6772,7 @@ function BudgetMonthlyView({ data, setData }) {
                       {(cat.items || []).map((item, ii) => (
                         <tr key={item.id} className={"border-b border-[var(--border)] transition-colors hover:bg-blue-50/20 bg-white"}>
                           <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
-                            {item.emoji && <span className="mr-1">{item.emoji}</span>}
+                            {!isAutoCat && item.emoji && <span className="mr-1">{item.emoji}</span>}
                             <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{item.label}</span>
                           </td>
                           {months.map(m => {
