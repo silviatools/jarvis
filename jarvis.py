@@ -264,7 +264,7 @@ def _tick():
                 try:
                     holiday_date = date(today_date.year + year_offset, mm, dd)
                     notify_date = holiday_date - timedelta(days=days_before)
-                    if notify_date != today_date.date():
+                    if notify_date != today_date:
                         continue
                     emoji = TYPE_EMOJI.get(holiday.get("type", "other"), "🎉")
                     if days_before == 0:
