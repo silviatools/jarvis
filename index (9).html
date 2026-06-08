@@ -576,6 +576,8 @@ function App() {
         <EngErrorBoundary><EnglishView /></EngErrorBoundary>
       ) : tab === 'house' ? (
         <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />
+      ) : tab === 'budget' ? (
+        <BudgetView data={data} setData={setData} />
       ) : (
         <main className="max-w-3xl mx-auto px-4 sm:px-6 pt-6 md:pt-8">
           {tab === 'home' && <HomeView data={data} setData={setData} setTab={setTab} setHouseTab={setHouseTab} setMealTab={setMealTab} />}
@@ -585,7 +587,6 @@ function App() {
           {tab === 'body' && <BodyView data={data} setData={setData} />}
           {tab === 'cars' && <CarsView data={data} setData={setData} />}
           {tab === 'holidays' && <HolidaysView data={data} setData={setData} />}
-          {tab === 'budget'   && <BudgetView   data={data} setData={setData} />}
           {tab === 'settings' && (
             <SettingsView
               data={data}
@@ -6535,7 +6536,7 @@ const pluralMonths = (n) => n === 1 ? 'месяц' : n < 5 ? 'месяца' : '�
 function BudgetView({ data, setData }) {
   const [budgetTab, setBudgetTab] = useState('monthly');
   return (
-    <div className="fade-in">
+    <main className="max-w-5xl mx-auto px-4 sm:px-6 pt-6 md:pt-8 pb-8 fade-in">
       <div className="mb-6 flex items-baseline justify-between gap-4">
         <div className="font-display text-2xl">Бюджет</div>
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Планирование</div>
@@ -6550,7 +6551,7 @@ function BudgetView({ data, setData }) {
       </div>
       {budgetTab === 'monthly'  && <BudgetMonthlyView  data={data} />}
       {budgetTab === 'expenses' && <BudgetExpensesView data={data} setData={setData} />}
-    </div>
+    </main>
   );
 }
 
