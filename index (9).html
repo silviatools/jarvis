@@ -6770,7 +6770,7 @@ function BudgetMonthlyView({ data, setData }) {
 
                       {/* Item rows */}
                       {(cat.items || []).map((item, ii) => (
-                        <tr key={item.id} className={`border-b border-[var(--border)] transition-colors hover:bg-blue-50/20 ${ii % 2 === 1 ? 'bg-gray-50' : ''}`}>
+                        <tr key={item.id} className={"border-b border-[var(--border)] transition-colors hover:bg-blue-50/20 bg-white"}>
                           <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
                             {item.emoji && <span className="mr-1">{item.emoji}</span>}
                             <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{item.label}</span>
@@ -6818,8 +6818,8 @@ function BudgetMonthlyView({ data, setData }) {
                 })}
 
                 {/* Grand total */}
-                <tr className="border-t-2 border-[var(--border-strong)] bg-[var(--bg)]">
-                  <td className="sticky left-0 z-10 bg-[var(--bg)] px-4 py-3 border-r border-[var(--border)] font-bold text-xs uppercase tracking-wide text-[var(--text)]">
+                <tr className="border-t-2 border-[var(--border-strong)] bg-gray-200">
+                  <td className="sticky left-0 z-10 bg-gray-200 px-4 py-3 border-r border-[var(--border)] font-bold text-xs uppercase tracking-wide text-[var(--text)]">
                     Итого
                   </td>
                   {months.map(m => {
