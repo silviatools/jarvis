@@ -6615,15 +6615,8 @@ function BudgetMonthlyView({ data, setData }) {
   const usedExpCatIds = [...new Set(activeExp.map(e => e.category))];
   const usedRecCatIds = [...new Set(activeRec.map(r => r.category))];
 
+  // Order: Постоянные first, Накопления second (appended after user cats)
   const autoCategories = [
-    usedExpCatIds.length > 0 ? {
-      id: '__savings', emoji: '💰', label: 'Накопления', isAuto: true, autoColor: 'violet',
-      items: usedExpCatIds.map(cid => {
-        const c = expCats.find(x => x.id === cid) || { emoji: '💡', label: cid };
-        return { id: `__sav_${cid}`, emoji: c.emoji, label: c.label, isAuto: true,
-                 getAutoVal: (m) => getExpCatVal(cid, m) };
-      }),
-    } : null,
     usedRecCatIds.length > 0 ? {
       id: '__recurring', emoji: '🔄', label: 'Постоянные', isAuto: true, autoColor: 'emerald',
       items: usedRecCatIds.map(cid => {
@@ -6632,10 +6625,18 @@ function BudgetMonthlyView({ data, setData }) {
                  getAutoVal: () => getRecCatVal(cid) };
       }),
     } : null,
+    usedExpCatIds.length > 0 ? {
+      id: '__savings', emoji: '💰', label: 'Накопления', isAuto: true, autoColor: 'violet',
+      items: usedExpCatIds.map(cid => {
+        const c = expCats.find(x => x.id === cid) || { emoji: '💡', label: cid };
+        return { id: `__sav_${cid}`, emoji: c.emoji, label: c.label, isAuto: true,
+                 getAutoVal: (m) => getExpCatVal(cid, m) };
+      }),
+    } : null,
   ].filter(Boolean);
 
-  // All categories: auto first (linked data), then user-defined
-  const allCats = [...autoCategories, ...userCats];
+  // User-defined categories first, auto-linked at the bottom
+  const allCats = [...userCats, ...autoCategories];
 
   // ── Value helpers ─────────────────────────────────────────────────────────
   const getItemVal   = (item, month) => item.getAutoVal ? item.getAutoVal(month) : (vals[`${item.id}_${month}`] || 0);
