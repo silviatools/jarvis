@@ -215,6 +215,9 @@ const DEFAULT_DATA = () => ({
   cars: [],
   serviceRecords: [],
   budgetExpenses: [],
+  budgetCategories: [],
+  budgetRecurring: [],
+  budgetRecurringCategories: [],
   settings: { ...DEFAULT_SETTINGS },
 });
 
@@ -6486,7 +6489,26 @@ const BUDGET_CATS = [
   { id: 'other',   emoji: '💡', label: 'Другое'       },
 ];
 
-const getBudgetCat = (id) => BUDGET_CATS.find(c => c.id === id) || { emoji: '💡', label: 'Другое' };
+const BUDGET_RECURRING_CATS = [
+  { id: 'subscriptions', emoji: '📺', label: 'Подписки'         },
+  { id: 'internet',      emoji: '🌐', label: 'Интернет'          },
+  { id: 'mobile',        emoji: '📱', label: 'Мобильная связь'   },
+  { id: 'rent',          emoji: '🏠', label: 'Аренда'            },
+  { id: 'insurance',     emoji: '🛡️', label: 'Страховка'         },
+  { id: 'utilities',     emoji: '💡', label: 'Коммуналка'        },
+  { id: 'gym',           emoji: '💪', label: 'Фитнес'            },
+  { id: 'bank',          emoji: '🏦', label: 'Банк / карта'      },
+  { id: 'transport',     emoji: '🚇', label: 'Транспорт'         },
+  { id: 'other',         emoji: '📌', label: 'Другое'            },
+];
+
+const getExpenseCats   = (data) => (data.budgetCategories          && data.budgetCategories.length          > 0) ? data.budgetCategories          : BUDGET_CATS;
+const getRecurringCats = (data) => (data.budgetRecurringCategories && data.budgetRecurringCategories.length > 0) ? data.budgetRecurringCategories : BUDGET_RECURRING_CATS;
+
+const getBudgetCat = (id, data) => {
+  const cats = data ? getExpenseCats(data) : BUDGET_CATS;
+  return cats.find(c => c.id === id) || { emoji: '💡', label: 'Другое', id: 'other' };
+};
 
 const getCurrentMonthStr = () => {
   const d = new Date();
@@ -6542,15 +6564,16 @@ function BudgetView({ data, setData }) {
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Планирование</div>
       </div>
       <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6">
-        {[['monthly','По месяцу'],['expenses','Накопления']].map(([id, label]) => (
+        {[['monthly','По месяцу'],['expenses','Накопления'],['recurring','Постоянные']].map(([id, label]) => (
           <button key={id} onClick={() => setBudgetTab(id)}
-            className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${budgetTab === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
+            className={`px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${budgetTab === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
             {label}
           </button>
         ))}
       </div>
-      {budgetTab === 'monthly'  && <BudgetMonthlyView  data={data} />}
-      {budgetTab === 'expenses' && <BudgetExpensesView data={data} setData={setData} />}
+      {budgetTab === 'monthly'   && <BudgetMonthlyView   data={data} />}
+      {budgetTab === 'expenses'  && <BudgetExpensesView  data={data} setData={setData} />}
+      {budgetTab === 'recurring' && <BudgetRecurringView data={data} setData={setData} />}
     </main>
   );
 }
@@ -6560,7 +6583,7 @@ function BudgetMonthlyView({ data }) {
   const curMonth = getCurrentMonthStr();
 
   if (!expenses.length) return (
-    <EmptyState title="Нет плановых расходов" text="Добавьте расходы во вкладке «Расходы»" />
+    <EmptyState title="Нет плановых накоплений" text="Добавьте накопления во вкладке «Накопления»" />
   );
 
   // Range: from earliest startDate (≥ now) to latest targetDate
@@ -6615,7 +6638,7 @@ function BudgetMonthlyView({ data }) {
           </div>
           <div className="px-5 pb-4 space-y-2 mt-1">
             {contrib.map(e => {
-              const cat = getBudgetCat(e.category);
+              const cat = getBudgetCat(e.category, data);
               const pct = Math.round((calcMonthly(e) / total) * 100);
               return (
                 <div key={e.id} className="flex items-center gap-2">
@@ -6639,13 +6662,80 @@ function BudgetMonthlyView({ data }) {
   );
 }
 
-function BudgetExpensesView({ data, setData }) {
-  const [editing,     setEditing]     = useState(null);
-  const [filterCat,   setFilterCat]   = useState('all');
-  const [filterMonth, setFilterMonth] = useState('');
-  const [sortCol,     setSortCol]     = useState('targetDate');
-  const [sortDir,     setSortDir]     = useState('asc');
+function BudgetMultiSelect({ label, options, selected, onChange }) {
+  const [open, setOpen] = useState(false);
+  const hasSelected = selected.length > 0;
 
+  const toggle = (val) => {
+    onChange(selected.includes(val) ? selected.filter(v => v !== val) : [...selected, val]);
+  };
+
+  return (
+    <div className="relative flex-1">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className={`w-full flex items-center justify-between gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${
+          hasSelected || open
+            ? 'bg-[var(--text)] text-white border-[var(--text)]'
+            : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-strong)]'
+        }`}
+      >
+        <span>{label}{hasSelected ? ` · ${selected.length}` : ''}</span>
+        <Icon name="chevronDown" size={14} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s ease' }} />
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 top-full mt-1.5 z-20 bg-[var(--surface)] border border-[var(--border)] rounded-2xl shadow-lg min-w-full max-h-64 overflow-y-auto fade-in" style={{ overscrollBehavior: 'contain' }}>
+            <div className="py-1">
+              {options.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={(e) => { e.stopPropagation(); toggle(opt.value); }}
+                  className="w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-all hover:bg-black/[0.04] text-left"
+                >
+                  <div className={`w-4 h-4 rounded-[4px] border flex items-center justify-center flex-shrink-0 transition-all ${
+                    selected.includes(opt.value)
+                      ? 'bg-[var(--text)] border-[var(--text)]'
+                      : 'border-[var(--border-strong)] bg-[var(--surface)]'
+                  }`}>
+                    {selected.includes(opt.value) && (
+                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M20 6 9 17l-5-5"/>
+                      </svg>
+                    )}
+                  </div>
+                  <span className={selected.includes(opt.value) ? 'text-[var(--text)] font-medium' : 'text-[var(--text-muted)]'}>
+                    {opt.label}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="border-t border-[var(--border)] px-3 py-2">
+              <button
+                onClick={(e) => { e.stopPropagation(); onChange([]); setOpen(false); }}
+                className="w-full text-xs text-[var(--text-subtle)] hover:text-[var(--text)] py-1.5 transition-colors font-medium tracking-wide uppercase"
+              >
+                Сбросить
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function BudgetExpensesView({ data, setData }) {
+  const [editing,      setEditing]      = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [filterCat,    setFilterCat]    = useState('all');
+  const [filterMonth,  setFilterMonth]  = useState('');
+  const [sortCol,      setSortCol]      = useState('targetDate');
+  const [sortDir,      setSortDir]      = useState('asc');
+
+  const cats    = getExpenseCats(data);
   const expenses = (data.budgetExpenses || []).filter(e => !e.archived);
 
   const save = (exp) => {
@@ -6658,12 +6748,12 @@ function BudgetExpensesView({ data, setData }) {
   };
 
   const remove = (id) => {
-    if (!confirm('Удалить расход?')) return;
+    if (!confirm('Удалить накопление?')) return;
     setData(d => ({ ...d, budgetExpenses: (d.budgetExpenses || []).filter(e => e.id !== id) }));
   };
 
   const newExp = () => setEditing({
-    id: crypto.randomUUID(), name: '', category: 'other', amount: '',
+    id: crypto.randomUUID(), name: '', category: cats[0]?.id || 'other', amount: '',
     startDate: getCurrentMonthStr(), targetDate: addMonthsStr(getCurrentMonthStr(), 6),
     notes: '', archived: false,
   });
@@ -6683,7 +6773,7 @@ function BudgetExpensesView({ data, setData }) {
   const sorted = [...filtered].sort((a, b) => {
     const vals = {
       name:       [a.name, b.name],
-      category:   [getBudgetCat(a.category).label, getBudgetCat(b.category).label],
+      category:   [(cats.find(c => c.id === a.category) || {}).label || 'Я', (cats.find(c => c.id === b.category) || {}).label || 'Я'],
       amount:     [a.amount || 0,   b.amount || 0],
       monthly:    [calcMonthly(a),  calcMonthly(b)],
       startDate:  [a.startDate,     b.startDate],
@@ -6713,9 +6803,16 @@ function BudgetExpensesView({ data, setData }) {
 
   return (
     <div>
-      <button onClick={newExp} className="btn-primary inline-flex items-center gap-2 mb-4">
-        <Icon name="plus" size={18} />Добавить накопление
-      </button>
+      <div className="flex items-center gap-2 mb-4">
+        <button onClick={newExp} className="btn-primary inline-flex items-center gap-2">
+          <Icon name="plus" size={18} />Добавить накопление
+        </button>
+        <button onClick={() => setShowSettings(true)}
+          className="p-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
+          title="Настройки категорий">
+          <Icon name="settings" size={16} />
+        </button>
+      </div>
 
       {!expenses.length ? (
         <EmptyState title="Нет накоплений" text="Добавьте плановые накопления и получите план по месяцам" />
@@ -6747,7 +6844,7 @@ function BudgetExpensesView({ data, setData }) {
                   Все
                 </button>
                 {usedCats.map(cid => {
-                  const cat = getBudgetCat(cid);
+                  const cat = cats.find(c => c.id === cid) || { emoji: '💡', label: cid };
                   return (
                     <button key={cid} onClick={() => setFilterCat(cid)}
                       className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${filterCat === cid ? 'bg-[var(--text)] text-white' : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
@@ -6759,7 +6856,7 @@ function BudgetExpensesView({ data, setData }) {
             )}
           </div>
 
-          {/* Table — horizontally scrollable on narrow screens */}
+          {/* Table */}
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm" style={{ minWidth: '680px' }}>
@@ -6776,7 +6873,7 @@ function BudgetExpensesView({ data, setData }) {
                 </thead>
                 <tbody>
                   {sorted.map((e, i) => {
-                    const cat      = getBudgetCat(e.category);
+                    const cat      = cats.find(c => c.id === e.category) || { emoji: '💡', label: e.category };
                     const monthly  = calcMonthly(e);
                     const mTotal   = monthsBetweenStr(e.startDate, e.targetDate);
                     const mLeft    = e.targetDate < curMonth ? 0 : monthsBetweenStr(curMonth, e.targetDate);
@@ -6826,12 +6923,21 @@ function BudgetExpensesView({ data, setData }) {
         </>
       )}
 
-      {editing && <BudgetExpenseModal expense={editing} onSave={save} onClose={() => setEditing(null)} />}
+      {editing && <BudgetExpenseModal expense={editing} cats={cats} onSave={save} onClose={() => setEditing(null)} />}
+      {showSettings && (
+        <BudgetCategoriesModal
+          title="Категории накоплений"
+          cats={cats}
+          defaultCats={BUDGET_CATS}
+          onSaveCategories={newCats => setData(d => ({ ...d, budgetCategories: newCats }))}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
     </div>
   );
 }
 
-function BudgetExpenseModal({ expense, onSave, onClose }) {
+function BudgetExpenseModal({ expense, cats, onSave, onClose }) {
   const [form, setForm] = useState({ ...expense });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
@@ -6857,7 +6963,7 @@ function BudgetExpenseModal({ expense, onSave, onClose }) {
         <div>
           <label>Категория</label>
           <select value={form.category} onChange={e => set('category', e.target.value)}>
-            {BUDGET_CATS.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.label}</option>)}
+            {(cats || BUDGET_CATS).map(c => <option key={c.id} value={c.id}>{c.emoji} {c.label}</option>)}
           </select>
         </div>
 
@@ -6919,6 +7025,301 @@ function BudgetExpenseModal({ expense, onSave, onClose }) {
     </Modal>
   );
 }
+
+// ---- Budget Categories Settings Modal ----
+function BudgetCategoriesModal({ title, cats, defaultCats, onSaveCategories, onClose }) {
+  const [list,      setList]      = useState([...cats]);
+  const [editId,    setEditId]    = useState(null);
+  const [editEmoji, setEditEmoji] = useState('');
+  const [editLabel, setEditLabel] = useState('');
+  const [newEmoji,  setNewEmoji]  = useState('');
+  const [newLabel,  setNewLabel]  = useState('');
+
+  const startEdit = (cat) => { setEditId(cat.id); setEditEmoji(cat.emoji); setEditLabel(cat.label); };
+  const cancelEdit = () => setEditId(null);
+  const saveEdit = () => {
+    if (!editLabel.trim()) return;
+    setList(l => l.map(c => c.id === editId ? { ...c, emoji: editEmoji.trim() || c.emoji, label: editLabel.trim() } : c));
+    setEditId(null);
+  };
+  const doAdd = () => {
+    if (!newLabel.trim()) return;
+    setList(l => [...l, { id: crypto.randomUUID(), emoji: newEmoji.trim() || '📌', label: newLabel.trim() }]);
+    setNewEmoji(''); setNewLabel('');
+  };
+  const doDelete = (id) => {
+    if (list.length <= 1) { alert('Нужна хотя бы одна категория'); return; }
+    setList(l => l.filter(c => c.id !== id));
+  };
+  const doReset = () => { if (confirm('Сбросить к стандартным категориям?')) setList([...defaultCats]); };
+
+  return (
+    <Modal title={title} onClose={onClose}>
+      <div className="space-y-1.5 max-h-[55vh] overflow-y-auto pr-1">
+        {list.map(cat => (
+          <div key={cat.id} className="flex items-center gap-2 bg-[var(--bg)] rounded-xl px-3 py-2">
+            {editId === cat.id ? (
+              <>
+                <input
+                  className="w-12 text-center text-lg border border-[var(--border)] rounded-lg p-1 bg-[var(--surface)]"
+                  value={editEmoji} onChange={e => setEditEmoji(e.target.value)} placeholder="🏠" />
+                <input
+                  className="flex-1 text-sm border border-[var(--border)] rounded-lg p-1.5 bg-[var(--surface)]"
+                  value={editLabel} onChange={e => setEditLabel(e.target.value)} placeholder="Название"
+                  onKeyDown={e => e.key === 'Enter' && saveEdit()} autoFocus />
+                <button onClick={saveEdit}   className="p-1.5 rounded-lg bg-[var(--text)] text-white hover:opacity-90"><Icon name="check" size={14} /></button>
+                <button onClick={cancelEdit} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="x"     size={14} /></button>
+              </>
+            ) : (
+              <>
+                <span className="text-xl w-8 text-center shrink-0">{cat.emoji}</span>
+                <span className="flex-1 text-sm">{cat.label}</span>
+                <button onClick={() => startEdit(cat)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit"  size={14} /></button>
+                <button onClick={() => doDelete(cat.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
+              </>
+            )}
+          </div>
+        ))}
+
+        {/* Добавить новую */}
+        <div className="flex items-center gap-2 border-2 border-dashed border-[var(--border)] rounded-xl px-3 py-2 mt-2">
+          <input
+            className="w-12 text-center text-lg border border-[var(--border)] rounded-lg p-1 bg-[var(--surface)]"
+            value={newEmoji} onChange={e => setNewEmoji(e.target.value)} placeholder="🏠" />
+          <input
+            className="flex-1 text-sm border border-[var(--border)] rounded-lg p-1.5 bg-[var(--surface)]"
+            value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Новая категория"
+            onKeyDown={e => e.key === 'Enter' && doAdd()} />
+          <button onClick={doAdd} className="p-1.5 rounded-lg bg-[var(--text)] text-white hover:opacity-90"><Icon name="plus" size={14} /></button>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 mt-5 pt-4 border-t border-[var(--border)]">
+        <button onClick={doReset} className="btn-secondary text-sm">Сбросить</button>
+        <div className="flex-1" />
+        <button onClick={onClose} className="btn-secondary">Отмена</button>
+        <button onClick={() => { onSaveCategories(list); onClose(); }} className="btn-primary">Сохранить</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ---- Recurring Payments (Постоянные) ----
+function BudgetRecurringView({ data, setData }) {
+  const [editing,      setEditing]      = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [filterCat,    setFilterCat]    = useState('all');
+  const [sortCol,      setSortCol]      = useState('name');
+  const [sortDir,      setSortDir]      = useState('asc');
+
+  const cats  = getRecurringCats(data);
+  const items = (data.budgetRecurring || []).filter(r => !r.archived);
+
+  const save = (item) => {
+    setData(d => {
+      const list = d.budgetRecurring || [];
+      const exists = list.find(r => r.id === item.id);
+      return { ...d, budgetRecurring: exists ? list.map(r => r.id === item.id ? item : r) : [...list, item] };
+    });
+    setEditing(null);
+  };
+
+  const remove = (id) => {
+    if (!confirm('Удалить платёж?')) return;
+    setData(d => ({ ...d, budgetRecurring: (d.budgetRecurring || []).filter(r => r.id !== id) }));
+  };
+
+  const newItem = () => setEditing({
+    id: crypto.randomUUID(), name: '', category: cats[0]?.id || 'other',
+    amount: '', notes: '', archived: false,
+  });
+
+  const toggleSort = (col) => {
+    if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortCol(col); setSortDir('asc'); }
+  };
+
+  const usedCats = [...new Set(items.map(r => r.category))];
+
+  const filtered = items.filter(r => filterCat === 'all' || r.category === filterCat);
+
+  const sorted = [...filtered].sort((a, b) => {
+    const vals = {
+      name:     [a.name, b.name],
+      category: [(cats.find(c => c.id === a.category) || {}).label || 'Я', (cats.find(c => c.id === b.category) || {}).label || 'Я'],
+      amount:   [a.amount || 0, b.amount || 0],
+    };
+    const [av, bv] = vals[sortCol] || vals.name;
+    const cmp = typeof av === 'string' ? av.localeCompare(bv, 'ru') : av - bv;
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+
+  const totalMonthly = sorted.reduce((s, r) => s + (r.amount || 0), 0);
+
+  const SortArrow = ({ col }) => (
+    <span className={`ml-0.5 text-[11px] ${sortCol === col ? 'opacity-100' : 'opacity-25'}`}>
+      {sortCol === col ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+    </span>
+  );
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-4">
+        <button onClick={newItem} className="btn-primary inline-flex items-center gap-2">
+          <Icon name="plus" size={18} />Добавить платёж
+        </button>
+        <button onClick={() => setShowSettings(true)}
+          className="p-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
+          title="Настройки категорий">
+          <Icon name="settings" size={16} />
+        </button>
+      </div>
+
+      {!items.length ? (
+        <EmptyState title="Нет постоянных платежей" text="Добавьте регулярные расходы: подписки, интернет, аренду и прочее" />
+      ) : (
+        <>
+          {/* Сводка */}
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 mb-4 flex items-center justify-between gap-4">
+            <div>
+              <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-1">Итого в месяц</div>
+              <div className="font-display text-3xl">{formatRub(totalMonthly)} <span className="text-base font-normal text-[var(--text-muted)]">₽</span></div>
+            </div>
+            <div className="text-right">
+              <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-1">Платежей</div>
+              <div className="font-display text-3xl">{items.length}</div>
+            </div>
+          </div>
+
+          {/* Фильтр по категории */}
+          {usedCats.length > 1 && (
+            <div className="flex flex-wrap gap-2 mb-4">
+              <button onClick={() => setFilterCat('all')}
+                className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${filterCat === 'all' ? 'bg-[var(--text)] text-white' : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
+                Все
+              </button>
+              {usedCats.map(cid => {
+                const cat = cats.find(c => c.id === cid) || { emoji: '📌', label: cid };
+                return (
+                  <button key={cid} onClick={() => setFilterCat(cid)}
+                    className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${filterCat === cid ? 'bg-[var(--text)] text-white' : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
+                    {cat.emoji} {cat.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Table */}
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm" style={{ minWidth: '480px' }}>
+                <thead>
+                  <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
+                    {[
+                      { col: 'name',     label: 'Название',  cls: 'text-left'  },
+                      { col: 'category', label: 'Категория', cls: 'text-left'  },
+                      { col: 'amount',   label: 'Сумма/мес', cls: 'text-right' },
+                    ].map(({ col, label, cls }) => (
+                      <th key={col} onClick={() => toggleSort(col)}
+                        className={`px-3 py-3 text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] cursor-pointer hover:text-[var(--text)] transition-colors select-none whitespace-nowrap ${cls}`}>
+                        {label}<SortArrow col={col} />
+                      </th>
+                    ))}
+                    <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap">Заметка</th>
+                    <th className="px-3 py-3 w-16" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {sorted.map((r, i) => {
+                    const cat = cats.find(c => c.id === r.category) || { emoji: '📌', label: r.category };
+                    return (
+                      <tr key={r.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${i % 2 === 1 ? 'bg-[var(--bg)]/50' : ''}`}>
+                        <td className="px-3 py-3 font-medium whitespace-nowrap">{r.name}</td>
+                        <td className="px-3 py-3 whitespace-nowrap text-[var(--text-muted)]">{cat.emoji} {cat.label}</td>
+                        <td className="px-3 py-3 text-right whitespace-nowrap font-semibold text-[var(--text)]">{formatRub(r.amount)} ₽</td>
+                        <td className="px-3 py-3 text-[var(--text-subtle)] text-sm max-w-[200px] truncate">{r.notes || '—'}</td>
+                        <td className="px-2 py-3">
+                          <div className="flex gap-1 justify-end">
+                            <button onClick={() => setEditing(r)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit"  size={14} /></button>
+                            <button onClick={() => remove(r.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] flex justify-between items-center">
+              <span className="text-xs text-[var(--text-subtle)] uppercase tracking-wide">{sorted.length} позиций</span>
+              <span className="font-display text-base">{formatRub(totalMonthly)} ₽/мес</span>
+            </div>
+          </div>
+        </>
+      )}
+
+      {editing && <BudgetRecurringModal item={editing} cats={cats} onSave={save} onClose={() => setEditing(null)} />}
+      {showSettings && (
+        <BudgetCategoriesModal
+          title="Категории постоянных платежей"
+          cats={cats}
+          defaultCats={BUDGET_RECURRING_CATS}
+          onSaveCategories={newCats => setData(d => ({ ...d, budgetRecurringCategories: newCats }))}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function BudgetRecurringModal({ item, cats, onSave, onClose }) {
+  const [form, setForm] = useState({ ...item });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const submit = () => {
+    if (!form.name.trim()) return;
+    if (!form.amount || Number(form.amount) <= 0) return;
+    onSave({ ...form, amount: Number(form.amount) });
+  };
+
+  return (
+    <Modal title={item.name ? 'Редактировать платёж' : 'Новый платёж'} onClose={onClose}>
+      <div className="space-y-4">
+        <div>
+          <label>Название</label>
+          <input value={form.name} onChange={e => set('name', e.target.value)} placeholder="Netflix, Интернет..." />
+        </div>
+
+        <div>
+          <label>Категория</label>
+          <select value={form.category} onChange={e => set('category', e.target.value)}>
+            {cats.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.label}</option>)}
+          </select>
+        </div>
+
+        <div>
+          <label>Сумма в месяц (₽)</label>
+          <input type="number" inputMode="numeric" min="1"
+            value={form.amount || ''}
+            onChange={e => set('amount', e.target.value)}
+            placeholder="1 000" />
+        </div>
+
+        <div>
+          <label>Заметка (необязательно)</label>
+          <textarea value={form.notes || ''} onChange={e => set('notes', e.target.value)} rows={2} placeholder="Дополнительная информация..." />
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit}  className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 
 // ============== SHARED ==============
 function Modal({ title, children, onClose }) {
