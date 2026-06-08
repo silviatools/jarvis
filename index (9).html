@@ -6754,8 +6754,8 @@ function BudgetMonthlyView({ data, setData }) {
                   return (
                     <React.Fragment key={cat.id}>
                       {/* Category total row */}
-                      <tr className={`${catHdrBg || 'bg-[var(--bg)]/80'}`}>
-                        <td className={`sticky left-0 z-10 ${stickyBg} px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs`}>
+                      <tr className="bg-gray-100">
+                        <td className="sticky left-0 z-10 bg-gray-100 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs">
                           {cat.emoji && <span className="mr-1.5">{cat.emoji}</span>}
                           <span className={`uppercase tracking-wide ${catLblCls}`}>{cat.label}</span>
                           {isAutoCat && <span className="ml-2 text-[9px] font-normal opacity-50 normal-case tracking-normal">авто</span>}
