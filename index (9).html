@@ -217,6 +217,8 @@ const DEFAULT_DATA = () => ({
   budgetExpenses: [],
   budgetCategories: [],
   budgetRecurring: [],
+  budgetPlanCategories: [],
+  budgetPlanValues: {},
   budgetRecurringCategories: [],
   settings: { ...DEFAULT_SETTINGS },
 });
@@ -6571,161 +6573,406 @@ function BudgetView({ data, setData }) {
           </button>
         ))}
       </div>
-      {budgetTab === 'monthly'   && <BudgetMonthlyView   data={data} />}
+      {budgetTab === 'monthly'   && <BudgetMonthlyView   data={data} setData={setData} />}
       {budgetTab === 'expenses'  && <BudgetExpensesView  data={data} setData={setData} />}
       {budgetTab === 'recurring' && <BudgetRecurringView data={data} setData={setData} />}
     </main>
   );
 }
 
-function BudgetMonthlyView({ data }) {
-  const expenses = (data.budgetExpenses || []).filter(e => !e.archived && e.startDate && e.targetDate && e.amount > 0);
-  const curMonth = getCurrentMonthStr();
+function BudgetMonthlyView({ data, setData }) {
+  const curYear = new Date().getFullYear();
+  const [year,         setYear]         = useState(curYear);
+  const [showSettings, setShowSettings] = useState(false);
+  const [editCell,     setEditCell]     = useState(null); // {itemId, month}
+  const [editVal,      setEditVal]      = useState('');
 
-  if (!expenses.length) return (
-    <EmptyState title="Нет плановых накоплений" text="Добавьте накопления во вкладке «Накопления»" />
-  );
+  const cats = data.budgetPlanCategories || [];
+  const vals = data.budgetPlanValues     || {};
 
-  // Range: from earliest startDate (≥ now) to latest targetDate
-  const firstMonth = [curMonth, ...expenses.map(e => e.startDate)].sort()[0] < curMonth
-    ? curMonth
-    : [...expenses.map(e => e.startDate)].sort()[0];
-  const lastMonth  = [...expenses.map(e => e.targetDate)].sort().reverse()[0];
+  const MONTH_NAMES = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
+  const months = MONTH_NAMES.map((_, i) => {
+    const m = String(i + 1).padStart(2, '0');
+    return `${year}-${m}`;
+  });
 
-  const months = [];
-  let m = firstMonth > curMonth ? firstMonth : curMonth;
-  while (m <= lastMonth && months.length < 48) {
-    const contrib = expenses.filter(e => e.startDate <= m && e.targetDate >= m);
-    const total   = contrib.reduce((s, e) => s + calcMonthly(e), 0);
-    months.push({ month: m, contrib, total });
-    m = addMonthsStr(m, 1);
-  }
+  const getVal     = (itemId, month) => vals[`${itemId}_${month}`] || 0;
+  const catTotal   = (cat, month) => (cat.items || []).reduce((s, it) => s + getVal(it.id, month), 0);
+  const grandTotal = (month) => cats.flatMap(c => c.items || []).reduce((s, it) => s + getVal(it.id, month), 0);
 
-  const maxTotal = Math.max(...months.map(x => x.total), 1);
-  const totalAll  = expenses.reduce((s, e) => s + (e.amount || 0), 0);
-  const curTotal  = months[0]?.total || 0;
-
-  return (
-    <div className="space-y-4">
-      {/* Summary strip */}
-      <div className="grid grid-cols-3 gap-3">
-        {[
-          { label: 'Целей',       value: expenses.length,        unit: '' },
-          { label: 'Всего, ₽',   value: formatRub(totalAll),    unit: '' },
-          { label: 'Сейчас/мес', value: formatRub(curTotal)+' ₽', unit: '' },
-        ].map(s => (
-          <div key={s.label} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 text-center">
-            <div className="font-display text-2xl leading-tight">{s.value}</div>
-            <div className="text-xs text-[var(--text-subtle)] mt-1">{s.label}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Month timeline */}
-      {months.map(({ month, contrib, total }) => (
-        <div key={month} className={`bg-[var(--surface)] border rounded-2xl overflow-hidden ${month === curMonth ? 'border-[var(--text)]' : 'border-[var(--border)]'}`}>
-          <div className="px-5 pt-4 pb-2 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              {month === curMonth && <span className="text-[10px] uppercase tracking-widest bg-[var(--text)] text-white px-2 py-0.5 rounded-full">сейчас</span>}
-              <span className="font-medium">{formatMonthFull(month)}</span>
-            </div>
-            <span className="font-display text-xl shrink-0">{formatRub(total)} <span className="text-sm text-[var(--text-subtle)] font-normal">₽</span></span>
-          </div>
-          <div className="px-5 pb-2">
-            <div className="h-1.5 bg-[var(--bg)] rounded-full overflow-hidden">
-              <div className="h-full bg-[var(--text)] rounded-full transition-all" style={{ width: `${(total / maxTotal) * 100}%` }} />
-            </div>
-          </div>
-          <div className="px-5 pb-4 space-y-2 mt-1">
-            {contrib.map(e => {
-              const cat = getBudgetCat(e.category, data);
-              const pct = Math.round((calcMonthly(e) / total) * 100);
-              return (
-                <div key={e.id} className="flex items-center gap-2">
-                  <span className="text-lg shrink-0">{cat.emoji}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm text-[var(--text-muted)] truncate">{e.name}</span>
-                      <span className="text-sm font-medium shrink-0">{formatRub(calcMonthly(e))} ₽</span>
-                    </div>
-                    <div className="h-1 bg-[var(--bg)] rounded-full mt-1 overflow-hidden">
-                      <div className="h-full bg-[var(--border-strong)] rounded-full" style={{ width: `${pct}%` }} />
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function BudgetMultiSelect({ label, options, selected, onChange }) {
-  const [open, setOpen] = useState(false);
-  const hasSelected = selected.length > 0;
-
-  const toggle = (val) => {
-    onChange(selected.includes(val) ? selected.filter(v => v !== val) : [...selected, val]);
+  const startEdit = (itemId, month) => {
+    const v = getVal(itemId, month);
+    setEditCell({ itemId, month });
+    setEditVal(v > 0 ? String(v) : '');
   };
 
-  return (
-    <div className="relative w-36">
-      <button
-        onClick={() => setOpen(v => !v)}
-        className={`w-full flex items-center justify-between gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${
-          hasSelected || open
-            ? 'bg-[var(--text)] text-white border-[var(--text)]'
-            : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-strong)]'
-        }`}
-      >
-        <span>{label}{hasSelected ? ` · ${selected.length}` : ''}</span>
-        <Icon name="chevronDown" size={14} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s ease' }} />
-      </button>
+  const commitEdit = (itemId, month, value) => {
+    const num = parseInt(value.replace(/\s/g, ''), 10);
+    setData(d => ({
+      ...d,
+      budgetPlanValues: { ...(d.budgetPlanValues || {}), [`${itemId}_${month}`]: isNaN(num) || num < 0 ? 0 : num }
+    }));
+    setEditCell(null);
+  };
 
-      {open && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-full mt-1.5 z-20 bg-[var(--surface)] border border-[var(--border)] rounded-2xl shadow-lg min-w-full max-h-64 overflow-y-auto fade-in" style={{ overscrollBehavior: 'contain' }}>
-            <div className="py-1">
-              {options.map(opt => (
-                <button
-                  key={opt.value}
-                  onClick={(e) => { e.stopPropagation(); toggle(opt.value); }}
-                  className="w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-all hover:bg-black/[0.04] text-left"
-                >
-                  <div className={`w-4 h-4 rounded-[4px] border flex items-center justify-center flex-shrink-0 transition-all ${
-                    selected.includes(opt.value)
-                      ? 'bg-[var(--text)] border-[var(--text)]'
-                      : 'border-[var(--border-strong)] bg-[var(--surface)]'
-                  }`}>
-                    {selected.includes(opt.value) && (
-                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M20 6 9 17l-5-5"/>
-                      </svg>
-                    )}
-                  </div>
-                  <span className={selected.includes(opt.value) ? 'text-[var(--text)] font-medium' : 'text-[var(--text-muted)]'}>
-                    {opt.label}
-                  </span>
-                </button>
-              ))}
-            </div>
-            <div className="border-t border-[var(--border)] px-3 py-2">
-              <button
-                onClick={(e) => { e.stopPropagation(); onChange([]); setOpen(false); }}
-                className="w-full text-xs text-[var(--text-subtle)] hover:text-[var(--text)] py-1.5 transition-colors font-medium tracking-wide uppercase"
-              >
-                Сбросить
-              </button>
-            </div>
+  const handleKeyDown = (e, itemId, month) => {
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); commitEdit(itemId, month, editVal); }
+    if (e.key === 'Escape') setEditCell(null);
+  };
+
+  const curMonth = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+
+  return (
+    <div>
+      {/* Toolbar */}
+      <div className="flex items-center gap-3 mb-4">
+        <div className="flex items-center gap-0 bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden">
+          <button onClick={() => setYear(y => y - 1)}
+            className="px-3 py-2 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-black/5 transition-colors text-base leading-none">‹</button>
+          <span className="px-3 py-2 text-sm font-semibold min-w-[56px] text-center">{year}</span>
+          <button onClick={() => setYear(y => y + 1)}
+            className="px-3 py-2 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-black/5 transition-colors text-base leading-none">›</button>
+        </div>
+        <button onClick={() => setShowSettings(true)}
+          className="p-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
+          title="Настройки статей бюджета">
+          <Icon name="settings" size={16} />
+        </button>
+        {year !== curYear && (
+          <button onClick={() => setYear(curYear)}
+            className="px-3 py-1.5 rounded-xl text-xs border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">
+            Текущий год
+          </button>
+        )}
+      </div>
+
+      {!cats.length ? (
+        <div className="text-center py-16 text-[var(--text-subtle)]">
+          <div className="text-4xl mb-3">📊</div>
+          <div className="font-medium mb-1">Нет статей бюджета</div>
+          <div className="text-sm mb-4">Нажмите на шестерёнку, чтобы добавить категории и статьи</div>
+          <button onClick={() => setShowSettings(true)} className="btn-primary inline-flex items-center gap-2">
+            <Icon name="settings" size={16} />Настроить статьи
+          </button>
+        </div>
+      ) : (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="text-sm border-collapse" style={{minWidth: `${180 + months.length * 125}px`}}>
+              <thead>
+                {/* Month names row */}
+                <tr>
+                  <th className="sticky left-0 z-20 bg-[var(--bg)] px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] border-b border-r border-[var(--border)]"
+                    style={{minWidth:'180px'}}>
+                    Статья
+                  </th>
+                  {months.map((m, i) => (
+                    <th key={m} colSpan={2}
+                      className={`px-1 py-2.5 text-center text-xs font-semibold uppercase tracking-wide border-b border-[var(--border)] whitespace-nowrap
+                        ${m === curMonth ? 'text-[var(--text)] bg-[var(--bg)]' : 'text-[var(--text-subtle)] bg-[var(--bg)]'}`}
+                      style={{minWidth:'120px'}}>
+                      {m === curMonth ? <span className="px-1.5 py-0.5 rounded bg-[var(--text)] text-white text-[10px]">{MONTH_NAMES[i]}</span> : MONTH_NAMES[i]}
+                    </th>
+                  ))}
+                </tr>
+                {/* Plan / Fact sub-header */}
+                <tr className="bg-[var(--bg)]">
+                  <th className="sticky left-0 z-20 bg-[var(--bg)] border-b border-r border-[var(--border)]" />
+                  {months.map(m => (
+                    <React.Fragment key={m}>
+                      <th className="px-1 py-1 text-center text-[10px] font-medium text-[var(--text-muted)] border-b border-[var(--border)] w-[62px]">
+                        План
+                      </th>
+                      <th className="px-1 py-1 text-center text-[10px] font-medium text-[var(--border-strong)] border-b border-[var(--border)] w-[54px]">
+                        Факт
+                      </th>
+                    </React.Fragment>
+                  ))}
+                </tr>
+              </thead>
+
+              <tbody>
+                {cats.map((cat) => (
+                  <React.Fragment key={cat.id}>
+                    {/* Category total row */}
+                    <tr className="bg-[var(--bg)]/80">
+                      <td className="sticky left-0 z-10 bg-[var(--bg)] px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs">
+                        {cat.emoji && <span className="mr-1.5">{cat.emoji}</span>}
+                        <span className="text-[var(--text)] uppercase tracking-wide">{cat.label}</span>
+                      </td>
+                      {months.map(m => {
+                        const t = catTotal(cat, m);
+                        return (
+                          <React.Fragment key={m}>
+                            <td className="px-1 py-2 text-center text-xs font-semibold text-[var(--text)] border-b border-[var(--border)] whitespace-nowrap">
+                              {t > 0 ? formatRub(t) : <span className="text-[var(--border)]">—</span>}
+                            </td>
+                            <td className="px-1 py-2 text-center text-[10px] text-[var(--border-strong)] border-b border-[var(--border)]">—</td>
+                          </React.Fragment>
+                        );
+                      })}
+                    </tr>
+                    {/* Item rows */}
+                    {(cat.items || []).map((item, ii) => (
+                      <tr key={item.id} className={`border-b border-[var(--border)] hover:bg-black/[0.015] transition-colors ${ii % 2 === 1 ? 'bg-[var(--bg)]/20' : ''}`}>
+                        <td className="sticky left-0 z-10 bg-[var(--surface)] px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
+                          <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{item.label}</span>
+                        </td>
+                        {months.map(m => {
+                          const v = getVal(item.id, m);
+                          const isEditing = editCell?.itemId === item.id && editCell?.month === m;
+                          return (
+                            <React.Fragment key={m}>
+                              <td className="px-1 py-1 w-[62px]">
+                                {isEditing ? (
+                                  <input
+                                    type="number"
+                                    inputMode="numeric"
+                                    className="w-full text-center text-xs px-1 py-1 border border-[var(--text)] rounded-md focus:outline-none bg-white"
+                                    value={editVal}
+                                    onChange={e => setEditVal(e.target.value)}
+                                    onBlur={() => commitEdit(item.id, m, editVal)}
+                                    onKeyDown={e => handleKeyDown(e, item.id, m)}
+                                    autoFocus
+                                  />
+                                ) : (
+                                  <button
+                                    onClick={() => startEdit(item.id, m)}
+                                    className="w-full text-center text-xs px-1 py-1.5 rounded hover:bg-[var(--border)]/40 transition-colors whitespace-nowrap font-medium text-[var(--text)]"
+                                  >
+                                    {v > 0 ? formatRub(v) : <span className="text-[var(--border)] text-[10px]">·</span>}
+                                  </button>
+                                )}
+                              </td>
+                              <td className="px-1 py-1 text-center text-[10px] text-[var(--border)] w-[54px]">—</td>
+                            </React.Fragment>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </React.Fragment>
+                ))}
+
+                {/* Grand total */}
+                <tr className="border-t-2 border-[var(--border-strong)] bg-[var(--bg)]">
+                  <td className="sticky left-0 z-10 bg-[var(--bg)] px-4 py-3 border-r border-[var(--border)] font-bold text-xs uppercase tracking-wide text-[var(--text)]">
+                    Итого
+                  </td>
+                  {months.map(m => {
+                    const t = grandTotal(m);
+                    return (
+                      <React.Fragment key={m}>
+                        <td className="px-1 py-3 text-center text-xs font-bold text-[var(--text)] whitespace-nowrap">
+                          {t > 0 ? formatRub(t) : '—'}
+                        </td>
+                        <td className="px-1 py-3 text-center text-[10px] text-[var(--border-strong)]">—</td>
+                      </React.Fragment>
+                    );
+                  })}
+                </tr>
+              </tbody>
+            </table>
           </div>
-        </>
+        </div>
+      )}
+
+      {showSettings && (
+        <BudgetPlanSettingsModal data={data} setData={setData} onClose={() => setShowSettings(false)} />
       )}
     </div>
   );
 }
+
+function BudgetPlanSettingsModal({ data, setData, onClose }) {
+  const [cats,        setCats]        = useState(() => JSON.parse(JSON.stringify(data.budgetPlanCategories || [])));
+  const [expanded,    setExpanded]    = useState({});
+  const [editCat,     setEditCat]     = useState(null); // {id, emoji, label}
+  const [editItem,    setEditItem]    = useState(null); // {catId, id, label}
+  const [newCatEmoji, setNewCatEmoji] = useState('');
+  const [newCatLabel, setNewCatLabel] = useState('');
+  const [newItemLbls, setNewItemLbls] = useState({});  // {catId: string}
+
+  const save = () => {
+    setData(d => ({ ...d, budgetPlanCategories: cats }));
+    onClose();
+  };
+
+  /* ---- Category ops ---- */
+  const addCat = () => {
+    if (!newCatLabel.trim()) return;
+    const nc = { id: crypto.randomUUID(), emoji: newCatEmoji.trim() || '📊', label: newCatLabel.trim(), items: [] };
+    setCats(c => [...c, nc]);
+    setExpanded(e => ({ ...e, [nc.id]: true }));
+    setNewCatEmoji(''); setNewCatLabel('');
+  };
+  const removeCat = (id) => {
+    if (!confirm('Удалить категорию со всеми статьями?')) return;
+    setCats(c => c.filter(cat => cat.id !== id));
+  };
+  const moveCat = (id, dir) => {
+    setCats(c => {
+      const idx = c.findIndex(cat => cat.id === id);
+      if (idx + dir < 0 || idx + dir >= c.length) return c;
+      const n = [...c]; [n[idx], n[idx + dir]] = [n[idx + dir], n[idx]]; return n;
+    });
+  };
+  const saveCatEdit = () => {
+    if (!editCat?.label?.trim()) return;
+    setCats(c => c.map(cat => cat.id === editCat.id
+      ? { ...cat, emoji: editCat.emoji.trim() || '📊', label: editCat.label.trim() } : cat));
+    setEditCat(null);
+  };
+
+  /* ---- Item ops ---- */
+  const addItem = (catId) => {
+    const lbl = (newItemLbls[catId] || '').trim();
+    if (!lbl) return;
+    setCats(c => c.map(cat => cat.id === catId
+      ? { ...cat, items: [...(cat.items || []), { id: crypto.randomUUID(), label: lbl }] } : cat));
+    setNewItemLbls(n => ({ ...n, [catId]: '' }));
+  };
+  const removeItem = (catId, itemId) => {
+    setCats(c => c.map(cat => cat.id === catId
+      ? { ...cat, items: (cat.items || []).filter(it => it.id !== itemId) } : cat));
+  };
+  const moveItem = (catId, itemId, dir) => {
+    setCats(c => c.map(cat => {
+      if (cat.id !== catId) return cat;
+      const items = [...(cat.items || [])];
+      const idx = items.findIndex(it => it.id === itemId);
+      if (idx + dir < 0 || idx + dir >= items.length) return cat;
+      [items[idx], items[idx + dir]] = [items[idx + dir], items[idx]];
+      return { ...cat, items };
+    }));
+  };
+  const saveItemEdit = () => {
+    if (!editItem?.label?.trim()) return;
+    setCats(c => c.map(cat => cat.id === editItem.catId
+      ? { ...cat, items: (cat.items || []).map(it => it.id === editItem.id ? { ...it, label: editItem.label.trim() } : it) } : cat));
+    setEditItem(null);
+  };
+
+  return (
+    <Modal title="Структура бюджета" onClose={onClose}>
+      <div className="max-h-[62vh] overflow-y-auto space-y-2 pr-0.5">
+
+        {cats.length === 0 && (
+          <div className="text-center py-6 text-[var(--text-subtle)] text-sm">Добавьте первую категорию ниже</div>
+        )}
+
+        {cats.map((cat, ci) => (
+          <div key={cat.id} className="border border-[var(--border)] rounded-xl overflow-hidden">
+
+            {/* Category header row */}
+            <div className={`flex items-center gap-1.5 px-3 py-2.5 ${expanded[cat.id] ? '' : ''} bg-[var(--bg)]`}>
+              {editCat?.id === cat.id ? (
+                <div className="flex items-center gap-1.5 flex-1">
+                  <input className="w-10 text-center text-base border border-[var(--border)] rounded-lg p-1 bg-[var(--surface)]"
+                    value={editCat.emoji} onChange={e => setEditCat(ec => ({ ...ec, emoji: e.target.value }))} placeholder="📊" />
+                  <input className="flex-1 text-sm font-semibold border border-[var(--border)] rounded-lg p-1.5 bg-[var(--surface)]"
+                    value={editCat.label} onChange={e => setEditCat(ec => ({ ...ec, label: e.target.value }))}
+                    onKeyDown={e => e.key === 'Enter' && saveCatEdit()} autoFocus />
+                  <button onClick={saveCatEdit}        className="p-1.5 rounded-lg bg-[var(--text)] text-white shrink-0"><Icon name="check" size={13} /></button>
+                  <button onClick={() => setEditCat(null)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0"><Icon name="x" size={13} /></button>
+                </div>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setExpanded(e => ({ ...e, [cat.id]: !e[cat.id] }))}
+                    className="flex-1 flex items-center gap-2 text-left min-w-0">
+                    <span className="text-lg shrink-0">{cat.emoji || '📊'}</span>
+                    <span className="font-semibold text-sm truncate">{cat.label}</span>
+                    <span className="text-xs text-[var(--text-subtle)] shrink-0">({(cat.items || []).length})</span>
+                    <Icon name="chevronDown" size={14}
+                      style={{ transform: expanded[cat.id] ? 'rotate(180deg)' : 'none', transition: 'transform .2s', color: 'var(--text-subtle)', marginLeft: 'auto', flexShrink: 0 }} />
+                  </button>
+                  <button onClick={() => moveCat(cat.id, -1)} disabled={ci === 0}
+                    className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
+                    <Icon name="chevronDown" size={13} style={{transform:'rotate(180deg)'}} />
+                  </button>
+                  <button onClick={() => moveCat(cat.id, 1)} disabled={ci === cats.length - 1}
+                    className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
+                    <Icon name="chevronDown" size={13} />
+                  </button>
+                  <button onClick={() => setEditCat({ id: cat.id, emoji: cat.emoji || '', label: cat.label })}
+                    className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0"><Icon name="edit" size={13} /></button>
+                  <button onClick={() => removeCat(cat.id)}
+                    className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0"><Icon name="trash" size={13} /></button>
+                </>
+              )}
+            </div>
+
+            {/* Items list (expanded) */}
+            {expanded[cat.id] && (
+              <div className="border-t border-[var(--border)] px-3 py-2 space-y-1">
+                {(cat.items || []).length === 0 && (
+                  <div className="text-xs text-[var(--text-subtle)] pl-5 py-1">Нет статей — добавьте ниже</div>
+                )}
+                {(cat.items || []).map((item, ii) => (
+                  <div key={item.id} className="flex items-center gap-1.5 pl-4">
+                    {editItem?.id === item.id ? (
+                      <div className="flex items-center gap-1.5 flex-1">
+                        <input className="flex-1 text-sm border border-[var(--border)] rounded-lg p-1.5 bg-[var(--surface)]"
+                          value={editItem.label} onChange={e => setEditItem(ei => ({ ...ei, label: e.target.value }))}
+                          onKeyDown={e => e.key === 'Enter' && saveItemEdit()} autoFocus />
+                        <button onClick={saveItemEdit}          className="p-1.5 rounded-lg bg-[var(--text)] text-white shrink-0"><Icon name="check" size={12} /></button>
+                        <button onClick={() => setEditItem(null)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0"><Icon name="x" size={12} /></button>
+                      </div>
+                    ) : (
+                      <>
+                        <span className="w-1 h-1 rounded-full bg-[var(--border-strong)] shrink-0 ml-1" />
+                        <span className="flex-1 text-sm text-[var(--text-muted)] truncate">{item.label}</span>
+                        <button onClick={() => moveItem(cat.id, item.id, -1)} disabled={ii === 0}
+                          className="p-1 rounded hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
+                          <Icon name="chevronDown" size={12} style={{transform:'rotate(180deg)'}} />
+                        </button>
+                        <button onClick={() => moveItem(cat.id, item.id, 1)} disabled={ii === (cat.items || []).length - 1}
+                          className="p-1 rounded hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
+                          <Icon name="chevronDown" size={12} />
+                        </button>
+                        <button onClick={() => setEditItem({ catId: cat.id, id: item.id, label: item.label })}
+                          className="p-1 rounded hover:bg-black/5 text-[var(--text-muted)] shrink-0"><Icon name="edit" size={12} /></button>
+                        <button onClick={() => removeItem(cat.id, item.id)}
+                          className="p-1 rounded hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0"><Icon name="trash" size={12} /></button>
+                      </>
+                    )}
+                  </div>
+                ))}
+                {/* Add item */}
+                <div className="flex items-center gap-1.5 pl-4 pt-1">
+                  <span className="w-1 h-1 shrink-0 ml-1" />
+                  <input className="flex-1 text-sm border border-dashed border-[var(--border)] rounded-lg p-1.5 bg-transparent"
+                    value={newItemLbls[cat.id] || ''}
+                    onChange={e => setNewItemLbls(n => ({ ...n, [cat.id]: e.target.value }))}
+                    placeholder="Новая статья..."
+                    onKeyDown={e => e.key === 'Enter' && addItem(cat.id)} />
+                  <button onClick={() => addItem(cat.id)} className="p-1.5 rounded-lg bg-[var(--text)] text-white hover:opacity-90 shrink-0"><Icon name="plus" size={13} /></button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+
+        {/* Add category */}
+        <div className="flex items-center gap-2 border-2 border-dashed border-[var(--border)] rounded-xl px-3 py-2.5 mt-1">
+          <input className="w-10 text-center text-base border border-[var(--border)] rounded-lg p-1 bg-[var(--surface)]"
+            value={newCatEmoji} onChange={e => setNewCatEmoji(e.target.value)} placeholder="📊" />
+          <input className="flex-1 text-sm border border-[var(--border)] rounded-lg p-1.5 bg-[var(--surface)]"
+            value={newCatLabel} onChange={e => setNewCatLabel(e.target.value)}
+            placeholder="Новая категория..."
+            onKeyDown={e => e.key === 'Enter' && addCat()} />
+          <button onClick={addCat} className="p-1.5 rounded-lg bg-[var(--text)] text-white hover:opacity-90 shrink-0"><Icon name="plus" size={14} /></button>
+        </div>
+      </div>
+
+      <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
+        <button onClick={onClose} className="btn-secondary">Отмена</button>
+        <button onClick={save}    className="btn-primary flex-1">Сохранить</button>
+      </div>
+    </Modal>
+  );
+}
+
 
 function BudgetExpensesView({ data, setData }) {
   const [editing,      setEditing]      = useState(null);
@@ -6820,22 +7067,12 @@ function BudgetExpensesView({ data, setData }) {
 
   return (
     <div>
-      <div className="flex items-center gap-2 mb-4">
-        <button onClick={newExp} className="btn-primary inline-flex items-center gap-2">
-          <Icon name="plus" size={18} />Добавить накопление
+      <div className="flex items-center gap-2 flex-wrap mb-6">
+        <button onClick={newExp} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
+          <Icon name="plus" size={16} />Добавить накопление
         </button>
-        <button onClick={() => setShowSettings(true)}
-          className="p-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
-          title="Настройки категорий">
-          <Icon name="settings" size={16} />
-        </button>
-      </div>
-
-      {!expenses.length ? (
-        <EmptyState title="Нет накоплений" text="Добавьте плановые накопления и получите план по месяцам" />
-      ) : (
-        <>
-          <div className="inline-flex gap-2 mb-4">
+        {expenses.length > 0 && (
+          <>
             <BudgetMultiSelect
               label="Месяц"
               options={monthOptions}
@@ -6848,8 +7085,19 @@ function BudgetExpensesView({ data, setData }) {
               selected={filterCats}
               onChange={setFilterCats}
             />
-          </div>
+          </>
+        )}
+        <button onClick={() => setShowSettings(true)}
+          className="inline-flex items-center justify-center px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
+          title="Настройки категорий">
+          <Icon name="settings" size={16} />
+        </button>
+      </div>
 
+      {!expenses.length ? (
+        <EmptyState title="Нет накоплений" text="Добавьте плановые накопления и получите план по месяцам" />
+      ) : (
+        <>
           {/* Table */}
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
             <div className="overflow-x-auto">
@@ -7102,7 +7350,7 @@ function BudgetCategoriesModal({ title, cats, defaultCats, onSaveCategories, onC
 function BudgetRecurringView({ data, setData }) {
   const [editing,      setEditing]      = useState(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [filterCat,    setFilterCat]    = useState('all');
+  const [filterCats,   setFilterCats]   = useState([]);
   const [sortCol,      setSortCol]      = useState('name');
   const [sortDir,      setSortDir]      = useState('asc');
 
@@ -7133,9 +7381,12 @@ function BudgetRecurringView({ data, setData }) {
     else { setSortCol(col); setSortDir('asc'); }
   };
 
-  const usedCats = [...new Set(items.map(r => r.category))];
+  const catOptions = [...new Set(items.map(r => r.category))].map(cid => {
+    const cat = cats.find(c => c.id === cid) || { emoji: '📌', label: cid };
+    return { value: cid, label: `${cat.emoji} ${cat.label}` };
+  });
 
-  const filtered = items.filter(r => filterCat === 'all' || r.category === filterCat);
+  const filtered = items.filter(r => filterCats.length === 0 || filterCats.includes(r.category));
 
   const sorted = [...filtered].sort((a, b) => {
     const vals = {
@@ -7158,12 +7409,20 @@ function BudgetRecurringView({ data, setData }) {
 
   return (
     <div>
-      <div className="flex items-center gap-2 mb-4">
-        <button onClick={newItem} className="btn-primary inline-flex items-center gap-2">
-          <Icon name="plus" size={18} />Добавить платёж
+      <div className="flex items-center gap-2 flex-wrap mb-6">
+        <button onClick={newItem} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
+          <Icon name="plus" size={16} />Добавить платёж
         </button>
+        {items.length > 0 && (
+          <BudgetMultiSelect
+            label="Категория"
+            options={catOptions}
+            selected={filterCats}
+            onChange={setFilterCats}
+          />
+        )}
         <button onClick={() => setShowSettings(true)}
-          className="p-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
+          className="inline-flex items-center justify-center px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
           title="Настройки категорий">
           <Icon name="settings" size={16} />
         </button>
@@ -7184,25 +7443,6 @@ function BudgetRecurringView({ data, setData }) {
               <div className="font-display text-3xl">{items.length}</div>
             </div>
           </div>
-
-          {/* Фильтр по категории */}
-          {usedCats.length > 1 && (
-            <div className="flex flex-wrap gap-2 mb-4">
-              <button onClick={() => setFilterCat('all')}
-                className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${filterCat === 'all' ? 'bg-[var(--text)] text-white' : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
-                Все
-              </button>
-              {usedCats.map(cid => {
-                const cat = cats.find(c => c.id === cid) || { emoji: '📌', label: cid };
-                return (
-                  <button key={cid} onClick={() => setFilterCat(cid)}
-                    className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${filterCat === cid ? 'bg-[var(--text)] text-white' : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
-                    {cat.emoji} {cat.label}
-                  </button>
-                );
-              })}
-            </div>
-          )}
 
           {/* Table */}
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
