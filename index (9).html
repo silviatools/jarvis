@@ -6675,9 +6675,7 @@ function BudgetMonthlyView({ data, setData }) {
   const factHeaderCls = "px-1 py-1.5 text-center text-[10px] font-medium tracking-wide border-b border-[var(--border)] w-[54px] bg-gray-50 text-gray-400";
   const planDivCls    = "border-l-2 border-[var(--border)]";
 
-  const autoCatHeaderBg = { violet: 'bg-violet-50', emerald: 'bg-emerald-50' };
-  const autoCatTextCls  = { violet: 'text-violet-700', emerald: 'text-emerald-700' };
-  const autoStickyBg    = { violet: 'bg-violet-50',    emerald: 'bg-emerald-50' };
+
 
   return (
     <div>
@@ -6747,10 +6745,6 @@ function BudgetMonthlyView({ data, setData }) {
               <tbody>
                 {allCats.map((cat) => {
                   const isAutoCat = !!cat.isAuto;
-                  const acColor   = cat.autoColor || 'violet';
-                  const catHdrBg  = isAutoCat ? autoCatHeaderBg[acColor] : '';
-                  const catLblCls = isAutoCat ? autoCatTextCls[acColor]  : 'text-[var(--text)]';
-                  const stickyBg  = isAutoCat ? autoStickyBg[acColor]    : 'bg-[var(--bg)]';
 
                   return (
                     <React.Fragment key={cat.id}>
@@ -6758,14 +6752,14 @@ function BudgetMonthlyView({ data, setData }) {
                       <tr className="bg-gray-100">
                         <td className="sticky left-0 z-10 bg-gray-100 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs">
                           {cat.emoji && <span className="mr-1.5">{cat.emoji}</span>}
-                          <span className={`uppercase tracking-wide ${catLblCls}`}>{cat.label}</span>
+                          <span className="uppercase tracking-wide text-[var(--text)]">{cat.label}</span>
                           {isAutoCat && <span className="ml-2 text-[9px] font-normal opacity-50 normal-case tracking-normal">авто</span>}
                         </td>
                         {months.map(m => {
                           const t = catTotal(cat, m);
                           return (
                             <React.Fragment key={m}>
-                              <td className={`px-1 py-2 text-center text-xs font-semibold border-b border-[var(--border)] whitespace-nowrap ${planDivCls} ${t > 0 ? (isAutoCat ? autoCatTextCls[acColor] : 'text-blue-600') : 'text-[var(--border)]'}`}>
+                              <td className={`px-1 py-2 text-center text-xs font-semibold border-b border-[var(--border)] whitespace-nowrap ${planDivCls} ${t > 0 ? 'text-blue-600' : 'text-[var(--border)]'}`}>
                                 {t > 0 ? formatRub(t) : '—'}
                               </td>
                               <td className="px-1 py-2 text-center text-[10px] text-gray-300 border-b border-[var(--border)]">—</td>
@@ -6776,19 +6770,15 @@ function BudgetMonthlyView({ data, setData }) {
 
                       {/* Item rows */}
                       {(cat.items || []).map((item, ii) => (
-                        <tr key={item.id} className={`border-b border-[var(--border)] transition-colors
-                          ${isAutoCat ? (acColor === 'violet' ? 'hover:bg-violet-50/30' : 'hover:bg-emerald-50/30') : 'hover:bg-blue-50/20'}
-                          ${ii % 2 === 1 ? 'bg-[var(--bg)]/20' : ''}`}>
-                          <td className={`sticky left-0 z-10 ${isAutoCat ? (acColor === 'violet' ? 'bg-violet-50/40' : 'bg-emerald-50/40') : 'bg-[var(--surface)]'} px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8`}>
+                        <tr key={item.id} className={`border-b border-[var(--border)] transition-colors hover:bg-blue-50/20 ${ii % 2 === 1 ? 'bg-gray-50' : ''}`}>
+                          <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
                             {item.emoji && <span className="mr-1">{item.emoji}</span>}
                             <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{item.label}</span>
                           </td>
                           {months.map(m => {
-                            const v          = getItemVal(item, m);
-                            const isEditing  = !isAutoCat && editCell?.itemId === item.id && editCell?.month === m;
-                            const valColor   = isAutoCat
-                              ? (acColor === 'violet' ? 'text-violet-600' : 'text-emerald-600')
-                              : 'text-blue-600';
+                            const v         = getItemVal(item, m);
+                            const isEditing = !isAutoCat && editCell?.itemId === item.id && editCell?.month === m;
+                            const valColor  = 'text-blue-600';
 
                             return (
                               <React.Fragment key={m}>
