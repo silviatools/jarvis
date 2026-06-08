@@ -6542,7 +6542,7 @@ function BudgetView({ data, setData }) {
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Планирование</div>
       </div>
       <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6">
-        {[['monthly','По месяцу'],['expenses','Расходы']].map(([id, label]) => (
+        {[['monthly','По месяцу'],['expenses','Накопления']].map(([id, label]) => (
           <button key={id} onClick={() => setBudgetTab(id)}
             className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${budgetTab === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
             {label}
@@ -6640,10 +6640,11 @@ function BudgetMonthlyView({ data }) {
 }
 
 function BudgetExpensesView({ data, setData }) {
-  const [editing,   setEditing]   = useState(null);
-  const [filterCat, setFilterCat] = useState('all');
-  const [sortCol,   setSortCol]   = useState('targetDate');
-  const [sortDir,   setSortDir]   = useState('asc');
+  const [editing,     setEditing]     = useState(null);
+  const [filterCat,   setFilterCat]   = useState('all');
+  const [filterMonth, setFilterMonth] = useState('');
+  const [sortCol,     setSortCol]     = useState('targetDate');
+  const [sortDir,     setSortDir]     = useState('asc');
 
   const expenses = (data.budgetExpenses || []).filter(e => !e.archived);
 
@@ -6673,8 +6674,11 @@ function BudgetExpensesView({ data, setData }) {
   };
 
   const usedCats = [...new Set(expenses.map(e => e.category))];
-  const filtered = filterCat === 'all' ? expenses : expenses.filter(e => e.category === filterCat);
   const curMonth  = getCurrentMonthStr();
+
+  const filtered = expenses
+    .filter(e => filterCat === 'all' || e.category === filterCat)
+    .filter(e => !filterMonth || (e.startDate <= filterMonth && e.targetDate >= filterMonth));
 
   const sorted = [...filtered].sort((a, b) => {
     const vals = {
@@ -6710,30 +6714,50 @@ function BudgetExpensesView({ data, setData }) {
   return (
     <div>
       <button onClick={newExp} className="btn-primary inline-flex items-center gap-2 mb-4">
-        <Icon name="plus" size={18} />Добавить расход
+        <Icon name="plus" size={18} />Добавить накопление
       </button>
 
       {!expenses.length ? (
-        <EmptyState title="Нет расходов" text="Добавьте плановые расходы и получите план накоплений" />
+        <EmptyState title="Нет накоплений" text="Добавьте плановые накопления и получите план по месяцам" />
       ) : (
         <>
-          {usedCats.length > 1 && (
-            <div className="flex gap-1.5 flex-wrap mb-4">
-              <button onClick={() => setFilterCat('all')}
-                className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${filterCat === 'all' ? 'bg-[var(--text)] text-white' : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
-                Все
-              </button>
-              {usedCats.map(cid => {
-                const cat = getBudgetCat(cid);
-                return (
-                  <button key={cid} onClick={() => setFilterCat(cid)}
-                    className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${filterCat === cid ? 'bg-[var(--text)] text-white' : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
-                    {cat.emoji} {cat.label}
-                  </button>
-                );
-              })}
+          <div className="flex flex-wrap items-center gap-2 mb-4">
+            {/* Фильтр по месяцу */}
+            <div className="flex items-center gap-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-1.5">
+              <span className="text-xs text-[var(--text-subtle)] whitespace-nowrap">Месяц:</span>
+              <input
+                type="month"
+                value={filterMonth}
+                onChange={e => setFilterMonth(e.target.value)}
+                className="text-sm border-0 p-0 rounded-none bg-transparent focus:ring-0 w-auto"
+                style={{ width: filterMonth ? '130px' : '110px' }}
+              />
+              {filterMonth && (
+                <button onClick={() => setFilterMonth('')} className="text-[var(--text-subtle)] hover:text-[var(--text)] transition-colors">
+                  <Icon name="x" size={14} />
+                </button>
+              )}
             </div>
-          )}
+
+            {/* Фильтр по категории */}
+            {usedCats.length > 1 && (
+              <>
+                <button onClick={() => setFilterCat('all')}
+                  className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${filterCat === 'all' ? 'bg-[var(--text)] text-white' : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
+                  Все
+                </button>
+                {usedCats.map(cid => {
+                  const cat = getBudgetCat(cid);
+                  return (
+                    <button key={cid} onClick={() => setFilterCat(cid)}
+                      className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${filterCat === cid ? 'bg-[var(--text)] text-white' : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
+                      {cat.emoji} {cat.label}
+                    </button>
+                  );
+                })}
+              </>
+            )}
+          </div>
 
           {/* Table — horizontally scrollable on narrow screens */}
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
