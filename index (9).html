@@ -6581,20 +6581,29 @@ function BudgetView({ data, setData }) {
 }
 
 function BudgetMonthlyView({ data, setData }) {
-  const curYear = new Date().getFullYear();
+  const curYear  = new Date().getFullYear();
+  const curMonth = `${curYear}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+
   const [year,         setYear]         = useState(curYear);
   const [showSettings, setShowSettings] = useState(false);
   const [editCell,     setEditCell]     = useState(null); // {itemId, month}
   const [editVal,      setEditVal]      = useState('');
+  const scrollRef = useRef(null);
 
   const cats = data.budgetPlanCategories || [];
   const vals = data.budgetPlanValues     || {};
 
   const MONTH_NAMES = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
-  const months = MONTH_NAMES.map((_, i) => {
-    const m = String(i + 1).padStart(2, '0');
-    return `${year}-${m}`;
-  });
+  const months = MONTH_NAMES.map((_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
+
+  // Auto-scroll: put current month first (or Jan when viewing another year)
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const curIdx = months.indexOf(curMonth);
+    // each month ~116px wide (62 plan + 54 fact); scroll so current month is first
+    el.scrollLeft = curIdx > 0 ? curIdx * 116 : 0;
+  }, [year]);
 
   const getVal     = (itemId, month) => vals[`${itemId}_${month}`] || 0;
   const catTotal   = (cat, month) => (cat.items || []).reduce((s, it) => s + getVal(it.id, month), 0);
@@ -6620,7 +6629,10 @@ function BudgetMonthlyView({ data, setData }) {
     if (e.key === 'Escape') setEditCell(null);
   };
 
-  const curMonth = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+  // Plan col = blue tones; Fact col = gray tones
+  const planHeaderCls = "px-1 py-1.5 text-center text-[10px] font-semibold tracking-wide border-b border-l-2 border-[var(--border)] w-[62px] bg-blue-50 text-blue-600";
+  const factHeaderCls = "px-1 py-1.5 text-center text-[10px] font-medium tracking-wide border-b border-[var(--border)] w-[54px] bg-gray-50 text-gray-400";
+  const planDivCls    = "border-l-2 border-[var(--border)]"; // left separator on each Plan cell
 
   return (
     <div>
@@ -6657,8 +6669,8 @@ function BudgetMonthlyView({ data, setData }) {
         </div>
       ) : (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="text-sm border-collapse" style={{minWidth: `${180 + months.length * 125}px`}}>
+          <div className="overflow-x-auto" ref={scrollRef}>
+            <table className="text-sm border-collapse" style={{minWidth:`${180 + months.length * 116}px`}}>
               <thead>
                 {/* Month names row */}
                 <tr>
@@ -6667,25 +6679,23 @@ function BudgetMonthlyView({ data, setData }) {
                     Статья
                   </th>
                   {months.map((m, i) => (
-                    <th key={m} colSpan={2}
-                      className={`px-1 py-2.5 text-center text-xs font-semibold uppercase tracking-wide border-b border-[var(--border)] whitespace-nowrap
-                        ${m === curMonth ? 'text-[var(--text)] bg-[var(--bg)]' : 'text-[var(--text-subtle)] bg-[var(--bg)]'}`}
-                      style={{minWidth:'120px'}}>
-                      {m === curMonth ? <span className="px-1.5 py-0.5 rounded bg-[var(--text)] text-white text-[10px]">{MONTH_NAMES[i]}</span> : MONTH_NAMES[i]}
+                    <th key={m} colSpan={2} data-month={m}
+                      className={`px-1 py-2.5 text-center text-xs font-semibold uppercase tracking-wide border-b border-l-2 border-[var(--border)] whitespace-nowrap
+                        ${m === curMonth ? 'bg-blue-50 text-blue-700' : 'bg-[var(--bg)] text-[var(--text-subtle)]'}`}
+                      style={{minWidth:'116px'}}>
+                      {m === curMonth
+                        ? <span className="px-2 py-0.5 rounded-md bg-blue-600 text-white text-[10px]">{MONTH_NAMES[i]}</span>
+                        : MONTH_NAMES[i]}
                     </th>
                   ))}
                 </tr>
                 {/* Plan / Fact sub-header */}
-                <tr className="bg-[var(--bg)]">
+                <tr>
                   <th className="sticky left-0 z-20 bg-[var(--bg)] border-b border-r border-[var(--border)]" />
                   {months.map(m => (
                     <React.Fragment key={m}>
-                      <th className="px-1 py-1 text-center text-[10px] font-medium text-[var(--text-muted)] border-b border-[var(--border)] w-[62px]">
-                        План
-                      </th>
-                      <th className="px-1 py-1 text-center text-[10px] font-medium text-[var(--border-strong)] border-b border-[var(--border)] w-[54px]">
-                        Факт
-                      </th>
+                      <th className={planHeaderCls}>План</th>
+                      <th className={factHeaderCls}>Факт</th>
                     </React.Fragment>
                   ))}
                 </tr>
@@ -6704,17 +6714,17 @@ function BudgetMonthlyView({ data, setData }) {
                         const t = catTotal(cat, m);
                         return (
                           <React.Fragment key={m}>
-                            <td className="px-1 py-2 text-center text-xs font-semibold text-[var(--text)] border-b border-[var(--border)] whitespace-nowrap">
-                              {t > 0 ? formatRub(t) : <span className="text-[var(--border)]">—</span>}
+                            <td className={`px-1 py-2 text-center text-xs font-semibold border-b border-[var(--border)] whitespace-nowrap ${planDivCls} ${t > 0 ? 'text-blue-600' : 'text-[var(--border)]'}`}>
+                              {t > 0 ? formatRub(t) : '—'}
                             </td>
-                            <td className="px-1 py-2 text-center text-[10px] text-[var(--border-strong)] border-b border-[var(--border)]">—</td>
+                            <td className="px-1 py-2 text-center text-[10px] text-gray-300 border-b border-[var(--border)]">—</td>
                           </React.Fragment>
                         );
                       })}
                     </tr>
                     {/* Item rows */}
                     {(cat.items || []).map((item, ii) => (
-                      <tr key={item.id} className={`border-b border-[var(--border)] hover:bg-black/[0.015] transition-colors ${ii % 2 === 1 ? 'bg-[var(--bg)]/20' : ''}`}>
+                      <tr key={item.id} className={`border-b border-[var(--border)] hover:bg-blue-50/20 transition-colors ${ii % 2 === 1 ? 'bg-[var(--bg)]/20' : ''}`}>
                         <td className="sticky left-0 z-10 bg-[var(--surface)] px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
                           <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{item.label}</span>
                         </td>
@@ -6723,12 +6733,12 @@ function BudgetMonthlyView({ data, setData }) {
                           const isEditing = editCell?.itemId === item.id && editCell?.month === m;
                           return (
                             <React.Fragment key={m}>
-                              <td className="px-1 py-1 w-[62px]">
+                              <td className={`px-1 py-1 w-[62px] ${planDivCls}`}>
                                 {isEditing ? (
                                   <input
                                     type="number"
                                     inputMode="numeric"
-                                    className="w-full text-center text-xs px-1 py-1 border border-[var(--text)] rounded-md focus:outline-none bg-white"
+                                    className="w-full text-center text-xs px-1 py-1 border border-blue-400 rounded-md focus:outline-none bg-white text-blue-700"
                                     value={editVal}
                                     onChange={e => setEditVal(e.target.value)}
                                     onBlur={() => commitEdit(item.id, m, editVal)}
@@ -6738,13 +6748,13 @@ function BudgetMonthlyView({ data, setData }) {
                                 ) : (
                                   <button
                                     onClick={() => startEdit(item.id, m)}
-                                    className="w-full text-center text-xs px-1 py-1.5 rounded hover:bg-[var(--border)]/40 transition-colors whitespace-nowrap font-medium text-[var(--text)]"
+                                    className="w-full text-center text-xs px-1 py-1.5 rounded hover:bg-blue-50 transition-colors whitespace-nowrap font-medium text-blue-600"
                                   >
-                                    {v > 0 ? formatRub(v) : <span className="text-[var(--border)] text-[10px]">·</span>}
+                                    {v > 0 ? formatRub(v) : <span className="text-gray-300 text-[10px]">·</span>}
                                   </button>
                                 )}
                               </td>
-                              <td className="px-1 py-1 text-center text-[10px] text-[var(--border)] w-[54px]">—</td>
+                              <td className="px-1 py-1 text-center text-[10px] text-gray-300 w-[54px]">—</td>
                             </React.Fragment>
                           );
                         })}
@@ -6762,10 +6772,10 @@ function BudgetMonthlyView({ data, setData }) {
                     const t = grandTotal(m);
                     return (
                       <React.Fragment key={m}>
-                        <td className="px-1 py-3 text-center text-xs font-bold text-[var(--text)] whitespace-nowrap">
+                        <td className={`px-1 py-3 text-center text-xs font-bold whitespace-nowrap ${planDivCls} ${t > 0 ? 'text-blue-700' : 'text-gray-300'}`}>
                           {t > 0 ? formatRub(t) : '—'}
                         </td>
-                        <td className="px-1 py-3 text-center text-[10px] text-[var(--border-strong)]">—</td>
+                        <td className="px-1 py-3 text-center text-[10px] text-gray-300">—</td>
                       </React.Fragment>
                     );
                   })}
@@ -6782,6 +6792,7 @@ function BudgetMonthlyView({ data, setData }) {
     </div>
   );
 }
+
 
 function BudgetPlanSettingsModal({ data, setData, onClose }) {
   const [cats,        setCats]        = useState(() => JSON.parse(JSON.stringify(data.budgetPlanCategories || [])));
