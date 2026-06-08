@@ -4269,7 +4269,7 @@ function FlashcardsTab({rawData,cfg}){
         ))}
       </div>
       <div style={ENG_CARD_S.wrap} onClick={()=>setSess(s=>s?{...s,flipped:!s.flipped}:s)}>
-        <div style={ENG_CARD_S.card(sess.flipped)}>
+        <div key={sess.cur} style={ENG_CARD_S.card(sess.flipped)}>
           <div style={ENG_CARD_S.face}>
             <div className="absolute top-3 left-4 text-[10px] uppercase tracking-widest text-[var(--text-subtle)]">{dir==='en-ru'?'ENGLISH':'RUSSIAN'}</div>
             <button onClick={e=>{e.stopPropagation();toggleHard();}} className={`absolute top-2 right-3 text-xs px-2.5 py-1 rounded-full border transition-all ${isHard==='hard'||isHard==='marking'?'border-amber-400 text-amber-500':'border-[var(--border)] text-[var(--text-subtle)]'}`}>
