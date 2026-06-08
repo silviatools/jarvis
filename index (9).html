@@ -6730,8 +6730,8 @@ function BudgetMultiSelect({ label, options, selected, onChange }) {
 function BudgetExpensesView({ data, setData }) {
   const [editing,      setEditing]      = useState(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [filterCat,    setFilterCat]    = useState('all');
-  const [filterMonth,  setFilterMonth]  = useState('');
+  const [filterCats,   setFilterCats]   = useState([]);
+  const [filterMonths, setFilterMonths] = useState([]);
   const [sortCol,      setSortCol]      = useState('targetDate');
   const [sortDir,      setSortDir]      = useState('asc');
 
@@ -6763,12 +6763,29 @@ function BudgetExpensesView({ data, setData }) {
     else { setSortCol(col); setSortDir('asc'); }
   };
 
-  const usedCats = [...new Set(expenses.map(e => e.category))];
-  const curMonth  = getCurrentMonthStr();
+  const curMonth = getCurrentMonthStr();
+
+  const catOptions = [...new Set(expenses.map(e => e.category))].map(cid => {
+    const cat = cats.find(c => c.id === cid) || { emoji: '💡', label: cid };
+    return { value: cid, label: `${cat.emoji} ${cat.label}` };
+  });
+
+  const monthOptions = (() => {
+    if (!expenses.length) return [];
+    const minStart = [...expenses.map(e => e.startDate)].sort()[0];
+    const maxEnd   = [...expenses.map(e => e.targetDate)].sort().reverse()[0];
+    const months = [];
+    let m = minStart;
+    while (m <= maxEnd && months.length < 60) {
+      months.push({ value: m, label: formatMonthShortBudget(m) });
+      m = addMonthsStr(m, 1);
+    }
+    return months;
+  })();
 
   const filtered = expenses
-    .filter(e => filterCat === 'all' || e.category === filterCat)
-    .filter(e => !filterMonth || (e.startDate <= filterMonth && e.targetDate >= filterMonth));
+    .filter(e => filterCats.length === 0 || filterCats.includes(e.category))
+    .filter(e => filterMonths.length === 0 || filterMonths.some(m => e.startDate <= m && e.targetDate >= m));
 
   const sorted = [...filtered].sort((a, b) => {
     const vals = {
@@ -6818,42 +6835,19 @@ function BudgetExpensesView({ data, setData }) {
         <EmptyState title="Нет накоплений" text="Добавьте плановые накопления и получите план по месяцам" />
       ) : (
         <>
-          <div className="flex flex-wrap items-center gap-2 mb-4">
-            {/* Фильтр по месяцу */}
-            <div className="flex items-center gap-2 bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-1.5">
-              <span className="text-xs text-[var(--text-subtle)] whitespace-nowrap">Месяц:</span>
-              <input
-                type="month"
-                value={filterMonth}
-                onChange={e => setFilterMonth(e.target.value)}
-                className="text-sm border-0 p-0 rounded-none bg-transparent focus:ring-0 w-auto"
-                style={{ width: filterMonth ? '130px' : '110px' }}
-              />
-              {filterMonth && (
-                <button onClick={() => setFilterMonth('')} className="text-[var(--text-subtle)] hover:text-[var(--text)] transition-colors">
-                  <Icon name="x" size={14} />
-                </button>
-              )}
-            </div>
-
-            {/* Фильтр по категории */}
-            {usedCats.length > 1 && (
-              <>
-                <button onClick={() => setFilterCat('all')}
-                  className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${filterCat === 'all' ? 'bg-[var(--text)] text-white' : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
-                  Все
-                </button>
-                {usedCats.map(cid => {
-                  const cat = cats.find(c => c.id === cid) || { emoji: '💡', label: cid };
-                  return (
-                    <button key={cid} onClick={() => setFilterCat(cid)}
-                      className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${filterCat === cid ? 'bg-[var(--text)] text-white' : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
-                      {cat.emoji} {cat.label}
-                    </button>
-                  );
-                })}
-              </>
-            )}
+          <div className="flex gap-2 mb-4">
+            <BudgetMultiSelect
+              label="Месяц"
+              options={monthOptions}
+              selected={filterMonths}
+              onChange={setFilterMonths}
+            />
+            <BudgetMultiSelect
+              label="Категория"
+              options={catOptions}
+              selected={filterCats}
+              onChange={setFilterCats}
+            />
           </div>
 
           {/* Table */}
