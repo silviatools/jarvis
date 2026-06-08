@@ -6586,33 +6586,65 @@ function BudgetMonthlyView({ data, setData }) {
 
   const [year,         setYear]         = useState(curYear);
   const [showSettings, setShowSettings] = useState(false);
-  const [editCell,     setEditCell]     = useState(null); // {itemId, month}
+  const [editCell,     setEditCell]     = useState(null);
   const [editVal,      setEditVal]      = useState('');
   const scrollRef = useRef(null);
 
-  const cats = data.budgetPlanCategories || [];
-  const vals = data.budgetPlanValues     || {};
+  const userCats = data.budgetPlanCategories || [];
+  const vals     = data.budgetPlanValues     || {};
 
   const MONTH_NAMES = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
   const months = MONTH_NAMES.map((_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
 
-  // Auto-scroll: put current month first (or Jan when viewing another year)
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const curIdx = months.indexOf(curMonth);
-    // each month ~116px wide (62 plan + 54 fact); scroll so current month is first
-    el.scrollLeft = curIdx > 0 ? curIdx * 116 : 0;
-  }, [year]);
+  // ── Auto-categories from Накопления and Постоянные tabs ──────────────────
+  const expCats      = getExpenseCats(data);
+  const recCats      = getRecurringCats(data);
+  const activeExp    = (data.budgetExpenses  || []).filter(e => !e.archived);
+  const activeRec    = (data.budgetRecurring || []).filter(r => !r.archived);
 
-  const getVal     = (itemId, month) => vals[`${itemId}_${month}`] || 0;
-  const catTotal   = (cat, month) => (cat.items || []).reduce((s, it) => s + getVal(it.id, month), 0);
-  const grandTotal = (month) => cats.flatMap(c => c.items || []).reduce((s, it) => s + getVal(it.id, month), 0);
+  // Накопления: per savings-category, sum calcMonthly for expenses active in that month
+  const getExpCatVal = (catId, month) =>
+    activeExp
+      .filter(e => e.category === catId && e.startDate <= month && e.targetDate >= month)
+      .reduce((s, e) => s + calcMonthly(e), 0);
+
+  // Постоянные: per recurring-category, fixed monthly sum (same every month)
+  const getRecCatVal = (catId) =>
+    activeRec.filter(r => r.category === catId).reduce((s, r) => s + (r.amount || 0), 0);
+
+  const usedExpCatIds = [...new Set(activeExp.map(e => e.category))];
+  const usedRecCatIds = [...new Set(activeRec.map(r => r.category))];
+
+  const autoCategories = [
+    usedExpCatIds.length > 0 ? {
+      id: '__savings', emoji: '💰', label: 'Накопления', isAuto: true, autoColor: 'violet',
+      items: usedExpCatIds.map(cid => {
+        const c = expCats.find(x => x.id === cid) || { emoji: '💡', label: cid };
+        return { id: `__sav_${cid}`, emoji: c.emoji, label: c.label, isAuto: true,
+                 getAutoVal: (m) => getExpCatVal(cid, m) };
+      }),
+    } : null,
+    usedRecCatIds.length > 0 ? {
+      id: '__recurring', emoji: '🔄', label: 'Постоянные', isAuto: true, autoColor: 'emerald',
+      items: usedRecCatIds.map(cid => {
+        const c = recCats.find(x => x.id === cid) || { emoji: '📌', label: cid };
+        return { id: `__rec_${cid}`, emoji: c.emoji, label: c.label, isAuto: true,
+                 getAutoVal: () => getRecCatVal(cid) };
+      }),
+    } : null,
+  ].filter(Boolean);
+
+  // All categories: auto first (linked data), then user-defined
+  const allCats = [...autoCategories, ...userCats];
+
+  // ── Value helpers ─────────────────────────────────────────────────────────
+  const getItemVal   = (item, month) => item.getAutoVal ? item.getAutoVal(month) : (vals[`${item.id}_${month}`] || 0);
+  const catTotal     = (cat, month)  => (cat.items || []).reduce((s, it) => s + getItemVal(it, month), 0);
+  const grandTotal   = (month)       => allCats.flatMap(c => c.items || []).reduce((s, it) => s + getItemVal(it, month), 0);
 
   const startEdit = (itemId, month) => {
-    const v = getVal(itemId, month);
     setEditCell({ itemId, month });
-    setEditVal(v > 0 ? String(v) : '');
+    setEditVal((vals[`${itemId}_${month}`] || 0) > 0 ? String(vals[`${itemId}_${month}`]) : '');
   };
 
   const commitEdit = (itemId, month, value) => {
@@ -6629,10 +6661,22 @@ function BudgetMonthlyView({ data, setData }) {
     if (e.key === 'Escape') setEditCell(null);
   };
 
-  // Plan col = blue tones; Fact col = gray tones
+  // ── Scroll to current month on year change ────────────────────────────────
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const curIdx = months.indexOf(curMonth);
+    el.scrollLeft = curIdx > 0 ? curIdx * 116 : 0;
+  }, [year]);
+
+  // ── CSS helpers ───────────────────────────────────────────────────────────
   const planHeaderCls = "px-1 py-1.5 text-center text-[10px] font-semibold tracking-wide border-b border-l-2 border-[var(--border)] w-[62px] bg-blue-50 text-blue-600";
   const factHeaderCls = "px-1 py-1.5 text-center text-[10px] font-medium tracking-wide border-b border-[var(--border)] w-[54px] bg-gray-50 text-gray-400";
-  const planDivCls    = "border-l-2 border-[var(--border)]"; // left separator on each Plan cell
+  const planDivCls    = "border-l-2 border-[var(--border)]";
+
+  const autoCatHeaderBg = { violet: 'bg-violet-50', emerald: 'bg-emerald-50' };
+  const autoCatTextCls  = { violet: 'text-violet-700', emerald: 'text-emerald-700' };
+  const autoStickyBg    = { violet: 'bg-violet-50',    emerald: 'bg-emerald-50' };
 
   return (
     <div>
@@ -6658,11 +6702,11 @@ function BudgetMonthlyView({ data, setData }) {
         )}
       </div>
 
-      {!cats.length ? (
+      {!allCats.length ? (
         <div className="text-center py-16 text-[var(--text-subtle)]">
           <div className="text-4xl mb-3">📊</div>
-          <div className="font-medium mb-1">Нет статей бюджета</div>
-          <div className="text-sm mb-4">Нажмите на шестерёнку, чтобы добавить категории и статьи</div>
+          <div className="font-medium mb-1">Нет данных для отображения</div>
+          <div className="text-sm mb-4">Добавьте накопления или постоянные платежи — они появятся здесь автоматически. Или нажмите на шестерёнку, чтобы добавить ручные статьи.</div>
           <button onClick={() => setShowSettings(true)} className="btn-primary inline-flex items-center gap-2">
             <Icon name="settings" size={16} />Настроить статьи
           </button>
@@ -6672,7 +6716,6 @@ function BudgetMonthlyView({ data, setData }) {
           <div className="overflow-x-auto" ref={scrollRef}>
             <table className="text-sm border-collapse" style={{minWidth:`${180 + months.length * 116}px`}}>
               <thead>
-                {/* Month names row */}
                 <tr>
                   <th className="sticky left-0 z-20 bg-[var(--bg)] px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] border-b border-r border-[var(--border)]"
                     style={{minWidth:'180px'}}>
@@ -6689,7 +6732,6 @@ function BudgetMonthlyView({ data, setData }) {
                     </th>
                   ))}
                 </tr>
-                {/* Plan / Fact sub-header */}
                 <tr>
                   <th className="sticky left-0 z-20 bg-[var(--bg)] border-b border-r border-[var(--border)]" />
                   {months.map(m => (
@@ -6702,66 +6744,87 @@ function BudgetMonthlyView({ data, setData }) {
               </thead>
 
               <tbody>
-                {cats.map((cat) => (
-                  <React.Fragment key={cat.id}>
-                    {/* Category total row */}
-                    <tr className="bg-[var(--bg)]/80">
-                      <td className="sticky left-0 z-10 bg-[var(--bg)] px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs">
-                        {cat.emoji && <span className="mr-1.5">{cat.emoji}</span>}
-                        <span className="text-[var(--text)] uppercase tracking-wide">{cat.label}</span>
-                      </td>
-                      {months.map(m => {
-                        const t = catTotal(cat, m);
-                        return (
-                          <React.Fragment key={m}>
-                            <td className={`px-1 py-2 text-center text-xs font-semibold border-b border-[var(--border)] whitespace-nowrap ${planDivCls} ${t > 0 ? 'text-blue-600' : 'text-[var(--border)]'}`}>
-                              {t > 0 ? formatRub(t) : '—'}
-                            </td>
-                            <td className="px-1 py-2 text-center text-[10px] text-gray-300 border-b border-[var(--border)]">—</td>
-                          </React.Fragment>
-                        );
-                      })}
-                    </tr>
-                    {/* Item rows */}
-                    {(cat.items || []).map((item, ii) => (
-                      <tr key={item.id} className={`border-b border-[var(--border)] hover:bg-blue-50/20 transition-colors ${ii % 2 === 1 ? 'bg-[var(--bg)]/20' : ''}`}>
-                        <td className="sticky left-0 z-10 bg-[var(--surface)] px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
-                          <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{item.label}</span>
+                {allCats.map((cat) => {
+                  const isAutoCat = !!cat.isAuto;
+                  const acColor   = cat.autoColor || 'violet';
+                  const catHdrBg  = isAutoCat ? autoCatHeaderBg[acColor] : '';
+                  const catLblCls = isAutoCat ? autoCatTextCls[acColor]  : 'text-[var(--text)]';
+                  const stickyBg  = isAutoCat ? autoStickyBg[acColor]    : 'bg-[var(--bg)]';
+
+                  return (
+                    <React.Fragment key={cat.id}>
+                      {/* Category total row */}
+                      <tr className={`${catHdrBg || 'bg-[var(--bg)]/80'}`}>
+                        <td className={`sticky left-0 z-10 ${stickyBg} px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs`}>
+                          {cat.emoji && <span className="mr-1.5">{cat.emoji}</span>}
+                          <span className={`uppercase tracking-wide ${catLblCls}`}>{cat.label}</span>
+                          {isAutoCat && <span className="ml-2 text-[9px] font-normal opacity-50 normal-case tracking-normal">авто</span>}
                         </td>
                         {months.map(m => {
-                          const v = getVal(item.id, m);
-                          const isEditing = editCell?.itemId === item.id && editCell?.month === m;
+                          const t = catTotal(cat, m);
                           return (
                             <React.Fragment key={m}>
-                              <td className={`px-1 py-1 w-[62px] ${planDivCls}`}>
-                                {isEditing ? (
-                                  <input
-                                    type="number"
-                                    inputMode="numeric"
-                                    className="w-full text-center text-xs px-1 py-1 border border-blue-400 rounded-md focus:outline-none bg-white text-blue-700"
-                                    value={editVal}
-                                    onChange={e => setEditVal(e.target.value)}
-                                    onBlur={() => commitEdit(item.id, m, editVal)}
-                                    onKeyDown={e => handleKeyDown(e, item.id, m)}
-                                    autoFocus
-                                  />
-                                ) : (
-                                  <button
-                                    onClick={() => startEdit(item.id, m)}
-                                    className="w-full text-center text-xs px-1 py-1.5 rounded hover:bg-blue-50 transition-colors whitespace-nowrap font-medium text-blue-600"
-                                  >
-                                    {v > 0 ? formatRub(v) : <span className="text-gray-300 text-[10px]">·</span>}
-                                  </button>
-                                )}
+                              <td className={`px-1 py-2 text-center text-xs font-semibold border-b border-[var(--border)] whitespace-nowrap ${planDivCls} ${t > 0 ? (isAutoCat ? autoCatTextCls[acColor] : 'text-blue-600') : 'text-[var(--border)]'}`}>
+                                {t > 0 ? formatRub(t) : '—'}
                               </td>
-                              <td className="px-1 py-1 text-center text-[10px] text-gray-300 w-[54px]">—</td>
+                              <td className="px-1 py-2 text-center text-[10px] text-gray-300 border-b border-[var(--border)]">—</td>
                             </React.Fragment>
                           );
                         })}
                       </tr>
-                    ))}
-                  </React.Fragment>
-                ))}
+
+                      {/* Item rows */}
+                      {(cat.items || []).map((item, ii) => (
+                        <tr key={item.id} className={`border-b border-[var(--border)] transition-colors
+                          ${isAutoCat ? (acColor === 'violet' ? 'hover:bg-violet-50/30' : 'hover:bg-emerald-50/30') : 'hover:bg-blue-50/20'}
+                          ${ii % 2 === 1 ? 'bg-[var(--bg)]/20' : ''}`}>
+                          <td className={`sticky left-0 z-10 ${isAutoCat ? (acColor === 'violet' ? 'bg-violet-50/40' : 'bg-emerald-50/40') : 'bg-[var(--surface)]'} px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8`}>
+                            {item.emoji && <span className="mr-1">{item.emoji}</span>}
+                            <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{item.label}</span>
+                          </td>
+                          {months.map(m => {
+                            const v          = getItemVal(item, m);
+                            const isEditing  = !isAutoCat && editCell?.itemId === item.id && editCell?.month === m;
+                            const valColor   = isAutoCat
+                              ? (acColor === 'violet' ? 'text-violet-600' : 'text-emerald-600')
+                              : 'text-blue-600';
+
+                            return (
+                              <React.Fragment key={m}>
+                                <td className={`px-1 py-1 w-[62px] ${planDivCls}`}>
+                                  {isEditing ? (
+                                    <input
+                                      type="number" inputMode="numeric"
+                                      className="w-full text-center text-xs px-1 py-1 border border-blue-400 rounded-md focus:outline-none bg-white text-blue-700"
+                                      value={editVal}
+                                      onChange={e => setEditVal(e.target.value)}
+                                      onBlur={() => commitEdit(item.id, m, editVal)}
+                                      onKeyDown={e => handleKeyDown(e, item.id, m)}
+                                      autoFocus
+                                    />
+                                  ) : isAutoCat ? (
+                                    // Auto-computed: display only, no editing
+                                    <span className={`block w-full text-center text-xs px-1 py-1.5 font-medium ${v > 0 ? valColor : 'text-gray-300'}`}>
+                                      {v > 0 ? formatRub(v) : <span className="text-[10px]">·</span>}
+                                    </span>
+                                  ) : (
+                                    // Manual: click to edit
+                                    <button
+                                      onClick={() => startEdit(item.id, m)}
+                                      className={`w-full text-center text-xs px-1 py-1.5 rounded hover:bg-blue-50 transition-colors whitespace-nowrap font-medium ${v > 0 ? valColor : ''}`}>
+                                      {v > 0 ? formatRub(v) : <span className="text-gray-300 text-[10px]">·</span>}
+                                    </button>
+                                  )}
+                                </td>
+                                <td className="px-1 py-1 text-center text-[10px] text-gray-300 w-[54px]">—</td>
+                              </React.Fragment>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  );
+                })}
 
                 {/* Grand total */}
                 <tr className="border-t-2 border-[var(--border-strong)] bg-[var(--bg)]">
