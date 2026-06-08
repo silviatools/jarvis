@@ -6671,7 +6671,7 @@ function BudgetMultiSelect({ label, options, selected, onChange }) {
   };
 
   return (
-    <div className="relative flex-1">
+    <div className="relative w-36">
       <button
         onClick={() => setOpen(v => !v)}
         className={`w-full flex items-center justify-between gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${
@@ -6835,7 +6835,7 @@ function BudgetExpensesView({ data, setData }) {
         <EmptyState title="Нет накоплений" text="Добавьте плановые накопления и получите план по месяцам" />
       ) : (
         <>
-          <div className="flex gap-2 mb-4">
+          <div className="inline-flex gap-2 mb-4">
             <BudgetMultiSelect
               label="Месяц"
               options={monthOptions}
