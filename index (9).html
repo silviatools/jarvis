@@ -3019,16 +3019,33 @@ function CookingView({ data, setData }) {
                     : hasRawFact
                     ? { border: '1px solid #f59e0b', background: 'rgba(245,158,11,0.08)' }
                     : {};
+
+                  const portions = ing.portions ? +ing.portions : null;
+                  const portionSize = ing.portionSize ? +ing.portionSize : null;
+                  const plannedRaw = (portions && portionSize) ? portions * portionSize : (ing.plannedRaw != null && ing.plannedRaw !== '' ? +ing.plannedRaw : null);
+
+                  const kf = (hasCookedFact && hasRawFact && +ing.actualCooked > 0)
+                    ? (+ing.actualRaw / +ing.actualCooked)
+                    : null;
+                  const cookedPortion = (kf && portionSize) ? Math.round(portionSize / kf) : null;
+
                   return (
                     <div key={ing.id} className="rounded-xl p-4 border border-[var(--border)] bg-[var(--bg)]" style={cardStyle}>
                       <div className="font-medium mb-3">{ing.name}</div>
                       <div className="grid grid-cols-3 gap-3">
                         <div className="text-center">
                           <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">План сырой</div>
-                          <div className="font-display text-xl">
-                            {ing.plannedRaw !== '' && ing.plannedRaw != null ? ing.plannedRaw : '—'}
-                            {ing.plannedRaw !== '' && ing.plannedRaw != null && <span className="text-xs text-[var(--text-subtle)] ml-1">г</span>}
-                          </div>
+                          {portions && portionSize ? (
+                            <div>
+                              <div className="text-xs text-[var(--text-subtle)] mb-1">{portions} × {portionSize} г</div>
+                              <div className="font-display text-xl">{plannedRaw}<span className="text-xs text-[var(--text-subtle)] ml-1">г</span></div>
+                            </div>
+                          ) : (
+                            <div className="font-display text-xl">
+                              {plannedRaw != null ? plannedRaw : '—'}
+                              {plannedRaw != null && <span className="text-xs text-[var(--text-subtle)] ml-1">г</span>}
+                            </div>
+                          )}
                         </div>
                         <div className="text-center">
                           <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">Факт сырой</div>
@@ -3055,6 +3072,21 @@ function CookingView({ data, setData }) {
                           />
                         </div>
                       </div>
+
+                      {kf && (
+                        <div className="mt-3 pt-3 border-t border-[var(--border)] flex items-center justify-between gap-3 flex-wrap">
+                          <div className="text-xs text-[var(--text-subtle)]">
+                            КФ готовки: <span className="font-medium text-[var(--text)]">{kf.toFixed(2)}</span>
+                          </div>
+                          {cookedPortion && portions ? (
+                            <div className="text-sm font-medium text-green-600">
+                              Готового раскладывать: {portions} порц. по {cookedPortion} г
+                            </div>
+                          ) : (
+                            <div className="text-xs text-[var(--text-subtle)]">Укажи кол-во и размер порций для расчёта</div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -3082,7 +3114,7 @@ function CookingPlanModal({ plan, onSave, onClose }) {
       ...f,
       ingredients: [
         ...f.ingredients,
-        { id: crypto.randomUUID(), name: '', plannedRaw: '', actualRaw: null, actualCooked: null },
+        { id: crypto.randomUUID(), name: '', portions: '', portionSize: '', actualRaw: null, actualCooked: null },
       ],
     }));
   };
@@ -3119,32 +3151,52 @@ function CookingPlanModal({ plan, onSave, onClose }) {
 
         <div>
           <label>Продукты {form.ingredients.length > 0 && <span className="text-[var(--text-subtle)] font-normal">({form.ingredients.length})</span>}</label>
-          <div className="space-y-2">
-            {form.ingredients.map((ing, idx) => (
-              <div key={ing.id} className="flex gap-2 items-center">
-                <input
-                  value={ing.name}
-                  onChange={e => updateIng(ing.id, 'name', e.target.value)}
-                  placeholder={`Продукт ${idx + 1}`}
-                  className="flex-1"
-                />
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  min="0"
-                  value={ing.plannedRaw}
-                  onChange={e => updateIng(ing.id, 'plannedRaw', e.target.value)}
-                  placeholder="гр"
-                  style={{ width: '72px', textAlign: 'center' }}
-                />
-                <button
-                  onClick={() => removeIng(ing.id)}
-                  className="p-2 text-[var(--text-muted)] hover:text-red-500 flex-shrink-0"
-                >
-                  <Icon name="x" size={16} />
-                </button>
-              </div>
-            ))}
+          <div className="space-y-3">
+            {form.ingredients.map((ing, idx) => {
+              const total = ing.portions && ing.portionSize ? (+ing.portions * +ing.portionSize) : null;
+              return (
+                <div key={ing.id} className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 space-y-2">
+                  <div className="flex gap-2 items-center">
+                    <input
+                      value={ing.name}
+                      onChange={e => updateIng(ing.id, 'name', e.target.value)}
+                      placeholder={`Продукт ${idx + 1}`}
+                      className="flex-1"
+                    />
+                    <button
+                      onClick={() => removeIng(ing.id)}
+                      className="p-2 text-[var(--text-muted)] hover:text-red-500 flex-shrink-0"
+                    >
+                      <Icon name="x" size={16} />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min="1"
+                      value={ing.portions}
+                      onChange={e => updateIng(ing.id, 'portions', e.target.value)}
+                      placeholder="порций"
+                      style={{ width: '80px', textAlign: 'center' }}
+                    />
+                    <span className="text-[var(--text-subtle)] text-sm">×</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min="0"
+                      value={ing.portionSize}
+                      onChange={e => updateIng(ing.id, 'portionSize', e.target.value)}
+                      placeholder="г/пор"
+                      style={{ width: '80px', textAlign: 'center' }}
+                    />
+                    <span className="text-sm text-[var(--text-subtle)] flex-1">
+                      {total ? <span className="text-[var(--text)] font-medium">= {total} г сырого</span> : '= ? г сырого'}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
           <button
             onClick={addIngredient}
