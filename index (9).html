@@ -217,7 +217,7 @@ const PRESET_BODY_FIELDS = [
 const DEFAULT_BODY_PHOTO_CATEGORIES = ['Спереди', 'Сбоку', 'Спина'];
 
 const DEFAULT_DATA = () => ({
-  supplements: [], meals: [], taken: {}, rationStock: 0, cookingPlans: [],
+  supplements: [], meals: [], taken: {}, rationStock: 0, cookingPlans: [], containers: [],
   bodyFields: DEFAULT_BODY_FIELDS.map(f => ({ ...f })),
   bodyEntries: [],
   bodyPhotoCategories: [...DEFAULT_BODY_PHOTO_CATEGORIES],
@@ -1018,7 +1018,7 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
       ) : (
         <>
           <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8">
-            {[{ id: 'plan', label: 'План' }, { id: 'counter', label: 'Счётчик' }, { id: 'cooking', label: 'Готовка' }].map(t => (
+            {[{ id: 'plan', label: 'План' }, { id: 'counter', label: 'Счётчик' }, { id: 'cooking', label: 'Готовка' }, { id: 'containers', label: 'Контейнеры' }].map(t => (
               <button
                 key={t.id}
                 onClick={() => setMealTab(t.id)}
@@ -1034,6 +1034,7 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
           {mealTab === 'plan' && <MealPlanView data={data} setData={setData} />}
           {mealTab === 'counter' && <RationCounter data={data} setData={setData} />}
           {mealTab === 'cooking' && <CookingView data={data} setData={setData} />}
+          {mealTab === 'containers' && <ContainersView data={data} setData={setData} />}
         </>
       )}
     </div>
@@ -3154,6 +3155,137 @@ function CookingPlanModal({ plan, onSave, onClose }) {
           </button>
         </div>
 
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============== CONTAINERS ==============
+function ContainersView({ data, setData }) {
+  const [editing, setEditing] = useState(null);
+
+  const containers = data.containers || [];
+
+  const save = (item) => {
+    setData(d => {
+      const list = d.containers || [];
+      const exists = list.find(c => c.id === item.id);
+      return {
+        ...d,
+        containers: exists
+          ? list.map(c => c.id === item.id ? item : c)
+          : [...list, item],
+      };
+    });
+    setEditing(null);
+  };
+
+  const remove = (id) => {
+    if (!confirm('Удалить контейнер?')) return;
+    setData(d => ({ ...d, containers: (d.containers || []).filter(c => c.id !== id) }));
+  };
+
+  const newContainer = () => setEditing({
+    id: crypto.randomUUID(),
+    name: '',
+    weight: '',
+    comment: '',
+  });
+
+  return (
+    <div className="space-y-3">
+      <button
+        onClick={newContainer}
+        className="btn-primary w-full flex items-center justify-center gap-2"
+      >
+        <Icon name="plus" size={18} />
+        Добавить контейнер
+      </button>
+
+      {containers.length === 0 && (
+        <EmptyState title="Нет контейнеров" text="Добавьте контейнер для взвешивания" />
+      )}
+
+      {containers.map(c => (
+        <div key={c.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-5 py-4 flex items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-baseline gap-3">
+              <span className="font-display text-xl">{c.name}</span>
+              <span className="font-display text-xl text-[var(--text-muted)]">{c.weight}<span className="text-xs ml-0.5 font-body">г</span></span>
+            </div>
+            {c.comment && <div className="text-sm text-[var(--text-subtle)] mt-1 truncate">{c.comment}</div>}
+          </div>
+          <div className="flex gap-1 shrink-0">
+            <button
+              onClick={() => setEditing(c)}
+              className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
+              title="Редактировать"
+            >
+              <Icon name="edit" size={18} />
+            </button>
+            <button
+              onClick={() => remove(c.id)}
+              className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
+              title="Удалить"
+            >
+              <Icon name="trash" size={18} />
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {editing && (
+        <ContainerModal item={editing} onSave={save} onClose={() => setEditing(null)} />
+      )}
+    </div>
+  );
+}
+
+function ContainerModal({ item, onSave, onClose }) {
+  const [form, setForm] = useState(item);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const submit = () => {
+    if (!form.name.trim()) return alert('Введите название контейнера');
+    if (!form.weight) return alert('Введите вес контейнера');
+    onSave(form);
+  };
+
+  return (
+    <Modal onClose={onClose} title={item.name ? 'Редактировать контейнер' : 'Новый контейнер'}>
+      <div className="space-y-4">
+        <div>
+          <label>Название</label>
+          <input
+            value={form.name}
+            onChange={e => set('name', e.target.value)}
+            placeholder="Например, Стеклянный лоток"
+            autoFocus
+          />
+        </div>
+        <div>
+          <label>Вес (г)</label>
+          <input
+            type="number"
+            inputMode="decimal"
+            min="0"
+            value={form.weight}
+            onChange={e => set('weight', e.target.value)}
+            placeholder="320"
+          />
+        </div>
+        <div>
+          <label>Комментарий <span className="text-[var(--text-subtle)] font-normal text-sm">— необязательно</span></label>
+          <input
+            value={form.comment}
+            onChange={e => set('comment', e.target.value)}
+            placeholder="Размер, цвет, объём..."
+          />
+        </div>
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
           <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
