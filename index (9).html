@@ -208,7 +208,7 @@ const PRESET_BODY_FIELDS = [
 const DEFAULT_BODY_PHOTO_CATEGORIES = ['Спереди', 'Сбоку', 'Спина'];
 
 const DEFAULT_DATA = () => ({
-  supplements: [], meals: [], taken: {}, rationStock: 0,
+  supplements: [], meals: [], taken: {}, rationStock: 0, cookingPlans: [],
   bodyFields: DEFAULT_BODY_FIELDS.map(f => ({ ...f })),
   bodyEntries: [],
   bodyPhotoCategories: [...DEFAULT_BODY_PHOTO_CATEGORIES],
@@ -1009,7 +1009,7 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
       ) : (
         <>
           <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8">
-            {[{ id: 'plan', label: 'План' }, { id: 'counter', label: 'Счётчик' }].map(t => (
+            {[{ id: 'plan', label: 'План' }, { id: 'counter', label: 'Счётчик' }, { id: 'cooking', label: 'Готовка' }].map(t => (
               <button
                 key={t.id}
                 onClick={() => setMealTab(t.id)}
@@ -1024,6 +1024,7 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
 
           {mealTab === 'plan' && <MealPlanView data={data} setData={setData} />}
           {mealTab === 'counter' && <RationCounter data={data} setData={setData} />}
+          {mealTab === 'cooking' && <CookingView data={data} setData={setData} />}
         </>
       )}
     </div>
@@ -1317,7 +1318,6 @@ function HomeView({ data, setData, setTab, setHouseTab, setMealTab }) {
         <BossWidget data={data} onGo={() => goHouse('boss')} />
       </div>
 
-      <RationBanner data={data} setData={setData} onGo={goCounter} />
     </div>
   );
 }
@@ -2836,6 +2836,254 @@ function MealModal({ meal, onSave, onClose }) {
             />
           </div>
         ))}
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============== COOKING ==============
+function CookingView({ data, setData }) {
+  const [editing, setEditing] = useState(null);
+  const [expanded, setExpanded] = useState(null);
+
+  const plans = data.cookingPlans || [];
+
+  const save = (plan) => {
+    setData(d => {
+      const list = d.cookingPlans || [];
+      const exists = list.find(p => p.id === plan.id);
+      return {
+        ...d,
+        cookingPlans: exists
+          ? list.map(p => p.id === plan.id ? plan : p)
+          : [...list, plan],
+      };
+    });
+    setEditing(null);
+  };
+
+  const remove = (id) => {
+    if (!confirm('Удалить план готовки?')) return;
+    setData(d => ({ ...d, cookingPlans: (d.cookingPlans || []).filter(p => p.id !== id) }));
+    if (expanded === id) setExpanded(null);
+  };
+
+  const updateActual = (planId, ingId, field, value) => {
+    setData(d => ({
+      ...d,
+      cookingPlans: (d.cookingPlans || []).map(p =>
+        p.id !== planId ? p : {
+          ...p,
+          ingredients: p.ingredients.map(i =>
+            i.id !== ingId ? i : { ...i, [field]: value }
+          ),
+        }
+      ),
+    }));
+  };
+
+  const newPlan = () => setEditing({
+    id: crypto.randomUUID(),
+    name: '',
+    ingredients: [],
+    createdAt: new Date().toISOString(),
+  });
+
+  return (
+    <div className="space-y-4">
+      <button
+        onClick={newPlan}
+        className="btn-primary w-full flex items-center justify-center gap-2"
+      >
+        <Icon name="plus" size={18} />
+        Добавить план готовки
+      </button>
+
+      {plans.length === 0 && (
+        <EmptyState title="Нет планов готовки" text="Добавьте первый план готовки" />
+      )}
+
+      {[...plans].reverse().map(plan => {
+        const isOpen = expanded === plan.id;
+        const count = plan.ingredients.length;
+        const countLabel = count === 0 ? 'нет продуктов' : count === 1 ? '1 продукт' : count < 5 ? `${count} продукта` : `${count} продуктов`;
+        return (
+          <div key={plan.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+            <button
+              onClick={() => setExpanded(isOpen ? null : plan.id)}
+              className="w-full p-5 text-left flex items-center justify-between gap-4"
+            >
+              <div className="flex-1 min-w-0">
+                <h3 className="font-display text-xl">{plan.name}</h3>
+                <div className="text-sm text-[var(--text-subtle)] mt-1">{countLabel}</div>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={e => { e.stopPropagation(); setEditing(plan); }}
+                  className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
+                  title="Редактировать"
+                >
+                  <Icon name="edit" size={18} />
+                </button>
+                <button
+                  onClick={e => { e.stopPropagation(); remove(plan.id); }}
+                  className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
+                  title="Удалить"
+                >
+                  <Icon name="trash" size={18} />
+                </button>
+                <div className={`text-[var(--text-muted)] transition-transform ml-1 ${isOpen ? 'rotate-180' : ''}`}>
+                  <Icon name="chevronDown" size={20} />
+                </div>
+              </div>
+            </button>
+
+            {isOpen && (
+              <div className="slide-down border-t border-[var(--border)] px-5 py-5 space-y-3">
+                {plan.ingredients.length === 0 && (
+                  <div className="text-sm text-[var(--text-subtle)] text-center py-4">Нет продуктов — нажмите редактировать</div>
+                )}
+                {plan.ingredients.map(ing => (
+                  <div key={ing.id} className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-4">
+                    <div className="font-medium mb-3">{ing.name}</div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="text-center">
+                        <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">План сырой</div>
+                        <div className="font-display text-xl">
+                          {ing.plannedRaw !== '' && ing.plannedRaw != null ? ing.plannedRaw : '—'}
+                          {ing.plannedRaw !== '' && ing.plannedRaw != null && <span className="text-xs text-[var(--text-subtle)] ml-1">г</span>}
+                        </div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">Факт сырой</div>
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          min="0"
+                          value={ing.actualRaw ?? ''}
+                          onChange={e => updateActual(plan.id, ing.id, 'actualRaw', e.target.value)}
+                          placeholder="г"
+                          style={{ textAlign: 'center' }}
+                          className="text-sm"
+                        />
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">Факт готовый</div>
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          min="0"
+                          value={ing.actualCooked ?? ''}
+                          onChange={e => updateActual(plan.id, ing.id, 'actualCooked', e.target.value)}
+                          placeholder="г"
+                          style={{ textAlign: 'center' }}
+                          className="text-sm"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {editing && (
+        <CookingPlanModal plan={editing} onSave={save} onClose={() => setEditing(null)} />
+      )}
+    </div>
+  );
+}
+
+function CookingPlanModal({ plan, onSave, onClose }) {
+  const [form, setForm] = useState({
+    ...plan,
+    ingredients: plan.ingredients.map(i => ({ ...i })),
+  });
+
+  const addIngredient = () => {
+    setForm(f => ({
+      ...f,
+      ingredients: [
+        ...f.ingredients,
+        { id: crypto.randomUUID(), name: '', plannedRaw: '', actualRaw: null, actualCooked: null },
+      ],
+    }));
+  };
+
+  const updateIng = (id, field, value) => {
+    setForm(f => ({
+      ...f,
+      ingredients: f.ingredients.map(i => i.id === id ? { ...i, [field]: value } : i),
+    }));
+  };
+
+  const removeIng = (id) => {
+    setForm(f => ({ ...f, ingredients: f.ingredients.filter(i => i.id !== id) }));
+  };
+
+  const submit = () => {
+    if (!form.name.trim()) return alert('Введите название плана');
+    if (form.ingredients.some(i => !i.name.trim())) return alert('Заполните названия всех продуктов');
+    onSave(form);
+  };
+
+  return (
+    <Modal onClose={onClose} title={plan.name ? 'Редактировать план' : 'Новый план готовки'}>
+      <div className="space-y-4">
+        <div>
+          <label>Название плана</label>
+          <input
+            value={form.name}
+            onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+            placeholder="Например, Готовка на неделю"
+            autoFocus
+          />
+        </div>
+
+        <div>
+          <label>Продукты {form.ingredients.length > 0 && <span className="text-[var(--text-subtle)] font-normal">({form.ingredients.length})</span>}</label>
+          <div className="space-y-2">
+            {form.ingredients.map((ing, idx) => (
+              <div key={ing.id} className="flex gap-2 items-center">
+                <input
+                  value={ing.name}
+                  onChange={e => updateIng(ing.id, 'name', e.target.value)}
+                  placeholder={`Продукт ${idx + 1}`}
+                  className="flex-1"
+                />
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  value={ing.plannedRaw}
+                  onChange={e => updateIng(ing.id, 'plannedRaw', e.target.value)}
+                  placeholder="гр"
+                  style={{ width: '72px', textAlign: 'center' }}
+                />
+                <button
+                  onClick={() => removeIng(ing.id)}
+                  className="p-2 text-[var(--text-muted)] hover:text-red-500 flex-shrink-0"
+                >
+                  <Icon name="x" size={16} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={addIngredient}
+            className="mt-2 w-full flex items-center justify-center gap-2 py-2.5 border border-dashed border-[var(--border)] rounded-xl text-sm text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--border-strong)] transition-colors"
+          >
+            <Icon name="plus" size={14} />
+            Добавить продукт
+          </button>
+        </div>
+
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
           <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
