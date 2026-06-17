@@ -7170,9 +7170,9 @@ function BudgetMonthlyView({ data, setData }) {
     (() => {
       const suppAssign = data.budgetSupplementAssignments || {};
       const suppItems  = data.budgetSupplements || [];
+      const normalize  = (arr) => (arr || []).map(x => typeof x === 'string' ? { id: x, qty: 1 } : x);
       const monthsWithSupp = months.filter(m => {
-        const ids = suppAssign[m] || [];
-        return ids.some(id => suppItems.find(s => s.id === id && !s.archived));
+        return normalize(suppAssign[m]).some(e => suppItems.find(s => s.id === e.id && !s.archived));
       });
       if (monthsWithSupp.length === 0) return null;
       return {
@@ -7180,10 +7180,9 @@ function BudgetMonthlyView({ data, setData }) {
         items: [{
           id: '__supp_total', emoji: '💊', label: 'Спортпит и БАДы', isAuto: true,
           getAutoVal: (m) => {
-            const ids = (suppAssign[m] || []);
-            return ids.reduce((s, id) => {
-              const item = suppItems.find(x => x.id === id && !x.archived);
-              return s + (item ? (item.cost || 0) : 0);
+            return normalize(suppAssign[m]).reduce((s, e) => {
+              const item = suppItems.find(x => x.id === e.id && !x.archived);
+              return s + (item ? (item.cost || 0) * (e.qty || 1) : 0);
             }, 0);
           }
         }]
@@ -8502,7 +8501,12 @@ function BudgetSupplementsView({ data, setData }) {
   const [selected, setSelected] = useState([]);
 
   const items = (data.budgetSupplements || []).filter(s => !s.archived);
-  const assignments = data.budgetSupplementAssignments || {};
+  const rawAssignments = data.budgetSupplementAssignments || {};
+  const assignments = Object.fromEntries(
+    Object.entries(rawAssignments).map(([m, arr]) => [m,
+      (arr || []).map(x => typeof x === 'string' ? { id: x, qty: 1 } : x)
+    ])
+  );
 
   const save = (item) => {
     setData(d => {
@@ -8518,7 +8522,7 @@ function BudgetSupplementsView({ data, setData }) {
     setData(d => {
       const newAssign = { ...d.budgetSupplementAssignments };
       Object.keys(newAssign).forEach(m => {
-        newAssign[m] = (newAssign[m] || []).filter(x => x !== id);
+        newAssign[m] = (newAssign[m] || []).map(x => typeof x === 'string' ? { id: x, qty: 1 } : x).filter(x => x.id !== id);
         if (newAssign[m].length === 0) delete newAssign[m];
       });
       return { ...d, budgetSupplements: (d.budgetSupplements || []).filter(s => s.id !== id), budgetSupplementAssignments: newAssign };
@@ -8533,11 +8537,17 @@ function BudgetSupplementsView({ data, setData }) {
   const toggleSelect = (id) => setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
   const selectAll = () => setSelected(items.length === selected.length ? [] : items.map(i => i.id));
 
-  const assignToMonth = (month) => {
+  const assignToMonth = (month, quantities) => {
     setData(d => {
       const a = { ...(d.budgetSupplementAssignments || {}) };
-      const existing = a[month] || [];
-      const merged = [...new Set([...existing, ...selected])];
+      const existing = (a[month] || []).map(x => typeof x === 'string' ? { id: x, qty: 1 } : x);
+      const merged = [...existing];
+      selected.forEach(id => {
+        const idx = merged.findIndex(x => x.id === id);
+        const qty = quantities[id] || 1;
+        if (idx >= 0) merged[idx] = { ...merged[idx], qty };
+        else merged.push({ id, qty });
+      });
       return { ...d, budgetSupplementAssignments: { ...a, [month]: merged } };
     });
     setSelected([]);
@@ -8547,7 +8557,7 @@ function BudgetSupplementsView({ data, setData }) {
   const removeFromMonth = (month, itemId) => {
     setData(d => {
       const a = { ...(d.budgetSupplementAssignments || {}) };
-      a[month] = (a[month] || []).filter(x => x !== itemId);
+      a[month] = (a[month] || []).map(x => typeof x === 'string' ? { id: x, qty: 1 } : x).filter(x => x.id !== itemId);
       if (a[month].length === 0) delete a[month];
       return { ...d, budgetSupplementAssignments: a };
     });
@@ -8578,7 +8588,7 @@ function BudgetSupplementsView({ data, setData }) {
         {selected.length > 0 && (
           <button onClick={() => setShowAssign(true)}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-medium hover:opacity-85 transition-all">
-            📅 В месяц ({selected.length} шт · {formatRub(totalSelected)} ₽)
+            📅 В месяц ({selected.length} поз.)
           </button>
         )}
       </div>
@@ -8646,12 +8656,15 @@ function BudgetSupplementsView({ data, setData }) {
           <h3 className="text-sm font-semibold text-[var(--text-subtle)] uppercase tracking-wide mb-3">Распределено по месяцам</h3>
           <div className="space-y-3">
             {assignedMonths.map(month => {
-              const ids = assignments[month] || [];
-              const monthItems = ids.map(id => items.find(x => x.id === id)).filter(Boolean);
-              if (monthItems.length === 0) return null;
+              const entries = assignments[month] || [];
+              const monthEntries = entries.map(e => {
+                const item = items.find(x => x.id === e.id);
+                return item ? { ...item, qty: e.qty || 1 } : null;
+              }).filter(Boolean);
+              if (monthEntries.length === 0) return null;
               const [y, m] = month.split('-');
               const monthLabel = `${MONTH_NAMES_FULL[parseInt(m, 10) - 1]} ${y}`;
-              const total = monthItems.reduce((s, x) => s + (x.cost || 0), 0);
+              const total = monthEntries.reduce((s, x) => s + (x.cost || 0) * x.qty, 0);
               return (
                 <div key={month} className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-3">
                   <div className="flex items-center justify-between mb-2">
@@ -8659,11 +8672,11 @@ function BudgetSupplementsView({ data, setData }) {
                     <span className="text-sm font-display font-semibold">{formatRub(total)} ₽</span>
                   </div>
                   <div className="space-y-1">
-                    {monthItems.map(item => (
+                    {monthEntries.map(item => (
                       <div key={item.id} className="flex items-center justify-between text-sm text-[var(--text-muted)]">
-                        <span>{item.name}</span>
+                        <span>{item.name}{item.qty > 1 ? ` ×${item.qty}` : ''}</span>
                         <div className="flex items-center gap-2">
-                          <span>{item.cost ? formatRub(item.cost) + ' ₽' : ''}</span>
+                          <span>{item.cost ? formatRub(item.cost * item.qty) + ' ₽' : ''}</span>
                           <button onClick={() => removeFromMonth(month, item.id)}
                             className="p-1 rounded hover:bg-red-50 text-[var(--text-subtle)] hover:text-red-500">
                             <Icon name="x" size={12} />
@@ -8683,8 +8696,7 @@ function BudgetSupplementsView({ data, setData }) {
 
       {showAssign && (
         <BudgetSupplementAssignModal
-          selectedCount={selected.length}
-          totalCost={totalSelected}
+          selectedItems={selected.map(id => items.find(x => x.id === id)).filter(Boolean)}
           onAssign={assignToMonth}
           onClose={() => setShowAssign(false)}
         />
@@ -8770,11 +8782,18 @@ function BudgetSupplementModal({ item, onSave, onClose }) {
   );
 }
 
-function BudgetSupplementAssignModal({ selectedCount, totalCost, onAssign, onClose }) {
+function BudgetSupplementAssignModal({ selectedItems, onAssign, onClose }) {
   const MONTH_NAMES_FULL = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
   const now = new Date();
   const [selYear, setSelYear] = useState(now.getFullYear());
   const [selMonth, setSelMonth] = useState('');
+  const [quantities, setQuantities] = useState(() =>
+    Object.fromEntries(selectedItems.map(x => [x.id, 1]))
+  );
+
+  const setQty = (id, val) => setQuantities(q => ({ ...q, [id]: Math.max(1, parseInt(val) || 1) }));
+
+  const totalCost = selectedItems.reduce((s, x) => s + (x.cost || 0) * (quantities[x.id] || 1), 0);
 
   const monthOptions = MONTH_NAMES_FULL.map((name, i) => {
     const m = `${selYear}-${String(i + 1).padStart(2, '0')}`;
@@ -8784,8 +8803,27 @@ function BudgetSupplementAssignModal({ selectedCount, totalCost, onAssign, onClo
   return (
     <Modal title="Добавить в месяц" onClose={onClose}>
       <div className="space-y-4">
-        <div className="bg-blue-50 rounded-xl px-4 py-3 text-sm">
-          <span className="text-blue-700">Выбрано: <b>{selectedCount}</b> позиций на сумму <b>{formatRub(totalCost)} ₽</b></span>
+        <div className="space-y-2">
+          {selectedItems.map(item => (
+            <div key={item.id} className="flex items-center gap-3 bg-[var(--bg)] rounded-xl px-3 py-2">
+              <span className="flex-1 text-sm truncate">{item.name}{item.brand ? ` (${item.brand})` : ''}</span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button onClick={() => setQty(item.id, (quantities[item.id] || 1) - 1)}
+                  className="w-7 h-7 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-sm flex items-center justify-center hover:bg-black/5">−</button>
+                <input type="number" min="1" value={quantities[item.id] || 1}
+                  onChange={e => setQty(item.id, e.target.value)}
+                  className="w-12 text-center text-sm border border-[var(--border)] rounded-lg py-1 bg-[var(--surface)]" />
+                <button onClick={() => setQty(item.id, (quantities[item.id] || 1) + 1)}
+                  className="w-7 h-7 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-sm flex items-center justify-center hover:bg-black/5">+</button>
+              </div>
+              <span className="text-sm font-medium whitespace-nowrap w-20 text-right">{item.cost ? formatRub(item.cost * (quantities[item.id] || 1)) + ' ₽' : '—'}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="bg-blue-50 rounded-xl px-4 py-2.5 text-sm text-blue-700 font-medium flex justify-between">
+          <span>Итого:</span>
+          <span>{formatRub(totalCost)} ₽</span>
         </div>
 
         <div className="flex items-center gap-2">
@@ -8805,7 +8843,7 @@ function BudgetSupplementAssignModal({ selectedCount, totalCost, onAssign, onClo
 
       <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
         <button onClick={onClose} className="btn-secondary">Отмена</button>
-        <button onClick={() => selMonth && onAssign(selMonth)} disabled={!selMonth}
+        <button onClick={() => selMonth && onAssign(selMonth, quantities)} disabled={!selMonth}
           className="btn-primary flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
           Добавить в месяц
         </button>
