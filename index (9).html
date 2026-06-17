@@ -7993,7 +7993,7 @@ function BudgetExpensesView({ data, setData }) {
   return (
     <div>
       <div className="inline-flex bg-[var(--bg)] border border-[var(--border)] rounded-xl p-1 mb-6">
-        {[['list','Статьи'],['dds','ДДС'],['balance','Баланс']].map(([id, label]) => (
+        {[['list','Статьи и Баланс'],['dds','ДДС']].map(([id, label]) => (
           <button key={id} onClick={() => setSubTab(id)}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${subTab === id ? 'bg-violet-600 text-white' : 'text-[var(--text-muted)]'}`}>
             {label}
@@ -8002,7 +8002,6 @@ function BudgetExpensesView({ data, setData }) {
       </div>
       {subTab === 'list' && <SavingsListView data={data} setData={setData} />}
       {subTab === 'dds' && <SavingsDDSView data={data} setData={setData} />}
-      {subTab === 'balance' && <SavingsBalanceView data={data} setData={setData} />}
     </div>
   );
 }
@@ -8014,9 +8013,23 @@ function SavingsListView({ data, setData }) {
   const [filterMonths, setFilterMonths] = useState([]);
   const [sortCol,      setSortCol]      = useState('targetDate');
   const [sortDir,      setSortDir]      = useState('asc');
+  const [withdrawItem, setWithdrawItem] = useState(null);
 
   const cats    = getExpenseCats(data);
   const expenses = (data.budgetExpenses || []).filter(e => !e.archived);
+  const actual = data.savingsActual || {};
+  const corrections = data.savingsCorrections || [];
+
+  const getItemBalance = (exp) => {
+    let dep = 0, wd = 0;
+    Object.keys(actual).forEach(k => {
+      if (k.startsWith(exp.id + '_')) {
+        dep += actual[k].deposit || 0;
+        wd += actual[k].withdrawal || 0;
+      }
+    });
+    return { deposit: dep, withdrawal: wd, balance: dep - wd };
+  };
 
   const save = (exp) => {
     setData(d => {
@@ -8037,6 +8050,17 @@ function SavingsListView({ data, setData }) {
     startDate: getCurrentMonthStr(), targetDate: addMonthsStr(getCurrentMonthStr(), 6),
     notes: '', archived: false,
   });
+
+  const doWithdraw = (expenseId, amount, month) => {
+    const key = expenseId + '_' + month;
+    setData(d => {
+      const a = { ...(d.savingsActual || {}) };
+      const cur = a[key] || {};
+      a[key] = { ...cur, withdrawal: (cur.withdrawal || 0) + amount };
+      return { ...d, savingsActual: a };
+    });
+    setWithdrawItem(null);
+  };
 
   const toggleSort = (col) => {
     if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -8072,6 +8096,7 @@ function SavingsListView({ data, setData }) {
       name:       [a.name, b.name],
       category:   [(cats.find(c => c.id === a.category) || {}).label || 'Я', (cats.find(c => c.id === b.category) || {}).label || 'Я'],
       amount:     [a.amount || 0,   b.amount || 0],
+      saved:      [getItemBalance(a).balance, getItemBalance(b).balance],
       monthly:    [calcMonthly(a),  calcMonthly(b)],
       startDate:  [a.startDate,     b.startDate],
       targetDate: [a.targetDate,    b.targetDate],
@@ -8091,6 +8116,7 @@ function SavingsListView({ data, setData }) {
   const COLS = [
     { col: 'name',       label: 'Название',    cls: 'text-left' },
     { col: 'category',   label: 'Категория',   cls: 'text-left' },
+    { col: 'saved',      label: 'Накоплено',   cls: 'text-right' },
     { col: 'amount',     label: 'Сумма',       cls: 'text-right' },
     { col: 'monthly',    label: '/ мес',       cls: 'text-right' },
     { col: 'startDate',  label: 'Начало',      cls: 'text-left' },
@@ -8098,8 +8124,27 @@ function SavingsListView({ data, setData }) {
     { col: 'months',     label: 'Месяцев',     cls: 'text-right' },
   ];
 
+  const corrTotal = corrections.reduce((s, c) => s + (c.amount || 0), 0);
+  const totalBalance = sorted.reduce((s, e) => s + getItemBalance(e).balance, 0) + corrTotal;
+  const totalTarget = sorted.reduce((s, e) => s + (e.amount || 0), 0);
+
   return (
     <div>
+      {expenses.length > 0 && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 mb-6 flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-1">Баланс счёта</div>
+            <div className={`font-display text-3xl ${totalBalance >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+              {totalBalance >= 0 ? '+' : ''}{formatRub(totalBalance)} <span className="text-base">₽</span>
+            </div>
+          </div>
+          <div className="text-right text-sm text-[var(--text-muted)]">
+            <div>Цель: {formatRub(totalTarget)} ₽</div>
+            {corrTotal !== 0 && <div>Корректировки: {corrTotal > 0 ? '+' : ''}{formatRub(corrTotal)} ₽</div>}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center gap-2 flex-wrap mb-6">
         <button onClick={newExp} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
           <Icon name="plus" size={16} />Добавить накопление
@@ -8133,7 +8178,7 @@ function SavingsListView({ data, setData }) {
         <>
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-sm" style={{ minWidth: '680px' }}>
+              <table className="w-full text-sm" style={{ minWidth: '780px' }}>
                 <thead>
                   <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                     {COLS.map(({ col, label, cls }) => (
@@ -8142,7 +8187,7 @@ function SavingsListView({ data, setData }) {
                         {label}<SortArrow col={col} />
                       </th>
                     ))}
-                    <th className="px-3 py-3 w-16" />
+                    <th className="px-3 py-3 w-24" />
                   </tr>
                 </thead>
                 <tbody>
@@ -8152,6 +8197,8 @@ function SavingsListView({ data, setData }) {
                     const mTotal   = monthsBetweenStr(e.startDate, e.targetDate);
                     const mLeft    = e.targetDate < curMonth ? 0 : monthsBetweenStr(curMonth, e.targetDate);
                     const isOver   = e.targetDate < curMonth;
+                    const bal      = getItemBalance(e);
+                    const pct      = e.amount > 0 ? Math.min(100, Math.round((bal.balance / e.amount) * 100)) : 0;
                     return (
                       <tr key={e.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${i % 2 === 1 ? 'bg-[var(--bg)]/50' : ''}`}>
                         <td className="px-3 py-3">
@@ -8160,6 +8207,18 @@ function SavingsListView({ data, setData }) {
                         </td>
                         <td className="px-3 py-3 whitespace-nowrap text-[var(--text-muted)]">
                           {cat.emoji} {cat.label}
+                        </td>
+                        <td className="px-3 py-3 text-right whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-2">
+                            <div className="w-14 bg-[var(--bg)] rounded-full h-1.5 overflow-hidden">
+                              <div className={`h-full rounded-full ${pct >= 100 ? 'bg-green-500' : pct >= 50 ? 'bg-blue-500' : 'bg-violet-500'}`}
+                                style={{ width: Math.max(0, pct) + '%' }} />
+                            </div>
+                            <span className={`font-medium ${bal.balance > 0 ? 'text-green-600' : 'text-[var(--text-muted)]'}`}>
+                              {formatRub(bal.balance)} ₽
+                            </span>
+                            <span className="text-[10px] text-[var(--text-subtle)]">{pct}%</span>
+                          </div>
                         </td>
                         <td className="px-3 py-3 text-right whitespace-nowrap font-medium">{formatRub(e.amount)} ₽</td>
                         <td className="px-3 py-3 text-right whitespace-nowrap font-semibold text-[var(--text)]">{formatRub(monthly)} ₽</td>
@@ -8175,6 +8234,8 @@ function SavingsListView({ data, setData }) {
                         </td>
                         <td className="px-2 py-3">
                           <div className="flex gap-1 justify-end">
+                            <button onClick={() => setWithdrawItem(e)} title="Списание"
+                              className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 hover:text-red-600 font-bold text-base leading-none">−</button>
                             <button onClick={() => setEditing(e)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={14} /></button>
                             <button onClick={() => remove(e.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
                           </div>
@@ -8187,9 +8248,10 @@ function SavingsListView({ data, setData }) {
             </div>
             <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] flex justify-between items-center">
               <span className="text-xs text-[var(--text-subtle)] uppercase tracking-wide">{sorted.length} позиций</span>
-              <div className="text-right">
-                <span className="font-display text-base">{formatRub(sorted.reduce((s, e) => s + (e.amount || 0), 0))} ₽</span>
-                <span className="text-xs text-[var(--text-subtle)] ml-3">{formatRub(sorted.reduce((s, e) => s + calcMonthly(e), 0))} ₽/мес</span>
+              <div className="text-right flex gap-4 items-baseline">
+                <span className="text-xs text-[var(--text-subtle)]">Накоплено: <b className="text-green-600">{formatRub(sorted.reduce((s, e) => s + getItemBalance(e).balance, 0))} ₽</b></span>
+                <span className="font-display text-base">{formatRub(totalTarget)} ₽</span>
+                <span className="text-xs text-[var(--text-subtle)]">{formatRub(sorted.reduce((s, e) => s + calcMonthly(e), 0))} ₽/мес</span>
               </div>
             </div>
           </div>
@@ -8197,6 +8259,13 @@ function SavingsListView({ data, setData }) {
       )}
 
       {editing && <BudgetExpenseModal expense={editing} cats={cats} onSave={save} onClose={() => setEditing(null)} />}
+      {withdrawItem && (
+        <SavingsWithdrawModal
+          expense={withdrawItem}
+          onSave={(amount, month) => doWithdraw(withdrawItem.id, amount, month)}
+          onClose={() => setWithdrawItem(null)}
+        />
+      )}
       {showSettings && (
         <BudgetCategoriesModal
           title="Категории накоплений"
@@ -8617,89 +8686,45 @@ function SavingsCorrectionModal({ onSave, onClose }) {
   );
 }
 
-// ---- Savings Balance View ----
-function SavingsBalanceView({ data }) {
-  const cats = getExpenseCats(data);
-  const expenses = (data.budgetExpenses || []).filter(e => !e.archived);
-  const actual = data.savingsActual || {};
-  const corrections = data.savingsCorrections || [];
+function SavingsWithdrawModal({ expense, onSave, onClose }) {
+  const [amount, setAmount] = useState('');
+  const [month, setMonth] = useState(getCurrentMonthStr());
 
-  const itemBalances = expenses.map(exp => {
-    let totalDeposit = 0, totalWithdrawal = 0;
-    let m = exp.startDate;
-    while (m <= exp.targetDate) {
-      const key = exp.id + '_' + m;
-      const act = actual[key] || {};
-      totalDeposit += act.deposit || 0;
-      totalWithdrawal += act.withdrawal || 0;
-      m = addMonthsStr(m, 1);
-    }
-    Object.keys(actual).forEach(k => {
-      if (k.startsWith(exp.id + '_') && !k.startsWith(exp.id + '_corr')) {
-        const km = k.split('_').slice(1).join('_');
-        if (km < exp.startDate || km > exp.targetDate) {
-          totalDeposit += actual[k].deposit || 0;
-          totalWithdrawal += actual[k].withdrawal || 0;
-        }
-      }
-    });
-    const balance = totalDeposit - totalWithdrawal;
-    const cat = cats.find(c => c.id === exp.category) || { emoji: '💡', label: exp.category };
-    return { ...exp, cat, totalDeposit, totalWithdrawal, balance, target: exp.amount || 0 };
-  });
+  const curYear = new Date().getFullYear();
+  const MONTH_NAMES_FULL = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
 
-  const corrTotal = corrections.reduce((s, c) => s + (c.amount || 0), 0);
-  const grandBalance = itemBalances.reduce((s, b) => s + b.balance, 0) + corrTotal;
+  const submit = () => {
+    const val = Number(amount);
+    if (!val || val <= 0) return;
+    onSave(val, month);
+  };
 
   return (
-    <div>
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6 mb-6">
-        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-2">Общий баланс счёта</div>
-        <div className={`font-display text-4xl ${grandBalance >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-          {grandBalance >= 0 ? '+' : ''}{formatRub(grandBalance)} <span className="text-lg">₽</span>
+    <Modal title={`Списание — ${expense.name}`} onClose={onClose}>
+      <div className="space-y-4">
+        <div>
+          <label>Сумма списания (₽)</label>
+          <input type="number" inputMode="numeric" min="1" value={amount}
+            onChange={e => setAmount(e.target.value)} placeholder="5 000" autoFocus />
         </div>
-        {corrTotal !== 0 && (
-          <div className="text-xs text-[var(--text-muted)] mt-1">
-            включая корректировки: {corrTotal > 0 ? '+' : ''}{formatRub(corrTotal)} ₽
-          </div>
-        )}
+        <div>
+          <label>Месяц</label>
+          <select value={month} onChange={e => setMonth(e.target.value)}>
+            {[-1, 0, 1].map(dy => {
+              const y = curYear + dy;
+              return MONTH_NAMES_FULL.map((mn, mi) => {
+                const val = y + '-' + String(mi + 1).padStart(2, '0');
+                return <option key={val} value={val}>{mn} {y}</option>;
+              });
+            }).flat()}
+          </select>
+        </div>
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1 !bg-red-500 hover:!bg-red-600">Списать</button>
+        </div>
       </div>
-
-      {expenses.length === 0 ? (
-        <EmptyState title="Нет статей" text="Добавьте накопления на вкладке «Статьи»" />
-      ) : (
-        <div className="space-y-3">
-          {itemBalances.map(b => {
-            const pct = b.target > 0 ? Math.min(100, Math.round((b.balance / b.target) * 100)) : 0;
-            return (
-              <div key={b.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <div>
-                    <span className="font-medium">{b.name}</span>
-                    <span className="text-xs text-[var(--text-muted)] ml-2">{b.cat.emoji} {b.cat.label}</span>
-                  </div>
-                  <div className="text-right">
-                    <span className={`font-display text-lg ${b.balance >= 0 ? '' : 'text-red-500'}`}>{formatRub(b.balance)} ₽</span>
-                    <span className="text-[var(--text-muted)] text-sm"> / {formatRub(b.target)} ₽</span>
-                  </div>
-                </div>
-                <div className="w-full bg-[var(--bg)] rounded-full h-2.5 overflow-hidden">
-                  <div className={`h-full rounded-full transition-all ${pct >= 100 ? 'bg-green-500' : pct >= 50 ? 'bg-blue-500' : 'bg-violet-500'}`}
-                    style={{ width: Math.max(0, pct) + '%' }} />
-                </div>
-                <div className="flex justify-between mt-1.5 text-xs text-[var(--text-subtle)]">
-                  <span>{pct}% накоплено</span>
-                  <div className="flex gap-3">
-                    {b.totalDeposit > 0 && <span className="text-green-600">+{formatRub(b.totalDeposit)} ₽</span>}
-                    {b.totalWithdrawal > 0 && <span className="text-red-500">-{formatRub(b.totalWithdrawal)} ₽</span>}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
+    </Modal>
   );
 }
 
