@@ -7190,8 +7190,17 @@ function BudgetMonthlyView({ data, setData }) {
     })(),
   ].filter(Boolean);
 
-  // User-defined categories first, auto-linked at the bottom
-  const allCats = [...userCats, ...autoCategories];
+  // Merge user + auto, then sort by saved order
+  const allCatsUnsorted = [...userCats, ...autoCategories];
+  const savedOrder = data.budgetCategoryOrder || [];
+  const allCats = [...allCatsUnsorted].sort((a, b) => {
+    const ai = savedOrder.indexOf(a.id);
+    const bi = savedOrder.indexOf(b.id);
+    if (ai === -1 && bi === -1) return 0;
+    if (ai === -1) return 1;
+    if (bi === -1) return 1;
+    return ai - bi;
+  });
 
   // ── Value helpers ─────────────────────────────────────────────────────────
   const getItemVal   = (item, month) => item.getAutoVal ? item.getAutoVal(month) : (vals[`${item.id}_${month}`] || 0);
@@ -7485,7 +7494,7 @@ function BudgetMonthlyView({ data, setData }) {
       )}
 
       {showSettings && (
-        <BudgetPlanSettingsModal data={data} setData={setData} onClose={() => setShowSettings(false)} />
+        <BudgetPlanSettingsModal data={data} setData={setData} autoCategories={autoCategories} allCatsOrdered={allCats} onClose={() => setShowSettings(false)} />
       )}
 
       {showCopyMonth && (
@@ -7584,20 +7593,38 @@ function BudgetCopyMonthModal({ year, userCats, incomeSources, data, setData, on
 }
 
 
-function BudgetPlanSettingsModal({ data, setData, onClose }) {
+function BudgetPlanSettingsModal({ data, setData, autoCategories, allCatsOrdered, onClose }) {
   const [cats,        setCats]        = useState(() => JSON.parse(JSON.stringify(data.budgetPlanCategories || [])));
   const [incomeSrcs,  setIncomeSrcs]  = useState(() => JSON.parse(JSON.stringify(data.budgetIncomeSources || [])));
+  const [catOrder,    setCatOrder]    = useState(() => allCatsOrdered.map(c => c.id));
   const [expanded,    setExpanded]    = useState({});
-  const [editCat,     setEditCat]     = useState(null); // {id, emoji, label}
-  const [editItem,    setEditItem]    = useState(null); // {catId, id, label}
-  const [editIncome,  setEditIncome]  = useState(null); // {id, label}
+  const [editCat,     setEditCat]     = useState(null);
+  const [editItem,    setEditItem]    = useState(null);
+  const [editIncome,  setEditIncome]  = useState(null);
   const [newCatEmoji, setNewCatEmoji] = useState('');
   const [newCatLabel, setNewCatLabel] = useState('');
-  const [newItemLbls, setNewItemLbls] = useState({});  // {catId: string}
+  const [newItemLbls, setNewItemLbls] = useState({});
   const [newIncLabel, setNewIncLabel] = useState('');
 
+  const autoMap = Object.fromEntries(autoCategories.map(c => [c.id, c]));
+
+  const orderedAll = (() => {
+    const allIds = [...new Set([...catOrder, ...cats.map(c => c.id), ...autoCategories.map(c => c.id)])];
+    const sorted = allIds.filter(id => cats.find(c => c.id === id) || autoMap[id]);
+    return sorted.map(id => autoMap[id] ? { ...autoMap[id], _isAuto: true } : { ...cats.find(c => c.id === id), _isAuto: false }).filter(Boolean);
+  })();
+
+  const moveInOrder = (id, dir) => {
+    const all = orderedAll.map(c => c.id);
+    const idx = all.indexOf(id);
+    if (idx + dir < 0 || idx + dir >= all.length) return;
+    const n = [...all]; [n[idx], n[idx + dir]] = [n[idx + dir], n[idx]];
+    setCatOrder(n);
+  };
+
   const save = () => {
-    setData(d => ({ ...d, budgetPlanCategories: cats, budgetIncomeSources: incomeSrcs }));
+    const finalOrder = orderedAll.map(c => c.id);
+    setData(d => ({ ...d, budgetPlanCategories: cats, budgetIncomeSources: incomeSrcs, budgetCategoryOrder: finalOrder }));
     onClose();
   };
 
@@ -7626,19 +7653,14 @@ function BudgetPlanSettingsModal({ data, setData, onClose }) {
     if (!newCatLabel.trim()) return;
     const nc = { id: crypto.randomUUID(), emoji: newCatEmoji.trim() || '📊', label: newCatLabel.trim(), items: [] };
     setCats(c => [...c, nc]);
+    setCatOrder(o => [...o, nc.id]);
     setExpanded(e => ({ ...e, [nc.id]: true }));
     setNewCatEmoji(''); setNewCatLabel('');
   };
   const removeCat = (id) => {
     if (!confirm('Удалить категорию со всеми статьями?')) return;
     setCats(c => c.filter(cat => cat.id !== id));
-  };
-  const moveCat = (id, dir) => {
-    setCats(c => {
-      const idx = c.findIndex(cat => cat.id === id);
-      if (idx + dir < 0 || idx + dir >= c.length) return c;
-      const n = [...c]; [n[idx], n[idx + dir]] = [n[idx + dir], n[idx]]; return n;
-    });
+    setCatOrder(o => o.filter(x => x !== id));
   };
   const saveCatEdit = () => {
     if (!editCat?.label?.trim()) return;
@@ -7735,16 +7757,20 @@ function BudgetPlanSettingsModal({ data, setData, onClose }) {
 
         <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide font-semibold px-1 pt-2">Статьи расходов</div>
 
-        {cats.length === 0 && (
+        {orderedAll.length === 0 && (
           <div className="text-center py-6 text-[var(--text-subtle)] text-sm">Добавьте первую категорию ниже</div>
         )}
 
-        {cats.map((cat, ci) => (
-          <div key={cat.id} className="border border-[var(--border)] rounded-xl overflow-hidden">
+        {orderedAll.map((cat, ci) => {
+          const isAuto = cat._isAuto;
+          const userCat = !isAuto ? cats.find(c => c.id === cat.id) : null;
+
+          return (
+          <div key={cat.id} className={`border rounded-xl overflow-hidden ${isAuto ? 'border-blue-200' : 'border-[var(--border)]'}`}>
 
             {/* Category header row */}
-            <div className={`flex items-center gap-1.5 px-3 py-2.5 ${expanded[cat.id] ? '' : ''} bg-[var(--bg)]`}>
-              {editCat?.id === cat.id ? (
+            <div className={`flex items-center gap-1.5 px-3 py-2.5 ${isAuto ? 'bg-blue-50/60' : 'bg-[var(--bg)]'}`}>
+              {!isAuto && editCat?.id === cat.id ? (
                 <div className="flex items-center gap-1.5 flex-1">
                   <input className="w-10 text-center text-base border border-[var(--border)] rounded-lg p-1 bg-[var(--surface)]"
                     value={editCat.emoji} onChange={e => setEditCat(ec => ({ ...ec, emoji: e.target.value }))} placeholder="📊" />
@@ -7756,38 +7782,50 @@ function BudgetPlanSettingsModal({ data, setData, onClose }) {
                 </div>
               ) : (
                 <>
-                  <button
-                    onClick={() => setExpanded(e => ({ ...e, [cat.id]: !e[cat.id] }))}
-                    className="flex-1 flex items-center gap-2 text-left min-w-0">
-                    <span className="text-lg shrink-0">{cat.emoji || '📊'}</span>
-                    <span className="font-semibold text-sm truncate">{cat.label}</span>
-                    <span className="text-xs text-[var(--text-subtle)] shrink-0">({(cat.items || []).length})</span>
-                    <Icon name="chevronDown" size={14}
-                      style={{ transform: expanded[cat.id] ? 'rotate(180deg)' : 'none', transition: 'transform .2s', color: 'var(--text-subtle)', marginLeft: 'auto', flexShrink: 0 }} />
-                  </button>
-                  <button onClick={() => moveCat(cat.id, -1)} disabled={ci === 0}
+                  {!isAuto ? (
+                    <button
+                      onClick={() => setExpanded(e => ({ ...e, [cat.id]: !e[cat.id] }))}
+                      className="flex-1 flex items-center gap-2 text-left min-w-0">
+                      <span className="text-lg shrink-0">{cat.emoji || '📊'}</span>
+                      <span className="font-semibold text-sm truncate">{cat.label}</span>
+                      <span className="text-xs text-[var(--text-subtle)] shrink-0">({(userCat?.items || []).length})</span>
+                      <Icon name="chevronDown" size={14}
+                        style={{ transform: expanded[cat.id] ? 'rotate(180deg)' : 'none', transition: 'transform .2s', color: 'var(--text-subtle)', marginLeft: 'auto', flexShrink: 0 }} />
+                    </button>
+                  ) : (
+                    <div className="flex-1 flex items-center gap-2 min-w-0">
+                      <span className="text-lg shrink-0">{cat.emoji}</span>
+                      <span className="font-semibold text-sm truncate">{cat.label}</span>
+                      <span className="ml-1 text-[9px] font-normal text-blue-500 bg-blue-100 px-1.5 py-0.5 rounded-full">авто</span>
+                    </div>
+                  )}
+                  <button onClick={() => moveInOrder(cat.id, -1)} disabled={ci === 0}
                     className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
                     <Icon name="chevronDown" size={13} style={{transform:'rotate(180deg)'}} />
                   </button>
-                  <button onClick={() => moveCat(cat.id, 1)} disabled={ci === cats.length - 1}
+                  <button onClick={() => moveInOrder(cat.id, 1)} disabled={ci === orderedAll.length - 1}
                     className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
                     <Icon name="chevronDown" size={13} />
                   </button>
-                  <button onClick={() => setEditCat({ id: cat.id, emoji: cat.emoji || '', label: cat.label })}
-                    className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0"><Icon name="edit" size={13} /></button>
-                  <button onClick={() => removeCat(cat.id)}
-                    className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0"><Icon name="trash" size={13} /></button>
+                  {!isAuto && (
+                    <>
+                      <button onClick={() => setEditCat({ id: cat.id, emoji: cat.emoji || '', label: cat.label })}
+                        className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0"><Icon name="edit" size={13} /></button>
+                      <button onClick={() => removeCat(cat.id)}
+                        className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0"><Icon name="trash" size={13} /></button>
+                    </>
+                  )}
                 </>
               )}
             </div>
 
-            {/* Items list (expanded) */}
-            {expanded[cat.id] && (
+            {/* Items list (expanded) — only for user categories */}
+            {!isAuto && expanded[cat.id] && (
               <div className="border-t border-[var(--border)] px-3 py-2 space-y-1">
-                {(cat.items || []).length === 0 && (
+                {(userCat?.items || []).length === 0 && (
                   <div className="text-xs text-[var(--text-subtle)] pl-5 py-1">Нет статей — добавьте ниже</div>
                 )}
-                {(cat.items || []).map((item, ii) => (
+                {(userCat?.items || []).map((item, ii) => (
                   <div key={item.id} className="flex items-center gap-1.5 pl-4">
                     {editItem?.id === item.id ? (
                       <div className="flex items-center gap-1.5 flex-1">
@@ -7805,7 +7843,7 @@ function BudgetPlanSettingsModal({ data, setData, onClose }) {
                           className="p-1 rounded hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
                           <Icon name="chevronDown" size={12} style={{transform:'rotate(180deg)'}} />
                         </button>
-                        <button onClick={() => moveItem(cat.id, item.id, 1)} disabled={ii === (cat.items || []).length - 1}
+                        <button onClick={() => moveItem(cat.id, item.id, 1)} disabled={ii === (userCat?.items || []).length - 1}
                           className="p-1 rounded hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
                           <Icon name="chevronDown" size={12} />
                         </button>
@@ -7830,7 +7868,8 @@ function BudgetPlanSettingsModal({ data, setData, onClose }) {
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
 
         {/* Add category */}
         <div className="flex items-center gap-2 border-2 border-dashed border-[var(--border)] rounded-xl px-3 py-2.5 mt-1">
