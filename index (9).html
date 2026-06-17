@@ -8499,6 +8499,10 @@ function BudgetSupplementsView({ data, setData }) {
   const [editing, setEditing] = useState(null);
   const [showAssign, setShowAssign] = useState(false);
   const [selected, setSelected] = useState([]);
+  const [sortCol, setSortCol] = useState('name');
+  const [sortDir, setSortDir] = useState('asc');
+  const [filters, setFilters] = useState({});
+  const [filterOpen, setFilterOpen] = useState(null);
 
   const items = (data.budgetSupplements || []).filter(s => !s.archived);
   const rawAssignments = data.budgetSupplementAssignments || {};
@@ -8569,7 +8573,72 @@ function BudgetSupplementsView({ data, setData }) {
     return daily > 0 ? Math.floor(qty / daily) : 0;
   };
 
-  const totalSelected = selected.reduce((s, id) => {
+  const COLUMNS = [
+    { id: 'name',       label: 'Название',  align: 'left',  getValue: x => x.name || '' },
+    { id: 'brand',      label: 'Бренд',     align: 'left',  getValue: x => x.brand || '' },
+    { id: 'qtyPerPack', label: 'В уп.',     align: 'right', getValue: x => Number(x.qtyPerPack) || 0 },
+    { id: 'dailyIntake',label: 'В день',    align: 'right', getValue: x => Number(x.dailyIntake) || 0 },
+    { id: 'daysLast',   label: 'Хватит, дн',align: 'right', getValue: x => daysLast(x) },
+    { id: 'cost',       label: 'Цена',      align: 'right', getValue: x => Number(x.cost) || 0 },
+    { id: 'notes',      label: 'Коммент',   align: 'left',  getValue: x => x.notes || '' },
+  ];
+
+  const getUniqueVals = (colId) => {
+    const col = COLUMNS.find(c => c.id === colId);
+    if (!col) return [];
+    const vals = [...new Set(items.map(x => {
+      const v = col.getValue(x);
+      return typeof v === 'number' ? (v || 0) : (v || '');
+    }))];
+    return vals.sort((a, b) => typeof a === 'string' ? a.localeCompare(b, 'ru') : a - b);
+  };
+
+  const toggleSort = (col) => {
+    if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortCol(col); setSortDir('asc'); }
+  };
+
+  const setFilter = (colId, values) => {
+    setFilters(f => {
+      const next = { ...f };
+      if (!values || values.length === 0) delete next[colId];
+      else next[colId] = values;
+      return next;
+    });
+  };
+
+  const toggleFilterValue = (colId, val) => {
+    setFilters(f => {
+      const cur = f[colId] || [];
+      const next = cur.includes(val) ? cur.filter(v => v !== val) : [...cur, val];
+      const updated = { ...f };
+      if (next.length === 0) delete updated[colId];
+      else updated[colId] = next;
+      return updated;
+    });
+  };
+
+  const activeFilterCount = Object.keys(filters).length;
+
+  const filtered = items.filter(item => {
+    return Object.entries(filters).every(([colId, allowed]) => {
+      const col = COLUMNS.find(c => c.id === colId);
+      if (!col) return true;
+      const v = col.getValue(item);
+      return allowed.includes(typeof v === 'number' ? v : v);
+    });
+  });
+
+  const sorted = [...filtered].sort((a, b) => {
+    const col = COLUMNS.find(c => c.id === sortCol);
+    if (!col) return 0;
+    const av = col.getValue(a);
+    const bv = col.getValue(b);
+    const cmp = typeof av === 'string' ? av.localeCompare(bv, 'ru') : av - bv;
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+
+  const totalSelected = selected.filter(id => sorted.find(x => x.id === id)).reduce((s, id) => {
     const it = items.find(x => x.id === id);
     return s + (it ? (it.cost || 0) : 0);
   }, 0);
@@ -8578,6 +8647,14 @@ function BudgetSupplementsView({ data, setData }) {
   const curYear = new Date().getFullYear();
 
   const assignedMonths = Object.keys(assignments).filter(m => (assignments[m] || []).length > 0).sort();
+
+  const filterRef = useRef(null);
+  useEffect(() => {
+    if (!filterOpen) return;
+    const handler = (e) => { if (filterRef.current && !filterRef.current.contains(e.target)) setFilterOpen(null); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [filterOpen]);
 
   return (
     <div>
@@ -8591,6 +8668,12 @@ function BudgetSupplementsView({ data, setData }) {
             📅 В месяц ({selected.length} поз.)
           </button>
         )}
+        {activeFilterCount > 0 && (
+          <button onClick={() => setFilters({})}
+            className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors">
+            Сбросить фильтры ({activeFilterCount})
+          </button>
+        )}
       </div>
 
       {!items.length ? (
@@ -8602,21 +8685,59 @@ function BudgetSupplementsView({ data, setData }) {
               <thead>
                 <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                   <th className="px-3 py-3 w-10">
-                    <input type="checkbox" checked={items.length > 0 && selected.length === items.length} onChange={selectAll}
+                    <input type="checkbox" checked={sorted.length > 0 && selected.length === sorted.length}
+                      onChange={() => setSelected(sorted.length === selected.length ? [] : sorted.map(i => i.id))}
                       className="rounded border-gray-300" />
                   </th>
-                  <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Название</th>
-                  <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Бренд</th>
-                  <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap">В уп.</th>
-                  <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap">В день</th>
-                  <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap">Хватит, дн</th>
-                  <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Цена</th>
-                  <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Коммент</th>
+                  {COLUMNS.map(col => (
+                    <th key={col.id} className={`px-3 py-3 text-${col.align} text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap relative`}>
+                      <div className={`flex items-center gap-1 ${col.align === 'right' ? 'justify-end' : ''}`}>
+                        <button onClick={() => toggleSort(col.id)}
+                          className="hover:text-[var(--text)] transition-colors select-none flex items-center gap-0.5">
+                          {col.label}
+                          <span className={`text-[11px] ${sortCol === col.id ? 'opacity-100' : 'opacity-25'}`}>
+                            {sortCol === col.id ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+                          </span>
+                        </button>
+                        <button onClick={(e) => { e.stopPropagation(); setFilterOpen(filterOpen === col.id ? null : col.id); }}
+                          className={`p-0.5 rounded hover:bg-black/5 transition-colors ${filters[col.id] ? 'text-blue-600' : 'text-[var(--text-subtle)] opacity-40 hover:opacity-100'}`}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+                          </svg>
+                        </button>
+                      </div>
+                      {filterOpen === col.id && (
+                        <div ref={filterRef}
+                          className="absolute top-full left-0 z-50 mt-1 bg-white border border-[var(--border)] rounded-xl shadow-lg p-2 min-w-[180px] max-h-[240px] overflow-y-auto text-left normal-case tracking-normal"
+                          style={col.align === 'right' ? { left: 'auto', right: 0 } : {}}>
+                          <div className="flex items-center justify-between mb-1.5 px-1">
+                            <span className="text-[10px] font-semibold text-[var(--text-subtle)] uppercase">Фильтр: {col.label}</span>
+                            {filters[col.id] && (
+                              <button onClick={() => setFilter(col.id, null)} className="text-[10px] text-blue-600 hover:underline">Сбросить</button>
+                            )}
+                          </div>
+                          {getUniqueVals(col.id).map(val => {
+                            const display = typeof val === 'number'
+                              ? (col.id === 'cost' ? formatRub(val) + ' ₽' : (val || '—'))
+                              : (val || '(пусто)');
+                            const isActive = (filters[col.id] || []).includes(val);
+                            return (
+                              <label key={String(val)} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-black/5 cursor-pointer">
+                                <input type="checkbox" checked={isActive} onChange={() => toggleFilterValue(col.id, val)}
+                                  className="rounded border-gray-300" />
+                                <span className="text-sm text-[var(--text)] truncate">{display}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </th>
+                  ))}
                   <th className="px-3 py-3 w-20" />
                 </tr>
               </thead>
               <tbody>
-                {items.map((item, i) => {
+                {sorted.map((item, i) => {
                   const days = daysLast(item);
                   return (
                     <tr key={item.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${selected.includes(item.id) ? 'bg-blue-50/50' : ''}`}>
@@ -8646,6 +8767,12 @@ function BudgetSupplementsView({ data, setData }) {
                 })}
               </tbody>
             </table>
+          </div>
+          <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] flex justify-between items-center">
+            <span className="text-xs text-[var(--text-subtle)]">
+              {filtered.length !== items.length ? `${sorted.length} из ${items.length} позиций` : `${items.length} позиций`}
+            </span>
+            <span className="font-display text-base">{formatRub(sorted.reduce((s, x) => s + (x.cost || 0), 0))} ₽</span>
           </div>
         </div>
       )}
