@@ -8010,13 +8010,16 @@ function BudgetExpensesView({ data, setData }) {
 function SavingsListView({ data, setData }) {
   const [editing,      setEditing]      = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showArchive,  setShowArchive]  = useState(false);
   const [filterCats,   setFilterCats]   = useState([]);
   const [filterMonths, setFilterMonths] = useState([]);
   const [sortCol,      setSortCol]      = useState('targetDate');
   const [sortDir,      setSortDir]      = useState('asc');
 
   const cats    = getExpenseCats(data);
-  const expenses = (data.budgetExpenses || []).filter(e => !e.archived);
+  const allExpenses = (data.budgetExpenses || []);
+  const expenses = allExpenses.filter(e => !e.archived);
+  const archivedExpenses = allExpenses.filter(e => e.archived);
   const transactions = data.savingsTransactions || [];
 
   const getItemBalance = (exp) => {
@@ -8042,6 +8045,10 @@ function SavingsListView({ data, setData }) {
   const remove = (id) => {
     if (!confirm('Удалить накопление?')) return;
     setData(d => ({ ...d, budgetExpenses: (d.budgetExpenses || []).filter(e => e.id !== id) }));
+  };
+
+  const toggleArchive = (id) => {
+    setData(d => ({ ...d, budgetExpenses: (d.budgetExpenses || []).map(e => e.id === id ? { ...e, archived: !e.archived } : e) }));
   };
 
   const newExp = () => setEditing({
@@ -8236,8 +8243,8 @@ function SavingsListView({ data, setData }) {
                             <button onClick={() => addTransaction(e.id, 'expense', e.amount || 0, today)}
                               title={`Записать расход ${formatRub(e.amount || 0)} ₽ (вся сумма) на ${today}`}
                               className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 hover:text-red-600 font-bold text-base leading-none">−</button>
-                            <button onClick={() => setEditing(e)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={14} /></button>
-                            <button onClick={() => remove(e.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
+                            <button onClick={() => setEditing(e)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать"><Icon name="edit" size={14} /></button>
+                            <button onClick={() => toggleArchive(e.id)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="В архив"><Icon name="archive" size={14} /></button>
                           </div>
                         </td>
                       </tr>
@@ -8256,6 +8263,44 @@ function SavingsListView({ data, setData }) {
             </div>
           </div>
         </>
+      )}
+
+      {archivedExpenses.length > 0 && (
+        <div className="mt-4">
+          <button onClick={() => setShowArchive(v => !v)}
+            className="flex items-center gap-2 text-sm text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">
+            <Icon name={showArchive ? 'chevron-down' : 'chevron-right'} size={14} />
+            <Icon name="archive" size={14} />
+            Архив ({archivedExpenses.length})
+          </button>
+          {showArchive && (
+            <div className="mt-3 space-y-2">
+              {archivedExpenses.map(e => {
+                const cat = cats.find(c => c.id === e.category) || { emoji: '💡', label: e.category };
+                const bal = getItemBalance(e);
+                return (
+                  <div key={e.id} className="flex items-center justify-between bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3 opacity-60">
+                    <div className="flex items-center gap-3">
+                      <span>{cat.emoji}</span>
+                      <div>
+                        <div className="font-medium">{e.name}</div>
+                        <div className="text-xs text-[var(--text-subtle)]">{formatRub(e.amount)} ₽ · накоплено {formatRub(bal.balance)} ₽</div>
+                      </div>
+                    </div>
+                    <div className="flex gap-1">
+                      <button onClick={() => toggleArchive(e.id)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Восстановить">
+                        <Icon name="restore" size={16} />
+                      </button>
+                      <button onClick={() => remove(e.id)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500" title="Удалить">
+                        <Icon name="trash" size={16} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
 
       {editing && <BudgetExpenseModal expense={editing} cats={cats} onSave={save} onClose={() => setEditing(null)} />}
