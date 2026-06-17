@@ -237,6 +237,7 @@ const DEFAULT_DATA = () => ({
   budgetRecurringCategories: [],
   savingsActual: {},
   savingsCorrections: [],
+  savingsTransactions: [],
   settings: { ...DEFAULT_SETTINGS },
 });
 
@@ -8013,19 +8014,17 @@ function SavingsListView({ data, setData }) {
   const [filterMonths, setFilterMonths] = useState([]);
   const [sortCol,      setSortCol]      = useState('targetDate');
   const [sortDir,      setSortDir]      = useState('asc');
-  const [withdrawItem, setWithdrawItem] = useState(null);
 
   const cats    = getExpenseCats(data);
   const expenses = (data.budgetExpenses || []).filter(e => !e.archived);
-  const actual = data.savingsActual || {};
-  const corrections = data.savingsCorrections || [];
+  const transactions = data.savingsTransactions || [];
 
   const getItemBalance = (exp) => {
     let dep = 0, wd = 0;
-    Object.keys(actual).forEach(k => {
-      if (k.startsWith(exp.id + '_')) {
-        dep += actual[k].deposit || 0;
-        wd += actual[k].withdrawal || 0;
+    transactions.forEach(t => {
+      if (t.expenseId === exp.id) {
+        if (t.type === 'income') dep += t.amount || 0;
+        else wd += t.amount || 0;
       }
     });
     return { deposit: dep, withdrawal: wd, balance: dep - wd };
@@ -8051,15 +8050,13 @@ function SavingsListView({ data, setData }) {
     notes: '', archived: false,
   });
 
-  const doWithdraw = (expenseId, amount, month) => {
-    const key = expenseId + '_' + month;
-    setData(d => {
-      const a = { ...(d.savingsActual || {}) };
-      const cur = a[key] || {};
-      a[key] = { ...cur, withdrawal: (cur.withdrawal || 0) + amount };
-      return { ...d, savingsActual: a };
-    });
-    setWithdrawItem(null);
+  const addTransaction = (expenseId, type, amount, date) => {
+    setData(d => ({
+      ...d,
+      savingsTransactions: [...(d.savingsTransactions || []), {
+        id: crypto.randomUUID(), expenseId, type, amount, date,
+      }],
+    }));
   };
 
   const toggleSort = (col) => {
@@ -8068,6 +8065,7 @@ function SavingsListView({ data, setData }) {
   };
 
   const curMonth = getCurrentMonthStr();
+  const today    = new Date().toISOString().slice(0, 10);
 
   const catOptions = [...new Set(expenses.map(e => e.category))].map(cid => {
     const cat = cats.find(c => c.id === cid) || { emoji: '💡', label: cid };
@@ -8124,8 +8122,7 @@ function SavingsListView({ data, setData }) {
     { col: 'months',     label: 'Месяцев',     cls: 'text-right' },
   ];
 
-  const corrTotal = corrections.reduce((s, c) => s + (c.amount || 0), 0);
-  const totalBalance = sorted.reduce((s, e) => s + getItemBalance(e).balance, 0) + corrTotal;
+  const totalBalance = sorted.reduce((s, e) => s + getItemBalance(e).balance, 0);
   const totalTarget = sorted.reduce((s, e) => s + (e.amount || 0), 0);
 
   return (
@@ -8140,7 +8137,6 @@ function SavingsListView({ data, setData }) {
           </div>
           <div className="text-right text-sm text-[var(--text-muted)]">
             <div>Цель: {formatRub(totalTarget)} ₽</div>
-            {corrTotal !== 0 && <div>Корректировки: {corrTotal > 0 ? '+' : ''}{formatRub(corrTotal)} ₽</div>}
           </div>
         </div>
       )}
@@ -8233,8 +8229,12 @@ function SavingsListView({ data, setData }) {
                           {mTotal}
                         </td>
                         <td className="px-2 py-3">
-                          <div className="flex gap-1 justify-end">
-                            <button onClick={() => setWithdrawItem(e)} title="Списание"
+                          <div className="flex gap-0.5 justify-end">
+                            <button onClick={() => addTransaction(e.id, 'income', monthly, today)}
+                              title={`Записать доход ${formatRub(monthly)} ₽ (план/мес) на ${today}`}
+                              className="p-1.5 rounded-lg hover:bg-green-50 text-green-500 hover:text-green-700 font-bold text-base leading-none">+</button>
+                            <button onClick={() => addTransaction(e.id, 'expense', e.amount || 0, today)}
+                              title={`Записать расход ${formatRub(e.amount || 0)} ₽ (вся сумма) на ${today}`}
                               className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 hover:text-red-600 font-bold text-base leading-none">−</button>
                             <button onClick={() => setEditing(e)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={14} /></button>
                             <button onClick={() => remove(e.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
@@ -8259,13 +8259,6 @@ function SavingsListView({ data, setData }) {
       )}
 
       {editing && <BudgetExpenseModal expense={editing} cats={cats} onSave={save} onClose={() => setEditing(null)} />}
-      {withdrawItem && (
-        <SavingsWithdrawModal
-          expense={withdrawItem}
-          onSave={(amount, month) => doWithdraw(withdrawItem.id, amount, month)}
-          onClose={() => setWithdrawItem(null)}
-        />
-      )}
       {showSettings && (
         <BudgetCategoriesModal
           title="Категории накоплений"
@@ -8281,92 +8274,30 @@ function SavingsListView({ data, setData }) {
 
 // ---- Savings DDS (Cash Flow) View ----
 function SavingsDDSView({ data, setData }) {
-  const [sortCol, setSortCol] = useState('month');
+  const [showAdd, setShowAdd] = useState(false);
+  const [sortCol, setSortCol] = useState('date');
   const [sortDir, setSortDir] = useState('desc');
-  const [filters, setFilters] = useState({});
   const [filterOpen, setFilterOpen] = useState(null);
   const [filterAnchor, setFilterAnchor] = useState(null);
-  const [editingCell, setEditingCell] = useState(null);
-  const [editVal, setEditVal] = useState('');
-  const [showCorrection, setShowCorrection] = useState(false);
+  const [filters, setFilters] = useState({});
 
-  const cats = getExpenseCats(data);
   const expenses = (data.budgetExpenses || []).filter(e => !e.archived);
-  const actual = data.savingsActual || {};
-  const corrections = data.savingsCorrections || [];
+  const transactions = data.savingsTransactions || [];
 
-  const openFilter = (colId, e) => {
-    e.stopPropagation();
-    if (filterOpen === colId) { setFilterOpen(null); return; }
-    setFilterAnchor(e.currentTarget);
-    setFilterOpen(colId);
+  const getExpName = (id) => {
+    const e = expenses.find(x => x.id === id);
+    return e ? e.name : '(удалено)';
   };
 
-  const rows = useMemo(() => {
-    const result = [];
-    expenses.forEach(exp => {
-      const monthly = calcMonthly(exp);
-      let m = exp.startDate;
-      while (m <= exp.targetDate) {
-        const key = exp.id + '_' + m;
-        const act = actual[key] || {};
-        const cat = cats.find(c => c.id === exp.category) || { emoji: '💡', label: exp.category };
-        result.push({
-          rowId: key,
-          type: 'plan',
-          month: m,
-          expenseId: exp.id,
-          name: exp.name,
-          category: cat.emoji + ' ' + cat.label,
-          categoryId: exp.category,
-          plan: monthly,
-          deposit: act.deposit || 0,
-          withdrawal: act.withdrawal || 0,
-        });
-        m = addMonthsStr(m, 1);
-      }
-    });
-    corrections.forEach(c => {
-      result.push({
-        rowId: 'corr_' + c.id,
-        type: 'correction',
-        month: c.month,
-        expenseId: null,
-        name: c.notes || 'Корректировка',
-        category: '🔧 Корректировка',
-        categoryId: '__correction',
-        plan: 0,
-        deposit: c.amount > 0 ? c.amount : 0,
-        withdrawal: c.amount < 0 ? Math.abs(c.amount) : 0,
-      });
-    });
-    return result;
-  }, [expenses, actual, corrections, cats]);
-
-  const COLUMNS = [
-    { id: 'month',      label: 'Месяц',        align: 'left',  getValue: r => r.month },
-    { id: 'name',       label: 'Статья',        align: 'left',  getValue: r => r.name },
-    { id: 'category',   label: 'Категория',     align: 'left',  getValue: r => r.category },
-    { id: 'plan',       label: 'План',          align: 'right', getValue: r => r.plan },
-    { id: 'deposit',    label: 'Пополнение',    align: 'right', getValue: r => r.deposit },
-    { id: 'withdrawal', label: 'Списание',      align: 'right', getValue: r => r.withdrawal },
-    { id: 'delta',      label: 'Дельта',        align: 'right', getValue: r => r.deposit - r.withdrawal - r.plan },
-  ];
-
-  const getUniqueVals = (colId) => {
-    const col = COLUMNS.find(c => c.id === colId);
-    if (!col) return [];
-    const vals = [...new Set(rows.map(r => {
-      const v = col.getValue(r);
-      if (colId === 'month') return formatMonthShortBudget(v);
-      return v;
-    }))];
-    return vals.sort((a, b) => typeof a === 'string' ? a.localeCompare(b, 'ru') : a - b);
+  const formatDate = (d) => {
+    if (!d) return '—';
+    const [y, m, day] = d.split('-');
+    return `${day}.${m}.${y}`;
   };
 
   const toggleSort = (col) => {
     if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-    else { setSortCol(col); setSortDir('asc'); }
+    else { setSortCol(col); setSortDir('desc'); }
   };
 
   const toggleFilterValue = (colId, val) => {
@@ -8389,14 +8320,32 @@ function SavingsDDSView({ data, setData }) {
     });
   };
 
+  const COLUMNS = [
+    { id: 'date',   label: 'Дата',   align: 'left',  getValue: t => t.date || '' },
+    { id: 'name',   label: 'Статья', align: 'left',  getValue: t => getExpName(t.expenseId) },
+    { id: 'type',   label: 'Тип',    align: 'left',  getValue: t => t.type === 'income' ? 'Доход' : 'Расход' },
+    { id: 'amount', label: 'Сумма',  align: 'right', getValue: t => t.amount || 0 },
+  ];
+
+  const getUniqueVals = (colId) => {
+    const col = COLUMNS.find(c => c.id === colId);
+    if (!col) return [];
+    const vals = [...new Set(transactions.map(t => {
+      const v = col.getValue(t);
+      if (colId === 'date') return formatDate(v);
+      return v;
+    }))];
+    return vals.sort((a, b) => typeof a === 'string' ? a.localeCompare(b, 'ru') : a - b);
+  };
+
   const activeFilterCount = Object.keys(filters).length;
 
-  const filtered = rows.filter(row => {
+  const filtered = transactions.filter(t => {
     return Object.entries(filters).every(([colId, allowed]) => {
       const col = COLUMNS.find(c => c.id === colId);
       if (!col) return true;
-      let v = col.getValue(row);
-      if (colId === 'month') v = formatMonthShortBudget(v);
+      let v = col.getValue(t);
+      if (colId === 'date') v = formatDate(v);
       return allowed.includes(v);
     });
   });
@@ -8410,66 +8359,29 @@ function SavingsDDSView({ data, setData }) {
     return sortDir === 'asc' ? cmp : -cmp;
   });
 
-  const startEdit = (rowId, field) => {
-    const row = rows.find(r => r.rowId === rowId);
-    if (!row) return;
-    setEditingCell({ rowId, field });
-    setEditVal(row[field] || '');
-  };
-
-  const commitEdit = () => {
-    if (!editingCell) return;
-    const { rowId, field } = editingCell;
-    const val = Number(editVal) || 0;
-    const row = rows.find(r => r.rowId === rowId);
-    if (!row) { setEditingCell(null); return; }
-
-    if (row.type === 'correction') {
-      const corrId = rowId.replace('corr_', '');
-      setData(d => {
-        const corrs = [...(d.savingsCorrections || [])];
-        const idx = corrs.findIndex(c => c.id === corrId);
-        if (idx >= 0) {
-          const newAmount = field === 'deposit' ? val : -val;
-          corrs[idx] = { ...corrs[idx], amount: newAmount };
-        }
-        return { ...d, savingsCorrections: corrs };
-      });
-    } else {
-      const key = row.expenseId + '_' + row.month;
-      setData(d => {
-        const a = { ...(d.savingsActual || {}) };
-        const cur = a[key] || {};
-        a[key] = { ...cur, [field]: val };
-        return { ...d, savingsActual: a };
-      });
-    }
-    setEditingCell(null);
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter') commitEdit();
-    if (e.key === 'Escape') setEditingCell(null);
-  };
-
-  const removeCorrection = (corrId) => {
-    if (!confirm('Удалить корректировку?')) return;
+  const removeTransaction = (id) => {
+    if (!confirm('Удалить операцию?')) return;
     setData(d => ({
       ...d,
-      savingsCorrections: (d.savingsCorrections || []).filter(c => c.id !== corrId),
+      savingsTransactions: (d.savingsTransactions || []).filter(t => t.id !== id),
     }));
   };
 
-  const totalPlan = sorted.reduce((s, r) => s + r.plan, 0);
-  const totalDeposit = sorted.reduce((s, r) => s + r.deposit, 0);
-  const totalWithdrawal = sorted.reduce((s, r) => s + r.withdrawal, 0);
+  const totalIncome = sorted.filter(t => t.type === 'income').reduce((s, t) => s + (t.amount || 0), 0);
+  const totalExpense = sorted.filter(t => t.type === 'expense').reduce((s, t) => s + (t.amount || 0), 0);
+
+  const SortArrow = ({ col }) => (
+    <span className={`ml-0.5 text-[11px] ${sortCol === col ? 'opacity-100' : 'opacity-25'}`}>
+      {sortCol === col ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+    </span>
+  );
 
   return (
     <div>
       <div className="flex items-center gap-2 flex-wrap mb-6">
-        <button onClick={() => setShowCorrection(true)}
+        <button onClick={() => setShowAdd(true)}
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
-          <Icon name="plus" size={16} />Корректировка
+          <Icon name="plus" size={16} />Добавить операцию
         </button>
         {activeFilterCount > 0 && (
           <button onClick={() => setFilters({})}
@@ -8479,32 +8391,27 @@ function SavingsDDSView({ data, setData }) {
         )}
       </div>
 
-      {rows.length === 0 ? (
-        <EmptyState title="Нет данных ДДС" text="Добавьте накопления на вкладке «Статьи» — здесь появятся плановые платежи" />
+      {transactions.length === 0 ? (
+        <EmptyState title="Нет операций" text="Добавьте операцию — пополнение или списание со счёта накоплений" />
       ) : (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm" style={{ minWidth: '780px' }}>
+            <table className="w-full text-sm" style={{ minWidth: '520px' }}>
               <thead>
                 <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                   {COLUMNS.map(col => (
-                    <th key={col.id} className={`px-3 py-3 text-${col.align} text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap relative`}>
+                    <th key={col.id} className={`px-3 py-3 text-${col.align} text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap`}>
                       <div className={`flex items-center gap-1 ${col.align === 'right' ? 'justify-end' : ''}`}>
                         <button onClick={() => toggleSort(col.id)}
                           className="hover:text-[var(--text)] transition-colors select-none flex items-center gap-0.5">
-                          {col.label}
-                          <span className={`text-[11px] ${sortCol === col.id ? 'opacity-100' : 'opacity-25'}`}>
-                            {sortCol === col.id ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
-                          </span>
+                          {col.label}<SortArrow col={col.id} />
                         </button>
-                        {col.id !== 'delta' && (
-                          <button onClick={(e) => openFilter(col.id, e)}
-                            className={`p-0.5 rounded hover:bg-black/5 transition-colors ${filters[col.id] ? 'text-blue-600' : 'text-[var(--text-subtle)] opacity-40 hover:opacity-100'}`}>
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                              <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
-                            </svg>
-                          </button>
-                        )}
+                        <button onClick={(e) => { e.stopPropagation(); if (filterOpen === col.id) { setFilterOpen(null); return; } setFilterAnchor(e.currentTarget); setFilterOpen(col.id); }}
+                          className={`p-0.5 rounded hover:bg-black/5 transition-colors ${filters[col.id] ? 'text-blue-600' : 'text-[var(--text-subtle)] opacity-40 hover:opacity-100'}`}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+                          </svg>
+                        </button>
                       </div>
                     </th>
                   ))}
@@ -8512,53 +8419,25 @@ function SavingsDDSView({ data, setData }) {
                 </tr>
               </thead>
               <tbody>
-                {sorted.map((r, i) => {
-                  const delta = r.deposit - r.withdrawal - r.plan;
-                  const isCorrRow = r.type === 'correction';
+                {sorted.map((t, i) => {
+                  const isIncome = t.type === 'income';
                   return (
-                    <tr key={r.rowId} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${i % 2 === 1 ? 'bg-[var(--bg)]/50' : ''} ${isCorrRow ? 'bg-amber-50/50' : ''}`}>
-                      <td className="px-3 py-2.5 whitespace-nowrap text-[var(--text-muted)]">{formatMonthShortBudget(r.month)}</td>
-                      <td className="px-3 py-2.5">
-                        <span className={`font-medium ${isCorrRow ? 'text-amber-700' : ''}`}>{r.name}</span>
+                    <tr key={t.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${i % 2 === 1 ? 'bg-[var(--bg)]/50' : ''}`}>
+                      <td className="px-3 py-2.5 whitespace-nowrap text-[var(--text-muted)]">{formatDate(t.date)}</td>
+                      <td className="px-3 py-2.5 font-medium">{getExpName(t.expenseId)}</td>
+                      <td className="px-3 py-2.5 whitespace-nowrap">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${isIncome ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                          {isIncome ? '↑ Доход' : '↓ Расход'}
+                        </span>
                       </td>
-                      <td className="px-3 py-2.5 whitespace-nowrap text-[var(--text-muted)]">{r.category}</td>
-                      <td className="px-3 py-2.5 text-right whitespace-nowrap text-[var(--text-muted)]">
-                        {r.plan > 0 ? formatRub(r.plan) + ' ₽' : '—'}
-                      </td>
-                      <td className="px-3 py-2.5 text-right whitespace-nowrap">
-                        {editingCell && editingCell.rowId === r.rowId && editingCell.field === 'deposit' ? (
-                          <input type="number" autoFocus value={editVal} onChange={e => setEditVal(e.target.value)}
-                            onBlur={commitEdit} onKeyDown={handleKeyDown}
-                            className="w-24 text-right text-sm border border-blue-300 rounded-lg px-2 py-1 bg-white" />
-                        ) : (
-                          <button onClick={() => startEdit(r.rowId, 'deposit')}
-                            className={`hover:bg-green-50 px-2 py-0.5 rounded transition-colors ${r.deposit > 0 ? 'text-green-600 font-medium' : 'text-[var(--text-subtle)]'}`}>
-                            {r.deposit > 0 ? '+' + formatRub(r.deposit) + ' ₽' : '—'}
-                          </button>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5 text-right whitespace-nowrap">
-                        {editingCell && editingCell.rowId === r.rowId && editingCell.field === 'withdrawal' ? (
-                          <input type="number" autoFocus value={editVal} onChange={e => setEditVal(e.target.value)}
-                            onBlur={commitEdit} onKeyDown={handleKeyDown}
-                            className="w-24 text-right text-sm border border-blue-300 rounded-lg px-2 py-1 bg-white" />
-                        ) : (
-                          <button onClick={() => startEdit(r.rowId, 'withdrawal')}
-                            className={`hover:bg-red-50 px-2 py-0.5 rounded transition-colors ${r.withdrawal > 0 ? 'text-red-500 font-medium' : 'text-[var(--text-subtle)]'}`}>
-                            {r.withdrawal > 0 ? '-' + formatRub(r.withdrawal) + ' ₽' : '—'}
-                          </button>
-                        )}
-                      </td>
-                      <td className={`px-3 py-2.5 text-right whitespace-nowrap font-medium ${delta > 0 ? 'text-green-600' : delta < 0 ? 'text-red-500' : 'text-[var(--text-muted)]'}`}>
-                        {delta !== 0 ? (delta > 0 ? '+' : '') + formatRub(delta) + ' ₽' : '—'}
+                      <td className={`px-3 py-2.5 text-right whitespace-nowrap font-semibold ${isIncome ? 'text-green-600' : 'text-red-500'}`}>
+                        {isIncome ? '+' : '−'}{formatRub(t.amount)} ₽
                       </td>
                       <td className="px-2 py-2.5">
-                        {isCorrRow && (
-                          <button onClick={() => removeCorrection(r.rowId.replace('corr_', ''))}
-                            className="p-1 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500">
-                            <Icon name="trash" size={13} />
-                          </button>
-                        )}
+                        <button onClick={() => removeTransaction(t.id)}
+                          className="p-1 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500">
+                          <Icon name="trash" size={13} />
+                        </button>
                       </td>
                     </tr>
                   );
@@ -8567,13 +8446,12 @@ function SavingsDDSView({ data, setData }) {
             </table>
           </div>
           <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] flex flex-wrap gap-4 justify-between items-center">
-            <span className="text-xs text-[var(--text-subtle)] uppercase tracking-wide">{sorted.length} строк</span>
+            <span className="text-xs text-[var(--text-subtle)] uppercase tracking-wide">{sorted.length} операций</span>
             <div className="flex gap-5 text-sm">
-              <span className="text-[var(--text-muted)]">План: <b>{formatRub(totalPlan)} ₽</b></span>
-              <span className="text-green-600">Пополнения: <b>+{formatRub(totalDeposit)} ₽</b></span>
-              <span className="text-red-500">Списания: <b>-{formatRub(totalWithdrawal)} ₽</b></span>
-              <span className={`font-semibold ${totalDeposit - totalWithdrawal > 0 ? 'text-green-600' : 'text-red-500'}`}>
-                Итого: {totalDeposit - totalWithdrawal > 0 ? '+' : ''}{formatRub(totalDeposit - totalWithdrawal)} ₽
+              <span className="text-green-600">Доходы: <b>+{formatRub(totalIncome)} ₽</b></span>
+              <span className="text-red-500">Расходы: <b>−{formatRub(totalExpense)} ₽</b></span>
+              <span className={`font-semibold ${totalIncome - totalExpense >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                Баланс: {totalIncome - totalExpense >= 0 ? '+' : ''}{formatRub(totalIncome - totalExpense)} ₽
               </span>
             </div>
           </div>
@@ -8596,7 +8474,7 @@ function SavingsDDSView({ data, setData }) {
                 <label key={String(val)} className="flex items-center gap-2 px-1.5 py-1.5 rounded-lg hover:bg-gray-50 cursor-pointer text-sm font-normal">
                   <input type="checkbox" checked={(filters[filterOpen] || []).includes(val)}
                     onChange={() => toggleFilterValue(filterOpen, val)} className="rounded border-gray-300" />
-                  <span>{filterOpen === 'plan' || filterOpen === 'deposit' || filterOpen === 'withdrawal' ? formatRub(val) + ' ₽' : String(val) || '(пусто)'}</span>
+                  <span>{filterOpen === 'amount' ? formatRub(val) + ' ₽' : String(val) || '(пусто)'}</span>
                 </label>
               ))}
             </>
@@ -8604,124 +8482,84 @@ function SavingsDDSView({ data, setData }) {
         })()}
       </FilterDropdownPortal>
 
-      {showCorrection && (
-        <SavingsCorrectionModal
-          onSave={(corr) => {
+      {showAdd && (
+        <SavingsTransactionModal
+          expenses={expenses}
+          onSave={(expId, type, amount, date) => {
             setData(d => ({
               ...d,
-              savingsCorrections: [...(d.savingsCorrections || []), corr],
+              savingsTransactions: [...(d.savingsTransactions || []), {
+                id: crypto.randomUUID(), expenseId: expId, type, amount, date,
+              }],
             }));
-            setShowCorrection(false);
+            setShowAdd(false);
           }}
-          onClose={() => setShowCorrection(false)}
+          onClose={() => setShowAdd(false)}
         />
       )}
     </div>
   );
 }
 
-function SavingsCorrectionModal({ onSave, onClose }) {
+function SavingsTransactionModal({ expenses, preselectedId, preselectedType, onSave, onClose }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [expenseId, setExpenseId] = useState(preselectedId || (expenses[0]?.id || ''));
+  const [type, setType] = useState(preselectedType || 'income');
   const [amount, setAmount] = useState('');
-  const [direction, setDirection] = useState('plus');
-  const [month, setMonth] = useState(getCurrentMonthStr());
-  const [notes, setNotes] = useState('');
+  const [date, setDate] = useState(today);
+
+  const selectedExp = expenses.find(e => e.id === expenseId);
+  const planMonthly = selectedExp ? calcMonthly(selectedExp) : 0;
 
   const submit = () => {
     const val = Number(amount);
     if (!val || val <= 0) return;
-    onSave({
-      id: crypto.randomUUID(),
-      month,
-      amount: direction === 'plus' ? val : -val,
-      notes: notes.trim() || 'Корректировка',
-    });
+    if (!expenseId) return;
+    onSave(expenseId, type, val, date || today);
   };
 
-  const curYear = new Date().getFullYear();
-  const MONTH_NAMES_FULL = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
-
   return (
-    <Modal title="Корректировка баланса" onClose={onClose}>
+    <Modal title="Добавить операцию" onClose={onClose}>
       <div className="space-y-4">
         <div>
-          <label>Направление</label>
+          <label>Тип операции</label>
           <div className="flex gap-2">
-            <button onClick={() => setDirection('plus')}
-              className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${direction === 'plus' ? 'bg-green-50 border-green-300 text-green-700' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
-              + Пополнение
+            <button onClick={() => setType('income')}
+              className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${type === 'income' ? 'bg-green-50 border-green-300 text-green-700' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
+              ↑ Доход
             </button>
-            <button onClick={() => setDirection('minus')}
-              className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${direction === 'minus' ? 'bg-red-50 border-red-300 text-red-600' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
-              − Списание
+            <button onClick={() => setType('expense')}
+              className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${type === 'expense' ? 'bg-red-50 border-red-300 text-red-600' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
+              ↓ Расход
             </button>
           </div>
         </div>
         <div>
+          <label>Статья</label>
+          <select value={expenseId} onChange={e => setExpenseId(e.target.value)}>
+            {expenses.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+        </div>
+        <div>
           <label>Сумма (₽)</label>
           <input type="number" inputMode="numeric" min="1" value={amount}
-            onChange={e => setAmount(e.target.value)} placeholder="5 000" />
-        </div>
-        <div>
-          <label>Месяц</label>
-          <select value={month} onChange={e => setMonth(e.target.value)}>
-            {[-1, 0, 1].map(dy => {
-              const y = curYear + dy;
-              return MONTH_NAMES_FULL.map((mn, mi) => {
-                const val = y + '-' + String(mi + 1).padStart(2, '0');
-                return <option key={val} value={val}>{mn} {y}</option>;
-              });
-            }).flat()}
-          </select>
-        </div>
-        <div>
-          <label>Комментарий</label>
-          <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Причина корректировки" />
-        </div>
-        <div className="flex gap-3 pt-2">
-          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
-          <button onClick={submit} className="btn-primary flex-1">Добавить</button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function SavingsWithdrawModal({ expense, onSave, onClose }) {
-  const [amount, setAmount] = useState('');
-  const [month, setMonth] = useState(getCurrentMonthStr());
-
-  const curYear = new Date().getFullYear();
-  const MONTH_NAMES_FULL = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
-
-  const submit = () => {
-    const val = Number(amount);
-    if (!val || val <= 0) return;
-    onSave(val, month);
-  };
-
-  return (
-    <Modal title={`Списание — ${expense.name}`} onClose={onClose}>
-      <div className="space-y-4">
-        <div>
-          <label>Сумма списания (₽)</label>
-          <input type="number" inputMode="numeric" min="1" value={amount}
             onChange={e => setAmount(e.target.value)} placeholder="5 000" autoFocus />
+          {planMonthly > 0 && (
+            <div className="text-xs text-[var(--text-subtle)] mt-1">
+              По плану: {formatRub(planMonthly)} ₽/мес
+            </div>
+          )}
         </div>
         <div>
-          <label>Месяц</label>
-          <select value={month} onChange={e => setMonth(e.target.value)}>
-            {[-1, 0, 1].map(dy => {
-              const y = curYear + dy;
-              return MONTH_NAMES_FULL.map((mn, mi) => {
-                const val = y + '-' + String(mi + 1).padStart(2, '0');
-                return <option key={val} value={val}>{mn} {y}</option>;
-              });
-            }).flat()}
-          </select>
+          <label>Дата</label>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)} />
         </div>
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
-          <button onClick={submit} className="btn-primary flex-1 !bg-red-500 hover:!bg-red-600">Списать</button>
+          <button onClick={submit}
+            className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-white transition-all hover:opacity-90 ${type === 'income' ? 'bg-green-600' : 'bg-red-500'}`}>
+            {type === 'income' ? 'Пополнить' : 'Списать'}
+          </button>
         </div>
       </div>
     </Modal>
