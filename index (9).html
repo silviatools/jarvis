@@ -7074,7 +7074,7 @@ function BudgetView({ data, setData }) {
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Планирование</div>
       </div>
       <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6">
-        {[['monthly','По месяцу'],['expenses','Накопления'],['recurring','Постоянные']].map(([id, label]) => (
+        {[['monthly','По месяцу'],['expenses','Накопления'],['recurring','Постоянные'],['supplements','Спортпит']].map(([id, label]) => (
           <button key={id} onClick={() => setBudgetTab(id)}
             className={`px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${budgetTab === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
             {label}
@@ -7084,6 +7084,7 @@ function BudgetView({ data, setData }) {
       {budgetTab === 'monthly'   && <BudgetMonthlyView   data={data} setData={setData} />}
       {budgetTab === 'expenses'  && <BudgetExpensesView  data={data} setData={setData} />}
       {budgetTab === 'recurring' && <BudgetRecurringView data={data} setData={setData} />}
+      {budgetTab === 'supplements' && <BudgetSupplementsView data={data} setData={setData} />}
     </main>
   );
 }
@@ -7166,6 +7167,28 @@ function BudgetMonthlyView({ data, setData }) {
                  getAutoVal: (m) => getExpCatVal(cid, m) };
       }),
     } : null,
+    (() => {
+      const suppAssign = data.budgetSupplementAssignments || {};
+      const suppItems  = data.budgetSupplements || [];
+      const monthsWithSupp = months.filter(m => {
+        const ids = suppAssign[m] || [];
+        return ids.some(id => suppItems.find(s => s.id === id && !s.archived));
+      });
+      if (monthsWithSupp.length === 0) return null;
+      return {
+        id: '__supplements', emoji: '💊', label: 'Спортпит и БАДы', isAuto: true, autoColor: 'orange',
+        items: [{
+          id: '__supp_total', emoji: '💊', label: 'Спортпит и БАДы', isAuto: true,
+          getAutoVal: (m) => {
+            const ids = (suppAssign[m] || []);
+            return ids.reduce((s, id) => {
+              const item = suppItems.find(x => x.id === id && !x.archived);
+              return s + (item ? (item.cost || 0) : 0);
+            }, 0);
+          }
+        }]
+      };
+    })(),
   ].filter(Boolean);
 
   // User-defined categories first, auto-linked at the bottom
@@ -8465,6 +8488,320 @@ function BudgetRecurringModal({ item, cats, onSave, onClose }) {
           <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
           <button onClick={submit}  className="btn-primary flex-1">Сохранить</button>
         </div>
+      </div>
+    </Modal>
+  );
+}
+
+
+// ============== SUPPLEMENTS ==============
+
+function BudgetSupplementsView({ data, setData }) {
+  const [editing, setEditing] = useState(null);
+  const [showAssign, setShowAssign] = useState(false);
+  const [selected, setSelected] = useState([]);
+
+  const items = (data.budgetSupplements || []).filter(s => !s.archived);
+  const assignments = data.budgetSupplementAssignments || {};
+
+  const save = (item) => {
+    setData(d => {
+      const list = d.budgetSupplements || [];
+      const exists = list.find(s => s.id === item.id);
+      return { ...d, budgetSupplements: exists ? list.map(s => s.id === item.id ? item : s) : [...list, item] };
+    });
+    setEditing(null);
+  };
+
+  const remove = (id) => {
+    if (!confirm('Удалить позицию?')) return;
+    setData(d => {
+      const newAssign = { ...d.budgetSupplementAssignments };
+      Object.keys(newAssign).forEach(m => {
+        newAssign[m] = (newAssign[m] || []).filter(x => x !== id);
+        if (newAssign[m].length === 0) delete newAssign[m];
+      });
+      return { ...d, budgetSupplements: (d.budgetSupplements || []).filter(s => s.id !== id), budgetSupplementAssignments: newAssign };
+    });
+  };
+
+  const newItem = () => setEditing({
+    id: crypto.randomUUID(), name: '', qtyPerPack: '', dailyIntake: '',
+    cost: '', link: '', notes: '', archived: false,
+  });
+
+  const toggleSelect = (id) => setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+  const selectAll = () => setSelected(items.length === selected.length ? [] : items.map(i => i.id));
+
+  const assignToMonth = (month) => {
+    setData(d => {
+      const a = { ...(d.budgetSupplementAssignments || {}) };
+      const existing = a[month] || [];
+      const merged = [...new Set([...existing, ...selected])];
+      return { ...d, budgetSupplementAssignments: { ...a, [month]: merged } };
+    });
+    setSelected([]);
+    setShowAssign(false);
+  };
+
+  const removeFromMonth = (month, itemId) => {
+    setData(d => {
+      const a = { ...(d.budgetSupplementAssignments || {}) };
+      a[month] = (a[month] || []).filter(x => x !== itemId);
+      if (a[month].length === 0) delete a[month];
+      return { ...d, budgetSupplementAssignments: a };
+    });
+  };
+
+  const daysLast = (item) => {
+    const qty = Number(item.qtyPerPack) || 0;
+    const daily = Number(item.dailyIntake) || 0;
+    return daily > 0 ? Math.floor(qty / daily) : 0;
+  };
+
+  const totalSelected = selected.reduce((s, id) => {
+    const it = items.find(x => x.id === id);
+    return s + (it ? (it.cost || 0) : 0);
+  }, 0);
+
+  const MONTH_NAMES_FULL = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+  const curYear = new Date().getFullYear();
+
+  const assignedMonths = Object.keys(assignments).filter(m => (assignments[m] || []).length > 0).sort();
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 flex-wrap mb-6">
+        <button onClick={newItem} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
+          <Icon name="plus" size={16} />Добавить
+        </button>
+        {selected.length > 0 && (
+          <button onClick={() => setShowAssign(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-medium hover:opacity-85 transition-all">
+            📅 В месяц ({selected.length} шт · {formatRub(totalSelected)} ₽)
+          </button>
+        )}
+      </div>
+
+      {!items.length ? (
+        <EmptyState title="Нет добавок" text="Добавьте БАДы или спортивное питание — укажите количество, дозировку и стоимость" />
+      ) : (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm" style={{ minWidth: '640px' }}>
+              <thead>
+                <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
+                  <th className="px-3 py-3 w-10">
+                    <input type="checkbox" checked={items.length > 0 && selected.length === items.length} onChange={selectAll}
+                      className="rounded border-gray-300" />
+                  </th>
+                  <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Название</th>
+                  <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap">В уп.</th>
+                  <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap">В день</th>
+                  <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap">Хватит, дн</th>
+                  <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Цена</th>
+                  <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Коммент</th>
+                  <th className="px-3 py-3 w-20" />
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((item, i) => {
+                  const days = daysLast(item);
+                  return (
+                    <tr key={item.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${selected.includes(item.id) ? 'bg-blue-50/50' : ''}`}>
+                      <td className="px-3 py-3">
+                        <input type="checkbox" checked={selected.includes(item.id)} onChange={() => toggleSelect(item.id)}
+                          className="rounded border-gray-300" />
+                      </td>
+                      <td className="px-3 py-3 font-medium">
+                        {item.link ? (
+                          <a href={item.link} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{item.name}</a>
+                        ) : item.name}
+                      </td>
+                      <td className="px-3 py-3 text-right text-[var(--text-muted)]">{item.qtyPerPack || '—'}</td>
+                      <td className="px-3 py-3 text-right text-[var(--text-muted)]">{item.dailyIntake || '—'}</td>
+                      <td className="px-3 py-3 text-right font-medium">{days > 0 ? days : '—'}</td>
+                      <td className="px-3 py-3 text-right font-semibold whitespace-nowrap">{item.cost ? formatRub(item.cost) + ' ₽' : '—'}</td>
+                      <td className="px-3 py-3 text-[var(--text-subtle)] max-w-[180px] truncate">{item.notes || '—'}</td>
+                      <td className="px-2 py-3">
+                        <div className="flex gap-1 justify-end">
+                          <button onClick={() => setEditing(item)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={14} /></button>
+                          <button onClick={() => remove(item.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Assigned months overview */}
+      {assignedMonths.length > 0 && (
+        <div className="mt-6">
+          <h3 className="text-sm font-semibold text-[var(--text-subtle)] uppercase tracking-wide mb-3">Распределено по месяцам</h3>
+          <div className="space-y-3">
+            {assignedMonths.map(month => {
+              const ids = assignments[month] || [];
+              const monthItems = ids.map(id => items.find(x => x.id === id)).filter(Boolean);
+              if (monthItems.length === 0) return null;
+              const [y, m] = month.split('-');
+              const monthLabel = `${MONTH_NAMES_FULL[parseInt(m, 10) - 1]} ${y}`;
+              const total = monthItems.reduce((s, x) => s + (x.cost || 0), 0);
+              return (
+                <div key={month} className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-semibold">{monthLabel}</span>
+                    <span className="text-sm font-display font-semibold">{formatRub(total)} ₽</span>
+                  </div>
+                  <div className="space-y-1">
+                    {monthItems.map(item => (
+                      <div key={item.id} className="flex items-center justify-between text-sm text-[var(--text-muted)]">
+                        <span>{item.name}</span>
+                        <div className="flex items-center gap-2">
+                          <span>{item.cost ? formatRub(item.cost) + ' ₽' : ''}</span>
+                          <button onClick={() => removeFromMonth(month, item.id)}
+                            className="p-1 rounded hover:bg-red-50 text-[var(--text-subtle)] hover:text-red-500">
+                            <Icon name="x" size={12} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {editing && <BudgetSupplementModal item={editing} onSave={save} onClose={() => setEditing(null)} />}
+
+      {showAssign && (
+        <BudgetSupplementAssignModal
+          selectedCount={selected.length}
+          totalCost={totalSelected}
+          onAssign={assignToMonth}
+          onClose={() => setShowAssign(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function BudgetSupplementModal({ item, onSave, onClose }) {
+  const [form, setForm] = useState({ ...item });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const days = (() => {
+    const qty = Number(form.qtyPerPack) || 0;
+    const daily = Number(form.dailyIntake) || 0;
+    return daily > 0 ? Math.floor(qty / daily) : 0;
+  })();
+
+  const submit = () => {
+    if (!form.name.trim()) return;
+    onSave({
+      ...form,
+      qtyPerPack: Number(form.qtyPerPack) || 0,
+      dailyIntake: Number(form.dailyIntake) || 0,
+      cost: Number(form.cost) || 0,
+    });
+  };
+
+  return (
+    <Modal title={item.name ? 'Редактировать' : 'Новая добавка'} onClose={onClose}>
+      <div className="space-y-4">
+        <div>
+          <label>Название</label>
+          <input value={form.name} onChange={e => set('name', e.target.value)} placeholder="Креатин, Омега-3, Витамин D..." />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label>Кол-во в упаковке</label>
+            <input type="number" inputMode="numeric" min="1"
+              value={form.qtyPerPack || ''} onChange={e => set('qtyPerPack', e.target.value)} placeholder="90" />
+          </div>
+          <div>
+            <label>Приём в день (шт)</label>
+            <input type="number" inputMode="numeric" min="1" step="0.5"
+              value={form.dailyIntake || ''} onChange={e => set('dailyIntake', e.target.value)} placeholder="3" />
+          </div>
+        </div>
+
+        {days > 0 && (
+          <div className="bg-blue-50 rounded-xl px-4 py-2.5 text-sm text-blue-700 font-medium">
+            Хватит на <span className="font-display text-lg">{days}</span> дней
+          </div>
+        )}
+
+        <div>
+          <label>Стоимость (₽)</label>
+          <input type="number" inputMode="numeric" min="0"
+            value={form.cost || ''} onChange={e => set('cost', e.target.value)} placeholder="1 500" />
+        </div>
+
+        <div>
+          <label>Ссылка (необязательно)</label>
+          <input type="url" value={form.link || ''} onChange={e => set('link', e.target.value)} placeholder="https://..." />
+        </div>
+
+        <div>
+          <label>Комментарий (необязательно)</label>
+          <textarea value={form.notes || ''} onChange={e => set('notes', e.target.value)} rows={2} placeholder="Заметки..." />
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function BudgetSupplementAssignModal({ selectedCount, totalCost, onAssign, onClose }) {
+  const MONTH_NAMES_FULL = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+  const now = new Date();
+  const [selYear, setSelYear] = useState(now.getFullYear());
+  const [selMonth, setSelMonth] = useState('');
+
+  const monthOptions = MONTH_NAMES_FULL.map((name, i) => {
+    const m = `${selYear}-${String(i + 1).padStart(2, '0')}`;
+    return { value: m, label: `${name} ${selYear}` };
+  });
+
+  return (
+    <Modal title="Добавить в месяц" onClose={onClose}>
+      <div className="space-y-4">
+        <div className="bg-blue-50 rounded-xl px-4 py-3 text-sm">
+          <span className="text-blue-700">Выбрано: <b>{selectedCount}</b> позиций на сумму <b>{formatRub(totalCost)} ₽</b></span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-0 bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden">
+            <button onClick={() => setSelYear(y => y - 1)} className="px-3 py-2 text-[var(--text-muted)] hover:text-[var(--text)] text-base leading-none">‹</button>
+            <span className="px-3 py-2 text-sm font-semibold min-w-[56px] text-center">{selYear}</span>
+            <button onClick={() => setSelYear(y => y + 1)} className="px-3 py-2 text-[var(--text-muted)] hover:text-[var(--text)] text-base leading-none">›</button>
+          </div>
+        </div>
+
+        <select value={selMonth} onChange={e => setSelMonth(e.target.value)}
+          className="w-full border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm bg-[var(--surface)]">
+          <option value="">Выберите месяц…</option>
+          {monthOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </div>
+
+      <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
+        <button onClick={onClose} className="btn-secondary">Отмена</button>
+        <button onClick={() => selMonth && onAssign(selMonth)} disabled={!selMonth}
+          className="btn-primary flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
+          Добавить в месяц
+        </button>
       </div>
     </Modal>
   );
