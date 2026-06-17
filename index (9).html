@@ -7056,9 +7056,12 @@ const formatMonthShortBudget = (ym) => {
   return `${names[m - 1]} ${y}`;
 };
 
-const calcMonthly = (exp) => {
-  const m = monthsBetweenStr(exp.startDate, exp.targetDate);
-  return Math.ceil((exp.amount || 0) / m);
+const calcMonthly = (exp, balance) => {
+  const curMonth = getCurrentMonthStr();
+  const remaining = Math.max((exp.amount || 0) - (balance || 0), 0);
+  if (remaining <= 0) return 0;
+  const mLeft = exp.targetDate <= curMonth ? 1 : monthsBetweenStr(curMonth, exp.targetDate);
+  return Math.ceil(remaining / mLeft);
 };
 
 const formatRub = (n) => {
@@ -7138,12 +7141,19 @@ function BudgetMonthlyView({ data, setData }) {
   const recCats      = getRecurringCats(data);
   const activeExp    = (data.budgetExpenses  || []).filter(e => !e.archived);
   const activeRec    = (data.budgetRecurring || []).filter(r => !r.archived);
+  const savTx        = data.savingsTransactions || [];
+
+  const getExpBalance = (exp) => {
+    let b = 0;
+    savTx.forEach(t => { if (t.expenseId === exp.id) b += (t.type === 'income' ? 1 : -1) * (t.amount || 0); });
+    return b;
+  };
 
   // Накопления: per savings-category, sum calcMonthly for expenses active in that month
   const getExpCatVal = (catId, month) =>
     activeExp
       .filter(e => e.category === catId && e.startDate <= month && e.targetDate >= month)
-      .reduce((s, e) => s + calcMonthly(e), 0);
+      .reduce((s, e) => s + calcMonthly(e, getExpBalance(e)), 0);
 
   // Постоянные: per recurring-category, fixed monthly sum (same every month)
   const getRecCatVal = (catId) =>
@@ -8102,7 +8112,7 @@ function SavingsListView({ data, setData }) {
       category:   [(cats.find(c => c.id === a.category) || {}).label || 'Я', (cats.find(c => c.id === b.category) || {}).label || 'Я'],
       amount:     [a.amount || 0,   b.amount || 0],
       saved:      [getItemBalance(a).balance, getItemBalance(b).balance],
-      monthly:    [calcMonthly(a),  calcMonthly(b)],
+      monthly:    [calcMonthly(a, getItemBalance(a).balance),  calcMonthly(b, getItemBalance(b).balance)],
       startDate:  [a.startDate,     b.startDate],
       targetDate: [a.targetDate,    b.targetDate],
       months:     [monthsBetweenStr(a.startDate, a.targetDate), monthsBetweenStr(b.startDate, b.targetDate)],
@@ -8196,11 +8206,11 @@ function SavingsListView({ data, setData }) {
                 <tbody>
                   {sorted.map((e, i) => {
                     const cat      = cats.find(c => c.id === e.category) || { emoji: '💡', label: e.category };
-                    const monthly  = calcMonthly(e);
+                    const bal      = getItemBalance(e);
+                    const monthly  = calcMonthly(e, bal.balance);
                     const mTotal   = monthsBetweenStr(e.startDate, e.targetDate);
                     const mLeft    = e.targetDate < curMonth ? 0 : monthsBetweenStr(curMonth, e.targetDate);
                     const isOver   = e.targetDate < curMonth;
-                    const bal      = getItemBalance(e);
                     const pct      = e.amount > 0 ? Math.min(100, Math.round((bal.balance / e.amount) * 100)) : 0;
                     return (
                       <tr key={e.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${i % 2 === 1 ? 'bg-[var(--bg)]/50' : ''}`}>
@@ -8258,7 +8268,7 @@ function SavingsListView({ data, setData }) {
               <div className="text-right flex gap-4 items-baseline">
                 <span className="text-xs text-[var(--text-subtle)]">Накоплено: <b className="text-green-600">{formatRub(sorted.reduce((s, e) => s + getItemBalance(e).balance, 0))} ₽</b></span>
                 <span className="font-display text-base">{formatRub(totalTarget)} ₽</span>
-                <span className="text-xs text-[var(--text-subtle)]">{formatRub(sorted.reduce((s, e) => s + calcMonthly(e), 0))} ₽/мес</span>
+                <span className="text-xs text-[var(--text-subtle)]">{formatRub(sorted.reduce((s, e) => s + calcMonthly(e, getItemBalance(e).balance), 0))} ₽/мес</span>
               </div>
             </div>
           </div>
@@ -8530,6 +8540,7 @@ function SavingsDDSView({ data, setData }) {
       {showAdd && (
         <SavingsTransactionModal
           expenses={expenses}
+          transactions={transactions}
           onSave={(expId, type, amount, date) => {
             setData(d => ({
               ...d,
@@ -8546,7 +8557,7 @@ function SavingsDDSView({ data, setData }) {
   );
 }
 
-function SavingsTransactionModal({ expenses, preselectedId, preselectedType, onSave, onClose }) {
+function SavingsTransactionModal({ expenses, transactions = [], preselectedId, preselectedType, onSave, onClose }) {
   const today = new Date().toISOString().slice(0, 10);
   const [expenseId, setExpenseId] = useState(preselectedId || (expenses[0]?.id || ''));
   const [type, setType] = useState(preselectedType || 'income');
@@ -8554,7 +8565,8 @@ function SavingsTransactionModal({ expenses, preselectedId, preselectedType, onS
   const [date, setDate] = useState(today);
 
   const selectedExp = expenses.find(e => e.id === expenseId);
-  const planMonthly = selectedExp ? calcMonthly(selectedExp) : 0;
+  const expBalance = selectedExp ? transactions.filter(t => t.expenseId === selectedExp.id).reduce((s, t) => s + (t.type === 'income' ? 1 : -1) * (t.amount || 0), 0) : 0;
+  const planMonthly = selectedExp ? calcMonthly(selectedExp, expBalance) : 0;
 
   const submit = () => {
     const val = Number(amount);
