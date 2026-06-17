@@ -8216,7 +8216,7 @@ function SavingsDDSView({ data, setData }) {
   const [sortDir, setSortDir] = useState('desc');
   const [filters, setFilters] = useState({});
   const [filterOpen, setFilterOpen] = useState(null);
-  const [filterPos, setFilterPos] = useState({ top: 0, left: 0 });
+  const [filterAnchor, setFilterAnchor] = useState(null);
   const [editingCell, setEditingCell] = useState(null);
   const [editVal, setEditVal] = useState('');
   const [showCorrection, setShowCorrection] = useState(false);
@@ -8229,8 +8229,7 @@ function SavingsDDSView({ data, setData }) {
   const openFilter = (colId, e) => {
     e.stopPropagation();
     if (filterOpen === colId) { setFilterOpen(null); return; }
-    const rect = e.currentTarget.getBoundingClientRect();
-    setFilterPos({ top: rect.bottom + 4, left: rect.left });
+    setFilterAnchor(e.currentTarget);
     setFilterOpen(colId);
   };
 
@@ -8396,14 +8395,6 @@ function SavingsDDSView({ data, setData }) {
   const totalDeposit = sorted.reduce((s, r) => s + r.deposit, 0);
   const totalWithdrawal = sorted.reduce((s, r) => s + r.withdrawal, 0);
 
-  const filterRef = useRef(null);
-  useEffect(() => {
-    if (!filterOpen) return;
-    const handler = (e) => { if (filterRef.current && !filterRef.current.contains(e.target)) setFilterOpen(null); };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [filterOpen]);
-
   return (
     <div>
       <div className="flex items-center gap-2 flex-wrap mb-6">
@@ -8520,28 +8511,29 @@ function SavingsDDSView({ data, setData }) {
         </div>
       )}
 
-      {filterOpen && (() => {
-        const col = COLUMNS.find(c => c.id === filterOpen);
-        if (!col) return null;
-        return (
-          <div ref={filterRef} className="fixed z-[9999] bg-white border border-[var(--border)] rounded-xl shadow-lg p-2 min-w-[200px] max-h-[260px] overflow-y-auto"
-            style={{ top: filterPos.top, left: Math.min(filterPos.left, window.innerWidth - 220) }}>
-            <div className="flex items-center justify-between mb-1.5 px-1">
-              <span className="text-[10px] font-semibold text-[var(--text-subtle)] uppercase">Фильтр: {col.label}</span>
-              {filters[filterOpen] && (
-                <button onClick={() => setFilter(filterOpen, null)} className="text-[10px] text-blue-600 hover:underline">Сбросить</button>
-              )}
-            </div>
-            {getUniqueVals(filterOpen).map(val => (
-              <label key={String(val)} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-gray-50 cursor-pointer text-sm font-normal">
-                <input type="checkbox" checked={(filters[filterOpen] || []).includes(val)}
-                  onChange={() => toggleFilterValue(filterOpen, val)} className="rounded border-gray-300" />
-                <span className="truncate">{filterOpen === 'plan' || filterOpen === 'deposit' || filterOpen === 'withdrawal' ? formatRub(val) + ' ₽' : String(val) || '(пусто)'}</span>
-              </label>
-            ))}
-          </div>
-        );
-      })()}
+      <FilterDropdownPortal anchorRef={filterAnchor} isOpen={!!filterOpen} onClose={() => setFilterOpen(null)}>
+        {filterOpen && (() => {
+          const col = COLUMNS.find(c => c.id === filterOpen);
+          if (!col) return null;
+          return (
+            <>
+              <div className="flex items-center justify-between mb-1.5 px-1">
+                <span className="text-[10px] font-semibold text-gray-400 uppercase">Фильтр: {col.label}</span>
+                {filters[filterOpen] && (
+                  <button onClick={() => setFilter(filterOpen, null)} className="text-[10px] text-blue-600 hover:underline">Сбросить</button>
+                )}
+              </div>
+              {getUniqueVals(filterOpen).map(val => (
+                <label key={String(val)} className="flex items-center gap-2 px-1.5 py-1.5 rounded-lg hover:bg-gray-50 cursor-pointer text-sm font-normal">
+                  <input type="checkbox" checked={(filters[filterOpen] || []).includes(val)}
+                    onChange={() => toggleFilterValue(filterOpen, val)} className="rounded border-gray-300" />
+                  <span>{filterOpen === 'plan' || filterOpen === 'deposit' || filterOpen === 'withdrawal' ? formatRub(val) + ' ₽' : String(val) || '(пусто)'}</span>
+                </label>
+              ))}
+            </>
+          );
+        })()}
+      </FilterDropdownPortal>
 
       {showCorrection && (
         <SavingsCorrectionModal
@@ -9092,7 +9084,7 @@ function BudgetSupplementsView({ data, setData }) {
   const [sortDir, setSortDir] = useState('asc');
   const [filters, setFilters] = useState({});
   const [filterOpen, setFilterOpen] = useState(null);
-  const [filterPos, setFilterPos] = useState({ top: 0, left: 0 });
+  const [filterAnchor, setFilterAnchor] = useState(null);
 
   const items = (data.budgetSupplements || []).filter(s => !s.archived);
   const rawAssignments = data.budgetSupplementAssignments || {};
@@ -9249,14 +9241,6 @@ function BudgetSupplementsView({ data, setData }) {
 
   const assignedMonths = Object.keys(assignments).filter(m => (assignments[m] || []).length > 0).sort();
 
-  const filterRef = useRef(null);
-  useEffect(() => {
-    if (!filterOpen) return;
-    const handler = (e) => { if (filterRef.current && !filterRef.current.contains(e.target)) setFilterOpen(null); };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [filterOpen]);
-
   return (
     <div>
       <div className="flex items-center gap-2 flex-wrap mb-6">
@@ -9300,7 +9284,7 @@ function BudgetSupplementsView({ data, setData }) {
                             {sortCol === col.id ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
                           </span>
                         </button>
-                        <button onClick={(e) => { e.stopPropagation(); if (filterOpen === col.id) { setFilterOpen(null); return; } const rect = e.currentTarget.getBoundingClientRect(); setFilterPos({ top: rect.bottom + 4, left: rect.left }); setFilterOpen(col.id); }}
+                        <button onClick={(e) => { e.stopPropagation(); if (filterOpen === col.id) { setFilterOpen(null); return; } setFilterAnchor(e.currentTarget); setFilterOpen(col.id); }}
                           className={`p-0.5 rounded hover:bg-black/5 transition-colors ${filters[col.id] ? 'text-blue-600' : 'text-[var(--text-subtle)] opacity-40 hover:opacity-100'}`}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                             <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
@@ -9421,33 +9405,34 @@ function BudgetSupplementsView({ data, setData }) {
         />
       )}
 
-      {filterOpen && (() => {
-        const col = COLUMNS.find(c => c.id === filterOpen);
-        if (!col) return null;
-        return (
-          <div ref={filterRef} className="fixed z-[9999] bg-white border border-[var(--border)] rounded-xl shadow-lg p-2 min-w-[200px] max-h-[260px] overflow-y-auto"
-            style={{ top: filterPos.top, left: Math.min(filterPos.left, window.innerWidth - 220) }}>
-            <div className="flex items-center justify-between mb-1.5 px-1">
-              <span className="text-[10px] font-semibold text-[var(--text-subtle)] uppercase">Фильтр: {col.label}</span>
-              {filters[filterOpen] && (
-                <button onClick={() => setFilter(filterOpen, null)} className="text-[10px] text-blue-600 hover:underline">Сбросить</button>
-              )}
-            </div>
-            {getUniqueVals(filterOpen).map(val => {
-              const display = typeof val === 'number'
-                ? (filterOpen === 'cost' ? formatRub(val) + ' ₽' : (val || '—'))
-                : (val || '(пусто)');
-              return (
-                <label key={String(val)} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-black/5 cursor-pointer text-sm">
-                  <input type="checkbox" checked={(filters[filterOpen] || []).includes(val)}
-                    onChange={() => toggleFilterValue(filterOpen, val)} className="rounded border-gray-300" />
-                  <span className="text-[var(--text)] truncate">{display}</span>
-                </label>
-              );
-            })}
-          </div>
-        );
-      })()}
+      <FilterDropdownPortal anchorRef={filterAnchor} isOpen={!!filterOpen} onClose={() => setFilterOpen(null)}>
+        {filterOpen && (() => {
+          const col = COLUMNS.find(c => c.id === filterOpen);
+          if (!col) return null;
+          return (
+            <>
+              <div className="flex items-center justify-between mb-1.5 px-1">
+                <span className="text-[10px] font-semibold text-gray-400 uppercase">Фильтр: {col.label}</span>
+                {filters[filterOpen] && (
+                  <button onClick={() => setFilter(filterOpen, null)} className="text-[10px] text-blue-600 hover:underline">Сбросить</button>
+                )}
+              </div>
+              {getUniqueVals(filterOpen).map(val => {
+                const display = typeof val === 'number'
+                  ? (filterOpen === 'cost' ? formatRub(val) + ' ₽' : (val || '—'))
+                  : (val || '(пусто)');
+                return (
+                  <label key={String(val)} className="flex items-center gap-2 px-1.5 py-1.5 rounded-lg hover:bg-gray-50 cursor-pointer text-sm">
+                    <input type="checkbox" checked={(filters[filterOpen] || []).includes(val)}
+                      onChange={() => toggleFilterValue(filterOpen, val)} className="rounded border-gray-300" />
+                    <span>{display}</span>
+                  </label>
+                );
+              })}
+            </>
+          );
+        })()}
+      </FilterDropdownPortal>
     </div>
   );
 }
@@ -9687,6 +9672,43 @@ function BudgetSupplementAssignModal({ selectedItems, onAssign, onClose }) {
 
 
 // ============== SHARED ==============
+function FilterDropdownPortal({ anchorRef, isOpen, onClose, children }) {
+  const dropRef = useRef(null);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+
+  useEffect(() => {
+    if (!isOpen || !anchorRef) return;
+    const el = anchorRef instanceof Element ? anchorRef : anchorRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const dropW = 240;
+    let left = rect.left;
+    if (left + dropW > window.innerWidth) left = window.innerWidth - dropW - 8;
+    if (left < 8) left = 8;
+    setPos({ top: rect.bottom + 4, left });
+  }, [isOpen, anchorRef]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e) => {
+      if (dropRef.current && !dropRef.current.contains(e.target)) onClose();
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+
+  return ReactDOM.createPortal(
+    <div ref={dropRef}
+      className="fixed z-[9999] bg-white border border-gray-200 rounded-xl shadow-xl p-2.5"
+      style={{ top: pos.top, left: pos.left, minWidth: 230, maxHeight: 300, overflowY: 'auto' }}>
+      {children}
+    </div>,
+    document.body
+  );
+}
+
 function Modal({ title, children, onClose }) {
   useEffect(() => {
     const handler = (e) => e.key === 'Escape' && onClose();
