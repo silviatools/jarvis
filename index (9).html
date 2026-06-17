@@ -8216,6 +8216,7 @@ function SavingsDDSView({ data, setData }) {
   const [sortDir, setSortDir] = useState('desc');
   const [filters, setFilters] = useState({});
   const [filterOpen, setFilterOpen] = useState(null);
+  const [filterPos, setFilterPos] = useState({ top: 0, left: 0 });
   const [editingCell, setEditingCell] = useState(null);
   const [editVal, setEditVal] = useState('');
   const [showCorrection, setShowCorrection] = useState(false);
@@ -8224,6 +8225,14 @@ function SavingsDDSView({ data, setData }) {
   const expenses = (data.budgetExpenses || []).filter(e => !e.archived);
   const actual = data.savingsActual || {};
   const corrections = data.savingsCorrections || [];
+
+  const openFilter = (colId, e) => {
+    e.stopPropagation();
+    if (filterOpen === colId) { setFilterOpen(null); return; }
+    const rect = e.currentTarget.getBoundingClientRect();
+    setFilterPos({ top: rect.bottom + 4, left: rect.left });
+    setFilterOpen(colId);
+  };
 
   const rows = useMemo(() => {
     const result = [];
@@ -8429,7 +8438,7 @@ function SavingsDDSView({ data, setData }) {
                           </span>
                         </button>
                         {col.id !== 'delta' && (
-                          <button onClick={(e) => { e.stopPropagation(); setFilterOpen(filterOpen === col.id ? null : col.id); }}
+                          <button onClick={(e) => openFilter(col.id, e)}
                             className={`p-0.5 rounded hover:bg-black/5 transition-colors ${filters[col.id] ? 'text-blue-600' : 'text-[var(--text-subtle)] opacity-40 hover:opacity-100'}`}>
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                               <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
@@ -8437,25 +8446,6 @@ function SavingsDDSView({ data, setData }) {
                           </button>
                         )}
                       </div>
-                      {filterOpen === col.id && (
-                        <div ref={filterRef}
-                          className="absolute top-full left-0 z-50 mt-1 bg-white border border-[var(--border)] rounded-xl shadow-lg p-2 min-w-[180px] max-h-[240px] overflow-y-auto text-left normal-case tracking-normal"
-                          style={col.align === 'right' ? { left: 'auto', right: 0 } : {}}>
-                          <div className="flex items-center justify-between mb-1.5 px-1">
-                            <span className="text-[10px] font-semibold text-[var(--text-subtle)] uppercase">Фильтр: {col.label}</span>
-                            {filters[col.id] && (
-                              <button onClick={() => setFilter(col.id, null)} className="text-[10px] text-blue-600 hover:underline">Сбросить</button>
-                            )}
-                          </div>
-                          {getUniqueVals(col.id).map(val => (
-                            <label key={String(val)} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-gray-50 cursor-pointer text-sm font-normal">
-                              <input type="checkbox" checked={(filters[col.id] || []).includes(val)}
-                                onChange={() => toggleFilterValue(col.id, val)} className="rounded border-gray-300" />
-                              <span className="truncate">{col.id === 'plan' || col.id === 'deposit' || col.id === 'withdrawal' ? formatRub(val) + ' ₽' : String(val) || '(пусто)'}</span>
-                            </label>
-                          ))}
-                        </div>
-                      )}
                     </th>
                   ))}
                   <th className="px-3 py-3 w-10" />
@@ -8529,6 +8519,29 @@ function SavingsDDSView({ data, setData }) {
           </div>
         </div>
       )}
+
+      {filterOpen && (() => {
+        const col = COLUMNS.find(c => c.id === filterOpen);
+        if (!col) return null;
+        return (
+          <div ref={filterRef} className="fixed z-[9999] bg-white border border-[var(--border)] rounded-xl shadow-lg p-2 min-w-[200px] max-h-[260px] overflow-y-auto"
+            style={{ top: filterPos.top, left: Math.min(filterPos.left, window.innerWidth - 220) }}>
+            <div className="flex items-center justify-between mb-1.5 px-1">
+              <span className="text-[10px] font-semibold text-[var(--text-subtle)] uppercase">Фильтр: {col.label}</span>
+              {filters[filterOpen] && (
+                <button onClick={() => setFilter(filterOpen, null)} className="text-[10px] text-blue-600 hover:underline">Сбросить</button>
+              )}
+            </div>
+            {getUniqueVals(filterOpen).map(val => (
+              <label key={String(val)} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-gray-50 cursor-pointer text-sm font-normal">
+                <input type="checkbox" checked={(filters[filterOpen] || []).includes(val)}
+                  onChange={() => toggleFilterValue(filterOpen, val)} className="rounded border-gray-300" />
+                <span className="truncate">{filterOpen === 'plan' || filterOpen === 'deposit' || filterOpen === 'withdrawal' ? formatRub(val) + ' ₽' : String(val) || '(пусто)'}</span>
+              </label>
+            ))}
+          </div>
+        );
+      })()}
 
       {showCorrection && (
         <SavingsCorrectionModal
@@ -9079,6 +9092,7 @@ function BudgetSupplementsView({ data, setData }) {
   const [sortDir, setSortDir] = useState('asc');
   const [filters, setFilters] = useState({});
   const [filterOpen, setFilterOpen] = useState(null);
+  const [filterPos, setFilterPos] = useState({ top: 0, left: 0 });
 
   const items = (data.budgetSupplements || []).filter(s => !s.archived);
   const rawAssignments = data.budgetSupplementAssignments || {};
@@ -9286,38 +9300,13 @@ function BudgetSupplementsView({ data, setData }) {
                             {sortCol === col.id ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
                           </span>
                         </button>
-                        <button onClick={(e) => { e.stopPropagation(); setFilterOpen(filterOpen === col.id ? null : col.id); }}
+                        <button onClick={(e) => { e.stopPropagation(); if (filterOpen === col.id) { setFilterOpen(null); return; } const rect = e.currentTarget.getBoundingClientRect(); setFilterPos({ top: rect.bottom + 4, left: rect.left }); setFilterOpen(col.id); }}
                           className={`p-0.5 rounded hover:bg-black/5 transition-colors ${filters[col.id] ? 'text-blue-600' : 'text-[var(--text-subtle)] opacity-40 hover:opacity-100'}`}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                             <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
                           </svg>
                         </button>
                       </div>
-                      {filterOpen === col.id && (
-                        <div ref={filterRef}
-                          className="absolute top-full left-0 z-50 mt-1 bg-white border border-[var(--border)] rounded-xl shadow-lg p-2 min-w-[180px] max-h-[240px] overflow-y-auto text-left normal-case tracking-normal"
-                          style={col.align === 'right' ? { left: 'auto', right: 0 } : {}}>
-                          <div className="flex items-center justify-between mb-1.5 px-1">
-                            <span className="text-[10px] font-semibold text-[var(--text-subtle)] uppercase">Фильтр: {col.label}</span>
-                            {filters[col.id] && (
-                              <button onClick={() => setFilter(col.id, null)} className="text-[10px] text-blue-600 hover:underline">Сбросить</button>
-                            )}
-                          </div>
-                          {getUniqueVals(col.id).map(val => {
-                            const display = typeof val === 'number'
-                              ? (col.id === 'cost' ? formatRub(val) + ' ₽' : (val || '—'))
-                              : (val || '(пусто)');
-                            const isActive = (filters[col.id] || []).includes(val);
-                            return (
-                              <label key={String(val)} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-black/5 cursor-pointer">
-                                <input type="checkbox" checked={isActive} onChange={() => toggleFilterValue(col.id, val)}
-                                  className="rounded border-gray-300" />
-                                <span className="text-sm text-[var(--text)] truncate">{display}</span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      )}
                     </th>
                   ))}
                   <th className="px-3 py-3 w-20" />
@@ -9431,6 +9420,34 @@ function BudgetSupplementsView({ data, setData }) {
           onClose={() => setEditingMonth(null)}
         />
       )}
+
+      {filterOpen && (() => {
+        const col = COLUMNS.find(c => c.id === filterOpen);
+        if (!col) return null;
+        return (
+          <div ref={filterRef} className="fixed z-[9999] bg-white border border-[var(--border)] rounded-xl shadow-lg p-2 min-w-[200px] max-h-[260px] overflow-y-auto"
+            style={{ top: filterPos.top, left: Math.min(filterPos.left, window.innerWidth - 220) }}>
+            <div className="flex items-center justify-between mb-1.5 px-1">
+              <span className="text-[10px] font-semibold text-[var(--text-subtle)] uppercase">Фильтр: {col.label}</span>
+              {filters[filterOpen] && (
+                <button onClick={() => setFilter(filterOpen, null)} className="text-[10px] text-blue-600 hover:underline">Сбросить</button>
+              )}
+            </div>
+            {getUniqueVals(filterOpen).map(val => {
+              const display = typeof val === 'number'
+                ? (filterOpen === 'cost' ? formatRub(val) + ' ₽' : (val || '—'))
+                : (val || '(пусто)');
+              return (
+                <label key={String(val)} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-black/5 cursor-pointer text-sm">
+                  <input type="checkbox" checked={(filters[filterOpen] || []).includes(val)}
+                    onChange={() => toggleFilterValue(filterOpen, val)} className="rounded border-gray-300" />
+                  <span className="text-[var(--text)] truncate">{display}</span>
+                </label>
+              );
+            })}
+          </div>
+        );
+      })()}
     </div>
   );
 }
