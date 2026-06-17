@@ -235,6 +235,9 @@ const DEFAULT_DATA = () => ({
   budgetPlanCategories: [],
   budgetPlanValues: {},
   budgetRecurringCategories: [],
+  savingsActual: {},
+  savingsCorrections: [],
+  savingsTransactions: [],
   settings: { ...DEFAULT_SETTINGS },
 });
 
@@ -7986,15 +7989,48 @@ function BudgetMultiSelect({ label, options, selected, onChange }) {
 }
 
 function BudgetExpensesView({ data, setData }) {
+  const [subTab, setSubTab] = useState('list');
+
+  return (
+    <div>
+      <div className="inline-flex bg-[var(--bg)] border border-[var(--border)] rounded-xl p-1 mb-6">
+        {[['list','Статьи и Баланс'],['dds','ДДС']].map(([id, label]) => (
+          <button key={id} onClick={() => setSubTab(id)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${subTab === id ? 'bg-violet-600 text-white' : 'text-[var(--text-muted)]'}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {subTab === 'list' && <SavingsListView data={data} setData={setData} />}
+      {subTab === 'dds' && <SavingsDDSView data={data} setData={setData} />}
+    </div>
+  );
+}
+
+function SavingsListView({ data, setData }) {
   const [editing,      setEditing]      = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [filterCats,   setFilterCats]   = useState([]);
   const [filterMonths, setFilterMonths] = useState([]);
   const [sortCol,      setSortCol]      = useState('targetDate');
   const [sortDir,      setSortDir]      = useState('asc');
+  const [withdrawItem, setWithdrawItem] = useState(null);
+  const [depositItem, setDepositItem] = useState(null);
 
   const cats    = getExpenseCats(data);
   const expenses = (data.budgetExpenses || []).filter(e => !e.archived);
+  const transactions = data.savingsTransactions || [];
+
+  const getItemBalance = (exp) => {
+    let dep = 0, wd = 0;
+    transactions.forEach(t => {
+      if (t.expenseId === exp.id) {
+        if (t.type === 'income') dep += t.amount || 0;
+        else wd += t.amount || 0;
+      }
+    });
+    return { deposit: dep, withdrawal: wd, balance: dep - wd };
+  };
 
   const save = (exp) => {
     setData(d => {
@@ -8015,6 +8051,17 @@ function BudgetExpensesView({ data, setData }) {
     startDate: getCurrentMonthStr(), targetDate: addMonthsStr(getCurrentMonthStr(), 6),
     notes: '', archived: false,
   });
+
+  const addTransaction = (expenseId, type, amount, date) => {
+    setData(d => ({
+      ...d,
+      savingsTransactions: [...(d.savingsTransactions || []), {
+        id: crypto.randomUUID(), expenseId, type, amount, date,
+      }],
+    }));
+    setWithdrawItem(null);
+    setDepositItem(null);
+  };
 
   const toggleSort = (col) => {
     if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -8050,6 +8097,7 @@ function BudgetExpensesView({ data, setData }) {
       name:       [a.name, b.name],
       category:   [(cats.find(c => c.id === a.category) || {}).label || 'Я', (cats.find(c => c.id === b.category) || {}).label || 'Я'],
       amount:     [a.amount || 0,   b.amount || 0],
+      saved:      [getItemBalance(a).balance, getItemBalance(b).balance],
       monthly:    [calcMonthly(a),  calcMonthly(b)],
       startDate:  [a.startDate,     b.startDate],
       targetDate: [a.targetDate,    b.targetDate],
@@ -8069,6 +8117,7 @@ function BudgetExpensesView({ data, setData }) {
   const COLS = [
     { col: 'name',       label: 'Название',    cls: 'text-left' },
     { col: 'category',   label: 'Категория',   cls: 'text-left' },
+    { col: 'saved',      label: 'Накоплено',   cls: 'text-right' },
     { col: 'amount',     label: 'Сумма',       cls: 'text-right' },
     { col: 'monthly',    label: '/ мес',       cls: 'text-right' },
     { col: 'startDate',  label: 'Начало',      cls: 'text-left' },
@@ -8076,8 +8125,25 @@ function BudgetExpensesView({ data, setData }) {
     { col: 'months',     label: 'Месяцев',     cls: 'text-right' },
   ];
 
+  const totalBalance = sorted.reduce((s, e) => s + getItemBalance(e).balance, 0);
+  const totalTarget = sorted.reduce((s, e) => s + (e.amount || 0), 0);
+
   return (
     <div>
+      {expenses.length > 0 && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 mb-6 flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-1">Баланс счёта</div>
+            <div className={`font-display text-3xl ${totalBalance >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+              {totalBalance >= 0 ? '+' : ''}{formatRub(totalBalance)} <span className="text-base">₽</span>
+            </div>
+          </div>
+          <div className="text-right text-sm text-[var(--text-muted)]">
+            <div>Цель: {formatRub(totalTarget)} ₽</div>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center gap-2 flex-wrap mb-6">
         <button onClick={newExp} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
           <Icon name="plus" size={16} />Добавить накопление
@@ -8109,10 +8175,9 @@ function BudgetExpensesView({ data, setData }) {
         <EmptyState title="Нет накоплений" text="Добавьте плановые накопления и получите план по месяцам" />
       ) : (
         <>
-          {/* Table */}
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-sm" style={{ minWidth: '680px' }}>
+              <table className="w-full text-sm" style={{ minWidth: '940px' }}>
                 <thead>
                   <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                     {COLS.map(({ col, label, cls }) => (
@@ -8121,7 +8186,7 @@ function BudgetExpensesView({ data, setData }) {
                         {label}<SortArrow col={col} />
                       </th>
                     ))}
-                    <th className="px-3 py-3 w-16" />
+                    <th className="px-3 py-3 w-24" />
                   </tr>
                 </thead>
                 <tbody>
@@ -8131,6 +8196,8 @@ function BudgetExpensesView({ data, setData }) {
                     const mTotal   = monthsBetweenStr(e.startDate, e.targetDate);
                     const mLeft    = e.targetDate < curMonth ? 0 : monthsBetweenStr(curMonth, e.targetDate);
                     const isOver   = e.targetDate < curMonth;
+                    const bal      = getItemBalance(e);
+                    const pct      = e.amount > 0 ? Math.min(100, Math.round((bal.balance / e.amount) * 100)) : 0;
                     return (
                       <tr key={e.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${i % 2 === 1 ? 'bg-[var(--bg)]/50' : ''}`}>
                         <td className="px-3 py-3">
@@ -8139,6 +8206,18 @@ function BudgetExpensesView({ data, setData }) {
                         </td>
                         <td className="px-3 py-3 whitespace-nowrap text-[var(--text-muted)]">
                           {cat.emoji} {cat.label}
+                        </td>
+                        <td className="px-3 py-3 text-right whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-2">
+                            <div className="w-14 bg-[var(--bg)] rounded-full h-1.5 overflow-hidden">
+                              <div className={`h-full rounded-full ${pct >= 100 ? 'bg-green-500' : pct >= 50 ? 'bg-blue-500' : 'bg-violet-500'}`}
+                                style={{ width: Math.max(0, pct) + '%' }} />
+                            </div>
+                            <span className={`font-medium ${bal.balance > 0 ? 'text-green-600' : 'text-[var(--text-muted)]'}`}>
+                              {formatRub(bal.balance)} ₽
+                            </span>
+                            <span className="text-[10px] text-[var(--text-subtle)]">{pct}%</span>
+                          </div>
                         </td>
                         <td className="px-3 py-3 text-right whitespace-nowrap font-medium">{formatRub(e.amount)} ₽</td>
                         <td className="px-3 py-3 text-right whitespace-nowrap font-semibold text-[var(--text)]">{formatRub(monthly)} ₽</td>
@@ -8153,7 +8232,11 @@ function BudgetExpensesView({ data, setData }) {
                           {mTotal}
                         </td>
                         <td className="px-2 py-3">
-                          <div className="flex gap-1 justify-end">
+                          <div className="flex gap-0.5 justify-end">
+                            <button onClick={() => setDepositItem(e)} title="Пополнение"
+                              className="p-1.5 rounded-lg hover:bg-green-50 text-green-500 hover:text-green-700 font-bold text-base leading-none">+</button>
+                            <button onClick={() => setWithdrawItem(e)} title="Списание"
+                              className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 hover:text-red-600 font-bold text-base leading-none">−</button>
                             <button onClick={() => setEditing(e)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={14} /></button>
                             <button onClick={() => remove(e.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
                           </div>
@@ -8164,12 +8247,12 @@ function BudgetExpensesView({ data, setData }) {
                 </tbody>
               </table>
             </div>
-            {/* Итого */}
             <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] flex justify-between items-center">
               <span className="text-xs text-[var(--text-subtle)] uppercase tracking-wide">{sorted.length} позиций</span>
-              <div className="text-right">
-                <span className="font-display text-base">{formatRub(sorted.reduce((s, e) => s + (e.amount || 0), 0))} ₽</span>
-                <span className="text-xs text-[var(--text-subtle)] ml-3">{formatRub(sorted.reduce((s, e) => s + calcMonthly(e), 0))} ₽/мес</span>
+              <div className="text-right flex gap-4 items-baseline">
+                <span className="text-xs text-[var(--text-subtle)]">Накоплено: <b className="text-green-600">{formatRub(sorted.reduce((s, e) => s + getItemBalance(e).balance, 0))} ₽</b></span>
+                <span className="font-display text-base">{formatRub(totalTarget)} ₽</span>
+                <span className="text-xs text-[var(--text-subtle)]">{formatRub(sorted.reduce((s, e) => s + calcMonthly(e), 0))} ₽/мес</span>
               </div>
             </div>
           </div>
@@ -8177,6 +8260,24 @@ function BudgetExpensesView({ data, setData }) {
       )}
 
       {editing && <BudgetExpenseModal expense={editing} cats={cats} onSave={save} onClose={() => setEditing(null)} />}
+      {depositItem && (
+        <SavingsTransactionModal
+          expenses={expenses}
+          preselectedId={depositItem.id}
+          preselectedType="income"
+          onSave={(expId, type, amount, date) => addTransaction(expId, type, amount, date)}
+          onClose={() => setDepositItem(null)}
+        />
+      )}
+      {withdrawItem && (
+        <SavingsTransactionModal
+          expenses={expenses}
+          preselectedId={withdrawItem.id}
+          preselectedType="expense"
+          onSave={(expId, type, amount, date) => addTransaction(expId, type, amount, date)}
+          onClose={() => setWithdrawItem(null)}
+        />
+      )}
       {showSettings && (
         <BudgetCategoriesModal
           title="Категории накоплений"
@@ -8187,6 +8288,300 @@ function BudgetExpensesView({ data, setData }) {
         />
       )}
     </div>
+  );
+}
+
+// ---- Savings DDS (Cash Flow) View ----
+function SavingsDDSView({ data, setData }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [sortCol, setSortCol] = useState('date');
+  const [sortDir, setSortDir] = useState('desc');
+  const [filterOpen, setFilterOpen] = useState(null);
+  const [filterAnchor, setFilterAnchor] = useState(null);
+  const [filters, setFilters] = useState({});
+
+  const expenses = (data.budgetExpenses || []).filter(e => !e.archived);
+  const transactions = data.savingsTransactions || [];
+
+  const getExpName = (id) => {
+    const e = expenses.find(x => x.id === id);
+    return e ? e.name : '(удалено)';
+  };
+
+  const formatDate = (d) => {
+    if (!d) return '—';
+    const [y, m, day] = d.split('-');
+    return `${day}.${m}.${y}`;
+  };
+
+  const toggleSort = (col) => {
+    if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortCol(col); setSortDir('desc'); }
+  };
+
+  const toggleFilterValue = (colId, val) => {
+    setFilters(f => {
+      const cur = f[colId] || [];
+      const next = cur.includes(val) ? cur.filter(v => v !== val) : [...cur, val];
+      const updated = { ...f };
+      if (next.length === 0) delete updated[colId];
+      else updated[colId] = next;
+      return updated;
+    });
+  };
+
+  const setFilter = (colId, values) => {
+    setFilters(f => {
+      const next = { ...f };
+      if (!values || values.length === 0) delete next[colId];
+      else next[colId] = values;
+      return next;
+    });
+  };
+
+  const COLUMNS = [
+    { id: 'date',   label: 'Дата',   align: 'left',  getValue: t => t.date || '' },
+    { id: 'name',   label: 'Статья', align: 'left',  getValue: t => getExpName(t.expenseId) },
+    { id: 'type',   label: 'Тип',    align: 'left',  getValue: t => t.type === 'income' ? 'Доход' : 'Расход' },
+    { id: 'amount', label: 'Сумма',  align: 'right', getValue: t => t.amount || 0 },
+  ];
+
+  const getUniqueVals = (colId) => {
+    const col = COLUMNS.find(c => c.id === colId);
+    if (!col) return [];
+    const vals = [...new Set(transactions.map(t => {
+      const v = col.getValue(t);
+      if (colId === 'date') return formatDate(v);
+      return v;
+    }))];
+    return vals.sort((a, b) => typeof a === 'string' ? a.localeCompare(b, 'ru') : a - b);
+  };
+
+  const activeFilterCount = Object.keys(filters).length;
+
+  const filtered = transactions.filter(t => {
+    return Object.entries(filters).every(([colId, allowed]) => {
+      const col = COLUMNS.find(c => c.id === colId);
+      if (!col) return true;
+      let v = col.getValue(t);
+      if (colId === 'date') v = formatDate(v);
+      return allowed.includes(v);
+    });
+  });
+
+  const sorted = [...filtered].sort((a, b) => {
+    const col = COLUMNS.find(c => c.id === sortCol);
+    if (!col) return 0;
+    const av = col.getValue(a);
+    const bv = col.getValue(b);
+    const cmp = typeof av === 'string' ? av.localeCompare(bv, 'ru') : av - bv;
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+
+  const removeTransaction = (id) => {
+    if (!confirm('Удалить операцию?')) return;
+    setData(d => ({
+      ...d,
+      savingsTransactions: (d.savingsTransactions || []).filter(t => t.id !== id),
+    }));
+  };
+
+  const totalIncome = sorted.filter(t => t.type === 'income').reduce((s, t) => s + (t.amount || 0), 0);
+  const totalExpense = sorted.filter(t => t.type === 'expense').reduce((s, t) => s + (t.amount || 0), 0);
+
+  const SortArrow = ({ col }) => (
+    <span className={`ml-0.5 text-[11px] ${sortCol === col ? 'opacity-100' : 'opacity-25'}`}>
+      {sortCol === col ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+    </span>
+  );
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 flex-wrap mb-6">
+        <button onClick={() => setShowAdd(true)}
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
+          <Icon name="plus" size={16} />Добавить операцию
+        </button>
+        {activeFilterCount > 0 && (
+          <button onClick={() => setFilters({})}
+            className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors">
+            Сбросить фильтры ({activeFilterCount})
+          </button>
+        )}
+      </div>
+
+      {transactions.length === 0 ? (
+        <EmptyState title="Нет операций" text="Добавьте операцию — пополнение или списание со счёта накоплений" />
+      ) : (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm" style={{ minWidth: '520px' }}>
+              <thead>
+                <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
+                  {COLUMNS.map(col => (
+                    <th key={col.id} className={`px-3 py-3 text-${col.align} text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap`}>
+                      <div className={`flex items-center gap-1 ${col.align === 'right' ? 'justify-end' : ''}`}>
+                        <button onClick={() => toggleSort(col.id)}
+                          className="hover:text-[var(--text)] transition-colors select-none flex items-center gap-0.5">
+                          {col.label}<SortArrow col={col.id} />
+                        </button>
+                        <button onClick={(e) => { e.stopPropagation(); if (filterOpen === col.id) { setFilterOpen(null); return; } setFilterAnchor(e.currentTarget); setFilterOpen(col.id); }}
+                          className={`p-0.5 rounded hover:bg-black/5 transition-colors ${filters[col.id] ? 'text-blue-600' : 'text-[var(--text-subtle)] opacity-40 hover:opacity-100'}`}>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+                          </svg>
+                        </button>
+                      </div>
+                    </th>
+                  ))}
+                  <th className="px-3 py-3 w-10" />
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((t, i) => {
+                  const isIncome = t.type === 'income';
+                  return (
+                    <tr key={t.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${i % 2 === 1 ? 'bg-[var(--bg)]/50' : ''}`}>
+                      <td className="px-3 py-2.5 whitespace-nowrap text-[var(--text-muted)]">{formatDate(t.date)}</td>
+                      <td className="px-3 py-2.5 font-medium">{getExpName(t.expenseId)}</td>
+                      <td className="px-3 py-2.5 whitespace-nowrap">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${isIncome ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                          {isIncome ? '↑ Доход' : '↓ Расход'}
+                        </span>
+                      </td>
+                      <td className={`px-3 py-2.5 text-right whitespace-nowrap font-semibold ${isIncome ? 'text-green-600' : 'text-red-500'}`}>
+                        {isIncome ? '+' : '−'}{formatRub(t.amount)} ₽
+                      </td>
+                      <td className="px-2 py-2.5">
+                        <button onClick={() => removeTransaction(t.id)}
+                          className="p-1 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500">
+                          <Icon name="trash" size={13} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] flex flex-wrap gap-4 justify-between items-center">
+            <span className="text-xs text-[var(--text-subtle)] uppercase tracking-wide">{sorted.length} операций</span>
+            <div className="flex gap-5 text-sm">
+              <span className="text-green-600">Доходы: <b>+{formatRub(totalIncome)} ₽</b></span>
+              <span className="text-red-500">Расходы: <b>−{formatRub(totalExpense)} ₽</b></span>
+              <span className={`font-semibold ${totalIncome - totalExpense >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                Баланс: {totalIncome - totalExpense >= 0 ? '+' : ''}{formatRub(totalIncome - totalExpense)} ₽
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <FilterDropdownPortal anchorRef={filterAnchor} isOpen={!!filterOpen} onClose={() => setFilterOpen(null)}>
+        {filterOpen && (() => {
+          const col = COLUMNS.find(c => c.id === filterOpen);
+          if (!col) return null;
+          return (
+            <>
+              <div className="flex items-center justify-between mb-1.5 px-1">
+                <span className="text-[10px] font-semibold text-gray-400 uppercase">Фильтр: {col.label}</span>
+                {filters[filterOpen] && (
+                  <button onClick={() => setFilter(filterOpen, null)} className="text-[10px] text-blue-600 hover:underline">Сбросить</button>
+                )}
+              </div>
+              {getUniqueVals(filterOpen).map(val => (
+                <label key={String(val)} className="flex items-center gap-2 px-1.5 py-1.5 rounded-lg hover:bg-gray-50 cursor-pointer text-sm font-normal">
+                  <input type="checkbox" checked={(filters[filterOpen] || []).includes(val)}
+                    onChange={() => toggleFilterValue(filterOpen, val)} className="rounded border-gray-300" />
+                  <span>{filterOpen === 'amount' ? formatRub(val) + ' ₽' : String(val) || '(пусто)'}</span>
+                </label>
+              ))}
+            </>
+          );
+        })()}
+      </FilterDropdownPortal>
+
+      {showAdd && (
+        <SavingsTransactionModal
+          expenses={expenses}
+          onSave={(expId, type, amount, date) => {
+            setData(d => ({
+              ...d,
+              savingsTransactions: [...(d.savingsTransactions || []), {
+                id: crypto.randomUUID(), expenseId: expId, type, amount, date,
+              }],
+            }));
+            setShowAdd(false);
+          }}
+          onClose={() => setShowAdd(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function SavingsTransactionModal({ expenses, preselectedId, preselectedType, onSave, onClose }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [expenseId, setExpenseId] = useState(preselectedId || (expenses[0]?.id || ''));
+  const [type, setType] = useState(preselectedType || 'income');
+  const [amount, setAmount] = useState('');
+  const [date, setDate] = useState(today);
+
+  const selectedExp = expenses.find(e => e.id === expenseId);
+  const planMonthly = selectedExp ? calcMonthly(selectedExp) : 0;
+
+  const submit = () => {
+    const val = Number(amount);
+    if (!val || val <= 0) return;
+    if (!expenseId) return;
+    onSave(expenseId, type, val, date || today);
+  };
+
+  return (
+    <Modal title="Добавить операцию" onClose={onClose}>
+      <div className="space-y-4">
+        <div>
+          <label>Тип операции</label>
+          <div className="flex gap-2">
+            <button onClick={() => setType('income')}
+              className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${type === 'income' ? 'bg-green-50 border-green-300 text-green-700' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
+              ↑ Доход
+            </button>
+            <button onClick={() => setType('expense')}
+              className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${type === 'expense' ? 'bg-red-50 border-red-300 text-red-600' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
+              ↓ Расход
+            </button>
+          </div>
+        </div>
+        <div>
+          <label>Статья</label>
+          <select value={expenseId} onChange={e => setExpenseId(e.target.value)}>
+            {expenses.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label>Сумма (₽)</label>
+          <input type="number" inputMode="numeric" min="1" value={amount}
+            onChange={e => setAmount(e.target.value)} placeholder="5 000" autoFocus />
+          {planMonthly > 0 && (
+            <div className="text-xs text-[var(--text-subtle)] mt-1">
+              По плану: {formatRub(planMonthly)} ₽/мес
+            </div>
+          )}
+        </div>
+        <div>
+          <label>Дата</label>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)} />
+        </div>
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit}
+            className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-white transition-all hover:opacity-90 ${type === 'income' ? 'bg-green-600' : 'bg-red-500'}`}>
+            {type === 'income' ? 'Пополнить' : 'Списать'}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -8571,6 +8966,7 @@ function BudgetSupplementsView({ data, setData }) {
   const [sortDir, setSortDir] = useState('asc');
   const [filters, setFilters] = useState({});
   const [filterOpen, setFilterOpen] = useState(null);
+  const [filterAnchor, setFilterAnchor] = useState(null);
 
   const items = (data.budgetSupplements || []).filter(s => !s.archived);
   const rawAssignments = data.budgetSupplementAssignments || {};
@@ -8727,14 +9123,6 @@ function BudgetSupplementsView({ data, setData }) {
 
   const assignedMonths = Object.keys(assignments).filter(m => (assignments[m] || []).length > 0).sort();
 
-  const filterRef = useRef(null);
-  useEffect(() => {
-    if (!filterOpen) return;
-    const handler = (e) => { if (filterRef.current && !filterRef.current.contains(e.target)) setFilterOpen(null); };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [filterOpen]);
-
   return (
     <div>
       <div className="flex items-center gap-2 flex-wrap mb-6">
@@ -8778,38 +9166,13 @@ function BudgetSupplementsView({ data, setData }) {
                             {sortCol === col.id ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
                           </span>
                         </button>
-                        <button onClick={(e) => { e.stopPropagation(); setFilterOpen(filterOpen === col.id ? null : col.id); }}
+                        <button onClick={(e) => { e.stopPropagation(); if (filterOpen === col.id) { setFilterOpen(null); return; } setFilterAnchor(e.currentTarget); setFilterOpen(col.id); }}
                           className={`p-0.5 rounded hover:bg-black/5 transition-colors ${filters[col.id] ? 'text-blue-600' : 'text-[var(--text-subtle)] opacity-40 hover:opacity-100'}`}>
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                             <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
                           </svg>
                         </button>
                       </div>
-                      {filterOpen === col.id && (
-                        <div ref={filterRef}
-                          className="absolute top-full left-0 z-50 mt-1 bg-white border border-[var(--border)] rounded-xl shadow-lg p-2 min-w-[180px] max-h-[240px] overflow-y-auto text-left normal-case tracking-normal"
-                          style={col.align === 'right' ? { left: 'auto', right: 0 } : {}}>
-                          <div className="flex items-center justify-between mb-1.5 px-1">
-                            <span className="text-[10px] font-semibold text-[var(--text-subtle)] uppercase">Фильтр: {col.label}</span>
-                            {filters[col.id] && (
-                              <button onClick={() => setFilter(col.id, null)} className="text-[10px] text-blue-600 hover:underline">Сбросить</button>
-                            )}
-                          </div>
-                          {getUniqueVals(col.id).map(val => {
-                            const display = typeof val === 'number'
-                              ? (col.id === 'cost' ? formatRub(val) + ' ₽' : (val || '—'))
-                              : (val || '(пусто)');
-                            const isActive = (filters[col.id] || []).includes(val);
-                            return (
-                              <label key={String(val)} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-black/5 cursor-pointer">
-                                <input type="checkbox" checked={isActive} onChange={() => toggleFilterValue(col.id, val)}
-                                  className="rounded border-gray-300" />
-                                <span className="text-sm text-[var(--text)] truncate">{display}</span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      )}
                     </th>
                   ))}
                   <th className="px-3 py-3 w-20" />
@@ -8923,6 +9286,35 @@ function BudgetSupplementsView({ data, setData }) {
           onClose={() => setEditingMonth(null)}
         />
       )}
+
+      <FilterDropdownPortal anchorRef={filterAnchor} isOpen={!!filterOpen} onClose={() => setFilterOpen(null)}>
+        {filterOpen && (() => {
+          const col = COLUMNS.find(c => c.id === filterOpen);
+          if (!col) return null;
+          return (
+            <>
+              <div className="flex items-center justify-between mb-1.5 px-1">
+                <span className="text-[10px] font-semibold text-gray-400 uppercase">Фильтр: {col.label}</span>
+                {filters[filterOpen] && (
+                  <button onClick={() => setFilter(filterOpen, null)} className="text-[10px] text-blue-600 hover:underline">Сбросить</button>
+                )}
+              </div>
+              {getUniqueVals(filterOpen).map(val => {
+                const display = typeof val === 'number'
+                  ? (filterOpen === 'cost' ? formatRub(val) + ' ₽' : (val || '—'))
+                  : (val || '(пусто)');
+                return (
+                  <label key={String(val)} className="flex items-center gap-2 px-1.5 py-1.5 rounded-lg hover:bg-gray-50 cursor-pointer text-sm">
+                    <input type="checkbox" checked={(filters[filterOpen] || []).includes(val)}
+                      onChange={() => toggleFilterValue(filterOpen, val)} className="rounded border-gray-300" />
+                    <span>{display}</span>
+                  </label>
+                );
+              })}
+            </>
+          );
+        })()}
+      </FilterDropdownPortal>
     </div>
   );
 }
@@ -9162,6 +9554,43 @@ function BudgetSupplementAssignModal({ selectedItems, onAssign, onClose }) {
 
 
 // ============== SHARED ==============
+function FilterDropdownPortal({ anchorRef, isOpen, onClose, children }) {
+  const dropRef = useRef(null);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+
+  useEffect(() => {
+    if (!isOpen || !anchorRef) return;
+    const el = anchorRef instanceof Element ? anchorRef : anchorRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const dropW = 240;
+    let left = rect.left;
+    if (left + dropW > window.innerWidth) left = window.innerWidth - dropW - 8;
+    if (left < 8) left = 8;
+    setPos({ top: rect.bottom + 4, left });
+  }, [isOpen, anchorRef]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e) => {
+      if (dropRef.current && !dropRef.current.contains(e.target)) onClose();
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+
+  return ReactDOM.createPortal(
+    <div ref={dropRef}
+      className="fixed z-[9999] bg-white border border-gray-200 rounded-xl shadow-xl p-2.5"
+      style={{ top: pos.top, left: pos.left, minWidth: 230, maxHeight: 300, overflowY: 'auto' }}>
+      {children}
+    </div>,
+    document.body
+  );
+}
+
 function Modal({ title, children, onClose }) {
   useEffect(() => {
     const handler = (e) => e.key === 'Escape' && onClose();
