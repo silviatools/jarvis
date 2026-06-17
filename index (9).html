@@ -7101,6 +7101,30 @@ function BudgetMonthlyView({ data, setData }) {
   const userCats = data.budgetPlanCategories || [];
   const vals     = data.budgetPlanValues     || {};
 
+  // ── Income (Приход) ──────────────────────────────────────────────────────
+  const incomeSources = data.budgetIncomeSources || [];
+  const incomeVals    = data.budgetIncomeValues  || {};
+
+  const getIncomeVal    = (srcId, month) => incomeVals[`${srcId}_${month}`] || 0;
+  const incomeSrcTotal  = (month) => incomeSources.reduce((s, src) => s + getIncomeVal(src.id, month), 0);
+
+  const startIncomeEdit = (srcId, month) => {
+    setEditCell({ itemId: `__inc_${srcId}`, month, isIncome: true, srcId });
+    setEditVal((incomeVals[`${srcId}_${month}`] || 0) > 0 ? String(incomeVals[`${srcId}_${month}`]) : '');
+  };
+  const commitIncomeEdit = (srcId, month, value) => {
+    const num = parseInt(value.replace(/\s/g, ''), 10);
+    setData(d => ({
+      ...d,
+      budgetIncomeValues: { ...(d.budgetIncomeValues || {}), [`${srcId}_${month}`]: isNaN(num) || num < 0 ? 0 : num }
+    }));
+    setEditCell(null);
+  };
+  const handleIncomeKeyDown = (e, srcId, month) => {
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); commitIncomeEdit(srcId, month, editVal); }
+    if (e.key === 'Escape') setEditCell(null);
+  };
+
   const MONTH_NAMES = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
   const months = MONTH_NAMES.map((_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
 
@@ -7209,7 +7233,7 @@ function BudgetMonthlyView({ data, setData }) {
         )}
       </div>
 
-      {!allCats.length ? (
+      {!allCats.length && !incomeSources.length ? (
         <div className="text-center py-16 text-[var(--text-subtle)]">
           <div className="text-4xl mb-3">📊</div>
           <div className="font-medium mb-1">Нет данных для отображения</div>
@@ -7251,6 +7275,66 @@ function BudgetMonthlyView({ data, setData }) {
               </thead>
 
               <tbody>
+                {/* ── Income section ─────────────────────────────── */}
+                {incomeSources.length > 0 && (
+                  <React.Fragment>
+                    <tr className="bg-emerald-50">
+                      <td className="sticky left-0 z-10 bg-emerald-50 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs">
+                        <span className="mr-1.5">💰</span>
+                        <span className="uppercase tracking-wide text-emerald-700">Приход</span>
+                      </td>
+                      {months.map(m => {
+                        const t = incomeSrcTotal(m);
+                        return (
+                          <React.Fragment key={m}>
+                            <td className={`px-1 py-2 text-center text-xs font-semibold border-b border-[var(--border)] whitespace-nowrap ${planDivCls} ${t > 0 ? 'text-emerald-600' : 'text-[var(--border)]'}`}>
+                              {t > 0 ? formatRub(t) : '—'}
+                            </td>
+                            <td className="px-1 py-2 text-center text-[10px] text-gray-300 border-b border-[var(--border)]">—</td>
+                          </React.Fragment>
+                        );
+                      })}
+                    </tr>
+                    {incomeSources.map(src => (
+                      <tr key={src.id} className="border-b border-[var(--border)] transition-colors hover:bg-emerald-50/30 bg-white">
+                        <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
+                          <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{src.label}</span>
+                        </td>
+                        {months.map(m => {
+                          const v = getIncomeVal(src.id, m);
+                          const isEditing = editCell?.isIncome && editCell?.srcId === src.id && editCell?.month === m;
+                          return (
+                            <React.Fragment key={m}>
+                              <td className={`px-1 py-1 w-[62px] ${planDivCls}`}>
+                                {isEditing ? (
+                                  <input
+                                    type="number" inputMode="numeric"
+                                    className="w-full text-center text-xs px-1 py-1 border border-emerald-400 rounded-md focus:outline-none bg-white text-emerald-700"
+                                    value={editVal}
+                                    onChange={e => setEditVal(e.target.value)}
+                                    onBlur={() => commitIncomeEdit(src.id, m, editVal)}
+                                    onKeyDown={e => handleIncomeKeyDown(e, src.id, m)}
+                                    autoFocus
+                                  />
+                                ) : (
+                                  <button
+                                    onClick={() => startIncomeEdit(src.id, m)}
+                                    className={`w-full text-center text-xs px-1 py-1.5 rounded hover:bg-emerald-50 transition-colors whitespace-nowrap font-medium ${v > 0 ? 'text-emerald-600' : ''}`}>
+                                    {v > 0 ? formatRub(v) : <span className="text-gray-300 text-[10px]">·</span>}
+                                  </button>
+                                )}
+                              </td>
+                              <td className="px-1 py-1 text-center text-[10px] text-gray-300 w-[54px]">—</td>
+                            </React.Fragment>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                    <tr><td colSpan={1 + months.length * 2} className="h-1 bg-[var(--border)]" /></tr>
+                  </React.Fragment>
+                )}
+
+                {/* ── Expense categories ─────────────────────────── */}
                 {allCats.map((cat) => {
                   const isAutoCat = !!cat.isAuto;
 
@@ -7328,7 +7412,7 @@ function BudgetMonthlyView({ data, setData }) {
                 {/* Grand total */}
                 <tr className="border-t-2 border-[var(--border-strong)] bg-gray-200">
                   <td className="sticky left-0 z-10 bg-gray-200 px-4 py-3 border-r border-[var(--border)] font-bold text-xs uppercase tracking-wide text-[var(--text)]">
-                    Итого
+                    Итого расходы
                   </td>
                   {months.map(m => {
                     const t = grandTotal(m);
@@ -7342,6 +7426,29 @@ function BudgetMonthlyView({ data, setData }) {
                     );
                   })}
                 </tr>
+
+                {/* Delta: Income − Expenses */}
+                {incomeSources.length > 0 && (
+                  <tr className="bg-gray-100 border-t border-[var(--border)]">
+                    <td className="sticky left-0 z-10 bg-gray-100 px-4 py-3 border-r border-[var(--border)] font-bold text-xs uppercase tracking-wide text-[var(--text)]">
+                      Остаток
+                    </td>
+                    {months.map(m => {
+                      const income  = incomeSrcTotal(m);
+                      const expense = grandTotal(m);
+                      const delta   = income - expense;
+                      const hasData = income > 0 || expense > 0;
+                      return (
+                        <React.Fragment key={m}>
+                          <td className={`px-1 py-3 text-center text-xs font-bold whitespace-nowrap ${planDivCls} ${!hasData ? 'text-gray-300' : delta >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                            {!hasData ? '—' : (delta >= 0 ? '+' : '') + formatRub(delta)}
+                          </td>
+                          <td className="px-1 py-3 text-center text-[10px] text-gray-300">—</td>
+                        </React.Fragment>
+                      );
+                    })}
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -7358,16 +7465,39 @@ function BudgetMonthlyView({ data, setData }) {
 
 function BudgetPlanSettingsModal({ data, setData, onClose }) {
   const [cats,        setCats]        = useState(() => JSON.parse(JSON.stringify(data.budgetPlanCategories || [])));
+  const [incomeSrcs,  setIncomeSrcs]  = useState(() => JSON.parse(JSON.stringify(data.budgetIncomeSources || [])));
   const [expanded,    setExpanded]    = useState({});
   const [editCat,     setEditCat]     = useState(null); // {id, emoji, label}
   const [editItem,    setEditItem]    = useState(null); // {catId, id, label}
+  const [editIncome,  setEditIncome]  = useState(null); // {id, label}
   const [newCatEmoji, setNewCatEmoji] = useState('');
   const [newCatLabel, setNewCatLabel] = useState('');
   const [newItemLbls, setNewItemLbls] = useState({});  // {catId: string}
+  const [newIncLabel, setNewIncLabel] = useState('');
 
   const save = () => {
-    setData(d => ({ ...d, budgetPlanCategories: cats }));
+    setData(d => ({ ...d, budgetPlanCategories: cats, budgetIncomeSources: incomeSrcs }));
     onClose();
+  };
+
+  /* ---- Income source ops ---- */
+  const addIncomeSrc = () => {
+    if (!newIncLabel.trim()) return;
+    setIncomeSrcs(s => [...s, { id: crypto.randomUUID(), label: newIncLabel.trim() }]);
+    setNewIncLabel('');
+  };
+  const removeIncomeSrc = (id) => setIncomeSrcs(s => s.filter(x => x.id !== id));
+  const moveIncomeSrc = (id, dir) => {
+    setIncomeSrcs(s => {
+      const idx = s.findIndex(x => x.id === id);
+      if (idx + dir < 0 || idx + dir >= s.length) return s;
+      const n = [...s]; [n[idx], n[idx + dir]] = [n[idx + dir], n[idx]]; return n;
+    });
+  };
+  const saveIncomeEdit = () => {
+    if (!editIncome?.label?.trim()) return;
+    setIncomeSrcs(s => s.map(x => x.id === editIncome.id ? { ...x, label: editIncome.label.trim() } : x));
+    setEditIncome(null);
   };
 
   /* ---- Category ops ---- */
@@ -7428,6 +7558,61 @@ function BudgetPlanSettingsModal({ data, setData, onClose }) {
   return (
     <Modal title="Структура бюджета" onClose={onClose}>
       <div className="max-h-[62vh] overflow-y-auto space-y-2 pr-0.5">
+
+        {/* ── Income sources section ────────────────────────── */}
+        <div className="border border-emerald-200 rounded-xl overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2.5 bg-emerald-50">
+            <span className="text-lg">💰</span>
+            <span className="font-semibold text-sm text-emerald-700">Источники дохода</span>
+            <span className="text-xs text-emerald-500">({incomeSrcs.length})</span>
+          </div>
+          <div className="border-t border-emerald-100 px-3 py-2 space-y-1">
+            {incomeSrcs.length === 0 && (
+              <div className="text-xs text-[var(--text-subtle)] pl-5 py-1">Добавьте источники дохода ниже</div>
+            )}
+            {incomeSrcs.map((src, si) => (
+              <div key={src.id} className="flex items-center gap-1.5 pl-4">
+                {editIncome?.id === src.id ? (
+                  <div className="flex items-center gap-1.5 flex-1">
+                    <input className="flex-1 text-sm border border-[var(--border)] rounded-lg p-1.5 bg-[var(--surface)]"
+                      value={editIncome.label} onChange={e => setEditIncome(ei => ({ ...ei, label: e.target.value }))}
+                      onKeyDown={e => e.key === 'Enter' && saveIncomeEdit()} autoFocus />
+                    <button onClick={saveIncomeEdit} className="p-1.5 rounded-lg bg-[var(--text)] text-white shrink-0"><Icon name="check" size={12} /></button>
+                    <button onClick={() => setEditIncome(null)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0"><Icon name="x" size={12} /></button>
+                  </div>
+                ) : (
+                  <>
+                    <span className="w-1 h-1 rounded-full bg-emerald-400 shrink-0 ml-1" />
+                    <span className="flex-1 text-sm text-[var(--text-muted)] truncate">{src.label}</span>
+                    <button onClick={() => moveIncomeSrc(src.id, -1)} disabled={si === 0}
+                      className="p-1 rounded hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
+                      <Icon name="chevronDown" size={12} style={{transform:'rotate(180deg)'}} />
+                    </button>
+                    <button onClick={() => moveIncomeSrc(src.id, 1)} disabled={si === incomeSrcs.length - 1}
+                      className="p-1 rounded hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
+                      <Icon name="chevronDown" size={12} />
+                    </button>
+                    <button onClick={() => setEditIncome({ id: src.id, label: src.label })}
+                      className="p-1 rounded hover:bg-black/5 text-[var(--text-muted)] shrink-0"><Icon name="edit" size={12} /></button>
+                    <button onClick={() => removeIncomeSrc(src.id)}
+                      className="p-1 rounded hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0"><Icon name="trash" size={12} /></button>
+                  </>
+                )}
+              </div>
+            ))}
+            <div className="flex items-center gap-1.5 pl-4 pt-1">
+              <span className="w-1 h-1 shrink-0 ml-1" />
+              <input className="flex-1 text-sm border border-dashed border-emerald-200 rounded-lg p-1.5 bg-transparent"
+                value={newIncLabel}
+                onChange={e => setNewIncLabel(e.target.value)}
+                placeholder="Зарплата, фриланс, дивиденды..."
+                onKeyDown={e => e.key === 'Enter' && addIncomeSrc()} />
+              <button onClick={addIncomeSrc} className="p-1.5 rounded-lg bg-emerald-600 text-white hover:opacity-90 shrink-0"><Icon name="plus" size={13} /></button>
+            </div>
+          </div>
+        </div>
+
+        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide font-semibold px-1 pt-2">Статьи расходов</div>
 
         {cats.length === 0 && (
           <div className="text-center py-6 text-[var(--text-subtle)] text-sm">Добавьте первую категорию ниже</div>
