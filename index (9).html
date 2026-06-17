@@ -8526,7 +8526,7 @@ function BudgetSupplementsView({ data, setData }) {
   };
 
   const newItem = () => setEditing({
-    id: crypto.randomUUID(), name: '', qtyPerPack: '', dailyIntake: '',
+    id: crypto.randomUUID(), name: '', brand: '', qtyPerPack: '', dailyIntake: '',
     cost: '', link: '', notes: '', archived: false,
   });
 
@@ -8596,6 +8596,7 @@ function BudgetSupplementsView({ data, setData }) {
                       className="rounded border-gray-300" />
                   </th>
                   <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Название</th>
+                  <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Бренд</th>
                   <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap">В уп.</th>
                   <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap">В день</th>
                   <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap">Хватит, дн</th>
@@ -8618,6 +8619,7 @@ function BudgetSupplementsView({ data, setData }) {
                           <a href={item.link} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{item.name}</a>
                         ) : item.name}
                       </td>
+                      <td className="px-3 py-3 text-[var(--text-muted)]">{item.brand || '—'}</td>
                       <td className="px-3 py-3 text-right text-[var(--text-muted)]">{item.qtyPerPack || '—'}</td>
                       <td className="px-3 py-3 text-right text-[var(--text-muted)]">{item.dailyIntake || '—'}</td>
                       <td className="px-3 py-3 text-right font-medium">{days > 0 ? days : '—'}</td>
@@ -8717,6 +8719,11 @@ function BudgetSupplementModal({ item, onSave, onClose }) {
         <div>
           <label>Название</label>
           <input value={form.name} onChange={e => set('name', e.target.value)} placeholder="Креатин, Омега-3, Витамин D..." />
+        </div>
+
+        <div>
+          <label>Бренд (необязательно)</label>
+          <input value={form.brand || ''} onChange={e => set('brand', e.target.value)} placeholder="NOW Foods, Solgar, ON..." />
         </div>
 
         <div className="grid grid-cols-2 gap-3">
