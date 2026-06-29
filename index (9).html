@@ -474,14 +474,45 @@ function App() {
   const [houseTab, setHouseTab] = useState('boss');
   const [mealTab, setMealTab] = useState('plan');
   const initialLoad = React.useRef(true);
+  const serverLoaded = React.useRef(false);
 
-  // On mount: try to load from server (overrides localStorage if server has data)
+  // On mount: try to load from server, merge with localStorage to prevent data loss
   useEffect(() => {
     fetchServerData().then(serverData => {
       if (serverData) {
-        setData(serverData);
-        saveData(serverData);
+        setData(prev => {
+          const merged = { ...serverData };
+          // Preserve body entries from whichever source has more data
+          const serverEntries = serverData.bodyEntries || [];
+          const localEntries = prev.bodyEntries || [];
+          if (localEntries.length > 0) {
+            const serverIds = new Set(serverEntries.map(e => e.id));
+            const uniqueLocal = localEntries.filter(e => !serverIds.has(e.id));
+            merged.bodyEntries = [...serverEntries, ...uniqueLocal];
+          }
+          // Same merge for other array data that could be lost
+          const arrayKeys = ['supplements', 'meals', 'cookingPlans', 'containers',
+            'cars', 'serviceRecords', 'budgetExpenses', 'budgetCategories',
+            'budgetRecurring', 'budgetPlanCategories', 'budgetRecurringCategories',
+            'savingsCorrections', 'savingsTransactions', 'holidays'];
+          for (const key of arrayKeys) {
+            const serverArr = serverData[key] || [];
+            const localArr = prev[key] || [];
+            if (localArr.length > 0 && serverArr.length === 0) {
+              merged[key] = localArr;
+            } else if (localArr.length > 0 && serverArr.length > 0) {
+              const serverIds = new Set(serverArr.map(e => e.id).filter(Boolean));
+              const uniqueLocal = localArr.filter(e => e.id && !serverIds.has(e.id));
+              if (uniqueLocal.length > 0) {
+                merged[key] = [...serverArr, ...uniqueLocal];
+              }
+            }
+          }
+          saveData(merged);
+          return merged;
+        });
       }
+      serverLoaded.current = true;
     });
   }, []);
 
@@ -525,10 +556,13 @@ function App() {
   }, []);
 
   // On every change: save locally + push to server (debounced)
+  // Don't push to server until initial server load completes to avoid overwriting
   useEffect(() => {
     if (initialLoad.current) { initialLoad.current = false; return; }
     saveData(data);
-    pushServerData(data);
+    if (serverLoaded.current) {
+      pushServerData(data);
+    }
   }, [data]);
 
   // Очистка отметок старше сегодняшнего дня
