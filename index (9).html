@@ -7114,13 +7114,15 @@ function BudgetView({ data, setData }) {
         <div className="font-display text-2xl">Бюджет</div>
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Планирование</div>
       </div>
-      <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6">
-        {[['monthly','По месяцу'],['expenses','Накопления'],['recurring','Постоянные'],['supplements','Спортпит'],['debts','Долги']].map(([id, label]) => (
-          <button key={id} onClick={() => setBudgetTab(id)}
-            className={`px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${budgetTab === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
-            {label}
-          </button>
-        ))}
+      <div className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-6">
+        <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
+          {[['monthly','По месяцу'],['expenses','Накопления'],['recurring','Постоянные'],['supplements','Спортпит'],['debts','Долги']].map(([id, label]) => (
+            <button key={id} onClick={() => setBudgetTab(id)}
+              className={`px-3 sm:px-4 py-2.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${budgetTab === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
       {budgetTab === 'monthly'   && <BudgetMonthlyView   data={data} setData={setData} />}
       {budgetTab === 'expenses'  && <BudgetExpensesView  data={data} setData={setData} />}
@@ -7293,7 +7295,7 @@ function BudgetMonthlyView({ data, setData }) {
   return (
     <div>
       {/* Toolbar */}
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex items-center gap-2 sm:gap-3 mb-4 flex-wrap">
         <div className="flex items-center gap-0 bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden">
           <button onClick={() => setYear(y => y - 1)}
             className="px-3 py-2 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-black/5 transition-colors text-base leading-none">‹</button>
