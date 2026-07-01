@@ -282,6 +282,32 @@ def _tick():
                 except (ValueError, OverflowError):
                     pass
 
+    # Debts: one-off reminder at notifyDate + notifyTime (MSK)
+    debts = []
+    if APP_DATA_FILE.exists():
+        try:
+            app_data_raw = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
+            debts = app_data_raw.get("budgetDebts", [])
+        except Exception:
+            pass
+    today_iso = today_msk().isoformat()
+    for debt in debts:
+        if not debt.get("notify") or debt.get("closed"):
+            continue
+        if debt.get("notifyDate", "") != today_iso:
+            continue
+        if debt.get("notifyTime", "") != now_str:
+            continue
+        amount = debt.get("amount", 0)
+        debtor = debt.get("debtor", "")
+        comment = debt.get("comment", "")
+        text = f"💰 <b>Долг — напоминание</b>\n\n{debtor} должен вернуть {amount} ₽"
+        if comment:
+            text += f"\n<i>{comment}</i>"
+        print(f"[{now_str} MSK] → debt: {debtor} {amount} ({len(subs['chat_ids'])} subscriber(s))")
+        for cid in subs["chat_ids"]:
+            send_message(token, cid, text)
+
     if changed:
         save_subscribers(subs)
 

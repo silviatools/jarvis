@@ -238,6 +238,7 @@ const DEFAULT_DATA = () => ({
   savingsActual: {},
   savingsCorrections: [],
   savingsTransactions: [],
+  budgetDebts: [],
   settings: { ...DEFAULT_SETTINGS },
 });
 
@@ -7114,7 +7115,7 @@ function BudgetView({ data, setData }) {
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Планирование</div>
       </div>
       <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6">
-        {[['monthly','По месяцу'],['expenses','Накопления'],['recurring','Постоянные'],['supplements','Спортпит']].map(([id, label]) => (
+        {[['monthly','По месяцу'],['expenses','Накопления'],['recurring','Постоянные'],['supplements','Спортпит'],['debts','Долги']].map(([id, label]) => (
           <button key={id} onClick={() => setBudgetTab(id)}
             className={`px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${budgetTab === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
             {label}
@@ -7125,6 +7126,7 @@ function BudgetView({ data, setData }) {
       {budgetTab === 'expenses'  && <BudgetExpensesView  data={data} setData={setData} />}
       {budgetTab === 'recurring' && <BudgetRecurringView data={data} setData={setData} />}
       {budgetTab === 'supplements' && <BudgetSupplementsView data={data} setData={setData} />}
+      {budgetTab === 'debts' && <BudgetDebtsView data={data} setData={setData} />}
     </main>
   );
 }
@@ -9015,6 +9017,236 @@ function BudgetRecurringModal({ item, cats, onSave, onClose }) {
         <div>
           <label>Заметка (необязательно)</label>
           <textarea value={form.notes || ''} onChange={e => set('notes', e.target.value)} rows={2} placeholder="Дополнительная информация..." />
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit}  className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+
+// ============== DEBTS (Долги) ==============
+
+const DEBT_SOURCES = ['Альфа', '9816', 'Накопления'];
+
+function BudgetDebtsView({ data, setData }) {
+  const [editing,   setEditing]   = useState(null);
+  const [showClosed, setShowClosed] = useState(false);
+
+  const debts = data.budgetDebts || [];
+  const active = debts.filter(d => !d.closed);
+  const closed = debts.filter(d => d.closed);
+
+  const save = (debt) => {
+    setData(d => {
+      const list = d.budgetDebts || [];
+      const exists = list.find(x => x.id === debt.id);
+      return { ...d, budgetDebts: exists ? list.map(x => x.id === debt.id ? debt : x) : [...list, debt] };
+    });
+    setEditing(null);
+  };
+
+  const remove = (id) => {
+    if (!confirm('Удалить долг?')) return;
+    setData(d => ({ ...d, budgetDebts: (d.budgetDebts || []).filter(x => x.id !== id) }));
+  };
+
+  const toggleClosed = (id) => {
+    setData(d => ({ ...d, budgetDebts: (d.budgetDebts || []).map(x => x.id === id ? { ...x, closed: !x.closed } : x) }));
+  };
+
+  const newDebt = () => setEditing({
+    id: crypto.randomUUID(), amount: '', debtor: '', source: DEBT_SOURCES[0],
+    returnDate: '', notify: false, notifyDate: '', notifyTime: '12:00',
+    comment: '', closed: false,
+  });
+
+  const totalActive = active.reduce((s, d) => s + (d.amount || 0), 0);
+
+  const fmtDate = (s) => {
+    if (!s) return '—';
+    const [y, m, dd] = s.split('-');
+    return `${dd}.${m}.${y}`;
+  };
+  const isOverdue = (d) => d.returnDate && !d.closed && d.returnDate < new Date().toISOString().slice(0, 10);
+
+  const DebtRow = ({ d }) => (
+    <tr className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${d.closed ? 'opacity-50' : ''}`}>
+      <td className="px-3 py-3 whitespace-nowrap font-semibold text-[var(--text)]">{formatRub(d.amount)} ₽</td>
+      <td className="px-3 py-3 whitespace-nowrap font-medium">{d.debtor || '—'}</td>
+      <td className="px-3 py-3 whitespace-nowrap text-[var(--text-muted)]">{d.source || '—'}</td>
+      <td className={`px-3 py-3 whitespace-nowrap ${isOverdue(d) ? 'text-red-500 font-medium' : 'text-[var(--text-muted)]'}`}>
+        {fmtDate(d.returnDate)}
+        {isOverdue(d) && <span className="block text-[10px] text-red-400">просрочен</span>}
+      </td>
+      <td className="px-3 py-3 whitespace-nowrap text-[var(--text-muted)] text-xs">
+        {d.notify && d.notifyDate ? `🔔 ${fmtDate(d.notifyDate)} ${d.notifyTime || ''}` : '—'}
+      </td>
+      <td className="px-3 py-3 text-[var(--text-subtle)] text-sm max-w-[200px] truncate">{d.comment || '—'}</td>
+      <td className="px-2 py-3">
+        <div className="flex gap-0.5 justify-end">
+          <button onClick={() => toggleClosed(d.id)} title={d.closed ? 'Вернуть в активные' : 'Отметить закрытым'}
+            className={`p-1.5 rounded-lg hover:bg-black/5 ${d.closed ? 'text-[var(--text-muted)]' : 'text-green-500 hover:text-green-700'}`}>
+            <Icon name={d.closed ? 'restore' : 'check'} size={14} />
+          </button>
+          <button onClick={() => setEditing(d)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать"><Icon name="edit" size={14} /></button>
+          <button onClick={() => remove(d.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500" title="Удалить"><Icon name="trash" size={14} /></button>
+        </div>
+      </td>
+    </tr>
+  );
+
+  const headCells = ['Сумма', 'Кому', 'Откуда', 'Вернуть до', 'Напоминание', 'Комментарий'];
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 flex-wrap mb-6">
+        <button onClick={newDebt} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
+          <Icon name="plus" size={16} />Добавить
+        </button>
+      </div>
+
+      {!debts.length ? (
+        <EmptyState title="Нет долгов" text="Добавьте долг: сумму, кому дали, откуда и когда должны вернуть" />
+      ) : (
+        <>
+          <div className="inline-flex items-baseline gap-2 bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-5 py-3 mb-4">
+            <span className="font-display text-3xl">{formatRub(totalActive)}</span>
+            <span className="text-[var(--text-muted)]">₽ в долгах</span>
+          </div>
+
+          {active.length > 0 && (
+            <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" style={{ minWidth: '720px' }}>
+                  <thead>
+                    <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
+                      {headCells.map(h => (
+                        <th key={h} className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap">{h}</th>
+                      ))}
+                      <th className="px-3 py-3 w-24" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {active.map(d => <DebtRow key={d.id} d={d} />)}
+                  </tbody>
+                </table>
+              </div>
+              <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] flex justify-between items-center">
+                <span className="text-xs text-[var(--text-subtle)] uppercase tracking-wide">{active.length} активных</span>
+                <span className="font-display text-base">{formatRub(totalActive)} ₽</span>
+              </div>
+            </div>
+          )}
+
+          {closed.length > 0 && (
+            <div className="mt-4">
+              <button onClick={() => setShowClosed(v => !v)}
+                className="flex items-center gap-2 text-sm text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">
+                <Icon name={showClosed ? 'chevronDown' : 'chevronDown'} size={14} />
+                Закрытые ({closed.length})
+              </button>
+              {showClosed && (
+                <div className="mt-3 bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm" style={{ minWidth: '720px' }}>
+                      <thead>
+                        <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
+                          {headCells.map(h => (
+                            <th key={h} className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap">{h}</th>
+                          ))}
+                          <th className="px-3 py-3 w-24" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {closed.map(d => <DebtRow key={d.id} d={d} />)}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {editing && <BudgetDebtModal debt={editing} onSave={save} onClose={() => setEditing(null)} />}
+    </div>
+  );
+}
+
+function BudgetDebtModal({ debt, onSave, onClose }) {
+  const [form, setForm] = useState({ ...debt });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const submit = () => {
+    if (!form.amount || Number(form.amount) <= 0) return;
+    if (!form.debtor.trim()) return;
+    onSave({
+      ...form,
+      amount: Number(form.amount),
+      debtor: form.debtor.trim(),
+      comment: (form.comment || '').trim(),
+      notify: !!(form.notify && form.notifyDate),
+    });
+  };
+
+  const isNew = !debt.debtor && !debt.amount;
+
+  return (
+    <Modal title={isNew ? 'Новый долг' : 'Редактировать долг'} onClose={onClose}>
+      <div className="space-y-4">
+        <div>
+          <label>Сумма (₽)</label>
+          <input type="number" inputMode="numeric" min="1" autoFocus
+            value={form.amount || ''}
+            onChange={e => set('amount', e.target.value)}
+            placeholder="5 000" />
+        </div>
+
+        <div>
+          <label>Кому даётся долг</label>
+          <input value={form.debtor} onChange={e => set('debtor', e.target.value)} placeholder="Имя" />
+        </div>
+
+        <div>
+          <label>Откуда даётся долг</label>
+          <select value={form.source} onChange={e => set('source', e.target.value)}>
+            {DEBT_SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+
+        <div>
+          <label>Вернуть до</label>
+          <input type="date" value={form.returnDate || ''} onChange={e => set('returnDate', e.target.value)} />
+        </div>
+
+        <div className="border border-[var(--border)] rounded-xl p-3 space-y-3">
+          <label className="flex items-center gap-2 cursor-pointer !mb-0">
+            <input type="checkbox" className="!w-auto" checked={!!form.notify} onChange={e => set('notify', e.target.checked)} />
+            <span className="text-sm font-medium">Напоминание в Telegram</span>
+          </label>
+          {form.notify && (
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <label>Дата</label>
+                <input type="date" value={form.notifyDate || ''} onChange={e => set('notifyDate', e.target.value)} />
+              </div>
+              <div className="w-28">
+                <label>Время</label>
+                <input type="time" value={form.notifyTime || '12:00'} onChange={e => set('notifyTime', e.target.value)} />
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <label>Комментарий (необязательно)</label>
+          <textarea value={form.comment || ''} onChange={e => set('comment', e.target.value)} rows={2} placeholder="Дополнительная информация..." />
         </div>
 
         <div className="flex gap-3 pt-2">
