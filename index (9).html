@@ -2979,9 +2979,10 @@ function DietComplianceView({ data, setData }) {
   };
 
   const markOnPlan = () => {
+    const existing = log.find(e => e.date === manualDate);
     const entry = {
-      id: todayEntry ? todayEntry.id : crypto.randomUUID(),
-      date: today,
+      id: existing ? existing.id : crypto.randomUUID(),
+      date: manualDate,
       onPlan: true,
       calories: plan.calories || '',
       protein: plan.protein || '',
@@ -2989,7 +2990,7 @@ function DietComplianceView({ data, setData }) {
       carbs: plan.carbs || '',
     };
     setData(d => {
-      const list = (d.dietLog || []).filter(e => e.date !== today);
+      const list = (d.dietLog || []).filter(e => e.date !== manualDate);
       return { ...d, dietLog: [...list, entry].sort((a, b) => b.date.localeCompare(a.date)) };
     });
   };
@@ -3102,28 +3103,36 @@ function DietComplianceView({ data, setData }) {
         </button>
       </div>
 
-      {/* Today card */}
+      {/* Entry card */}
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
-        <div className="font-medium text-sm text-[var(--text-muted)]">Сегодня</div>
+        {/* Shared date picker */}
+        <div>
+          <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Дата</label>
+          <input type="date" value={manualDate} max={today}
+            onChange={e => setManualDate(e.target.value)}
+            className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]"
+          />
+        </div>
 
-        {todayEntry ? (
-          <div className={`flex items-center gap-3 p-3 rounded-xl ${todayEntry.onPlan ? 'bg-green-500/10 border border-green-500/20' : 'bg-[var(--bg)] border border-[var(--border)]'}`}>
-            <div className={`w-2 h-2 rounded-full shrink-0 ${todayEntry.onPlan ? 'bg-green-500' : 'bg-yellow-400'}`} />
+        {/* Entry for selected date */}
+        {manualDateEntry ? (
+          <div className={`flex items-center gap-3 p-3 rounded-xl ${manualDateEntry.onPlan ? 'bg-green-500/10 border border-green-500/20' : 'bg-[var(--bg)] border border-[var(--border)]'}`}>
+            <div className={`w-2 h-2 rounded-full shrink-0 ${manualDateEntry.onPlan ? 'bg-green-500' : 'bg-yellow-400'}`} />
             <div className="flex-1 text-sm">
-              <span className="font-medium">{todayEntry.onPlan ? 'По плану' : 'Вручную'}</span>
-              {(todayEntry.calories || todayEntry.protein) && (
+              <span className="font-medium">{manualDateEntry.onPlan ? 'По плану' : 'Вручную'}</span>
+              {(manualDateEntry.calories || manualDateEntry.protein) && (
                 <span className="text-[var(--text-muted)] ml-2">
-                  {todayEntry.calories && `${todayEntry.calories} ккал`}
-                  {todayEntry.protein && ` · Б ${todayEntry.protein}г`}
-                  {todayEntry.fat && ` · Ж ${todayEntry.fat}г`}
-                  {todayEntry.carbs && ` · У ${todayEntry.carbs}г`}
+                  {manualDateEntry.calories && `${manualDateEntry.calories} ккал`}
+                  {manualDateEntry.protein && ` · Б ${manualDateEntry.protein}г`}
+                  {manualDateEntry.fat && ` · Ж ${manualDateEntry.fat}г`}
+                  {manualDateEntry.carbs && ` · У ${manualDateEntry.carbs}г`}
                 </span>
               )}
             </div>
-            <button onClick={() => deleteEntry(todayEntry.id)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="trash" size={15} /></button>
+            <button onClick={() => deleteEntry(manualDateEntry.id)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="trash" size={15} /></button>
           </div>
         ) : (
-          <div className="text-sm text-[var(--text-subtle)]">Ещё не отмечено</div>
+          <div className="text-sm text-[var(--text-subtle)]">За эту дату ещё нет записи</div>
         )}
 
         {/* По плану */}
@@ -3142,16 +3151,6 @@ function DietComplianceView({ data, setData }) {
         {/* Manual entry */}
         <div className="space-y-3 pt-1">
           <div className="text-xs text-[var(--text-muted)] font-medium uppercase tracking-wide">Вписать вручную</div>
-          <div>
-            <label className="block text-[10px] text-[var(--text-subtle)] mb-1">Дата</label>
-            <input type="date" value={manualDate} max={today}
-              onChange={e => setManualDate(e.target.value)}
-              className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]"
-            />
-            {manualDateEntry && (
-              <div className="text-[10px] text-yellow-500 mt-1">За эту дату уже есть запись — она будет перезаписана</div>
-            )}
-          </div>
           <div className="grid grid-cols-2 gap-2">
             {[['calories','Калории','ккал'],['protein','Белки','г'],['fat','Жиры','г'],['carbs','Углеводы','г']].map(([key,label,unit]) => (
               <div key={key}>
