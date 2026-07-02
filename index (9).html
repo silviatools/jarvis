@@ -2997,11 +2997,12 @@ function DietComplianceView({ data, setData }) {
 
   const markManual = () => {
     if (!manualForm.calories && !manualForm.protein && !manualForm.fat && !manualForm.carbs) return;
+    const autoCal = !manualForm.calories ? Math.round(calcKcal(manualForm)) : null;
     const entry = {
       id: manualDateEntry ? manualDateEntry.id : crypto.randomUUID(),
       date: manualDate,
       onPlan: false,
-      calories: manualForm.calories,
+      calories: manualForm.calories || (autoCal ? String(autoCal) : ''),
       protein: manualForm.protein,
       fat: manualForm.fat,
       carbs: manualForm.carbs,
@@ -3058,9 +3059,19 @@ function DietComplianceView({ data, setData }) {
     last30.push({ date: ds, entry });
   }
 
-  // SVG bar chart
-  const chartW = 600, chartH = 90, barW = 14, gap = 6;
+  // SVG bar chart — height = calories
+  const chartH = 90, barW = 14, gap = 6;
   const totalBarW = barW + gap;
+  const planCal = parseFloat(plan.calories) || 0;
+  const allCals = last30.map(d => parseFloat(d.entry?.calories) || 0);
+  const maxCal = Math.max(planCal, ...allCals, 1);
+
+  const calcKcal = (f) => {
+    const p = parseFloat(f.protein) || 0;
+    const fat = parseFloat(f.fat) || 0;
+    const c = parseFloat(f.carbs) || 0;
+    return p * 4 + fat * 9 + c * 4;
+  };
 
   if (showSettings) {
     return (
@@ -3152,17 +3163,22 @@ function DietComplianceView({ data, setData }) {
         <div className="space-y-3 pt-1">
           <div className="text-xs text-[var(--text-muted)] font-medium uppercase tracking-wide">Вписать вручную</div>
           <div className="grid grid-cols-2 gap-2">
-            {[['calories','Калории','ккал'],['protein','Белки','г'],['fat','Жиры','г'],['carbs','Углеводы','г']].map(([key,label,unit]) => (
+            {[['calories','Калории','ккал'],['protein','Белки','г'],['fat','Жиры','г'],['carbs','Углеводы','г']].map(([key,label,unit]) => {
+              const autoCal = key === 'calories' && !manualForm.calories
+                ? Math.round(calcKcal(manualForm)) || null
+                : null;
+              return (
               <div key={key}>
                 <label className="block text-[10px] text-[var(--text-subtle)] mb-1">{label} ({unit})</label>
                 <input type="number" min="0"
                   value={manualForm[key]}
                   onChange={e => setManualForm(f => ({ ...f, [key]: e.target.value }))}
                   className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]"
-                  placeholder="—"
+                  placeholder={autoCal ? `≈ ${autoCal}` : '—'}
                 />
               </div>
-            ))}
+              );
+            })}
           </div>
           <button onClick={markManual} className="w-full px-4 py-2.5 rounded-xl border border-[var(--border)] text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--text)] transition-all">Отметить</button>
         </div>
@@ -3171,21 +3187,32 @@ function DietComplianceView({ data, setData }) {
       {/* Chart — last 30 days */}
       {log.length > 0 && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-          <div className="font-medium text-sm mb-4">Последние 30 дней</div>
+          <div className="font-medium text-sm mb-1">Последние 30 дней</div>
+          {planCal > 0 && <div className="text-xs text-[var(--text-subtle)] mb-4">план: {planCal} ккал</div>}
           <div className="overflow-x-auto">
             <svg width={last30.length * totalBarW} height={chartH + 20} style={{ display: 'block', minWidth: '100%' }}>
+              {/* Plan line */}
+              {planCal > 0 && (() => {
+                const planY = chartH - Math.round((planCal / maxCal) * chartH);
+                return <line x1={0} y1={planY} x2={last30.length * totalBarW} y2={planY} stroke="#22c55e" strokeWidth={1} strokeDasharray="3 3" opacity={0.6} />;
+              })()}
               {last30.map((day, i) => {
                 const x = i * totalBarW;
                 const hasEntry = !!day.entry;
                 const isOnPlan = day.entry?.onPlan;
-                const isFuture = day.date > today;
+                const cal = parseFloat(day.entry?.calories) || 0;
                 const color = !hasEntry ? 'var(--border)' : isOnPlan ? '#22c55e' : '#f59e0b';
-                const h = hasEntry ? chartH : 6;
+                const h = hasEntry && cal > 0
+                  ? Math.max(4, Math.round((cal / maxCal) * chartH))
+                  : hasEntry ? chartH : 4;
                 const isToday = day.date === today;
                 return (
                   <g key={day.date}>
-                    <rect x={x} y={chartH - h} width={barW} height={h} rx={3} fill={color} opacity={isFuture ? 0.3 : 1} />
+                    <rect x={x} y={chartH - h} width={barW} height={h} rx={3} fill={color} />
                     {isToday && <rect x={x} y={chartH + 6} width={barW} height={3} rx={1} fill="var(--text)" />}
+                    {hasEntry && cal > 0 && (
+                      <title>{day.date}: {cal} ккал</title>
+                    )}
                   </g>
                 );
               })}
@@ -3195,6 +3222,7 @@ function DietComplianceView({ data, setData }) {
             <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm bg-green-500" /> По плану</div>
             <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm bg-yellow-400" /> Вручную</div>
             <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm" style={{background:'var(--border)'}} /> Нет данных</div>
+            {planCal > 0 && <div className="flex items-center gap-1.5"><div className="w-4 h-px border-t border-dashed border-green-500 opacity-60" /> Норма</div>}
           </div>
         </div>
       )}
