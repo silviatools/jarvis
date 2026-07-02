@@ -484,33 +484,33 @@ function App() {
     fetchServerData().then(serverData => {
       if (serverData) {
         setData(prev => {
-          const merged = { ...serverData };
-          // Preserve body entries from whichever source has more data
-          const serverEntries = serverData.bodyEntries || [];
-          const localEntries = prev.bodyEntries || [];
-          if (localEntries.length > 0) {
-            const serverIds = new Set(serverEntries.map(e => e.id));
-            const uniqueLocal = localEntries.filter(e => !serverIds.has(e.id));
-            merged.bodyEntries = [...serverEntries, ...uniqueLocal];
-          }
-          // Same merge for other array data that could be lost
-          const arrayKeys = ['supplements', 'meals', 'cookingPlans', 'containers', 'dietLog',
+          // Server is source of truth, but preserve any fields/keys missing from server
+          // (e.g. new fields added to code that aren't in old server JSON yet)
+          const merged = { ...prev, ...serverData };
+
+          // For arrays: merge by id so no entries are lost from either side
+          const arrayKeys = [
+            'bodyEntries', 'supplements', 'meals', 'cookingPlans', 'containers', 'dietLog',
             'cars', 'serviceRecords', 'budgetExpenses', 'budgetCategories',
             'budgetRecurring', 'budgetPlanCategories', 'budgetRecurringCategories',
-            'savingsCorrections', 'savingsTransactions', 'holidays'];
+            'savingsCorrections', 'savingsTransactions', 'holidays', 'bossTasks',
+          ];
           for (const key of arrayKeys) {
             const serverArr = serverData[key] || [];
             const localArr = prev[key] || [];
-            if (localArr.length > 0 && serverArr.length === 0) {
-              merged[key] = localArr;
-            } else if (localArr.length > 0 && serverArr.length > 0) {
+            if (localArr.length > 0) {
               const serverIds = new Set(serverArr.map(e => e.id).filter(Boolean));
               const uniqueLocal = localArr.filter(e => e.id && !serverIds.has(e.id));
-              if (uniqueLocal.length > 0) {
-                merged[key] = [...serverArr, ...uniqueLocal];
-              }
+              merged[key] = uniqueLocal.length > 0 ? [...serverArr, ...uniqueLocal] : serverArr;
             }
           }
+
+          // For plain-object fields: if server is missing the key, keep local value
+          const objectKeys = ['dietPlan', 'budgetPlanValues', 'savingsActual'];
+          for (const key of objectKeys) {
+            if (!serverData[key] && prev[key]) merged[key] = prev[key];
+          }
+
           saveData(merged);
           return merged;
         });
@@ -2965,11 +2965,13 @@ function DietComplianceView({ data, setData }) {
 
   const [showSettings, setShowSettings] = useState(false);
   const [planForm, setPlanForm] = useState({ calories: plan.calories || '', protein: plan.protein || '', fat: plan.fat || '', carbs: plan.carbs || '' });
+  const [manualDate, setManualDate] = useState(today);
   const [manualForm, setManualForm] = useState({ calories: '', protein: '', fat: '', carbs: '' });
   const [editEntry, setEditEntry] = useState(null);
   const [editForm, setEditForm] = useState({});
 
   const todayEntry = log.find(e => e.date === today);
+  const manualDateEntry = log.find(e => e.date === manualDate);
 
   const savePlan = () => {
     setData(d => ({ ...d, dietPlan: { ...planForm } }));
@@ -2995,8 +2997,8 @@ function DietComplianceView({ data, setData }) {
   const markManual = () => {
     if (!manualForm.calories && !manualForm.protein && !manualForm.fat && !manualForm.carbs) return;
     const entry = {
-      id: todayEntry ? todayEntry.id : crypto.randomUUID(),
-      date: today,
+      id: manualDateEntry ? manualDateEntry.id : crypto.randomUUID(),
+      date: manualDate,
       onPlan: false,
       calories: manualForm.calories,
       protein: manualForm.protein,
@@ -3004,10 +3006,11 @@ function DietComplianceView({ data, setData }) {
       carbs: manualForm.carbs,
     };
     setData(d => {
-      const list = (d.dietLog || []).filter(e => e.date !== today);
+      const list = (d.dietLog || []).filter(e => e.date !== manualDate);
       return { ...d, dietLog: [...list, entry].sort((a, b) => b.date.localeCompare(a.date)) };
     });
     setManualForm({ calories: '', protein: '', fat: '', carbs: '' });
+    setManualDate(today);
   };
 
   const deleteEntry = (id) => {
@@ -3017,13 +3020,15 @@ function DietComplianceView({ data, setData }) {
 
   const startEdit = (entry) => {
     setEditEntry(entry.id);
-    setEditForm({ calories: entry.calories || '', protein: entry.protein || '', fat: entry.fat || '', carbs: entry.carbs || '', onPlan: entry.onPlan });
+    setEditForm({ date: entry.date, calories: entry.calories || '', protein: entry.protein || '', fat: entry.fat || '', carbs: entry.carbs || '', onPlan: entry.onPlan });
   };
 
   const saveEdit = (id) => {
     setData(d => ({
       ...d,
-      dietLog: (d.dietLog || []).map(e => e.id === id ? { ...e, ...editForm } : e),
+      dietLog: (d.dietLog || [])
+        .map(e => e.id === id ? { ...e, ...editForm } : e)
+        .sort((a, b) => b.date.localeCompare(a.date)),
     }));
     setEditEntry(null);
   };
@@ -3137,6 +3142,16 @@ function DietComplianceView({ data, setData }) {
         {/* Manual entry */}
         <div className="space-y-3 pt-1">
           <div className="text-xs text-[var(--text-muted)] font-medium uppercase tracking-wide">Вписать вручную</div>
+          <div>
+            <label className="block text-[10px] text-[var(--text-subtle)] mb-1">Дата</label>
+            <input type="date" value={manualDate} max={today}
+              onChange={e => setManualDate(e.target.value)}
+              className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]"
+            />
+            {manualDateEntry && (
+              <div className="text-[10px] text-yellow-500 mt-1">За эту дату уже есть запись — она будет перезаписана</div>
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-2">
             {[['calories','Калории','ккал'],['protein','Белки','г'],['fat','Жиры','г'],['carbs','Углеводы','г']].map(([key,label,unit]) => (
               <div key={key}>
@@ -3193,7 +3208,13 @@ function DietComplianceView({ data, setData }) {
             <div key={entry.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3">
               {editEntry === entry.id ? (
                 <div className="space-y-3">
-                  <div className="text-sm font-medium">{formatDate(entry.date)}</div>
+                  <div>
+                    <label className="block text-[10px] text-[var(--text-subtle)] mb-1">Дата</label>
+                    <input type="date" value={editForm.date || entry.date}
+                      onChange={e => setEditForm(f => ({ ...f, date: e.target.value }))}
+                      className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:border-[var(--text)]"
+                    />
+                  </div>
                   <div className="flex items-center gap-3">
                     <label className="flex items-center gap-2 text-sm cursor-pointer">
                       <input type="checkbox" checked={!!editForm.onPlan} onChange={e => setEditForm(f => ({ ...f, onPlan: e.target.checked }))}
