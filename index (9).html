@@ -1048,7 +1048,7 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
         <div className="font-display text-2xl">Питание</div>
         <button
           onClick={() => setShowSettings(s => !s)}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all border ${
+          className={`flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-medium transition-all border ${
             showSettings
               ? 'bg-[var(--text)] text-white border-[var(--text)]'
               : 'border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)]'
@@ -1063,12 +1063,12 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
         <div className="fade-in"><MealSettings data={data} setData={setData} /></div>
       ) : (
         <>
-          <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8">
+          <div className="flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6 gap-0 overflow-x-auto">
             {[{ id: 'plan', label: 'План' }, { id: 'compliance', label: 'Соблюдение' }, { id: 'cooking', label: 'Готовка' }, { id: 'containers', label: 'Контейнеры' }, { id: 'counter', label: 'Счётчик' }].map(t => (
               <button
                 key={t.id}
                 onClick={() => setMealTab(t.id)}
-                className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                className={`px-3 py-2.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${
                   mealTab === t.id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
                 }`}
               >
@@ -1212,7 +1212,7 @@ function RationCounter({ data, setData }) {
 
   return (
     <div className="space-y-4">
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-8 text-center">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 text-center">
         <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] mb-4">Остаток рационов</div>
 
         <div className={`font-display text-8xl leading-none mb-3 ${urgencyColor}`}>
@@ -1303,13 +1303,13 @@ function NutritionRow({ meal, compact }) {
   }
 
   return (
-    <div className="grid grid-cols-4 gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl p-4">
+    <div className="grid grid-cols-4 gap-1 bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3">
       {items.map(i => (
         <div key={i.label} className="text-center">
-          <div className="font-display text-2xl">
+          <div className="font-display text-xl">
             {i.value !== '' && i.value != null ? i.value : '—'}
           </div>
-          <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wider mt-1">
+          <div className="text-[10px] text-[var(--text-subtle)] uppercase tracking-wider mt-0.5">
             {i.label}{i.unit ? `, ${i.unit}` : ''}
           </div>
         </div>
@@ -2656,13 +2656,13 @@ function SettingsSupplementRow({ supp, archived, hideFrequency, onEdit, onArchiv
           {supp.comment && <div className="text-sm text-[var(--text-muted)] italic mt-2">{supp.comment}</div>}
         </div>
         <div className="flex gap-1 flex-shrink-0">
-          <button onClick={onEdit} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать">
+          <button onClick={onEdit} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать">
             <Icon name="edit" size={18} />
           </button>
-          <button onClick={onArchive} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title={archived ? 'Восстановить' : 'В архив'}>
+          <button onClick={onArchive} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title={archived ? 'Восстановить' : 'В архив'}>
             <Icon name={archived ? 'restore' : 'archive'} size={18} />
           </button>
-          <button onClick={onDelete} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Удалить">
+          <button onClick={onDelete} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Удалить">
             <Icon name="trash" size={18} />
           </button>
         </div>
@@ -2853,13 +2853,13 @@ function SettingsMealRow({ meal, archived, onEdit, onArchive, onDelete }) {
           <NutritionRow meal={meal} compact />
         </div>
         <div className="flex gap-1 flex-shrink-0">
-          <button onClick={onEdit} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать">
+          <button onClick={onEdit} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать">
             <Icon name="edit" size={18} />
           </button>
-          <button onClick={onArchive} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title={archived ? 'Восстановить' : 'В архив'}>
+          <button onClick={onArchive} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title={archived ? 'Восстановить' : 'В архив'}>
             <Icon name={archived ? 'restore' : 'archive'} size={18} />
           </button>
-          <button onClick={onDelete} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Удалить">
+          <button onClick={onDelete} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Удалить">
             <Icon name="trash" size={18} />
           </button>
         </div>
@@ -2887,7 +2887,7 @@ function MealModal({ meal, onSave, onClose }) {
 
         <div>
           <label>КБЖУ на день</label>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <div>
               <input
                 type="number" inputMode="decimal" min="0"
@@ -3109,7 +3109,7 @@ function DietComplianceView({ data, setData }) {
           )}
         </div>
         <button onClick={() => { setPlanForm({ calories: plan.calories||'', protein: plan.protein||'', fat: plan.fat||'', carbs: plan.carbs||'' }); setShowSettings(true); }}
-          className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] transition-all">
+          className="flex items-center gap-2 px-3 py-3 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] transition-all">
           <Icon name="settings" size={15} /> План КБЖУ
         </button>
       </div>
@@ -3140,7 +3140,7 @@ function DietComplianceView({ data, setData }) {
                 </span>
               )}
             </div>
-            <button onClick={() => deleteEntry(manualDateEntry.id)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="trash" size={15} /></button>
+            <button onClick={() => deleteEntry(manualDateEntry.id)} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="trash" size={16} /></button>
           </div>
         ) : (
           <div className="text-sm text-[var(--text-subtle)]">За эту дату ещё нет записи</div>
@@ -3169,7 +3169,7 @@ function DietComplianceView({ data, setData }) {
                 : null;
               return (
               <div key={key}>
-                <label className="block text-[10px] text-[var(--text-subtle)] mb-1">{label} ({unit})</label>
+                <label className="block text-xs text-[var(--text-subtle)] mb-1">{label} ({unit})</label>
                 <input type="number" min="0"
                   value={manualForm[key]}
                   onChange={e => setManualForm(f => ({ ...f, [key]: e.target.value }))}
@@ -3180,7 +3180,7 @@ function DietComplianceView({ data, setData }) {
               );
             })}
           </div>
-          <button onClick={markManual} className="w-full px-4 py-2.5 rounded-xl border border-[var(--border)] text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--text)] transition-all">Отметить</button>
+          <button onClick={markManual} className="w-full px-4 py-3 rounded-xl border border-[var(--border)] text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--text)] transition-all">Отметить</button>
         </div>
       </div>
 
@@ -3236,7 +3236,7 @@ function DietComplianceView({ data, setData }) {
               {editEntry === entry.id ? (
                 <div className="space-y-3">
                   <div>
-                    <label className="block text-[10px] text-[var(--text-subtle)] mb-1">Дата</label>
+                    <label className="block text-xs text-[var(--text-subtle)] mb-1">Дата</label>
                     <input type="date" value={editForm.date || entry.date}
                       onChange={e => setEditForm(f => ({ ...f, date: e.target.value }))}
                       className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:border-[var(--text)]"
@@ -3252,7 +3252,7 @@ function DietComplianceView({ data, setData }) {
                   <div className="grid grid-cols-2 gap-2">
                     {[['calories','Ккал'],['protein','Белки'],['fat','Жиры'],['carbs','Углеводы']].map(([key,label]) => (
                       <div key={key}>
-                        <label className="block text-[10px] text-[var(--text-subtle)] mb-1">{label}</label>
+                        <label className="block text-xs text-[var(--text-subtle)] mb-1">{label}</label>
                         <input type="number" min="0" value={editForm[key] || ''}
                           onChange={e => setEditForm(f => ({ ...f, [key]: e.target.value }))}
                           className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:border-[var(--text)]"
@@ -3279,8 +3279,8 @@ function DietComplianceView({ data, setData }) {
                     </div>
                   </div>
                   <div className="flex gap-1 shrink-0">
-                    <button onClick={() => startEdit(entry)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={15} /></button>
-                    <button onClick={() => deleteEntry(entry.id)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="trash" size={15} /></button>
+                    <button onClick={() => startEdit(entry)} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={16} /></button>
+                    <button onClick={() => deleteEntry(entry.id)} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="trash" size={16} /></button>
                   </div>
                 </div>
               )}
@@ -3371,14 +3371,14 @@ function CookingView({ data, setData }) {
               <div className="flex items-center gap-1 shrink-0">
                 <button
                   onClick={e => { e.stopPropagation(); setEditing(plan); }}
-                  className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
+                  className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
                   title="Редактировать"
                 >
                   <Icon name="edit" size={18} />
                 </button>
                 <button
                   onClick={e => { e.stopPropagation(); remove(plan.id); }}
-                  className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
+                  className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
                   title="Удалить"
                 >
                   <Icon name="trash" size={18} />
@@ -3413,25 +3413,25 @@ function CookingView({ data, setData }) {
                   const cookedPortion = (kf && portionSize) ? Math.round(portionSize / kf) : null;
 
                   return (
-                    <div key={ing.id} className="rounded-xl p-4 border border-[var(--border)] bg-[var(--bg)]" style={cardStyle}>
+                    <div key={ing.id} className="rounded-xl p-3 border border-[var(--border)] bg-[var(--bg)]" style={cardStyle}>
                       <div className="font-medium mb-3">{ing.name}</div>
-                      <div className="grid grid-cols-3 gap-3">
+                      <div className="grid grid-cols-3 gap-2">
                         <div className="text-center">
-                          <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">План сырой</div>
+                          <div className="text-[10px] uppercase tracking-wider text-[var(--text-subtle)] mb-1.5">План</div>
                           {portions && portionSize ? (
                             <div>
-                              <div className="text-xs text-[var(--text-subtle)] mb-1">{portions} × {portionSize} г</div>
-                              <div className="font-display text-xl">{plannedRaw}<span className="text-xs text-[var(--text-subtle)] ml-1">г</span></div>
+                              <div className="text-[10px] text-[var(--text-subtle)] mb-0.5">{portions}×{portionSize}г</div>
+                              <div className="font-display text-lg">{plannedRaw}<span className="text-xs text-[var(--text-subtle)] ml-0.5">г</span></div>
                             </div>
                           ) : (
-                            <div className="font-display text-xl">
+                            <div className="font-display text-lg">
                               {plannedRaw != null ? plannedRaw : '—'}
-                              {plannedRaw != null && <span className="text-xs text-[var(--text-subtle)] ml-1">г</span>}
+                              {plannedRaw != null && <span className="text-xs text-[var(--text-subtle)] ml-0.5">г</span>}
                             </div>
                           )}
                         </div>
                         <div className="text-center">
-                          <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">Факт сырой</div>
+                          <div className="text-[10px] uppercase tracking-wider text-[var(--text-subtle)] mb-1.5">Факт сыр.</div>
                           <input
                             type="number"
                             inputMode="decimal"
@@ -3439,11 +3439,11 @@ function CookingView({ data, setData }) {
                             value={ing.actualRaw ?? ''}
                             onChange={e => updateActual(plan.id, ing.id, 'actualRaw', e.target.value)}
                             placeholder="—"
-                            className="input-display"
+                            className="input-display w-full"
                           />
                         </div>
                         <div className="text-center">
-                          <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">Факт готовый</div>
+                          <div className="text-[10px] uppercase tracking-wider text-[var(--text-subtle)] mb-1.5">Факт гот.</div>
                           <input
                             type="number"
                             inputMode="decimal"
@@ -3451,7 +3451,7 @@ function CookingView({ data, setData }) {
                             value={ing.actualCooked ?? ''}
                             onChange={e => updateActual(plan.id, ing.id, 'actualCooked', e.target.value)}
                             placeholder="—"
-                            className="input-display"
+                            className="input-display w-full"
                           />
                         </div>
                       </div>
@@ -3553,7 +3553,7 @@ function CookingPlanModal({ plan, onSave, onClose }) {
                       <Icon name="x" size={16} />
                     </button>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="grid grid-cols-3 gap-2 items-center">
                     <input
                       type="number"
                       inputMode="decimal"
@@ -3561,9 +3561,8 @@ function CookingPlanModal({ plan, onSave, onClose }) {
                       value={ing.portions}
                       onChange={e => updateIng(ing.id, 'portions', e.target.value)}
                       placeholder="порций"
-                      style={{ width: '80px', textAlign: 'center' }}
+                      className="text-center w-full"
                     />
-                    <span className="text-[var(--text-subtle)] text-sm">×</span>
                     <input
                       type="number"
                       inputMode="decimal"
@@ -3571,11 +3570,11 @@ function CookingPlanModal({ plan, onSave, onClose }) {
                       value={ing.portionSize}
                       onChange={e => updateIng(ing.id, 'portionSize', e.target.value)}
                       placeholder="г/пор"
-                      style={{ width: '80px', textAlign: 'center' }}
+                      className="text-center w-full"
                     />
-                    <span className="text-sm text-[var(--text-subtle)] flex-1">
-                      {total ? <span className="text-[var(--text)] font-medium">= {total} г сырого</span> : '= ? г сырого'}
-                    </span>
+                    <div className="text-sm text-[var(--text-subtle)] text-center">
+                      {total ? <span className="text-[var(--text)] font-medium">{total} г</span> : '—'}
+                    </div>
                   </div>
                 </div>
               );
@@ -3657,14 +3656,14 @@ function ContainersView({ data, setData }) {
           <div className="flex gap-1 shrink-0">
             <button
               onClick={() => setEditing(c)}
-              className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
+              className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
               title="Редактировать"
             >
               <Icon name="edit" size={18} />
             </button>
             <button
               onClick={() => remove(c.id)}
-              className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
+              className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
               title="Удалить"
             >
               <Icon name="trash" size={18} />
@@ -4421,13 +4420,13 @@ function ChoreSettingsRow({ chore, archived, onEdit, onArchive, onDelete }) {
           )}
         </div>
         <div className="flex gap-1 flex-shrink-0">
-          <button onClick={onEdit} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать">
+          <button onClick={onEdit} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать">
             <Icon name="edit" size={18} />
           </button>
-          <button onClick={onArchive} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title={archived ? 'Восстановить' : 'В архив'}>
+          <button onClick={onArchive} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title={archived ? 'Восстановить' : 'В архив'}>
             <Icon name={archived ? 'restore' : 'archive'} size={18} />
           </button>
-          <button onClick={onDelete} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Удалить">
+          <button onClick={onDelete} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Удалить">
             <Icon name="trash" size={18} />
           </button>
         </div>
@@ -10253,13 +10252,13 @@ function Modal({ title, children, onClose }) {
           onClick={e => e.stopPropagation()}
           className="bg-[var(--bg)] w-full max-w-lg rounded-2xl my-auto"
         >
-          <div className="bg-[var(--bg)] px-6 py-5 flex items-center justify-between border-b border-[var(--border)] rounded-t-2xl">
-            <h2 className="font-display text-2xl">{title}</h2>
-            <button onClick={onClose} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+          <div className="bg-[var(--bg)] px-4 py-4 sm:px-6 sm:py-5 flex items-center justify-between border-b border-[var(--border)] rounded-t-2xl">
+            <h2 className="font-display text-xl sm:text-2xl">{title}</h2>
+            <button onClick={onClose} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
               <Icon name="x" size={20} />
             </button>
           </div>
-          <div className="p-6">{children}</div>
+          <div className="p-4 sm:p-6">{children}</div>
         </div>
       </div>
     </div>,
