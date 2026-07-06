@@ -668,7 +668,7 @@ def _tick():
     try:
         reminder = app_data_raw.get("dietReminder") or {}
         diet_log = app_data_raw.get("dietLog", [])
-        if reminder.get("enabled") and reminder.get("time", "") == now_str:
+        if reminder.get("enabled") and str(reminder.get("time", "")).strip() == now_str:
             days = reminder.get("days", [0, 1, 2, 3, 4, 5, 6]) or []
             already = any(e.get("date") == today_iso for e in diet_log)
             if today_js in days and not already:
@@ -688,7 +688,23 @@ def _tick():
     try:
         checklist_reminder = app_data_raw.get("dailyChecklistReminder") or {}
         checklist_fields = app_data_raw.get("dailyChecklistFields") or []
-        if checklist_reminder.get("enabled") and checklist_reminder.get("time", "") == now_str:
+        cfg_time = str(checklist_reminder.get("time", "")).strip()
+
+        # Diagnostic: log a near-miss (configured time within ±2 min of now
+        # but not an exact string match) so time-format bugs are visible in
+        # the server logs instead of silently never firing.
+        def _to_mins(hhmm):
+            try:
+                h, m = hhmm.split(":")
+                return int(h) * 60 + int(m)
+            except Exception:
+                return None
+        if checklist_reminder.get("enabled") and cfg_time and cfg_time != now_str:
+            cfg_mins, now_mins = _to_mins(cfg_time), _to_mins(now_str)
+            if cfg_mins is not None and now_mins is not None and abs(cfg_mins - now_mins) <= 2:
+                print(f"[{now_str} MSK] checklist reminder near-miss: configured time '{cfg_time}' != now '{now_str}'")
+
+        if checklist_reminder.get("enabled") and cfg_time == now_str:
             days = checklist_reminder.get("days", [0, 1, 2, 3, 4, 5, 6]) or []
             if today_js not in days:
                 print(f"[{now_str} MSK] checklist reminder: today ({today_js}) not in days {days}")
