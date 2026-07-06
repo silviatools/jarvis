@@ -230,6 +230,134 @@ def handle_diet_callback(token: str, cq: dict):
     print(f"  diet callback: {date_iso} → {level}")
 
 
+# ── daily checklist ────────────────────────────────────────────────────────────
+
+def load_app_data() -> dict:
+    if APP_DATA_FILE.exists():
+        try:
+            return json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def save_app_data(app: dict):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    APP_DATA_FILE.write_text(json.dumps(app, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def get_checklist_entry(app: dict, date_iso: str) -> dict | None:
+    for e in app.get("dailyChecklistLog", []):
+        if e.get("date") == date_iso:
+            return e
+    return None
+
+
+def save_checklist_answer(date_iso: str, field_idx: int, opt_idx: int) -> tuple[str, str] | None:
+    """Save one checklist answer. Returns (field_label, option_text) or None."""
+    import uuid as _uuid
+    app = load_app_data()
+    fields = app.get("dailyChecklistFields") or []
+    if field_idx < 0 or field_idx >= len(fields):
+        return None
+    field = fields[field_idx]
+    options = field.get("options") or []
+    if opt_idx < 0 or opt_idx >= len(options):
+        return None
+    option_text = options[opt_idx]
+    field_id = field.get("id", str(field_idx))
+    entry = get_checklist_entry(app, date_iso)
+    if entry:
+        answers = {**(entry.get("answers") or {}), field_id: option_text}
+        entry = {**entry, "answers": answers}
+        log = [e for e in app.get("dailyChecklistLog", []) if e.get("date") != date_iso]
+    else:
+        entry = {"id": str(_uuid.uuid4()), "date": date_iso, "answers": {field_id: option_text}}
+        log = list(app.get("dailyChecklistLog", []))
+    log.append(entry)
+    log.sort(key=lambda e: e.get("date", ""), reverse=True)
+    app["dailyChecklistLog"] = log
+    save_app_data(app)
+    return field.get("label", ""), option_text
+
+
+def next_unanswered_field_idx(app: dict, date_iso: str) -> int | None:
+    fields = app.get("dailyChecklistFields") or []
+    entry = get_checklist_entry(app, date_iso)
+    answered = set((entry or {}).get("answers", {}).keys())
+    for i, f in enumerate(fields):
+        if f.get("id") not in answered:
+            return i
+    return None
+
+
+def checklist_keyboard(date_iso: str, field_idx: int, field: dict) -> dict:
+    row = []
+    for oi, opt in enumerate(field.get("options") or []):
+        row.append({"text": opt, "callback_data": f"chk:{date_iso}:{field_idx}:{oi}"})
+    return {"inline_keyboard": [row]}
+
+
+def send_checklist_question(token: str, chat_id: int, date_iso: str, field_idx: int | None = None):
+    app = load_app_data()
+    fields = app.get("dailyChecklistFields") or []
+    if not fields:
+        return
+    if field_idx is None:
+        field_idx = next_unanswered_field_idx(app, date_iso)
+    if field_idx is None:
+        return
+    field = fields[field_idx]
+    kb = checklist_keyboard(date_iso, field_idx, field)
+    tg_post(token, "sendMessage", {
+        "chat_id": chat_id,
+        "text": f"📋 <b>{field.get('label', 'Чек-лист')}</b>\n📅 {human_date(date_iso)}",
+        "parse_mode": "HTML",
+        "reply_markup": kb,
+    })
+
+
+def handle_checklist_callback(token: str, cq: dict):
+    cq_id = cq.get("id")
+    data_str = cq.get("data", "") or ""
+    if not data_str.startswith("chk:"):
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+        return
+    parts = data_str.split(":")
+    if len(parts) < 4:
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+        return
+    date_iso = parts[1]
+    try:
+        field_idx = int(parts[2])
+        opt_idx = int(parts[3])
+    except ValueError:
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+        return
+    result = save_checklist_answer(date_iso, field_idx, opt_idx)
+    if not result:
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+        return
+    field_label, option_text = result
+    tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": f"✅ {field_label}: {option_text}"})
+    msg = cq.get("message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    mid = msg.get("message_id")
+    if chat_id and mid:
+        tg_post(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": mid,
+            "text": f"📋 <b>{field_label}</b>\n📅 {human_date(date_iso)}\n\n✅ <b>{option_text}</b>",
+            "parse_mode": "HTML",
+        })
+    print(f"  checklist callback: {date_iso} → {field_label}: {option_text}")
+    app = load_app_data()
+    next_idx = next_unanswered_field_idx(app, date_iso)
+    if next_idx is not None and chat_id:
+        send_checklist_question(token, chat_id, date_iso, next_idx)
+    elif chat_id:
+        send_message(token, chat_id, f"✅ <b>Чек-лист за {human_date(date_iso)} заполнен!</b>")
+
+
 # ── update-poller loop ───────────────────────────────────────────────────────
 # Long-polls Telegram continuously so inline-button presses (diet answers) and new
 # subscribers are handled within ~1s, independent of the minute-aligned notifier.
@@ -260,10 +388,16 @@ def updates_loop():
             changed = True
             cq = upd.get("callback_query")
             if cq:
+                data_str = cq.get("data", "") or ""
                 try:
-                    handle_diet_callback(token, cq)
+                    if data_str.startswith("diet:"):
+                        handle_diet_callback(token, cq)
+                    elif data_str.startswith("chk:"):
+                        handle_checklist_callback(token, cq)
+                    else:
+                        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq.get("id")})
                 except Exception as e:
-                    print(f"  diet callback error: {e}")
+                    print(f"  callback error: {e}")
                 continue
             msg = upd.get("message") or upd.get("channel_post")
             if not msg:
@@ -443,6 +577,26 @@ def _tick():
                     "parse_mode": "HTML",
                     "reply_markup": kb,
                 })
+
+    # Daily checklist reminder
+    checklist_reminder = {}
+    checklist_fields = []
+    if APP_DATA_FILE.exists():
+        try:
+            app_data_raw = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
+            checklist_reminder = app_data_raw.get("dailyChecklistReminder") or {}
+            checklist_fields = app_data_raw.get("dailyChecklistFields") or []
+        except Exception:
+            pass
+    if checklist_reminder.get("enabled") and checklist_reminder.get("time", "") == now_str:
+        today_js = today_msk().isoweekday() % 7
+        days = checklist_reminder.get("days", [0, 1, 2, 3, 4, 5, 6])
+        if today_js in days and checklist_fields:
+            app = load_app_data()
+            if next_unanswered_field_idx(app, today_iso) is not None:
+                print(f"[{now_str} MSK] → checklist ask ({len(subs['chat_ids'])} subscriber(s))")
+                for cid in subs["chat_ids"]:
+                    send_checklist_question(token, cid, today_iso)
 
 
 # ── HTTP handler ───────────────────────────────────────────────────────────

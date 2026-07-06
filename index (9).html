@@ -244,6 +244,9 @@ const DEFAULT_DATA = () => ({
   bodyModes: [],
   activeBodyModeId: null,
   dietReminder: { enabled: false, time: '20:00', days: [0, 1, 2, 3, 4, 5, 6] },
+  dailyChecklistFields: [],
+  dailyChecklistReminder: { enabled: false, time: '21:00', days: [0, 1, 2, 3, 4, 5, 6] },
+  dailyChecklistLog: [],
   settings: { ...DEFAULT_SETTINGS },
 });
 
@@ -2345,10 +2348,19 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
         >
           Ассистент
         </button>
+        <button
+          onClick={() => setSettingsTab('checklist')}
+          className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+            settingsTab === 'checklist' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+          }`}
+        >
+          Чек-лист
+        </button>
       </div>
 
       {settingsTab === 'general' && <GeneralSettings data={data} setData={setData} />}
       {settingsTab === 'voice' && <VoiceAssistantSettings data={data} setData={setData} />}
+      {settingsTab === 'checklist' && <DailyChecklistSettings data={data} setData={setData} />}
     </div>
   );
 }
@@ -2597,6 +2609,326 @@ function VoiceAssistantSettings({ data, setData }) {
           Примеры: «Добавь задачу пылесосить раз в неделю», «Добавь зарядку каждое утро кроме воскресенья»
         </p>
       </div>
+    </div>
+  );
+}
+
+// ============== DAILY CHECKLIST ==============
+
+const CHECKLIST_OPTION_COLORS = ['#22c55e', '#ef4444', '#f59e0b', '#3b82f6', '#8b5cf6', '#ec4899'];
+
+function DailyChecklistSettings({ data, setData }) {
+  const fields = data.dailyChecklistFields || [];
+  const setFields = (f) => setData(d => ({ ...d, dailyChecklistFields: f }));
+
+  const reminder = data.dailyChecklistReminder || { enabled: false, time: '21:00', days: [0, 1, 2, 3, 4, 5, 6] };
+  const setReminder = (patch) => setData(d => ({
+    ...d,
+    dailyChecklistReminder: { ...(d.dailyChecklistReminder || { enabled: false, time: '21:00', days: [0, 1, 2, 3, 4, 5, 6] }), ...patch },
+  }));
+  const toggleDay = (dayId) => {
+    const cur = reminder.days || [];
+    setReminder({ days: cur.includes(dayId) ? cur.filter(x => x !== dayId) : [...cur, dayId].sort() });
+  };
+  const hasToken = !!(data.settings && data.settings.telegramToken);
+
+  const [newLabel, setNewLabel] = useState('');
+  const [newOptions, setNewOptions] = useState('Да, Нет');
+  const [editingId, setEditingId] = useState(null);
+  const [editLabel, setEditLabel] = useState('');
+  const [editOptions, setEditOptions] = useState('');
+
+  const parseOptions = (str) => str.split(/[,;]/).map(s => s.trim()).filter(Boolean);
+
+  const addField = () => {
+    const label = newLabel.trim();
+    const options = parseOptions(newOptions);
+    if (!label || options.length === 0) return;
+    setFields([...fields, { id: crypto.randomUUID(), label, options }]);
+    setNewLabel('');
+    setNewOptions('Да, Нет');
+  };
+
+  const startEdit = (f) => {
+    setEditingId(f.id);
+    setEditLabel(f.label);
+    setEditOptions(f.options.join(', '));
+  };
+
+  const saveEdit = () => {
+    const label = editLabel.trim();
+    const options = parseOptions(editOptions);
+    if (!label || options.length === 0) return;
+    setFields(fields.map(f => f.id === editingId ? { ...f, label, options } : f));
+    setEditingId(null);
+  };
+
+  const removeField = (id) => {
+    if (!confirm('Удалить поле?')) return;
+    setFields(fields.filter(f => f.id !== id));
+    setData(d => ({
+      ...d,
+      dailyChecklistLog: (d.dailyChecklistLog || []).map(e => {
+        const answers = { ...(e.answers || {}) };
+        delete answers[id];
+        return { ...e, answers };
+      }),
+    }));
+  };
+
+  const moveField = (idx, dir) => {
+    const arr = [...fields];
+    const to = idx + dir;
+    if (to < 0 || to >= arr.length) return;
+    [arr[idx], arr[to]] = [arr[to], arr[idx]];
+    setFields(arr);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <h3 className="font-display text-lg mb-1">Ежедневный чек-лист</h3>
+        <p className="text-sm text-[var(--text-muted)] mb-4">
+          Добавьте пункты, которые хотите отмечать каждый день, и варианты ответа для каждого.
+        </p>
+
+        {fields.length > 0 && (
+          <div className="space-y-3 mb-4">
+            {fields.map((f, i) => (
+              <div key={f.id} className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-4">
+                {editingId === f.id ? (
+                  <div className="space-y-3">
+                    <input value={editLabel} onChange={e => setEditLabel(e.target.value)} placeholder="Название" className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+                    <input value={editOptions} onChange={e => setEditOptions(e.target.value)} placeholder="Варианты через запятую" className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+                    <div className="flex gap-2">
+                      <button onClick={saveEdit} className="btn-primary text-sm flex-1">Сохранить</button>
+                      <button onClick={() => setEditingId(null)} className="btn-secondary text-sm flex-1">Отмена</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-sm">{f.label}</div>
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {f.options.map((opt, oi) => (
+                          <span key={oi} className="text-xs px-2 py-1 rounded-lg border border-[var(--border)] text-[var(--text-muted)]">{opt}</span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex gap-1 shrink-0">
+                      <button onClick={() => moveField(i, -1)} disabled={i === 0} className="p-1 text-[var(--text-subtle)] disabled:opacity-25">↑</button>
+                      <button onClick={() => moveField(i, 1)} disabled={i === fields.length - 1} className="p-1 text-[var(--text-subtle)] disabled:opacity-25">↓</button>
+                      <button onClick={() => startEdit(f)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={14} /></button>
+                      <button onClick={() => removeField(f.id)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="border border-dashed border-[var(--border)] rounded-xl p-4 space-y-3">
+          <div className="text-xs uppercase tracking-wide text-[var(--text-subtle)] font-medium">Новый пункт</div>
+          <input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Например, Вакуум" className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+          <input value={newOptions} onChange={e => setNewOptions(e.target.value)} placeholder="Варианты: Да, Нет, Пропустил" className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+          <button onClick={addField} disabled={!newLabel.trim()} className="btn-primary text-sm flex items-center gap-2 disabled:opacity-40">
+            <Icon name="plus" size={14} /> Добавить
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="font-display text-lg">Напоминание в Telegram</h3>
+          <Toggle checked={reminder.enabled} onChange={v => setReminder({ enabled: v })} />
+        </div>
+        <p className="text-sm text-[var(--text-muted)] mb-4">
+          Бот пришлёт чек-лист и запишет ответы прямо из Telegram.
+        </p>
+        {reminder.enabled && (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Время</label>
+              <input type="time" value={reminder.time || '21:00'} onChange={e => setReminder({ time: e.target.value })}
+                className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+            </div>
+            <div>
+              <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Дни недели</label>
+              <div className="flex flex-wrap gap-1.5">
+                {WEEKDAYS.map(w => {
+                  const on = (reminder.days || []).includes(w.id);
+                  return (
+                    <button key={w.id} onClick={() => toggleDay(w.id)}
+                      className={`w-10 h-10 rounded-xl text-sm font-medium transition-all ${on ? 'bg-[var(--text)] text-white' : 'bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
+                      {w.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            {fields.length === 0 && (
+              <div className="text-xs text-amber-600 bg-amber-500/10 border border-amber-500/20 rounded-xl px-3 py-2">
+                Добавьте хотя бы один пункт чек-листа.
+              </div>
+            )}
+            {!hasToken && (
+              <div className="text-xs text-amber-600 bg-amber-500/10 border border-amber-500/20 rounded-xl px-3 py-2">
+                Укажите токен Telegram-бота в Настройках → Общее.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <DailyChecklistStats data={data} setData={setData} />
+    </div>
+  );
+}
+
+function DailyChecklistStats({ data, setData }) {
+  const today = new Date().toISOString().split('T')[0];
+  const fields = data.dailyChecklistFields || [];
+  const log = [...(data.dailyChecklistLog || [])].sort((a, b) => b.date.localeCompare(a.date));
+  const [selDate, setSelDate] = useState(today);
+
+  const setAnswer = (fieldId, option) => {
+    setData(d => {
+      const list = d.dailyChecklistLog || [];
+      const existing = list.find(e => e.date === selDate);
+      const answers = { ...(existing?.answers || {}), [fieldId]: option };
+      const entry = { id: existing?.id || crypto.randomUUID(), date: selDate, answers };
+      return { ...d, dailyChecklistLog: [...list.filter(e => e.date !== selDate), entry].sort((a, b) => b.date.localeCompare(a.date)) };
+    });
+  };
+
+  const deleteDay = (date) => {
+    if (!confirm('Удалить запись за этот день?')) return;
+    setData(d => ({ ...d, dailyChecklistLog: (d.dailyChecklistLog || []).filter(e => e.date !== date) }));
+  };
+
+  const formatDate = (dateStr) => {
+    const d = new Date(dateStr + 'T00:00:00');
+    return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]} (${DOW_SHORT[d.getDay()]})`;
+  };
+
+  const STATS_DAYS = 30;
+  const statsFrom = new Date();
+  statsFrom.setDate(statsFrom.getDate() - STATS_DAYS + 1);
+  const statsFromIso = statsFrom.toISOString().split('T')[0];
+  const recentLog = log.filter(e => e.date >= statsFromIso);
+
+  const selEntry = log.find(e => e.date === selDate);
+
+  if (fields.length === 0) {
+    return (
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <h3 className="font-display text-lg mb-2">Статистика</h3>
+        <p className="text-sm text-[var(--text-muted)]">Добавьте пункты чек-листа, чтобы видеть статистику.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <h3 className="font-display text-lg">Отметить за день</h3>
+        <div>
+          <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Дата</label>
+          <input type="date" value={selDate} max={today} onChange={e => setSelDate(e.target.value)}
+            className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+        </div>
+        {fields.map(f => (
+          <div key={f.id}>
+            <div className="text-xs text-[var(--text-muted)] font-medium mb-2">{f.label}</div>
+            <div className="flex flex-wrap gap-1.5">
+              {f.options.map((opt, oi) => {
+                const active = selEntry?.answers?.[f.id] === opt;
+                const color = CHECKLIST_OPTION_COLORS[oi % CHECKLIST_OPTION_COLORS.length];
+                return (
+                  <button key={opt} onClick={() => setAnswer(f.id, opt)}
+                    className="px-3 py-2 rounded-xl border text-sm font-medium transition-all"
+                    style={active ? { background: color, borderColor: color, color: '#fff' } : { borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
+                    {opt}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <h3 className="font-display text-lg mb-4">Статистика за {STATS_DAYS} дней</h3>
+        {recentLog.length === 0 ? (
+          <p className="text-sm text-[var(--text-muted)]">Пока нет данных.</p>
+        ) : (
+          <div className="space-y-5">
+            {fields.map(f => {
+              const answered = recentLog.filter(e => e.answers?.[f.id]);
+              const total = answered.length;
+              if (total === 0) return (
+                <div key={f.id}>
+                  <div className="text-sm font-medium mb-1">{f.label}</div>
+                  <div className="text-xs text-[var(--text-subtle)]">Нет отметок</div>
+                </div>
+              );
+              const counts = {};
+              f.options.forEach(o => { counts[o] = 0; });
+              answered.forEach(e => {
+                const v = e.answers[f.id];
+                if (v in counts) counts[v]++;
+                else counts[v] = (counts[v] || 0) + 1;
+              });
+              return (
+                <div key={f.id}>
+                  <div className="text-sm font-medium mb-2">{f.label}</div>
+                  <div className="space-y-2">
+                    {Object.entries(counts).filter(([, c]) => c > 0).map(([opt, count], oi) => {
+                      const pct = Math.round((count / total) * 100);
+                      const color = CHECKLIST_OPTION_COLORS[oi % CHECKLIST_OPTION_COLORS.length];
+                      return (
+                        <div key={opt}>
+                          <div className="flex justify-between text-xs text-[var(--text-muted)] mb-1">
+                            <span>{opt}</span>
+                            <span>{pct}% ({count})</span>
+                          </div>
+                          <div className="h-2 bg-[var(--bg)] rounded-full overflow-hidden">
+                            <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: color }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {log.length > 0 && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <h3 className="font-display text-lg mb-3">История</h3>
+          <div className="space-y-2">
+            {log.slice(0, 30).map(e => (
+              <div key={e.id} className="flex items-start justify-between gap-3 bg-[var(--bg)] rounded-xl px-3 py-2.5 text-sm">
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium">{formatDate(e.date)}</div>
+                  <div className="text-xs text-[var(--text-muted)] mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                    {fields.map(f => e.answers?.[f.id] ? (
+                      <span key={f.id}>{f.label}: {e.answers[f.id]}</span>
+                    ) : null)}
+                  </div>
+                </div>
+                <button onClick={() => deleteDay(e.date)} className="p-1 text-red-400 hover:text-red-600 shrink-0">
+                  <Icon name="trash" size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
