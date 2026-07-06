@@ -5956,13 +5956,15 @@ function BodyView({ data, setData }) {
         )}
       </div>
 
-      <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6 gap-0 overflow-x-auto">
-        {tabs.map(t => (
-          <button key={t.id} onClick={() => setBodyTab(t.id)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex items-center justify-center ${bodyTab===t.id?'bg-[var(--text)] text-white':'text-[var(--text-muted)]'}`}>
-            {t.icon ? <Icon name={t.icon} size={16} /> : t.label}
-          </button>
-        ))}
+      <div className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-6">
+        <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 gap-0">
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => setBodyTab(t.id)}
+              className={`px-3 sm:px-4 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 flex items-center justify-center ${bodyTab===t.id?'bg-[var(--text)] text-white':'text-[var(--text-muted)]'}`}>
+              {t.icon ? <Icon name={t.icon} size={16} /> : t.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {bodyTab === 'history'  && <BodyHistory entries={entries} fields={fields} categories={categories} onEdit={setEditEntry} onDelete={deleteEntry} />}
