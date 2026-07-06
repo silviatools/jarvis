@@ -257,8 +257,27 @@ def _is_id_array(a) -> bool:
     return isinstance(a, list) and len(a) > 0 and all(isinstance(e, dict) and "id" in e for e in a)
 
 
-def merge_app_data(local: dict, server: dict, prefer_local: bool = False) -> dict:
-    """Merge two app-data dicts. prefer_local=True → local wins on conflicts (client push)."""
+def _prefer_local_for_key(key: str, mode: str) -> bool:
+    if mode == "push":
+        return True
+    return key not in DATE_LOG_KEYS
+
+
+def _merge_id_arrays(local_arr, server_arr, prefer_local: bool) -> list:
+    by_id: dict = {}
+    first = server_arr if prefer_local else local_arr
+    second = local_arr if prefer_local else server_arr
+    for e in (first if isinstance(first, list) else []):
+        if isinstance(e, dict) and e.get("id") is not None:
+            by_id[e["id"]] = e
+    for e in (second if isinstance(second, list) else []):
+        if isinstance(e, dict) and e.get("id") is not None:
+            by_id[e["id"]] = e
+    return list(by_id.values())
+
+
+def merge_app_data(local: dict, server: dict, mode: str = "pull") -> dict:
+    """Merge app-data dicts. mode='push' → incoming (local) wins; mode='pull' → local wins except bot logs."""
     if not server:
         return local or {}
     if not local:
@@ -272,48 +291,41 @@ def merge_app_data(local: dict, server: dict, prefer_local: bool = False) -> dic
             merged[key] = l
         elif l is None:
             merged[key] = s
-        elif key in DATE_LOG_KEYS and (isinstance(l, list) or isinstance(s, list)):
-            by_date: dict[str, dict] = {}
-            first = l if not prefer_local else s
-            second = s if not prefer_local else l
-            for e in (first if isinstance(first, list) else []):
-                if isinstance(e, dict) and e.get("date"):
-                    by_date[e["date"]] = {**e, "answers": {**(e.get("answers") or {})}}
-            for e in (second if isinstance(second, list) else []):
-                if not isinstance(e, dict) or not e.get("date"):
-                    continue
-                prev = by_date.get(e["date"])
-                if not prev:
-                    by_date[e["date"]] = {**e, "answers": {**(e.get("answers") or {})}}
-                else:
-                    if prefer_local:
-                        by_date[e["date"]] = {
-                            **prev, **e,
-                            "answers": {**(prev.get("answers") or {}), **(e.get("answers") or {})},
-                            "id": e.get("id") or prev.get("id"),
-                        }
-                    else:
-                        by_date[e["date"]] = {
-                            **e, **prev,
-                            "answers": {**(e.get("answers") or {}), **(prev.get("answers") or {})},
-                            "id": prev.get("id") or e.get("id"),
-                        }
-            merged[key] = sorted(by_date.values(), key=lambda e: e.get("date", ""), reverse=True)
-        elif _is_id_array(l) or _is_id_array(s):
-            by_id: dict = {}
-            first = l if not prefer_local else s
-            second = s if not prefer_local else l
-            for e in (first if isinstance(first, list) else []):
-                if isinstance(e, dict) and e.get("id") is not None:
-                    by_id[e["id"]] = e
-            for e in (second if isinstance(second, list) else []):
-                if isinstance(e, dict) and e.get("id") is not None:
-                    by_id[e["id"]] = e
-            merged[key] = list(by_id.values())
-        elif _is_plain_object(l) and _is_plain_object(s):
-            merged[key] = {**s, **l} if prefer_local else {**l, **s}
         else:
-            merged[key] = l if prefer_local else s
+            prefer_local = _prefer_local_for_key(key, mode)
+            if key in DATE_LOG_KEYS and (isinstance(l, list) or isinstance(s, list)):
+                by_date: dict[str, dict] = {}
+                first = l if not prefer_local else s
+                second = s if not prefer_local else l
+                for e in (first if isinstance(first, list) else []):
+                    if isinstance(e, dict) and e.get("date"):
+                        by_date[e["date"]] = {**e, "answers": {**(e.get("answers") or {})}}
+                for e in (second if isinstance(second, list) else []):
+                    if not isinstance(e, dict) or not e.get("date"):
+                        continue
+                    prev = by_date.get(e["date"])
+                    if not prev:
+                        by_date[e["date"]] = {**e, "answers": {**(e.get("answers") or {})}}
+                    else:
+                        if prefer_local:
+                            by_date[e["date"]] = {
+                                **prev, **e,
+                                "answers": {**(prev.get("answers") or {}), **(e.get("answers") or {})},
+                                "id": e.get("id") or prev.get("id"),
+                            }
+                        else:
+                            by_date[e["date"]] = {
+                                **e, **prev,
+                                "answers": {**(e.get("answers") or {}), **(prev.get("answers") or {})},
+                                "id": prev.get("id") or e.get("id"),
+                            }
+                merged[key] = sorted(by_date.values(), key=lambda e: e.get("date", ""), reverse=True)
+            elif isinstance(l, list) or isinstance(s, list):
+                merged[key] = _merge_id_arrays(l, s, prefer_local)
+            elif _is_plain_object(l) and _is_plain_object(s):
+                merged[key] = {**s, **l} if prefer_local else {**l, **s}
+            else:
+                merged[key] = l if prefer_local else s
     return merged
 
 
@@ -876,7 +888,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             try:
                 incoming = json.loads(body)
                 existing = load_app_data() if APP_DATA_FILE.exists() else {}
-                merged = merge_app_data(existing, incoming, prefer_local=True)
+                merged = merge_app_data(existing, incoming, mode="push")
                 save_app_data(merged)
                 self._json(200, {"ok": True})
             except Exception as e:

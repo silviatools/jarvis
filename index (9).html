@@ -266,14 +266,22 @@ const loadData = () => {
   }
 };
 
-// Generic, whitelist-free merge of server data with local data so NO entered
-// data is ever lost — even for fields added later. Rules:
-//  • arrays of {id} objects → union by id (server wins on conflicts, local-only kept)
-//  • plain object maps       → union of keys (server wins on conflicts, local-only kept)
-//  • everything else         → server value if present, otherwise local value
+//  • dietLog / dailyChecklistLog on pull → server wins (Telegram bot)
+//  • everything else on pull → local wins (user edits, bodyModes, reminders…)
+//  • on push → local wins, bot date-logs merged in
 const isPlainObject = (v) => v && typeof v === 'object' && !Array.isArray(v);
-const isIdArray = (a) => Array.isArray(a) && a.length > 0 && a.every(e => e && typeof e === 'object' && 'id' in e);
 const DATE_LOG_KEYS = new Set(['dietLog', 'dailyChecklistLog']);
+
+const preferLocalForKey = (key, mode) => mode === 'push' || !DATE_LOG_KEYS.has(key);
+
+const mergeIdArrays = (localArr, serverArr, preferLocal) => {
+  const byId = new Map();
+  const first = preferLocal ? serverArr : localArr;
+  const second = preferLocal ? localArr : serverArr;
+  (Array.isArray(first) ? first : []).forEach(e => { if (e?.id != null) byId.set(e.id, e); });
+  (Array.isArray(second) ? second : []).forEach(e => { if (e?.id != null) byId.set(e.id, e); });
+  return [...byId.values()];
+};
 
 const mergeDateLogEntries = (localArr, serverArr, preferLocal) => {
   const byDate = new Map();
@@ -304,7 +312,7 @@ const mergeDateLogEntries = (localArr, serverArr, preferLocal) => {
   return [...byDate.values()].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 };
 
-const mergeAppData = (local, server, preferLocal = false) => {
+const mergeAppData = (local, server, mode = 'pull') => {
   const merged = { ...local, ...server };
   const keys = new Set([...Object.keys(local || {}), ...Object.keys(server || {})]);
   for (const key of keys) {
@@ -312,15 +320,11 @@ const mergeAppData = (local, server, preferLocal = false) => {
     const s = server ? server[key] : undefined;
     if (s === undefined) { merged[key] = l; continue; }
     if (l === undefined) { merged[key] = s; continue; }
+    const preferLocal = preferLocalForKey(key, mode);
     if (DATE_LOG_KEYS.has(key) && (Array.isArray(l) || Array.isArray(s))) {
       merged[key] = mergeDateLogEntries(l, s, preferLocal);
-    } else if (isIdArray(l) || isIdArray(s)) {
-      const byId = new Map();
-      const first = preferLocal ? s : l;
-      const second = preferLocal ? l : s;
-      (Array.isArray(first) ? first : []).forEach(e => { if (e && e.id != null) byId.set(e.id, e); });
-      (Array.isArray(second) ? second : []).forEach(e => { if (e && e.id != null) byId.set(e.id, e); });
-      merged[key] = [...byId.values()];
+    } else if (Array.isArray(l) || Array.isArray(s)) {
+      merged[key] = mergeIdArrays(l, s, preferLocal);
     } else if (isPlainObject(l) && isPlainObject(s)) {
       merged[key] = preferLocal ? { ...s, ...l } : { ...l, ...s };
     } else {
@@ -358,7 +362,7 @@ const pushServerData = (() => {
       if (!local) return;
       try {
         const serverData = await fetchServerData();
-        const toPush = serverData ? mergeAppData(local, serverData, true) : local;
+        const toPush = serverData ? mergeAppData(local, serverData, 'push') : local;
         await fetch('/api/data', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -674,7 +678,7 @@ function App() {
     const syncFromServer = () => {
       if (!serverLoaded.current) return;
       fetchServerData().then(serverData => {
-        if (serverData) setData(prev => { const m = mergeAppData(prev, serverData, false); saveData(m); return m; });
+        if (serverData) setData(prev => { const m = mergeAppData(prev, serverData, 'pull'); saveData(m); return m; });
       });
     };
     const onVisible = () => {
