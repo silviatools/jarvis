@@ -123,6 +123,33 @@ def save_subscribers(subs: dict):
         json.dump(subs, f, ensure_ascii=False, indent=2)
 
 
+def subscriber_name(subs: dict, chat_id) -> str:
+    profile = (subs.get("profiles") or {}).get(str(chat_id)) or {}
+    name = " ".join(x for x in (profile.get("firstName"), profile.get("lastName")) if x).strip()
+    if name:
+        return name
+    if profile.get("username"):
+        return f"@{profile['username']}"
+    return ""
+
+
+# Which Telegram section each background reminder belongs to. Keep the ids in
+# sync with NOTIFICATION_CATEGORIES in index (9).html — a subscriber with no
+# entry in data.settings.notifyRouting receives every category (default-on,
+# so nobody currently relying on notifications silently loses them).
+NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist"}
+
+
+def recipients_for(app_data: dict, subs: dict, category: str) -> list:
+    routing = (app_data.get("settings") or {}).get("notifyRouting") or {}
+    result = []
+    for cid in subs.get("chat_ids", []):
+        allowed = routing.get(str(cid))
+        if allowed is None or category in allowed:
+            result.append(cid)
+    return result
+
+
 def freq_days(chore: dict) -> int:
     if chore.get("frequency") == "custom":
         return max(1, int(chore.get("customDays") or 7))
@@ -576,6 +603,13 @@ def updates_loop():
             if not msg:
                 continue
             cid = msg["chat"]["id"]
+            from_user = msg.get("from") or {}
+            profiles = subs.setdefault("profiles", {})
+            profiles[str(cid)] = {
+                "firstName": from_user.get("first_name", ""),
+                "lastName": from_user.get("last_name", ""),
+                "username": from_user.get("username", ""),
+            }
             if cid not in subs["chat_ids"]:
                 subs["chat_ids"].append(cid)
                 print(f"  New subscriber: {cid}")
@@ -636,8 +670,9 @@ def _tick():
             if not is_due_today(chore):
                 continue
             text = f"🏠 <b>По дому — напоминание</b>\n\n{chore.get('name', 'Дело')}"
-            print(f"[{now_str} MSK] → {chore['name']} ({len(subs['chat_ids'])} subscriber(s))")
-            for cid in subs["chat_ids"]:
+            recipients = recipients_for(app_data_raw, subs, "chores")
+            print(f"[{now_str} MSK] → {chore['name']} ({len(recipients)} subscriber(s))")
+            for cid in recipients:
                 send_message(token, cid, text)
     except Exception as e:
         print(f"[{now_str} MSK] chores reminder error: {e}")
@@ -653,8 +688,9 @@ def _tick():
             if today_js not in (task.get("days") or []):
                 continue
             text = f"💼 <b>Босс — напоминание</b>\n\n{task.get('name', 'Задача')}"
-            print(f"[{now_str} MSK] → boss: {task['name']} ({len(subs['chat_ids'])} subscriber(s))")
-            for cid in subs["chat_ids"]:
+            recipients = recipients_for(app_data_raw, subs, "boss")
+            print(f"[{now_str} MSK] → boss: {task['name']} ({len(recipients)} subscriber(s))")
+            for cid in recipients:
                 send_message(token, cid, text)
     except Exception as e:
         print(f"[{now_str} MSK] boss tasks reminder error: {e}")
@@ -697,8 +733,9 @@ def _tick():
                         else:
                             when = f"через {days_before} дней"
                         text = f"{emoji} <b>Праздник — напоминание</b>\n\n{holiday.get('name', 'Событие')}\n<i>{when}</i>"
-                        print(f"[{now_str} MSK] → holiday: {holiday['name']} in {days_before}d ({len(subs['chat_ids'])} subscriber(s))")
-                        for cid in subs["chat_ids"]:
+                        recipients = recipients_for(app_data_raw, subs, "holidays")
+                        print(f"[{now_str} MSK] → holiday: {holiday['name']} in {days_before}d ({len(recipients)} subscriber(s))")
+                        for cid in recipients:
                             send_message(token, cid, text)
                     except (ValueError, OverflowError):
                         pass
@@ -721,8 +758,9 @@ def _tick():
             text = f"💰 <b>Долг — напоминание</b>\n\n{debtor} должен вернуть {amount} ₽"
             if comment:
                 text += f"\n<i>{comment}</i>"
-            print(f"[{now_str} MSK] → debt: {debtor} {amount} ({len(subs['chat_ids'])} subscriber(s))")
-            for cid in subs["chat_ids"]:
+            recipients = recipients_for(app_data_raw, subs, "debts")
+            print(f"[{now_str} MSK] → debt: {debtor} {amount} ({len(recipients)} subscriber(s))")
+            for cid in recipients:
                 send_message(token, cid, text)
     except Exception as e:
         print(f"[{now_str} MSK] debts reminder error: {e}")
@@ -736,8 +774,9 @@ def _tick():
             already = any(e.get("date") == today_iso for e in diet_log)
             if today_js in days and not already:
                 kb = diet_keyboard(today_iso)
-                print(f"[{now_str} MSK] → diet ask ({len(subs['chat_ids'])} subscriber(s))")
-                for cid in subs["chat_ids"]:
+                recipients = recipients_for(app_data_raw, subs, "diet")
+                print(f"[{now_str} MSK] → diet ask ({len(recipients)} subscriber(s))")
+                for cid in recipients:
                     tg_post(token, "sendMessage", {
                         "chat_id": cid,
                         "text": f"🍽 <b>Как ты кушал сегодня?</b>\n📅 {human_date(today_iso)}",
@@ -769,19 +808,20 @@ def _tick():
 
         if checklist_reminder.get("enabled") and cfg_time == now_str:
             days = checklist_reminder.get("days", [0, 1, 2, 3, 4, 5, 6]) or []
+            recipients = recipients_for(app_data_raw, subs, "checklist")
             if today_js not in days:
                 print(f"[{now_str} MSK] checklist reminder: today ({today_js}) not in days {days}")
             elif not checklist_fields:
                 print(f"[{now_str} MSK] checklist reminder: no dailyChecklistFields configured")
-            elif not subs["chat_ids"]:
-                print(f"[{now_str} MSK] checklist reminder: no subscribers")
+            elif not recipients:
+                print(f"[{now_str} MSK] checklist reminder: no subscribers routed to checklist")
             else:
                 idx = next_unanswered_field_idx(app_data_raw, today_iso)
                 if idx is None:
                     print(f"[{now_str} MSK] checklist reminder: all fields already answered for {today_iso}")
                 else:
-                    print(f"[{now_str} MSK] → checklist ask ({len(subs['chat_ids'])} subscriber(s))")
-                    for cid in subs["chat_ids"]:
+                    print(f"[{now_str} MSK] → checklist ask ({len(recipients)} subscriber(s))")
+                    for cid in recipients:
                         send_checklist_question(token, cid, today_iso)
     except Exception as e:
         print(f"[{now_str} MSK] checklist reminder error: {e}")
@@ -839,7 +879,13 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.wfile.write(content)
         elif self.path == "/api/subscribers":
             subs = load_subscribers()
-            self._json(200, {"count": len(subs["chat_ids"])})
+            self._json(200, {
+                "count": len(subs["chat_ids"]),
+                "subscribers": [
+                    {"chatId": cid, "name": subscriber_name(subs, cid)}
+                    for cid in subs["chat_ids"]
+                ],
+            })
         elif self.path == "/api/debug":
             token = get_token()
             subs = load_subscribers()

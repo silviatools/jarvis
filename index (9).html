@@ -194,7 +194,20 @@ const DEFAULT_SETTINGS = {
   voiceApiKey: '',
   voiceModel: '',
   voiceTtsVoice: 'nova',
+  notifyRouting: {},
 };
+
+// Which Telegram section each background reminder belongs to. Keep the ids in
+// sync with jarvis.py's NOTIFICATION_CATEGORIES — they gate who receives each
+// broadcast (data.settings.notifyRouting[chatId] = [subset of these ids]).
+const NOTIFICATION_CATEGORIES = [
+  { id: 'chores',    label: 'По дому' },
+  { id: 'boss',      label: 'Босс' },
+  { id: 'holidays',  label: 'Праздники' },
+  { id: 'debts',     label: 'Долги' },
+  { id: 'diet',      label: 'Питание' },
+  { id: 'checklist', label: 'Чек-лист' },
+];
 
 // ── MSK time helpers ─────────────────────────────────────────────────────
 // All Telegram reminder times (chores, boss tasks, holidays, debts, diet,
@@ -3013,6 +3026,88 @@ function GeneralSettings({ data, setData }) {
           При использовании <span className="font-mono">jarvis.py</span> конфиг синхронизируется автоматически — экспорт не нужен.
         </p>
       </div>
+
+      <NotifyRoutingSettings data={data} setData={setData} />
+    </div>
+  );
+}
+
+function NotifyRoutingSettings({ data, setData }) {
+  const [subs, setSubs] = useState(null); // null = loading, [] = loaded empty
+  const [error, setError] = useState(false);
+
+  const routing = (data.settings || {}).notifyRouting || {};
+
+  const load = () => {
+    setError(false);
+    fetch('/api/subscribers')
+      .then(r => r.json())
+      .then(json => setSubs(json.subscribers || []))
+      .catch(() => setError(true));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const isAllowed = (chatId, catId) => {
+    const list = routing[chatId];
+    return list ? list.includes(catId) : true; // no entry yet = everything enabled (backward compatible)
+  };
+
+  const toggle = (chatId, catId) => {
+    setData(d => {
+      const r = { ...((d.settings || {}).notifyRouting || {}) };
+      const current = r[chatId] ? [...r[chatId]] : NOTIFICATION_CATEGORIES.map(c => c.id);
+      const idx = current.indexOf(catId);
+      if (idx >= 0) current.splice(idx, 1); else current.push(catId);
+      r[chatId] = current;
+      return { ...d, settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), notifyRouting: r } };
+    });
+  };
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="font-display text-lg mb-1">Маршрутизация уведомлений</h3>
+          <p className="text-sm text-[var(--text-muted)]">
+            Кто из подписчиков бота получает уведомления из каждого раздела. Без настройки — получают все.
+          </p>
+        </div>
+        <button onClick={load} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0" title="Обновить список">
+          <Icon name="restore" size={16} />
+        </button>
+      </div>
+
+      {error && (
+        <div className="text-sm text-red-500">Не удалось загрузить список подписчиков.</div>
+      )}
+      {subs === null && !error && (
+        <div className="text-sm text-[var(--text-subtle)]">Загрузка...</div>
+      )}
+      {subs !== null && subs.length === 0 && (
+        <div className="text-sm text-[var(--text-subtle)]">Пока никто не подписан — напишите боту в Telegram любое сообщение.</div>
+      )}
+
+      {subs && subs.length > 0 && (
+        <div className="space-y-3">
+          {subs.map(s => (
+            <div key={s.chatId} className="border border-[var(--border)] rounded-xl p-3">
+              <div className="text-sm font-medium mb-2">{s.name || `Без имени (${s.chatId})`}</div>
+              <div className="flex flex-wrap gap-1.5">
+                {NOTIFICATION_CATEGORIES.map(cat => {
+                  const on = isAllowed(String(s.chatId), cat.id);
+                  return (
+                    <button key={cat.id} onClick={() => toggle(String(s.chatId), cat.id)}
+                      className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${on ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
+                      {cat.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
