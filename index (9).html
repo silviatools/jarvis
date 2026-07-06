@@ -273,6 +273,7 @@ const loadData = () => {
 //  • everything else         → server value if present, otherwise local value
 const isPlainObject = (v) => v && typeof v === 'object' && !Array.isArray(v);
 const isIdArray = (a) => Array.isArray(a) && a.length > 0 && a.every(e => e && typeof e === 'object' && 'id' in e);
+const DATE_LOG_KEYS = new Set(['dietLog', 'dailyChecklistLog']);
 
 const mergeAppData = (local, server) => {
   const merged = { ...local, ...server };
@@ -280,18 +281,22 @@ const mergeAppData = (local, server) => {
   for (const key of keys) {
     const l = local ? local[key] : undefined;
     const s = server ? server[key] : undefined;
-    if (s === undefined) { merged[key] = l; continue; }      // server missing → keep local
-    if (l === undefined) { merged[key] = s; continue; }      // local missing → take server
-    if (isIdArray(l) || isIdArray(s)) {
-      // union by id; server entry overrides local one with same id
+    if (s === undefined) { merged[key] = l; continue; }
+    if (l === undefined) { merged[key] = s; continue; }
+    if (DATE_LOG_KEYS.has(key) && (Array.isArray(l) || Array.isArray(s))) {
+      const byDate = new Map();
+      (Array.isArray(l) ? l : []).forEach(e => { if (e?.date) byDate.set(e.date, e); });
+      (Array.isArray(s) ? s : []).forEach(e => { if (e?.date) byDate.set(e.date, e); });
+      merged[key] = [...byDate.values()].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    } else if (isIdArray(l) || isIdArray(s)) {
       const byId = new Map();
       (Array.isArray(l) ? l : []).forEach(e => { if (e && e.id != null) byId.set(e.id, e); });
       (Array.isArray(s) ? s : []).forEach(e => { if (e && e.id != null) byId.set(e.id, e); });
       merged[key] = [...byId.values()];
     } else if (isPlainObject(l) && isPlainObject(s)) {
-      merged[key] = { ...l, ...s };                          // union keys, server wins
+      merged[key] = { ...l, ...s };
     } else {
-      merged[key] = s;                                       // scalars / non-id arrays → server
+      merged[key] = s;
     }
   }
   return merged;
@@ -314,16 +319,24 @@ const fetchServerData = async () => {
   }
 };
 
+let getAppDataSnapshot = () => null;
+
 const pushServerData = (() => {
   let timer = null;
-  return (data) => {
+  return () => {
     clearTimeout(timer);
-    timer = setTimeout(() => {
-      fetch('/api/data', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      }).catch(() => {});
+    timer = setTimeout(async () => {
+      const local = getAppDataSnapshot();
+      if (!local) return;
+      try {
+        const serverData = await fetchServerData();
+        const toPush = serverData ? mergeAppData(local, serverData) : local;
+        await fetch('/api/data', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(toPush),
+        });
+      } catch (_) {}
     }, 1500);
   };
 })();
@@ -599,10 +612,11 @@ function App() {
   const dataRef = React.useRef(data);
   useEffect(() => {
     dataRef.current = data;
+    getAppDataSnapshot = () => dataRef.current;
     if (initialLoad.current) { initialLoad.current = false; return; }
     saveData(data);
     if (serverLoaded.current) {
-      pushServerData(data);
+      pushServerData();
     }
   }, [data]);
 
@@ -629,14 +643,23 @@ function App() {
   // server-side (e.g. diet answers from the Telegram bot) merge back in and
   // aren't clobbered by a later local push.
   useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState !== 'visible' || !serverLoaded.current) return;
+    const syncFromServer = () => {
+      if (!serverLoaded.current) return;
       fetchServerData().then(serverData => {
         if (serverData) setData(prev => { const m = mergeAppData(prev, serverData); saveData(m); return m; });
       });
     };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') syncFromServer();
+    };
     document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
+    const pollId = setInterval(() => {
+      if (document.visibilityState === 'visible') syncFromServer();
+    }, 20000);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(pollId);
+    };
   }, []);
 
   // Keep the URL in sync with the active tab (clean deep links like /mybody),
@@ -6242,10 +6265,11 @@ function BodyView({ data, setData }) {
   }
 
   const tabs = [
-    { id: 'modes',         label: 'Режим'                 },
-    { id: 'measurements',  label: 'Показатели и замеры'   },
-    { id: 'nutrition',     label: 'Питание'               },
-    { id: 'fields',        icon: 'settings'              },
+    { id: 'modes',            label: 'Режим'                 },
+    { id: 'measurements',     label: 'Показатели и замеры'   },
+    { id: 'nutrition',        label: 'Питание'               },
+    { id: 'checklist-stats',  label: 'Статистика чек-лист'   },
+    { id: 'fields',           icon: 'settings'              },
   ];
 
   const measurementsTabs = [
@@ -6315,6 +6339,7 @@ function BodyView({ data, setData }) {
         </div>
       )}
       {bodyTab === 'nutrition' && <DietComplianceView data={data} setData={setData} />}
+      {bodyTab === 'checklist-stats' && <DailyChecklistStats data={data} setData={setData} />}
       {bodyTab === 'fields'    && <BodyFieldsSettings data={data} setData={setData} />}
     </div>
   );
@@ -7224,7 +7249,6 @@ function BodyFieldsSettings({ data, setData }) {
       </div>
 
       <DailyChecklistFieldsConfig data={data} setData={setData} />
-      <DailyChecklistStats data={data} setData={setData} />
 
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
         <h3 className="font-display text-lg mb-3">Текущие поля</h3>

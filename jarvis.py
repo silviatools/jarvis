@@ -189,18 +189,12 @@ def diet_keyboard(date_iso: str) -> dict:
 def save_diet_entry(date_iso: str, level: str):
     """Записать/обновить оценку питания за день прямо в файл БД."""
     import uuid as _uuid
-    app = {}
-    if APP_DATA_FILE.exists():
-        try:
-            app = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            app = {}
+    app = load_app_data()
     log = [e for e in app.get("dietLog", []) if e.get("date") != date_iso]
     log.append({"id": str(_uuid.uuid4()), "date": date_iso, "level": level})
     log.sort(key=lambda e: e.get("date", ""), reverse=True)
     app["dietLog"] = log
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    APP_DATA_FILE.write_text(json.dumps(app, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_app_data(app)
 
 
 def handle_diet_callback(token: str, cq: dict):
@@ -244,6 +238,57 @@ def load_app_data() -> dict:
 def save_app_data(app: dict):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     APP_DATA_FILE.write_text(json.dumps(app, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+DATE_LOG_KEYS = frozenset({"dietLog", "dailyChecklistLog"})
+
+
+def _is_plain_object(v) -> bool:
+    return isinstance(v, dict)
+
+
+def _is_id_array(a) -> bool:
+    return isinstance(a, list) and len(a) > 0 and all(isinstance(e, dict) and "id" in e for e in a)
+
+
+def merge_app_data(local: dict, server: dict) -> dict:
+    """Merge incoming (local) with existing (server); server wins on conflicts."""
+    if not server:
+        return local or {}
+    if not local:
+        return server or {}
+    merged = {**local, **server}
+    keys = set(local.keys()) | set(server.keys())
+    for key in keys:
+        l = local.get(key)
+        s = server.get(key)
+        if s is None:
+            merged[key] = l
+        elif l is None:
+            merged[key] = s
+        elif key in DATE_LOG_KEYS and (isinstance(l, list) or isinstance(s, list)):
+            by_date: dict[str, dict] = {}
+            for e in (l if isinstance(l, list) else []):
+                if isinstance(e, dict) and e.get("date"):
+                    by_date[e["date"]] = e
+            for e in (s if isinstance(s, list) else []):
+                if isinstance(e, dict) and e.get("date"):
+                    by_date[e["date"]] = e
+            merged[key] = sorted(by_date.values(), key=lambda e: e.get("date", ""), reverse=True)
+        elif _is_id_array(l) or _is_id_array(s):
+            by_id: dict = {}
+            for e in (l if isinstance(l, list) else []):
+                if isinstance(e, dict) and e.get("id") is not None:
+                    by_id[e["id"]] = e
+            for e in (s if isinstance(s, list) else []):
+                if isinstance(e, dict) and e.get("id") is not None:
+                    by_id[e["id"]] = e
+            merged[key] = list(by_id.values())
+        elif _is_plain_object(l) and _is_plain_object(s):
+            merged[key] = {**l, **s}
+        else:
+            merged[key] = s
+    return merged
 
 
 def get_checklist_entry(app: dict, date_iso: str) -> dict | None:
@@ -802,12 +847,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
             try:
-                app_data = json.loads(body)
-                DATA_DIR.mkdir(parents=True, exist_ok=True)
-                APP_DATA_FILE.write_text(
-                    json.dumps(app_data, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
+                incoming = json.loads(body)
+                existing = load_app_data() if APP_DATA_FILE.exists() else {}
+                merged = merge_app_data(incoming, existing)
+                save_app_data(merged)
                 self._json(200, {"ok": True})
             except Exception as e:
                 self._json(400, {"error": str(e)})
