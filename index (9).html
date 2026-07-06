@@ -275,7 +275,36 @@ const isPlainObject = (v) => v && typeof v === 'object' && !Array.isArray(v);
 const isIdArray = (a) => Array.isArray(a) && a.length > 0 && a.every(e => e && typeof e === 'object' && 'id' in e);
 const DATE_LOG_KEYS = new Set(['dietLog', 'dailyChecklistLog']);
 
-const mergeAppData = (local, server) => {
+const mergeDateLogEntries = (localArr, serverArr, preferLocal) => {
+  const byDate = new Map();
+  const ingest = (arr, primary) => {
+    (Array.isArray(arr) ? arr : []).forEach(e => {
+      if (!e?.date) return;
+      const prev = byDate.get(e.date);
+      if (!prev) {
+        byDate.set(e.date, { ...e, answers: { ...(e.answers || {}) } });
+        return;
+      }
+      byDate.set(e.date, {
+        ...(primary ? { ...prev, ...e } : { ...e, ...prev }),
+        answers: primary
+          ? { ...(prev.answers || {}), ...(e.answers || {}) }
+          : { ...(e.answers || {}), ...(prev.answers || {}) },
+        id: primary ? (e.id || prev.id) : (prev.id || e.id),
+      });
+    });
+  };
+  if (preferLocal) {
+    ingest(serverArr, false);
+    ingest(localArr, true);
+  } else {
+    ingest(localArr, false);
+    ingest(serverArr, true);
+  }
+  return [...byDate.values()].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+};
+
+const mergeAppData = (local, server, preferLocal = false) => {
   const merged = { ...local, ...server };
   const keys = new Set([...Object.keys(local || {}), ...Object.keys(server || {})]);
   for (const key of keys) {
@@ -284,19 +313,18 @@ const mergeAppData = (local, server) => {
     if (s === undefined) { merged[key] = l; continue; }
     if (l === undefined) { merged[key] = s; continue; }
     if (DATE_LOG_KEYS.has(key) && (Array.isArray(l) || Array.isArray(s))) {
-      const byDate = new Map();
-      (Array.isArray(l) ? l : []).forEach(e => { if (e?.date) byDate.set(e.date, e); });
-      (Array.isArray(s) ? s : []).forEach(e => { if (e?.date) byDate.set(e.date, e); });
-      merged[key] = [...byDate.values()].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+      merged[key] = mergeDateLogEntries(l, s, preferLocal);
     } else if (isIdArray(l) || isIdArray(s)) {
       const byId = new Map();
-      (Array.isArray(l) ? l : []).forEach(e => { if (e && e.id != null) byId.set(e.id, e); });
-      (Array.isArray(s) ? s : []).forEach(e => { if (e && e.id != null) byId.set(e.id, e); });
+      const first = preferLocal ? s : l;
+      const second = preferLocal ? l : s;
+      (Array.isArray(first) ? first : []).forEach(e => { if (e && e.id != null) byId.set(e.id, e); });
+      (Array.isArray(second) ? second : []).forEach(e => { if (e && e.id != null) byId.set(e.id, e); });
       merged[key] = [...byId.values()];
     } else if (isPlainObject(l) && isPlainObject(s)) {
-      merged[key] = { ...l, ...s };
+      merged[key] = preferLocal ? { ...s, ...l } : { ...l, ...s };
     } else {
-      merged[key] = s;
+      merged[key] = preferLocal ? l : s;
     }
   }
   return merged;
@@ -330,7 +358,7 @@ const pushServerData = (() => {
       if (!local) return;
       try {
         const serverData = await fetchServerData();
-        const toPush = serverData ? mergeAppData(local, serverData) : local;
+        const toPush = serverData ? mergeAppData(local, serverData, true) : local;
         await fetch('/api/data', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -646,7 +674,7 @@ function App() {
     const syncFromServer = () => {
       if (!serverLoaded.current) return;
       fetchServerData().then(serverData => {
-        if (serverData) setData(prev => { const m = mergeAppData(prev, serverData); saveData(m); return m; });
+        if (serverData) setData(prev => { const m = mergeAppData(prev, serverData, false); saveData(m); return m; });
       });
     };
     const onVisible = () => {
@@ -2633,6 +2661,36 @@ function VoiceAssistantSettings({ data, setData }) {
 const CHECKLIST_OPTION_COLORS = ['#22c55e', '#ef4444', '#f59e0b', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 const CHECKLIST_CHART_DAYS = 90;
 
+function normChecklistOption(opt, index) {
+  if (typeof opt === 'string') {
+    return { label: opt, color: CHECKLIST_OPTION_COLORS[index % CHECKLIST_OPTION_COLORS.length] };
+  }
+  return {
+    label: (opt.label || opt.text || '').trim(),
+    color: opt.color || CHECKLIST_OPTION_COLORS[index % CHECKLIST_OPTION_COLORS.length],
+  };
+}
+
+function getFieldOptions(field) {
+  return (field.options || []).map(normChecklistOption);
+}
+
+function getOptionColor(field, labelOrIndex) {
+  const opts = getFieldOptions(field);
+  if (typeof labelOrIndex === 'number') {
+    return opts[labelOrIndex]?.color || CHECKLIST_OPTION_COLORS[0];
+  }
+  const idx = opts.findIndex(o => o.label === labelOrIndex);
+  return opts[idx >= 0 ? idx : 0]?.color || CHECKLIST_OPTION_COLORS[0];
+}
+
+function labelsToOptions(labels) {
+  return labels.map((label, i) => ({
+    label,
+    color: CHECKLIST_OPTION_COLORS[i % CHECKLIST_OPTION_COLORS.length],
+  }));
+}
+
 function buildChecklistChartDays(log, days = CHECKLIST_CHART_DAYS) {
   const byDate = Object.fromEntries(log.map(e => [e.date, e]));
   const chartDays = [];
@@ -2665,8 +2723,9 @@ function getChecklistFieldStats(field, log, periodDays) {
   }
 
   const answered = log.filter(e => e.date >= fromIso && e.answers?.[field.id]);
+  const opts = getFieldOptions(field);
   const counts = {};
-  field.options.forEach(o => { counts[o] = 0; });
+  opts.forEach(o => { counts[o.label] = 0; });
   answered.forEach(e => {
     const v = e.answers[field.id];
     if (v != null) counts[v] = (counts[v] || 0) + 1;
@@ -2684,12 +2743,12 @@ function getChecklistFieldStats(field, log, periodDays) {
     else break;
   }
 
-  const primaryOpt = field.options[0];
+  const primaryOpt = opts[0]?.label;
   const primaryCount = primaryOpt ? (counts[primaryOpt] || 0) : 0;
   const primaryPct = totalAnswered > 0 ? Math.round((primaryCount / totalAnswered) * 100) : 0;
 
-  const segments = field.options
-    .map((opt, i) => ({ label: opt, value: counts[opt] || 0, color: CHECKLIST_OPTION_COLORS[i % CHECKLIST_OPTION_COLORS.length] }))
+  const segments = opts
+    .map(opt => ({ label: opt.label, value: counts[opt.label] || 0, color: opt.color }))
     .filter(s => s.value > 0);
 
   return { fromIso, totalAnswered, fillPct, streak, primaryOpt, primaryPct, primaryCount, counts, segments, periodDays };
@@ -2737,14 +2796,12 @@ function ChecklistFieldChart({ field, log, today, formatDate }) {
   const stats30 = getChecklistFieldStats(field, log, 30);
   const stats90 = getChecklistFieldStats(field, log, CHECKLIST_CHART_DAYS);
 
-  const optionColor = (opt) => {
-    const i = field.options.indexOf(opt);
-    return CHECKLIST_OPTION_COLORS[(i >= 0 ? i : 0) % CHECKLIST_OPTION_COLORS.length];
-  };
+  const opts = getFieldOptions(field);
+  const optionColor = (label) => getOptionColor(field, label);
 
   const barW = 14, gap = 5, totalBarW = barW + gap;
   const TOP = 20, plotH = 64, svgH = TOP + plotH + 34;
-  const bandH = plotH / Math.max(field.options.length, 1);
+  const bandH = plotH / Math.max(opts.length, 1);
   const svgW = chartDays.length * totalBarW;
 
   React.useEffect(() => {
@@ -2783,22 +2840,21 @@ function ChecklistFieldChart({ field, log, today, formatDate }) {
       {/* Распределение */}
       {stats30.totalAnswered > 0 && (
         <div className="space-y-2">
-          {field.options.map((opt, oi) => {
-            const count = stats30.counts[opt] || 0;
+          {opts.map((opt, oi) => {
+            const count = stats30.counts[opt.label] || 0;
             if (count === 0 && stats30.totalAnswered > 0) return null;
             const pct = stats30.totalAnswered > 0 ? Math.round((count / stats30.totalAnswered) * 100) : 0;
-            const color = CHECKLIST_OPTION_COLORS[oi % CHECKLIST_OPTION_COLORS.length];
             return (
-              <div key={opt}>
+              <div key={opt.label}>
                 <div className="flex justify-between text-xs mb-1">
                   <span className="flex items-center gap-1.5 text-[var(--text-muted)]">
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-                    {opt}
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: opt.color }} />
+                    {opt.label}
                   </span>
                   <span className="text-[var(--text-subtle)]">{pct}% · {count}</span>
                 </div>
                 <div className="h-2 bg-[var(--bg)] rounded-full overflow-hidden">
-                  <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: color }} />
+                  <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: opt.color }} />
                 </div>
               </div>
             );
@@ -2818,7 +2874,7 @@ function ChecklistFieldChart({ field, log, today, formatDate }) {
               const x = i * totalBarW;
               const cx = x + barW / 2;
               const answer = day.entry?.answers?.[field.id];
-              const optIdx = answer != null ? field.options.indexOf(answer) : -1;
+              const optIdx = answer != null ? opts.findIndex(o => o.label === answer) : -1;
               const isToday = day.date === today;
               const weekend = day.dow === 0 || day.dow === 6;
               const showMonth = i === 0 || day.dayNum === 1;
@@ -2853,10 +2909,10 @@ function ChecklistFieldChart({ field, log, today, formatDate }) {
           </svg>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-3 text-xs text-[var(--text-muted)]">
-          {field.options.map((opt, oi) => (
-            <div key={opt} className="flex items-center gap-1.5">
-              <div className="w-2.5 h-2.5 rounded-sm" style={{ background: CHECKLIST_OPTION_COLORS[oi % CHECKLIST_OPTION_COLORS.length] }} />
-              {opt}
+          {opts.map(opt => (
+            <div key={opt.label} className="flex items-center gap-1.5">
+              <div className="w-2.5 h-2.5 rounded-sm" style={{ background: opt.color }} />
+              {opt.label}
             </div>
           ))}
           <div className="flex items-center gap-1.5">
@@ -2876,15 +2932,15 @@ function DailyChecklistFieldsConfig({ data, setData }) {
   const [newOptions, setNewOptions] = useState('Да, Нет');
   const [editingId, setEditingId] = useState(null);
   const [editLabel, setEditLabel] = useState('');
-  const [editOptions, setEditOptions] = useState('');
+  const [editOptionsList, setEditOptionsList] = useState([]);
 
-  const parseOptions = (str) => str.split(/[,;]/).map(s => s.trim()).filter(Boolean);
+  const parseLabels = (str) => str.split(/[,;]/).map(s => s.trim()).filter(Boolean);
 
   const addField = () => {
     const label = newLabel.trim();
-    const options = parseOptions(newOptions);
-    if (!label || options.length === 0) return;
-    setFields([...fields, { id: crypto.randomUUID(), label, options }]);
+    const labels = parseLabels(newOptions);
+    if (!label || labels.length === 0) return;
+    setFields([...fields, { id: crypto.randomUUID(), label, options: labelsToOptions(labels) }]);
     setNewLabel('');
     setNewOptions('Да, Нет');
   };
@@ -2892,15 +2948,28 @@ function DailyChecklistFieldsConfig({ data, setData }) {
   const startEdit = (f) => {
     setEditingId(f.id);
     setEditLabel(f.label);
-    setEditOptions(f.options.join(', '));
+    setEditOptionsList(getFieldOptions(f).map(o => ({ ...o })));
   };
 
   const saveEdit = () => {
     const label = editLabel.trim();
-    const options = parseOptions(editOptions);
+    const options = editOptionsList.filter(o => o.label.trim()).map(o => ({ label: o.label.trim(), color: o.color }));
     if (!label || options.length === 0) return;
     setFields(fields.map(f => f.id === editingId ? { ...f, label, options } : f));
     setEditingId(null);
+  };
+
+  const addEditOption = () => {
+    const i = editOptionsList.length;
+    setEditOptionsList([...editOptionsList, { label: '', color: CHECKLIST_OPTION_COLORS[i % CHECKLIST_OPTION_COLORS.length] }]);
+  };
+
+  const updateEditOption = (idx, patch) => {
+    setEditOptionsList(list => list.map((o, i) => i === idx ? { ...o, ...patch } : o));
+  };
+
+  const removeEditOption = (idx) => {
+    setEditOptionsList(list => list.filter((_, i) => i !== idx));
   };
 
   const removeField = (id) => {
@@ -2938,7 +3007,24 @@ function DailyChecklistFieldsConfig({ data, setData }) {
               {editingId === f.id ? (
                 <div className="space-y-3">
                   <input value={editLabel} onChange={e => setEditLabel(e.target.value)} placeholder="Название" className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
-                  <input value={editOptions} onChange={e => setEditOptions(e.target.value)} placeholder="Варианты через запятую" className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+                  <div className="space-y-2">
+                    <div className="text-xs text-[var(--text-muted)] font-medium">Варианты ответа</div>
+                    {editOptionsList.map((opt, oi) => (
+                      <div key={oi} className="flex items-center gap-2">
+                        <input type="color" value={opt.color} onChange={e => updateEditOption(oi, { color: e.target.value })}
+                          className="w-9 h-9 rounded-lg border border-[var(--border)] cursor-pointer p-0.5 bg-transparent shrink-0" title="Цвет на графике" />
+                        <input value={opt.label} onChange={e => updateEditOption(oi, { label: e.target.value })} placeholder="Вариант"
+                          className="flex-1 bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+                        <button onClick={() => removeEditOption(oi)} disabled={editOptionsList.length <= 1}
+                          className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 disabled:opacity-25 shrink-0">
+                          <Icon name="trash" size={14} />
+                        </button>
+                      </div>
+                    ))}
+                    <button onClick={addEditOption} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1">
+                      <Icon name="plus" size={12} /> Добавить вариант
+                    </button>
+                  </div>
                   <div className="flex gap-2">
                     <button onClick={saveEdit} className="btn-primary text-sm flex-1">Сохранить</button>
                     <button onClick={() => setEditingId(null)} className="btn-secondary text-sm flex-1">Отмена</button>
@@ -2949,8 +3035,11 @@ function DailyChecklistFieldsConfig({ data, setData }) {
                   <div className="flex-1 min-w-0">
                     <div className="font-medium text-sm">{f.label}</div>
                     <div className="flex flex-wrap gap-1.5 mt-2">
-                      {f.options.map((opt, oi) => (
-                        <span key={oi} className="text-xs px-2 py-1 rounded-lg border border-[var(--border)] text-[var(--text-muted)]">{opt}</span>
+                      {getFieldOptions(f).map(opt => (
+                        <span key={opt.label} className="text-xs px-2 py-1 rounded-lg border font-medium"
+                          style={{ borderColor: opt.color + '66', color: opt.color, background: opt.color + '18' }}>
+                          {opt.label}
+                        </span>
                       ))}
                     </div>
                   </div>
@@ -3042,24 +3131,26 @@ function DailyChecklistStats({ data, setData }) {
             className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:border-[var(--text)]" />
         </div>
         <div className="space-y-3">
-          {fields.map(f => (
+          {fields.map(f => {
+            const opts = getFieldOptions(f);
+            return (
             <div key={f.id} className="bg-[var(--bg)] rounded-xl p-3">
               <div className="text-xs text-[var(--text-muted)] font-medium mb-2">{f.label}</div>
               <div className="flex flex-wrap gap-1.5">
-                {f.options.map((opt, oi) => {
-                  const active = selEntry?.answers?.[f.id] === opt;
-                  const color = CHECKLIST_OPTION_COLORS[oi % CHECKLIST_OPTION_COLORS.length];
+                {opts.map(opt => {
+                  const active = selEntry?.answers?.[f.id] === opt.label;
                   return (
-                    <button key={opt} onClick={() => setAnswer(f.id, opt)}
+                    <button key={opt.label} onClick={() => setAnswer(f.id, opt.label)}
                       className="px-3 py-1.5 rounded-lg border text-sm font-medium transition-all"
-                      style={active ? { background: color, borderColor: color, color: '#fff' } : { borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
-                      {opt}
+                      style={active ? { background: opt.color, borderColor: opt.color, color: '#fff' } : { borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
+                      {opt.label}
                     </button>
                   );
                 })}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
         {selEntry && (
           <button onClick={() => deleteDay(selDate)}
@@ -3095,8 +3186,7 @@ function DailyChecklistStats({ data, setData }) {
                       {fields.map(f => {
                         const ans = e.answers?.[f.id];
                         if (!ans) return null;
-                        const oi = f.options.indexOf(ans);
-                        const color = CHECKLIST_OPTION_COLORS[(oi >= 0 ? oi : 0) % CHECKLIST_OPTION_COLORS.length];
+                        const color = getOptionColor(f, ans);
                         return (
                           <span key={f.id} className="text-[10px] px-2 py-0.5 rounded-full font-medium"
                             style={{ background: color + '22', color, border: `1px solid ${color}44` }}>
