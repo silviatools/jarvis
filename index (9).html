@@ -2630,7 +2630,243 @@ function VoiceAssistantSettings({ data, setData }) {
 
 // ============== DAILY CHECKLIST ==============
 
-const CHECKLIST_OPTION_COLORS = ['#22c55e', '#ef4444', '#f59e0b', '#3b82f6', '#8b5cf6', '#ec4899'];
+const CHECKLIST_OPTION_COLORS = ['#22c55e', '#ef4444', '#f59e0b', '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
+const CHECKLIST_CHART_DAYS = 90;
+
+function buildChecklistChartDays(log, days = CHECKLIST_CHART_DAYS) {
+  const byDate = Object.fromEntries(log.map(e => [e.date, e]));
+  const chartDays = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const ds = d.toISOString().split('T')[0];
+    chartDays.push({
+      date: ds,
+      entry: byDate[ds] || null,
+      dow: d.getDay(),
+      dayNum: d.getDate(),
+      month: d.getMonth(),
+    });
+  }
+  return chartDays;
+}
+
+function getChecklistFieldStats(field, log, periodDays) {
+  const from = new Date();
+  from.setDate(from.getDate() - periodDays + 1);
+  const fromIso = from.toISOString().split('T')[0];
+  const today = new Date().toISOString().split('T')[0];
+
+  const periodDaysList = [];
+  for (let i = periodDays - 1; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    periodDaysList.push(d.toISOString().split('T')[0]);
+  }
+
+  const answered = log.filter(e => e.date >= fromIso && e.answers?.[field.id]);
+  const counts = {};
+  field.options.forEach(o => { counts[o] = 0; });
+  answered.forEach(e => {
+    const v = e.answers[field.id];
+    if (v != null) counts[v] = (counts[v] || 0) + 1;
+  });
+
+  const totalAnswered = answered.length;
+  const fillPct = Math.round((totalAnswered / periodDays) * 100);
+
+  let streak = 0;
+  for (let i = periodDaysList.length - 1; i >= 0; i--) {
+    const ds = periodDaysList[i];
+    if (ds > today) continue;
+    const entry = log.find(e => e.date === ds);
+    if (entry?.answers?.[field.id]) streak++;
+    else break;
+  }
+
+  const primaryOpt = field.options[0];
+  const primaryCount = primaryOpt ? (counts[primaryOpt] || 0) : 0;
+  const primaryPct = totalAnswered > 0 ? Math.round((primaryCount / totalAnswered) * 100) : 0;
+
+  const segments = field.options
+    .map((opt, i) => ({ label: opt, value: counts[opt] || 0, color: CHECKLIST_OPTION_COLORS[i % CHECKLIST_OPTION_COLORS.length] }))
+    .filter(s => s.value > 0);
+
+  return { fromIso, totalAnswered, fillPct, streak, primaryOpt, primaryPct, primaryCount, counts, segments, periodDays };
+}
+
+function ChecklistDonut({ segments, size = 96 }) {
+  const total = segments.reduce((s, x) => s + x.value, 0);
+  if (total === 0) {
+    return (
+      <div className="relative flex-shrink-0 rounded-full border-4 border-[var(--border)] bg-[var(--bg)]"
+        style={{ width: size, height: size }}>
+        <div className="absolute inset-0 flex items-center justify-center text-[10px] text-[var(--text-subtle)]">—</div>
+      </div>
+    );
+  }
+  let acc = 0;
+  const stops = segments.map(seg => {
+    const start = (acc / total) * 100;
+    acc += seg.value;
+    const end = (acc / total) * 100;
+    return `${seg.color} ${start}% ${end}%`;
+  }).join(', ');
+  const lead = segments.reduce((best, s) => s.value > best.value ? s : best, segments[0]);
+  const leadPct = Math.round((lead.value / total) * 100);
+  return (
+    <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
+      <div className="rounded-full" style={{
+        width: size, height: size,
+        background: `conic-gradient(${stops})`,
+        WebkitMask: 'radial-gradient(circle, transparent 58%, black 59%)',
+        mask: 'radial-gradient(circle, transparent 58%, black 59%)',
+      }} />
+      <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+        <span className="text-lg font-semibold leading-none">{leadPct}%</span>
+        <span className="text-[9px] text-[var(--text-muted)] mt-0.5 max-w-[52px] truncate text-center">{lead.label}</span>
+      </div>
+    </div>
+  );
+}
+
+function ChecklistFieldChart({ field, log, today, formatDate }) {
+  const chartScrollRef = React.useRef(null);
+  const chartDays = buildChecklistChartDays(log);
+  const todayIndex = chartDays.findIndex(d => d.date === today);
+  const stats30 = getChecklistFieldStats(field, log, 30);
+  const stats90 = getChecklistFieldStats(field, log, CHECKLIST_CHART_DAYS);
+
+  const optionColor = (opt) => {
+    const i = field.options.indexOf(opt);
+    return CHECKLIST_OPTION_COLORS[(i >= 0 ? i : 0) % CHECKLIST_OPTION_COLORS.length];
+  };
+
+  const barW = 14, gap = 5, totalBarW = barW + gap;
+  const TOP = 20, plotH = 64, svgH = TOP + plotH + 34;
+  const bandH = plotH / Math.max(field.options.length, 1);
+  const svgW = chartDays.length * totalBarW;
+
+  React.useEffect(() => {
+    const el = chartScrollRef.current;
+    if (!el || todayIndex < 0) return;
+    const todayX = todayIndex * totalBarW + barW / 2;
+    el.scrollLeft = todayX - el.offsetWidth / 2;
+  }, [log.length, field.id]);
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+      <div className="flex items-start gap-4">
+        <ChecklistDonut segments={stats30.segments} />
+        <div className="flex-1 min-w-0">
+          <h3 className="font-display text-lg leading-tight">{field.label}</h3>
+          <div className="text-xs text-[var(--text-muted)] mt-1">за 30 дней</div>
+          <div className="grid grid-cols-2 gap-2 mt-3">
+            <div className="bg-[var(--bg)] rounded-xl px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wide text-[var(--text-subtle)]">Заполнено</div>
+              <div className="text-sm font-semibold mt-0.5">{stats30.fillPct}% <span className="text-[var(--text-muted)] font-normal">({stats30.totalAnswered}/30)</span></div>
+            </div>
+            <div className="bg-[var(--bg)] rounded-xl px-3 py-2">
+              <div className="text-[10px] uppercase tracking-wide text-[var(--text-subtle)]">Серия</div>
+              <div className="text-sm font-semibold mt-0.5">{stats30.streak} {stats30.streak === 1 ? 'день' : stats30.streak < 5 ? 'дня' : 'дней'}</div>
+            </div>
+            {stats30.primaryOpt && (
+              <div className="bg-[var(--bg)] rounded-xl px-3 py-2 col-span-2">
+                <div className="text-[10px] uppercase tracking-wide text-[var(--text-subtle)]">{stats30.primaryOpt}</div>
+                <div className="text-sm font-semibold mt-0.5">{stats30.primaryPct}% <span className="text-[var(--text-muted)] font-normal">({stats30.primaryCount} из {stats30.totalAnswered || '—'})</span></div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Распределение */}
+      {stats30.totalAnswered > 0 && (
+        <div className="space-y-2">
+          {field.options.map((opt, oi) => {
+            const count = stats30.counts[opt] || 0;
+            if (count === 0 && stats30.totalAnswered > 0) return null;
+            const pct = stats30.totalAnswered > 0 ? Math.round((count / stats30.totalAnswered) * 100) : 0;
+            const color = CHECKLIST_OPTION_COLORS[oi % CHECKLIST_OPTION_COLORS.length];
+            return (
+              <div key={opt}>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="flex items-center gap-1.5 text-[var(--text-muted)]">
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
+                    {opt}
+                  </span>
+                  <span className="text-[var(--text-subtle)]">{pct}% · {count}</span>
+                </div>
+                <div className="h-2 bg-[var(--bg)] rounded-full overflow-hidden">
+                  <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: color }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* График 90 дней */}
+      <div>
+        <div className="flex items-baseline justify-between mb-3">
+          <span className="text-sm font-medium">90 дней</span>
+          <span className="text-xs text-[var(--text-subtle)]">{stats90.totalAnswered} отметок</span>
+        </div>
+        <div className="overflow-x-auto scrollbar-hide -mx-1 px-1" ref={chartScrollRef}>
+          <svg width={svgW} height={svgH} style={{ display: 'block' }}>
+            {chartDays.map((day, i) => {
+              const x = i * totalBarW;
+              const cx = x + barW / 2;
+              const answer = day.entry?.answers?.[field.id];
+              const optIdx = answer != null ? field.options.indexOf(answer) : -1;
+              const isToday = day.date === today;
+              const weekend = day.dow === 0 || day.dow === 6;
+              const showMonth = i === 0 || day.dayNum === 1;
+              const hasAnswer = optIdx >= 0;
+              const color = hasAnswer ? optionColor(answer) : 'var(--border)';
+              const y = hasAnswer ? TOP + plotH - (optIdx + 1) * bandH + 1 : TOP + plotH - 2;
+              const h = hasAnswer ? Math.max(bandH - 2, 6) : 2;
+              return (
+                <g key={day.date}>
+                  {showMonth && (
+                    <text x={x} y={11} fontSize="9" fill="var(--text-subtle)" fontWeight="600">
+                      {['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'][day.month]}
+                    </text>
+                  )}
+                  <rect x={x} y={y} width={barW} height={h} rx={hasAnswer ? 3 : 1} fill={color} opacity={hasAnswer ? 1 : 0.5} />
+                  {isToday && (
+                    <rect x={x - 1} y={TOP - 3} width={barW + 2} height={plotH + 6} rx={4}
+                      fill="none" stroke="var(--text)" strokeWidth={1.5} opacity={0.3} />
+                  )}
+                  <text x={cx} y={svgH - 18} textAnchor="middle" fontSize="8"
+                    fill={weekend ? '#ef4444' : 'var(--text-subtle)'} opacity={weekend ? 0.75 : 0.55}>
+                    {['вс','пн','вт','ср','чт','пт','сб'][day.dow]}
+                  </text>
+                  <text x={cx} y={svgH - 6} textAnchor="middle" fontSize="9"
+                    fill="var(--text-muted)" fontWeight={isToday ? 700 : 400}>
+                    {day.dayNum}
+                  </text>
+                  {hasAnswer && <title>{formatDate(day.date)}: {answer}</title>}
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-3 text-xs text-[var(--text-muted)]">
+          {field.options.map((opt, oi) => (
+            <div key={opt} className="flex items-center gap-1.5">
+              <div className="w-2.5 h-2.5 rounded-sm" style={{ background: CHECKLIST_OPTION_COLORS[oi % CHECKLIST_OPTION_COLORS.length] }} />
+              {opt}
+            </div>
+          ))}
+          <div className="flex items-center gap-1.5">
+            <div className="w-2.5 h-0.5 rounded-sm bg-[var(--border)]" /> нет данных
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function DailyChecklistFieldsConfig({ data, setData }) {
   const fields = data.dailyChecklistFields || [];
@@ -2748,6 +2984,14 @@ function DailyChecklistStats({ data, setData }) {
   const fields = data.dailyChecklistFields || [];
   const log = [...(data.dailyChecklistLog || [])].sort((a, b) => b.date.localeCompare(a.date));
   const [selDate, setSelDate] = useState(today);
+  const [showHistory, setShowHistory] = useState(false);
+
+  const fmtDate = (dateStr) => {
+    const d = new Date(dateStr + 'T00:00:00');
+    const months = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+    const dows = ['вс','пн','вт','ср','чт','пт','сб'];
+    return `${d.getDate()} ${months[d.getMonth()]} (${dows[d.getDay()]})`;
+  };
 
   const setAnswer = (fieldId, option) => {
     setData(d => {
@@ -2764,126 +3008,111 @@ function DailyChecklistStats({ data, setData }) {
     setData(d => ({ ...d, dailyChecklistLog: (d.dailyChecklistLog || []).filter(e => e.date !== date) }));
   };
 
-  const formatDate = (dateStr) => {
-    const d = new Date(dateStr + 'T00:00:00');
-    return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]} (${DOW_SHORT[d.getDay()]})`;
-  };
-
-  const STATS_DAYS = 30;
-  const statsFrom = new Date();
-  statsFrom.setDate(statsFrom.getDate() - STATS_DAYS + 1);
-  const statsFromIso = statsFrom.toISOString().split('T')[0];
-  const recentLog = log.filter(e => e.date >= statsFromIso);
-
   const selEntry = log.find(e => e.date === selDate);
+  const todayEntry = log.find(e => e.date === today);
+  const todayFilled = fields.filter(f => todayEntry?.answers?.[f.id]).length;
 
   if (fields.length === 0) {
     return (
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-        <h3 className="font-display text-lg mb-2">Статистика</h3>
-        <p className="text-sm text-[var(--text-muted)]">Добавьте пункты чек-листа, чтобы видеть статистику.</p>
-      </div>
+      <EmptyState title="Нет пунктов" text="Добавьте пункты чек-листа в настройках раздела (⚙), чтобы видеть статистику." />
     );
   }
 
   return (
-    <div className="space-y-4">
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
-        <h3 className="font-display text-lg">Отметить за день</h3>
-        <div>
-          <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Дата</label>
-          <input type="date" value={selDate} max={today} onChange={e => setSelDate(e.target.value)}
-            className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+    <div className="fade-in space-y-5">
+      {/* Сводка сегодня */}
+      <div className="flex flex-wrap gap-3">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 flex-1 min-w-[140px]">
+          <div className="text-[10px] uppercase tracking-wide text-[var(--text-subtle)]">Сегодня</div>
+          <div className="text-xl font-semibold mt-0.5">{todayFilled}/{fields.length}</div>
+          <div className="text-xs text-[var(--text-muted)]">пунктов отмечено</div>
         </div>
-        {fields.map(f => (
-          <div key={f.id}>
-            <div className="text-xs text-[var(--text-muted)] font-medium mb-2">{f.label}</div>
-            <div className="flex flex-wrap gap-1.5">
-              {f.options.map((opt, oi) => {
-                const active = selEntry?.answers?.[f.id] === opt;
-                const color = CHECKLIST_OPTION_COLORS[oi % CHECKLIST_OPTION_COLORS.length];
-                return (
-                  <button key={opt} onClick={() => setAnswer(f.id, opt)}
-                    className="px-3 py-2 rounded-xl border text-sm font-medium transition-all"
-                    style={active ? { background: color, borderColor: color, color: '#fff' } : { borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
-                    {opt}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 flex-1 min-w-[140px]">
+          <div className="text-[10px] uppercase tracking-wide text-[var(--text-subtle)]">Всего записей</div>
+          <div className="text-xl font-semibold mt-0.5">{log.length}</div>
+          <div className="text-xs text-[var(--text-muted)]">дней в журнале</div>
+        </div>
       </div>
 
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-        <h3 className="font-display text-lg mb-4">Статистика за {STATS_DAYS} дней</h3>
-        {recentLog.length === 0 ? (
-          <p className="text-sm text-[var(--text-muted)]">Пока нет данных.</p>
-        ) : (
-          <div className="space-y-5">
-            {fields.map(f => {
-              const answered = recentLog.filter(e => e.answers?.[f.id]);
-              const total = answered.length;
-              if (total === 0) return (
-                <div key={f.id}>
-                  <div className="text-sm font-medium mb-1">{f.label}</div>
-                  <div className="text-xs text-[var(--text-subtle)]">Нет отметок</div>
-                </div>
-              );
-              const counts = {};
-              f.options.forEach(o => { counts[o] = 0; });
-              answered.forEach(e => {
-                const v = e.answers[f.id];
-                if (v in counts) counts[v]++;
-                else counts[v] = (counts[v] || 0) + 1;
-              });
-              return (
-                <div key={f.id}>
-                  <div className="text-sm font-medium mb-2">{f.label}</div>
-                  <div className="space-y-2">
-                    {Object.entries(counts).filter(([, c]) => c > 0).map(([opt, count], oi) => {
-                      const pct = Math.round((count / total) * 100);
-                      const color = CHECKLIST_OPTION_COLORS[oi % CHECKLIST_OPTION_COLORS.length];
-                      return (
-                        <div key={opt}>
-                          <div className="flex justify-between text-xs text-[var(--text-muted)] mb-1">
-                            <span>{opt}</span>
-                            <span>{pct}% ({count})</span>
-                          </div>
-                          <div className="h-2 bg-[var(--bg)] rounded-full overflow-hidden">
-                            <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: color }} />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+      {/* Быстрая отметка */}
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="font-display text-lg">Отметить за день</h3>
+          <input type="date" value={selDate} max={today} onChange={e => setSelDate(e.target.value)}
+            className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+        </div>
+        <div className="space-y-3">
+          {fields.map(f => (
+            <div key={f.id} className="bg-[var(--bg)] rounded-xl p-3">
+              <div className="text-xs text-[var(--text-muted)] font-medium mb-2">{f.label}</div>
+              <div className="flex flex-wrap gap-1.5">
+                {f.options.map((opt, oi) => {
+                  const active = selEntry?.answers?.[f.id] === opt;
+                  const color = CHECKLIST_OPTION_COLORS[oi % CHECKLIST_OPTION_COLORS.length];
+                  return (
+                    <button key={opt} onClick={() => setAnswer(f.id, opt)}
+                      className="px-3 py-1.5 rounded-lg border text-sm font-medium transition-all"
+                      style={active ? { background: color, borderColor: color, color: '#fff' } : { borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
+                      {opt}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+        {selEntry && (
+          <button onClick={() => deleteDay(selDate)}
+            className="w-full text-xs text-[var(--text-subtle)] hover:text-red-400 py-1 transition-colors">
+            Убрать все отметки за {fmtDate(selDate)}
+          </button>
         )}
       </div>
 
+      {/* Графики по каждому пункту */}
+      {fields.map(f => (
+        <ChecklistFieldChart key={f.id} field={f} log={log} today={today} formatDate={fmtDate} />
+      ))}
+
+      {/* История */}
       {log.length > 0 && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-          <h3 className="font-display text-lg mb-3">История</h3>
-          <div className="space-y-2">
-            {log.slice(0, 30).map(e => (
-              <div key={e.id} className="flex items-start justify-between gap-3 bg-[var(--bg)] rounded-xl px-3 py-2.5 text-sm">
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium">{formatDate(e.date)}</div>
-                  <div className="text-xs text-[var(--text-muted)] mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
-                    {fields.map(f => e.answers?.[f.id] ? (
-                      <span key={f.id}>{f.label}: {e.answers[f.id]}</span>
-                    ) : null)}
+          <button onClick={() => setShowHistory(!showHistory)}
+            className="flex items-center justify-between w-full text-left">
+            <h3 className="font-display text-lg">История</h3>
+            <span className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
+              {log.length} {log.length < 5 ? 'дня' : 'дней'}
+              <span className={`transition-transform ${showHistory ? 'rotate-180' : ''}`}><Icon name="chevronDown" size={16} /></span>
+            </span>
+          </button>
+          {showHistory && (
+            <div className="space-y-2 mt-4 fade-in">
+              {log.slice(0, 45).map(e => (
+                <div key={e.id} className="flex items-start justify-between gap-3 bg-[var(--bg)] rounded-xl px-3 py-2.5">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium">{fmtDate(e.date)}</div>
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {fields.map(f => {
+                        const ans = e.answers?.[f.id];
+                        if (!ans) return null;
+                        const oi = f.options.indexOf(ans);
+                        const color = CHECKLIST_OPTION_COLORS[(oi >= 0 ? oi : 0) % CHECKLIST_OPTION_COLORS.length];
+                        return (
+                          <span key={f.id} className="text-[10px] px-2 py-0.5 rounded-full font-medium"
+                            style={{ background: color + '22', color, border: `1px solid ${color}44` }}>
+                            {f.label}: {ans}
+                          </span>
+                        );
+                      })}
+                    </div>
                   </div>
+                  <button onClick={() => deleteDay(e.date)} className="p-1 text-red-400 hover:text-red-600 shrink-0">
+                    <Icon name="trash" size={14} />
+                  </button>
                 </div>
-                <button onClick={() => deleteDay(e.date)} className="p-1 text-red-400 hover:text-red-600 shrink-0">
-                  <Icon name="trash" size={14} />
-                </button>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
