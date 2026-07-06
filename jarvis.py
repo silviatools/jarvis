@@ -917,6 +917,29 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(200, {"ok": True})
             except Exception as e:
                 self._json(400, {"error": str(e)})
+        elif self.path == "/api/data/delete-log-entry":
+            # Dedicated, immediate deletion endpoint for date-log entries
+            # (dailyChecklistLog / dietLog). Bypasses the generic merge logic
+            # so a deleted entry can never be resurrected by a racing pull
+            # that fetches a server snapshot taken just before this delete.
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            try:
+                payload = json.loads(body)
+                key = payload.get("key")
+                date = payload.get("date")
+                if key not in DATE_LOG_KEYS or not date:
+                    self._json(400, {"error": "invalid key/date"})
+                    return
+                app_data = load_app_data() if APP_DATA_FILE.exists() else {}
+                app_data[key] = [
+                    e for e in (app_data.get(key) or [])
+                    if not (isinstance(e, dict) and e.get("date") == date)
+                ]
+                save_app_data(app_data)
+                self._json(200, {"ok": True})
+            except Exception as e:
+                self._json(400, {"error": str(e)})
         else:
             self.send_response(404)
             self.end_headers()

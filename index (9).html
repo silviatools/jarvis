@@ -365,6 +365,22 @@ const fetchServerData = async () => {
 
 let getAppDataSnapshot = () => null;
 
+// Dedicated, immediate delete for date-log entries (dailyChecklistLog / dietLog).
+// Uses keepalive so the request survives even if the user reloads the page
+// right after clicking delete — avoids the race where a later pull-merge
+// (which trusts the server for these bot-writable logs) would resurrect
+// the entry from a stale server snapshot fetched before this delete landed.
+const deleteLogEntryOnServer = (key, date) => {
+  try {
+    fetch('/api/data/delete-log-entry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, date }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (_) {}
+};
+
 const pushServerData = (() => {
   let timer = null;
   const doPush = async (snapshot) => {
@@ -3173,11 +3189,8 @@ function DailyChecklistStats({ data, setData }) {
 
   const deleteDay = (date) => {
     if (!confirm('Удалить запись за этот день?')) return;
-    setData(d => {
-      const next = { ...d, dailyChecklistLog: (d.dailyChecklistLog || []).filter(e => e.date !== date) };
-      queueMicrotask(() => pushServerData.flush(next));
-      return next;
-    });
+    deleteLogEntryOnServer('dailyChecklistLog', date);
+    setData(d => ({ ...d, dailyChecklistLog: (d.dailyChecklistLog || []).filter(e => e.date !== date) }));
     if (selDate === date) setSelDate(today);
   };
 
@@ -3767,11 +3780,8 @@ function DietComplianceView({ data, setData }) {
   };
 
   const deleteEntry = (date) => {
-    setData(d => {
-      const next = { ...d, dietLog: (d.dietLog || []).filter(e => e.date !== date) };
-      queueMicrotask(() => pushServerData.flush(next));
-      return next;
-    });
+    deleteLogEntryOnServer('dietLog', date);
+    setData(d => ({ ...d, dietLog: (d.dietLog || []).filter(e => e.date !== date) }));
   };
 
   const onPlanCount = log.filter(e => e.level === 'on_plan').length;
