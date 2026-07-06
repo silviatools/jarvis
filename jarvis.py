@@ -276,6 +276,55 @@ def _merge_id_arrays(local_arr, server_arr, prefer_local: bool) -> list:
     return list(by_id.values())
 
 
+def _merge_date_log_entries(local_arr, server_arr, prefer_local: bool) -> list:
+    def _norm(e):
+        if not isinstance(e, dict) or not e.get("date"):
+            return None
+        out = dict(e)
+        if "answers" in e or any(isinstance(v, dict) for v in [e.get("answers")]):
+            out["answers"] = {**(e.get("answers") or {})}
+        return out
+
+    local = [x for x in ((_norm(e) for e in (local_arr or []))) if x]
+    server = [x for x in ((_norm(e) for e in (server_arr or []))) if x]
+    server_by_date = {e["date"]: e for e in server}
+
+    if prefer_local:
+        result = []
+        for entry in local:
+            srv = server_by_date.get(entry["date"])
+            if not srv:
+                result.append(entry)
+                continue
+            merged = {**srv, **entry}
+            if "answers" in srv or "answers" in entry:
+                merged["answers"] = {**(srv.get("answers") or {}), **(entry.get("answers") or {})}
+            if "level" in entry:
+                merged["level"] = entry["level"]
+            elif "level" in srv:
+                merged["level"] = srv["level"]
+            merged["id"] = entry.get("id") or srv.get("id")
+            result.append(merged)
+        return sorted(result, key=lambda e: e.get("date", ""), reverse=True)
+
+    by_date: dict[str, dict] = {}
+    for e in local:
+        by_date[e["date"]] = dict(e)
+    for e in server:
+        prev = by_date.get(e["date"])
+        if not prev:
+            by_date[e["date"]] = dict(e)
+            continue
+        merged = {**prev, **e}
+        if "answers" in prev or "answers" in e:
+            merged["answers"] = {**(prev.get("answers") or {}), **(e.get("answers") or {})}
+        if "level" in e:
+            merged["level"] = e["level"]
+        merged["id"] = e.get("id") or prev.get("id")
+        by_date[e["date"]] = merged
+    return sorted(by_date.values(), key=lambda e: e.get("date", ""), reverse=True)
+
+
 def merge_app_data(local: dict, server: dict, mode: str = "pull") -> dict:
     """Merge app-data dicts. mode='push' → incoming (local) wins; mode='pull' → local wins except bot logs."""
     if not server:
@@ -294,32 +343,7 @@ def merge_app_data(local: dict, server: dict, mode: str = "pull") -> dict:
         else:
             prefer_local = _prefer_local_for_key(key, mode)
             if key in DATE_LOG_KEYS and (isinstance(l, list) or isinstance(s, list)):
-                by_date: dict[str, dict] = {}
-                first = l if not prefer_local else s
-                second = s if not prefer_local else l
-                for e in (first if isinstance(first, list) else []):
-                    if isinstance(e, dict) and e.get("date"):
-                        by_date[e["date"]] = {**e, "answers": {**(e.get("answers") or {})}}
-                for e in (second if isinstance(second, list) else []):
-                    if not isinstance(e, dict) or not e.get("date"):
-                        continue
-                    prev = by_date.get(e["date"])
-                    if not prev:
-                        by_date[e["date"]] = {**e, "answers": {**(e.get("answers") or {})}}
-                    else:
-                        if prefer_local:
-                            by_date[e["date"]] = {
-                                **prev, **e,
-                                "answers": {**(prev.get("answers") or {}), **(e.get("answers") or {})},
-                                "id": e.get("id") or prev.get("id"),
-                            }
-                        else:
-                            by_date[e["date"]] = {
-                                **e, **prev,
-                                "answers": {**(e.get("answers") or {}), **(prev.get("answers") or {})},
-                                "id": prev.get("id") or e.get("id"),
-                            }
-                merged[key] = sorted(by_date.values(), key=lambda e: e.get("date", ""), reverse=True)
+                merged[key] = _merge_date_log_entries(l, s, prefer_local)
             elif isinstance(l, list) or isinstance(s, list):
                 merged[key] = _merge_id_arrays(l, s, prefer_local)
             elif _is_plain_object(l) and _is_plain_object(s):

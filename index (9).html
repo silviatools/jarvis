@@ -284,31 +284,43 @@ const mergeIdArrays = (localArr, serverArr, preferLocal) => {
 };
 
 const mergeDateLogEntries = (localArr, serverArr, preferLocal) => {
-  const byDate = new Map();
-  const ingest = (arr, primary) => {
-    (Array.isArray(arr) ? arr : []).forEach(e => {
-      if (!e?.date) return;
-      const prev = byDate.get(e.date);
-      if (!prev) {
-        byDate.set(e.date, { ...e, answers: { ...(e.answers || {}) } });
-        return;
-      }
-      byDate.set(e.date, {
-        ...(primary ? { ...prev, ...e } : { ...e, ...prev }),
-        answers: primary
-          ? { ...(prev.answers || {}), ...(e.answers || {}) }
-          : { ...(e.answers || {}), ...(prev.answers || {}) },
-        id: primary ? (e.id || prev.id) : (prev.id || e.id),
-      });
-    });
-  };
+  const norm = (e) => ({ ...e, answers: { ...(e.answers || {}) } });
+  const local = (Array.isArray(localArr) ? localArr : []).filter(e => e?.date).map(norm);
+  const server = (Array.isArray(serverArr) ? serverArr : []).filter(e => e?.date).map(norm);
+  const serverByDate = new Map(server.map(e => [e.date, e]));
+
   if (preferLocal) {
-    ingest(serverArr, false);
-    ingest(localArr, true);
-  } else {
-    ingest(localArr, false);
-    ingest(serverArr, true);
+    // push: локальный список дат — источник правды (удаления сохраняются)
+    return local.map(localEntry => {
+      const srv = serverByDate.get(localEntry.date);
+      if (!srv) return localEntry;
+      return {
+        ...srv,
+        ...localEntry,
+        answers: { ...(srv.answers || {}), ...(localEntry.answers || {}) },
+        level: localEntry.level !== undefined ? localEntry.level : srv.level,
+        id: localEntry.id || srv.id,
+      };
+    }).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   }
+
+  // pull: сервер/бот побеждает, но новые дни с бота добавляются
+  const byDate = new Map();
+  local.forEach(e => byDate.set(e.date, { ...e }));
+  server.forEach(e => {
+    const prev = byDate.get(e.date);
+    if (!prev) {
+      byDate.set(e.date, { ...e });
+      return;
+    }
+    byDate.set(e.date, {
+      ...prev,
+      ...e,
+      answers: { ...(prev.answers || {}), ...(e.answers || {}) },
+      level: e.level !== undefined ? e.level : prev.level,
+      id: e.id || prev.id,
+    });
+  });
   return [...byDate.values()].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 };
 
@@ -355,8 +367,8 @@ let getAppDataSnapshot = () => null;
 
 const pushServerData = (() => {
   let timer = null;
-  const doPush = async () => {
-    const local = getAppDataSnapshot();
+  const doPush = async (snapshot) => {
+    const local = snapshot || getAppDataSnapshot();
     if (!local) return;
     try {
       const serverData = await fetchServerData();
@@ -371,12 +383,12 @@ const pushServerData = (() => {
   return {
     schedule: () => {
       clearTimeout(timer);
-      timer = setTimeout(doPush, 400);
+      timer = setTimeout(() => doPush(), 400);
     },
-    flush: () => {
+    flush: (snapshot) => {
       clearTimeout(timer);
       timer = null;
-      return doPush();
+      return doPush(snapshot);
     },
   };
 })();
@@ -3161,7 +3173,12 @@ function DailyChecklistStats({ data, setData }) {
 
   const deleteDay = (date) => {
     if (!confirm('Удалить запись за этот день?')) return;
-    setData(d => ({ ...d, dailyChecklistLog: (d.dailyChecklistLog || []).filter(e => e.date !== date) }));
+    setData(d => {
+      const next = { ...d, dailyChecklistLog: (d.dailyChecklistLog || []).filter(e => e.date !== date) };
+      queueMicrotask(() => pushServerData.flush(next));
+      return next;
+    });
+    if (selDate === date) setSelDate(today);
   };
 
   const selEntry = log.find(e => e.date === selDate);
@@ -3750,7 +3767,11 @@ function DietComplianceView({ data, setData }) {
   };
 
   const deleteEntry = (date) => {
-    setData(d => ({ ...d, dietLog: (d.dietLog || []).filter(e => e.date !== date) }));
+    setData(d => {
+      const next = { ...d, dietLog: (d.dietLog || []).filter(e => e.date !== date) };
+      queueMicrotask(() => pushServerData.flush(next));
+      return next;
+    });
   };
 
   const onPlanCount = log.filter(e => e.level === 'on_plan').length;
