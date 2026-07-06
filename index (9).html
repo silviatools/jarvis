@@ -259,6 +259,37 @@ const loadData = () => {
   }
 };
 
+// Generic, whitelist-free merge of server data with local data so NO entered
+// data is ever lost — even for fields added later. Rules:
+//  • arrays of {id} objects → union by id (server wins on conflicts, local-only kept)
+//  • plain object maps       → union of keys (server wins on conflicts, local-only kept)
+//  • everything else         → server value if present, otherwise local value
+const isPlainObject = (v) => v && typeof v === 'object' && !Array.isArray(v);
+const isIdArray = (a) => Array.isArray(a) && a.length > 0 && a.every(e => e && typeof e === 'object' && 'id' in e);
+
+const mergeAppData = (local, server) => {
+  const merged = { ...local, ...server };
+  const keys = new Set([...Object.keys(local || {}), ...Object.keys(server || {})]);
+  for (const key of keys) {
+    const l = local ? local[key] : undefined;
+    const s = server ? server[key] : undefined;
+    if (s === undefined) { merged[key] = l; continue; }      // server missing → keep local
+    if (l === undefined) { merged[key] = s; continue; }      // local missing → take server
+    if (isIdArray(l) || isIdArray(s)) {
+      // union by id; server entry overrides local one with same id
+      const byId = new Map();
+      (Array.isArray(l) ? l : []).forEach(e => { if (e && e.id != null) byId.set(e.id, e); });
+      (Array.isArray(s) ? s : []).forEach(e => { if (e && e.id != null) byId.set(e.id, e); });
+      merged[key] = [...byId.values()];
+    } else if (isPlainObject(l) && isPlainObject(s)) {
+      merged[key] = { ...l, ...s };                          // union keys, server wins
+    } else {
+      merged[key] = s;                                       // scalars / non-id arrays → server
+    }
+  }
+  return merged;
+};
+
 const saveData = (data) => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 };
@@ -484,33 +515,8 @@ function App() {
     fetchServerData().then(serverData => {
       if (serverData) {
         setData(prev => {
-          // Server is source of truth, but preserve any fields/keys missing from server
-          // (e.g. new fields added to code that aren't in old server JSON yet)
-          const merged = { ...prev, ...serverData };
-
-          // For arrays: merge by id so no entries are lost from either side
-          const arrayKeys = [
-            'bodyEntries', 'supplements', 'meals', 'cookingPlans', 'containers', 'dietLog',
-            'cars', 'serviceRecords', 'budgetExpenses', 'budgetCategories',
-            'budgetRecurring', 'budgetPlanCategories', 'budgetRecurringCategories',
-            'savingsCorrections', 'savingsTransactions', 'holidays', 'bossTasks',
-          ];
-          for (const key of arrayKeys) {
-            const serverArr = serverData[key] || [];
-            const localArr = prev[key] || [];
-            if (localArr.length > 0) {
-              const serverIds = new Set(serverArr.map(e => e.id).filter(Boolean));
-              const uniqueLocal = localArr.filter(e => e.id && !serverIds.has(e.id));
-              merged[key] = uniqueLocal.length > 0 ? [...serverArr, ...uniqueLocal] : serverArr;
-            }
-          }
-
-          // For plain-object fields: if server is missing the key, keep local value
-          const objectKeys = ['dietPlan', 'budgetPlanValues', 'savingsActual'];
-          for (const key of objectKeys) {
-            if (!serverData[key] && prev[key]) merged[key] = prev[key];
-          }
-
+          // Whitelist-free merge so no entered data is ever lost, for any field
+          const merged = mergeAppData(prev, serverData);
           saveData(merged);
           return merged;
         });
@@ -560,13 +566,34 @@ function App() {
 
   // On every change: save locally + push to server (debounced)
   // Don't push to server until initial server load completes to avoid overwriting
+  const dataRef = React.useRef(data);
   useEffect(() => {
+    dataRef.current = data;
     if (initialLoad.current) { initialLoad.current = false; return; }
     saveData(data);
     if (serverLoaded.current) {
       pushServerData(data);
     }
   }, [data]);
+
+  // Flush latest data to the server synchronously when the page is hidden/closed,
+  // so a change made just before closing (before the debounce fires) isn't lost.
+  useEffect(() => {
+    const flush = () => {
+      if (!serverLoaded.current) return;
+      try {
+        const blob = new Blob([JSON.stringify(dataRef.current)], { type: 'application/json' });
+        if (navigator.sendBeacon) navigator.sendBeacon('/api/data', blob);
+      } catch (_) {}
+    };
+    const onHide = () => { if (document.visibilityState === 'hidden') flush(); };
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('pagehide', flush);
+    };
+  }, []);
 
   // Очистка отметок старше сегодняшнего дня
   useEffect(() => {
