@@ -292,6 +292,7 @@ const DEFAULT_DATA = () => ({
   dailyChecklistFields: [],
   dailyChecklistReminder: { enabled: false, time: '21:00', days: [0, 1, 2, 3, 4, 5, 6] },
   dailyChecklistLog: [],
+  shoppingLists: [],
   deletedIds: {},
   settings: { ...DEFAULT_SETTINGS },
 });
@@ -332,6 +333,78 @@ const normalizeMeal = (meal) => ({
   lunch: normalizeMealSection(meal.lunch),
   dinner: normalizeMealSection(meal.dinner),
 });
+
+// ── Закупка (shopping list): aggregate product amounts across selected meal
+// plans × quantity, for totalling a grocery run. ──────────────────────────
+const MEAL_SECTION_KEYS = ['breakfast', 'snack', 'lunch', 'dinner'];
+
+const UNIT_ALIASES = {
+  'г': 'г', 'гр': 'г', 'грамм': 'г', 'граммов': 'г', 'грамма': 'г',
+  'кг': 'кг', 'килограмм': 'кг', 'килограмма': 'кг', 'килограммов': 'кг',
+  'мл': 'мл', 'миллилитр': 'мл', 'миллилитра': 'мл', 'миллилитров': 'мл',
+  'л': 'л', 'литр': 'л', 'литра': 'л', 'литров': 'л',
+  'шт': 'шт', 'штук': 'шт', 'штука': 'шт', 'штуки': 'шт',
+  'ст.л': 'ст.л', 'ложка': 'ст.л', 'ложки': 'ст.л', 'ложек': 'ст.л',
+  'ч.л': 'ч.л',
+};
+const normalizeUnit = (u) => {
+  const raw = (u || '').trim().toLowerCase();
+  const noDot = raw.replace(/\.+$/, '');
+  return UNIT_ALIASES[raw] || UNIT_ALIASES[noDot] || raw;
+};
+
+// "230гр" -> {value:230, unit:'г'}; "2 шт" -> {value:2, unit:'шт'}; "1" -> {value:1, unit:''}
+// Returns null if the amount doesn't start with a number (can't be summed numerically).
+const parseMealAmount = (amountStr) => {
+  const s = (amountStr || '').trim();
+  const m = s.match(/^(\d+(?:[.,]\d+)?)\s*(.*)$/);
+  if (!m) return null;
+  const value = parseFloat(m[1].replace(',', '.'));
+  if (isNaN(value)) return null;
+  return { value, unit: normalizeUnit(m[2]) };
+};
+
+const formatAmountValue = (v) => {
+  const rounded = Math.round(v * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded).replace('.', ',');
+};
+
+// selections: [{ mealId, qty }] — qty = how many times that meal plan is needed.
+// Returns { totals: [{product, unit, value}], uncounted: [{product, count}] },
+// both sorted alphabetically by product (ru locale).
+const aggregateShoppingList = (meals, selections) => {
+  const totals = new Map();
+  const uncounted = new Map();
+  (selections || []).forEach(sel => {
+    const qty = Number(sel.qty) || 0;
+    if (qty <= 0) return;
+    const meal = meals.find(m => m.id === sel.mealId);
+    if (!meal) return;
+    MEAL_SECTION_KEYS.forEach(key => {
+      (meal[key] || []).forEach(item => {
+        const product = (item.product || '').trim();
+        if (!product) return;
+        const parsed = parseMealAmount(item.amount);
+        if (parsed) {
+          const k = `${product.toLowerCase()}__${parsed.unit}`;
+          const cur = totals.get(k);
+          if (cur) cur.value += parsed.value * qty;
+          else totals.set(k, { product, unit: parsed.unit, value: parsed.value * qty });
+        } else {
+          const k = product.toLowerCase();
+          const cur = uncounted.get(k);
+          if (cur) cur.count += qty;
+          else uncounted.set(k, { product, count: qty });
+        }
+      });
+    });
+  });
+  const byProduct = (a, b) => a.product.localeCompare(b.product, 'ru');
+  return {
+    totals: [...totals.values()].sort(byProduct),
+    uncounted: [...uncounted.values()].sort(byProduct),
+  };
+};
 
 const loadData = () => {
   try {
@@ -1403,7 +1476,7 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
       ) : (
         <>
           <div className="flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6 gap-0 overflow-x-auto">
-            {[{ id: 'plan', label: 'План' }, { id: 'cooking', label: 'Готовка' }, { id: 'containers', label: 'Контейнеры' }, { id: 'counter', label: 'Счётчик' }].map(t => (
+            {[{ id: 'plan', label: 'План' }, { id: 'cooking', label: 'Готовка' }, { id: 'containers', label: 'Контейнеры' }, { id: 'counter', label: 'Счётчик' }, { id: 'purchase', label: 'Закупка' }].map(t => (
               <button
                 key={t.id}
                 onClick={() => setMealTab(t.id)}
@@ -1420,6 +1493,7 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
           {mealTab === 'cooking' && <CookingView data={data} setData={setData} />}
           {mealTab === 'containers' && <ContainersView data={data} setData={setData} />}
           {mealTab === 'counter' && <RationCounter data={data} setData={setData} />}
+          {mealTab === 'purchase' && <MealPurchaseView data={data} setData={setData} />}
         </>
       )}
     </div>
@@ -1670,6 +1744,187 @@ function MealSection({ title, items }) {
             {item.amount && <span className="text-[var(--text-muted)] text-sm shrink-0">{item.amount}</span>}
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ============== MEAL PURCHASE (Закупка) ==============
+
+function MealPurchaseView({ data, setData }) {
+  const [editing, setEditing] = useState(null); // 'new' | list | null
+
+  const meals = (data.meals || []).filter(m => !m.archived).map(normalizeMeal);
+  const lists = [...(data.shoppingLists || [])].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+  const save = (list) => {
+    setData(d => {
+      const arr = d.shoppingLists || [];
+      const exists = arr.find(x => x.id === list.id);
+      return { ...d, shoppingLists: exists ? arr.map(x => x.id === list.id ? list : x) : [...arr, list] };
+    });
+    setEditing(null);
+  };
+
+  const remove = (id) => {
+    if (!confirm('Удалить закупку?')) return;
+    setData(d => ({ ...d, shoppingLists: (d.shoppingLists || []).filter(x => x.id !== id) }));
+  };
+
+  if (editing) {
+    return (
+      <MealPurchaseForm
+        meals={meals}
+        list={editing === 'new' ? null : editing}
+        onSave={save}
+        onCancel={() => setEditing(null)}
+      />
+    );
+  }
+
+  const fmtDate = (ms) => ms ? new Date(ms).toLocaleDateString('ru-RU') : '';
+
+  return (
+    <div className="fade-in space-y-4">
+      <button onClick={() => setEditing('new')} className="btn-primary flex items-center gap-2 text-sm">
+        <Icon name="plus" size={16} /> Добавить закупку
+      </button>
+
+      {meals.length === 0 ? (
+        <EmptyState title="Нет рационов" text="Сначала создайте рационы во вкладке «План»" />
+      ) : lists.length === 0 ? (
+        <EmptyState title="Нет закупок" text="Выберите рационы и их количество — получите список продуктов" />
+      ) : (
+        <div className="space-y-3">
+          {lists.map(list => {
+            const count = (list.selections || []).filter(s => Number(s.qty) > 0).length;
+            return (
+              <div key={list.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <button onClick={() => setEditing(list)} className="text-left flex-1 min-w-0">
+                    <div className="font-medium">{list.name || 'Закупка'}</div>
+                    <div className="text-xs text-[var(--text-muted)] mt-1">
+                      {fmtDate(list.createdAt)} · {count} {count === 1 ? 'рацион' : count < 5 ? 'рациона' : 'рационов'}
+                    </div>
+                  </button>
+                  <div className="flex gap-1 shrink-0">
+                    <button onClick={() => setEditing(list)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={16} /></button>
+                    <button onClick={() => remove(list.id)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={16} /></button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MealPurchaseForm({ meals, list, onSave, onCancel }) {
+  const todayLabel = new Date().toLocaleDateString('ru-RU');
+  const [name, setName] = useState(list?.name || `Закупка от ${todayLabel}`);
+  const [qtyByMeal, setQtyByMeal] = useState(() => {
+    const init = {};
+    (list?.selections || []).forEach(s => { init[s.mealId] = String(s.qty); });
+    return init;
+  });
+
+  const toggleMeal = (mealId) => {
+    setQtyByMeal(q => {
+      const next = { ...q };
+      if (next[mealId] !== undefined) delete next[mealId];
+      else next[mealId] = '1';
+      return next;
+    });
+  };
+  const setQty = (mealId, v) => setQtyByMeal(q => ({ ...q, [mealId]: v }));
+
+  const selections = Object.entries(qtyByMeal).map(([mealId, qty]) => ({ mealId, qty: Number(qty) || 0 }));
+  const { totals, uncounted } = aggregateShoppingList(meals, selections);
+  const hasSelection = selections.some(s => s.qty > 0);
+
+  const submit = () => {
+    const clean = selections.filter(s => s.qty > 0);
+    if (!clean.length) return alert('Выберите хотя бы один рацион с количеством больше 0');
+    onSave({
+      id: list?.id || crypto.randomUUID(),
+      name: name.trim() || `Закупка от ${todayLabel}`,
+      selections: clean,
+      createdAt: list?.createdAt || Date.now(),
+      updatedAt: Date.now(),
+    });
+  };
+
+  return (
+    <div className="fade-in space-y-5">
+      <div className="flex items-center gap-3">
+        <button onClick={onCancel} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]"><Icon name="x" size={20} /></button>
+        <h2 className="font-display text-2xl">{list ? 'Редактировать закупку' : 'Новая закупка'}</h2>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Название</label>
+        <input value={name} onChange={e => setName(e.target.value)} placeholder={`Закупка от ${todayLabel}`} />
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div className="text-sm font-semibold mb-3">Рационы и количество</div>
+        {meals.length === 0 ? (
+          <div className="text-sm text-[var(--text-subtle)]">Нет доступных рационов</div>
+        ) : (
+          <div className="space-y-2">
+            {meals.map(meal => {
+              const checked = qtyByMeal[meal.id] !== undefined;
+              return (
+                <div key={meal.id} className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 transition-colors ${checked ? 'border-[var(--text)] bg-[var(--bg)]' : 'border-[var(--border)]'}`}>
+                  <label className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer !mb-0">
+                    <input type="checkbox" className="!w-auto" checked={checked} onChange={() => toggleMeal(meal.id)} />
+                    <span className="text-sm font-medium truncate">{meal.name}</span>
+                  </label>
+                  {checked && (
+                    <input
+                      type="number" min="0" inputMode="numeric"
+                      value={qtyByMeal[meal.id]}
+                      onChange={e => setQty(meal.id, e.target.value)}
+                      placeholder="Кол-во"
+                      style={{ width: '90px', textAlign: 'center' }}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {hasSelection && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <div className="text-sm font-semibold mb-3">Итого по продуктам</div>
+          {totals.length === 0 && uncounted.length === 0 ? (
+            <div className="text-sm text-[var(--text-subtle)]">В выбранных рационах нет продуктов</div>
+          ) : (
+            <div className="space-y-1.5">
+              {totals.map(t => (
+                <div key={`${t.product}__${t.unit}`} className="flex items-baseline justify-between gap-3 text-sm bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2">
+                  <span className="font-medium">{t.product}</span>
+                  <span className="text-[var(--text-muted)] shrink-0">{formatAmountValue(t.value)}{t.unit ? ` ${t.unit}` : ''}</span>
+                </div>
+              ))}
+              {uncounted.map(u => (
+                <div key={u.product} className="flex items-baseline justify-between gap-3 text-sm bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2">
+                  <span className="font-medium">{u.product}</span>
+                  <span className="text-[var(--text-subtle)] shrink-0">× {u.count} (без указания количества)</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="flex gap-3">
+        <button onClick={onCancel} className="btn-secondary flex-1">Отмена</button>
+        <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
       </div>
     </div>
   );
