@@ -54,6 +54,21 @@ FREQ_DAYS = {
     "weekly": 7, "biweekly": 14, "monthly": 30,
 }
 
+# Generic file uploads (e.g. training programs attached to «Режим»)
+ALLOWED_FILE_EXT = {
+    "pdf", "doc", "docx", "xls", "xlsx", "txt", "rtf", "csv",
+    "png", "jpg", "jpeg", "webp", "heic", "gif",
+}
+FILE_CONTENT_TYPES = {
+    "pdf": "application/pdf", "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "txt": "text/plain; charset=utf-8", "rtf": "application/rtf", "csv": "text/csv",
+    "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    "webp": "image/webp", "heic": "image/heic", "gif": "image/gif",
+}
+
 WELCOME_TEXT = (
     "👋 <b>Jarvis подключён!</b>\n\n"
     "Вы будете получать напоминания об уборке в настроенное время."
@@ -334,6 +349,17 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(200, {"ok": True})
             else:
                 self._json(404, {"error": "not found"})
+        elif self.path.startswith("/api/files/"):
+            filename = self.path[len("/api/files/"):].split("?", 1)[0]
+            if "/" in filename or ".." in filename or not filename:
+                self._json(400, {"error": "invalid"})
+                return
+            file_path = DATA_DIR / "files" / filename
+            if file_path.exists():
+                file_path.unlink()
+                self._json(200, {"ok": True})
+            else:
+                self._json(404, {"error": "not found"})
         else:
             self.send_response(404)
             self.end_headers()
@@ -386,6 +412,25 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 ct = {"jpg":"image/jpeg","jpeg":"image/jpeg","png":"image/png",
                       "webp":"image/webp","heic":"image/heic","gif":"image/gif"}.get(ext, "application/octet-stream")
                 content = photo_path.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", ct)
+                self.send_header("Content-Length", str(len(content)))
+                self.send_header("Cache-Control", "public, max-age=31536000")
+                self._cors()
+                self.end_headers()
+                self.wfile.write(content)
+            else:
+                self._json(404, {"error": "not found"})
+        elif self.path.startswith("/api/files/"):
+            filename = self.path[len("/api/files/"):].split("?", 1)[0]
+            if "/" in filename or ".." in filename or not filename:
+                self._json(400, {"error": "invalid"})
+                return
+            file_path = DATA_DIR / "files" / filename
+            if file_path.exists():
+                ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+                ct = FILE_CONTENT_TYPES.get(ext, "application/octet-stream")
+                content = file_path.read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", ct)
                 self.send_header("Content-Length", str(len(content)))
@@ -452,6 +497,33 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             photos_dir = DATA_DIR / "photos"
             photos_dir.mkdir(parents=True, exist_ok=True)
             (photos_dir / filename).write_bytes(body)
+            self._json(200, {"filename": filename})
+        elif self.path.startswith("/api/files"):
+            import uuid as _uuid
+            ext = "bin"
+            if "?" in self.path:
+                for part in self.path.split("?", 1)[1].split("&"):
+                    if part.startswith("ext="):
+                        raw = part[4:].lower()[:5]
+                        if raw in ALLOWED_FILE_EXT:
+                            ext = raw
+                        break
+            length = int(self.headers.get("Content-Length", 0))
+            MAX_FILE = 25 * 1024 * 1024  # 25 MB hard cap
+            if length > MAX_FILE:
+                self._json(413, {"error": "file too large"})
+                return
+            body = self.rfile.read(length) if length else self.rfile.read(MAX_FILE)
+            if not body:
+                self._json(400, {"error": "empty body"})
+                return
+            if len(body) > MAX_FILE:
+                self._json(413, {"error": "file too large"})
+                return
+            filename = str(_uuid.uuid4()) + "." + ext
+            files_dir = DATA_DIR / "files"
+            files_dir.mkdir(parents=True, exist_ok=True)
+            (files_dir / filename).write_bytes(body)
             self._json(200, {"filename": filename})
         elif self.path == "/api/data":
             length = int(self.headers.get("Content-Length", 0))
