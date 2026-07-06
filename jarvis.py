@@ -265,16 +265,54 @@ def _prefer_local_for_key(key: str, mode: str) -> bool:
     return key not in DATE_LOG_KEYS
 
 
-def _merge_id_arrays(local_arr, server_arr, prefer_local: bool) -> list:
+def _looks_like_id_array(a) -> bool:
+    return any(isinstance(e, dict) and e.get("id") is not None for e in (a if isinstance(a, list) else []))
+
+
+def _merge_deleted_ids_maps(local_all: dict | None, server_all: dict | None) -> dict:
+    """Merge per-collection {id: deletedAtMs} tombstone maps, keeping the
+    newest timestamp for any id present on both sides."""
+    merged: dict = {}
+    for ck in set((local_all or {}).keys()) | set((server_all or {}).keys()):
+        l = (local_all or {}).get(ck) or {}
+        s = (server_all or {}).get(ck) or {}
+        out = {}
+        for tid in set(l.keys()) | set(s.keys()):
+            out[tid] = max(l.get(tid, 0) or 0, s.get(tid, 0) or 0)
+        merged[ck] = out
+    return merged
+
+
+def _merge_id_arrays(local_arr, server_arr, prefer_local: bool, deleted_for_key: dict | None = None) -> list:
+    la = local_arr if isinstance(local_arr, list) else []
+    sa = server_arr if isinstance(server_arr, list) else []
+
+    if not _looks_like_id_array(la) and not _looks_like_id_array(sa):
+        # Plain-value array (category name strings, id-order lists, etc.) —
+        # nothing has an `.id` to merge by. Union unique values instead of
+        # collapsing to [] (which is what the old id-based logic always did
+        # for these), while still respecting explicit deletions by value.
+        seen: set = set()
+        out = []
+        for v in [*la, *sa]:
+            k = json.dumps(v, sort_keys=True) if isinstance(v, (dict, list)) else v
+            if k not in seen and not (deleted_for_key and str(k) in deleted_for_key):
+                seen.add(k)
+                out.append(v)
+        return out
+
     by_id: dict = {}
-    first = server_arr if prefer_local else local_arr
-    second = local_arr if prefer_local else server_arr
-    for e in (first if isinstance(first, list) else []):
+    first = sa if prefer_local else la
+    second = la if prefer_local else sa
+    for e in first:
         if isinstance(e, dict) and e.get("id") is not None:
-            by_id[e["id"]] = e
-    for e in (second if isinstance(second, list) else []):
+            by_id[str(e["id"])] = e
+    for e in second:
         if isinstance(e, dict) and e.get("id") is not None:
-            by_id[e["id"]] = e
+            by_id[str(e["id"])] = e
+    if deleted_for_key:
+        for tid in deleted_for_key:
+            by_id.pop(str(tid), None)
     return list(by_id.values())
 
 
@@ -334,8 +372,12 @@ def merge_app_data(local: dict, server: dict, mode: str = "pull") -> dict:
     if not local:
         return server or {}
     merged = {**local, **server}
+    merged_deleted_ids = _merge_deleted_ids_maps(local.get("deletedIds"), server.get("deletedIds"))
     keys = set(local.keys()) | set(server.keys())
     for key in keys:
+        if key == "deletedIds":
+            merged[key] = merged_deleted_ids
+            continue
         l = local.get(key)
         s = server.get(key)
         if s is None:
@@ -347,7 +389,7 @@ def merge_app_data(local: dict, server: dict, mode: str = "pull") -> dict:
             if key in DATE_LOG_KEYS and (isinstance(l, list) or isinstance(s, list)):
                 merged[key] = _merge_date_log_entries(l, s, prefer_local)
             elif isinstance(l, list) or isinstance(s, list):
-                merged[key] = _merge_id_arrays(l, s, prefer_local)
+                merged[key] = _merge_id_arrays(l, s, prefer_local, merged_deleted_ids.get(key))
             elif _is_plain_object(l) and _is_plain_object(s):
                 merged[key] = {**s, **l} if prefer_local else {**l, **s}
             else:

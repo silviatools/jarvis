@@ -292,6 +292,7 @@ const DEFAULT_DATA = () => ({
   dailyChecklistFields: [],
   dailyChecklistReminder: { enabled: false, time: '21:00', days: [0, 1, 2, 3, 4, 5, 6] },
   dailyChecklistLog: [],
+  deletedIds: {},
   settings: { ...DEFAULT_SETTINGS },
 });
 
@@ -318,12 +319,63 @@ const DATE_LOG_KEYS = new Set(['dietLog', 'dailyChecklistLog']);
 
 const preferLocalForKey = (key, mode) => mode === 'push' || !DATE_LOG_KEYS.has(key);
 
-const mergeIdArrays = (localArr, serverArr, preferLocal) => {
+// Merge two per-collection "deleted id" tombstone maps ({ [id]: deletedAtMs }),
+// keeping the newest timestamp for any id present on both sides.
+const mergeDeletedIdsMaps = (localAll, serverAll) => {
+  const merged = {};
+  const collKeys = new Set([...Object.keys(localAll || {}), ...Object.keys(serverAll || {})]);
+  collKeys.forEach(ck => {
+    const l = (localAll || {})[ck] || {};
+    const s = (serverAll || {})[ck] || {};
+    const out = {};
+    new Set([...Object.keys(l), ...Object.keys(s)]).forEach(id => {
+      out[id] = Math.max(l[id] || 0, s[id] || 0);
+    });
+    merged[ck] = out;
+  });
+  return merged;
+};
+
+// Records that an item was explicitly deleted from a collection, so a later
+// merge (pull/push) with a server snapshot that still has it can never
+// resurrect it. Use alongside filtering the item out of the array itself.
+const withDeletedId = (d, collectionKey, id) => {
+  const all = { ...(d.deletedIds || {}) };
+  all[collectionKey] = { ...(all[collectionKey] || {}), [String(id)]: Date.now() };
+  return all;
+};
+
+// True if this array holds objects identifiable by `.id` (the normal case
+// for entity lists). False for plain-value arrays (category name strings,
+// id-order lists etc.) which have no per-item id to merge by.
+const looksLikeIdArray = (arr) => (Array.isArray(arr) ? arr : []).some(e => e && typeof e === 'object' && e.id != null);
+
+const mergeIdArrays = (localArr, serverArr, preferLocal, deletedForKey) => {
+  const la = Array.isArray(localArr) ? localArr : [];
+  const sa = Array.isArray(serverArr) ? serverArr : [];
+
+  if (!looksLikeIdArray(la) && !looksLikeIdArray(sa)) {
+    // Plain-value array — no id to merge by. Union unique values so neither
+    // side's entries are ever silently wiped out by a merge (this used to
+    // always collapse to [] since nothing in a string array has `.id`),
+    // while still respecting explicit deletions recorded by value.
+    const seen = new Set();
+    const out = [];
+    [...la, ...sa].forEach(v => {
+      const k = v && typeof v === 'object' ? JSON.stringify(v) : v;
+      if (!seen.has(k) && !(deletedForKey && deletedForKey[k] !== undefined)) { seen.add(k); out.push(v); }
+    });
+    return out;
+  }
+
   const byId = new Map();
-  const first = preferLocal ? serverArr : localArr;
-  const second = preferLocal ? localArr : serverArr;
-  (Array.isArray(first) ? first : []).forEach(e => { if (e?.id != null) byId.set(e.id, e); });
-  (Array.isArray(second) ? second : []).forEach(e => { if (e?.id != null) byId.set(e.id, e); });
+  const first = preferLocal ? sa : la;
+  const second = preferLocal ? la : sa;
+  first.forEach(e => { if (e?.id != null) byId.set(String(e.id), e); });
+  second.forEach(e => { if (e?.id != null) byId.set(String(e.id), e); });
+  if (deletedForKey) {
+    Object.keys(deletedForKey).forEach(id => byId.delete(id));
+  }
   return [...byId.values()];
 };
 
@@ -370,8 +422,10 @@ const mergeDateLogEntries = (localArr, serverArr, preferLocal) => {
 
 const mergeAppData = (local, server, mode = 'pull') => {
   const merged = { ...local, ...server };
+  const mergedDeletedIds = mergeDeletedIdsMaps(local?.deletedIds, server?.deletedIds);
   const keys = new Set([...Object.keys(local || {}), ...Object.keys(server || {})]);
   for (const key of keys) {
+    if (key === 'deletedIds') { merged[key] = mergedDeletedIds; continue; }
     const l = local ? local[key] : undefined;
     const s = server ? server[key] : undefined;
     if (s === undefined) { merged[key] = l; continue; }
@@ -380,7 +434,7 @@ const mergeAppData = (local, server, mode = 'pull') => {
     if (DATE_LOG_KEYS.has(key) && (Array.isArray(l) || Array.isArray(s))) {
       merged[key] = mergeDateLogEntries(l, s, preferLocal);
     } else if (Array.isArray(l) || Array.isArray(s)) {
-      merged[key] = mergeIdArrays(l, s, preferLocal);
+      merged[key] = mergeIdArrays(l, s, preferLocal, mergedDeletedIds[key]);
     } else if (isPlainObject(l) && isPlainObject(s)) {
       merged[key] = preferLocal ? { ...s, ...l } : { ...l, ...s };
     } else {
@@ -3115,6 +3169,7 @@ function DailyChecklistFieldsConfig({ data, setData }) {
         delete answers[id];
         return { ...e, answers };
       }),
+      deletedIds: withDeletedId(d, 'dailyChecklistFields', id),
     }));
     if (editingId === id) {
       editSnapshotRef.current = null;
@@ -6711,7 +6766,11 @@ function BodyView({ data, setData }) {
   const deleteEntry = (id) => {
     const entry = entries.find(e => e.id === id);
     (entry?.photos || []).map(normalizePhoto).forEach(p => deletePhoto(p.filename));
-    setData(d => ({ ...d, bodyEntries: (d.bodyEntries || []).filter(e => e.id !== id) }));
+    setData(d => ({
+      ...d,
+      bodyEntries: (d.bodyEntries || []).filter(e => e.id !== id),
+      deletedIds: withDeletedId(d, 'bodyEntries', id),
+    }));
   };
 
   if (editEntry !== null) {
@@ -6836,6 +6895,7 @@ function BodyModesView({ data, setData }) {
       ...d,
       bodyModes: (d.bodyModes || []).filter(m => m.id !== mode.id),
       activeBodyModeId: d.activeBodyModeId === mode.id ? null : d.activeBodyModeId,
+      deletedIds: withDeletedId(d, 'bodyModes', mode.id),
     }));
   };
 
@@ -7723,7 +7783,11 @@ function BodyFieldsSettings({ data, setData }) {
   const fields = data.bodyFields || DEFAULT_BODY_FIELDS;
   const cats = data.bodyPhotoCategories || DEFAULT_BODY_PHOTO_CATEGORIES;
 
-  const remove = (id) => setData(d => ({ ...d, bodyFields: (d.bodyFields || DEFAULT_BODY_FIELDS).filter(f => f.id !== id) }));
+  const remove = (id) => setData(d => ({
+    ...d,
+    bodyFields: (d.bodyFields || DEFAULT_BODY_FIELDS).filter(f => f.id !== id),
+    deletedIds: withDeletedId(d, 'bodyFields', id),
+  }));
   const move = (idx, dir) => {
     setData(d => {
       const arr = [...(d.bodyFields || DEFAULT_BODY_FIELDS)];
@@ -7747,7 +7811,11 @@ function BodyFieldsSettings({ data, setData }) {
     setCustomLabel(''); setCustomUnit('');
   };
 
-  const removeCat = (c) => setData(d => ({ ...d, bodyPhotoCategories: (d.bodyPhotoCategories || DEFAULT_BODY_PHOTO_CATEGORIES).filter(x => x !== c) }));
+  const removeCat = (c) => setData(d => ({
+    ...d,
+    bodyPhotoCategories: (d.bodyPhotoCategories || DEFAULT_BODY_PHOTO_CATEGORIES).filter(x => x !== c),
+    deletedIds: withDeletedId(d, 'bodyPhotoCategories', c),
+  }));
   const moveCat = (idx, dir) => {
     setData(d => {
       const arr = [...(d.bodyPhotoCategories || DEFAULT_BODY_PHOTO_CATEGORIES)];
