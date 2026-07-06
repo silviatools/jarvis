@@ -150,34 +150,123 @@ def send_message(token: str, chat_id: int, text: str):
     })
 
 
-def poll_updates(token: str, subs: dict) -> bool:
-    if not requests:
-        return False
+# ── diet compliance (Соблюдение) ─────────────────────────────────────────────
+
+DIET_LABELS = {
+    "much_below": "Ниже", "below": "Чуть ниже", "on_plan": "По плану",
+    "above": "Чуть выше", "much_above": "Выше",
+}
+
+MONTHS_RU_GEN = ["", "января", "февраля", "марта", "апреля", "мая", "июня",
+                 "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+
+def human_date(date_iso: str) -> str:
+    """'2026-07-06' → '6 июля'."""
     try:
-        r = requests.get(
-            f"https://api.telegram.org/bot{token}/getUpdates",
-            params={"offset": subs["offset"], "timeout": 0},
-            timeout=15,
-        )
-        updates = r.json().get("result", []) if r.ok else []
-    except Exception as e:
-        print(f"  getUpdates: {e}")
-        return False
+        y, m, d = date_iso.split("-")
+        return f"{int(d)} {MONTHS_RU_GEN[int(m)]}"
+    except Exception:
+        return date_iso
 
-    changed = False
-    for upd in updates:
-        subs["offset"] = upd["update_id"] + 1
-        msg = upd.get("message") or upd.get("channel_post")
-        if not msg:
+def diet_keyboard(date_iso: str) -> dict:
+    def btn(level):
+        return {"text": DIET_LABELS[level], "callback_data": f"diet:{level}:{date_iso}"}
+    return {"inline_keyboard": [
+        [btn("much_below"), btn("below")],
+        [btn("on_plan")],
+        [btn("above"), btn("much_above")],
+    ]}
+
+
+def save_diet_entry(date_iso: str, level: str):
+    """Записать/обновить оценку питания за день прямо в файл БД."""
+    import uuid as _uuid
+    app = {}
+    if APP_DATA_FILE.exists():
+        try:
+            app = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            app = {}
+    log = [e for e in app.get("dietLog", []) if e.get("date") != date_iso]
+    log.append({"id": str(_uuid.uuid4()), "date": date_iso, "level": level})
+    log.sort(key=lambda e: e.get("date", ""), reverse=True)
+    app["dietLog"] = log
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    APP_DATA_FILE.write_text(json.dumps(app, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def handle_diet_callback(token: str, cq: dict):
+    cq_id = cq.get("id")
+    data_str = cq.get("data", "") or ""
+    if not data_str.startswith("diet:"):
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+        return
+    parts = data_str.split(":")
+    level = parts[1] if len(parts) > 1 else ""
+    date_iso = parts[2] if len(parts) > 2 else today_msk().isoformat()
+    if level not in DIET_LABELS:
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+        return
+    save_diet_entry(date_iso, level)
+    label = DIET_LABELS[level]
+    tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": f"✅ Записано: {label}"})
+    msg = cq.get("message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    mid = msg.get("message_id")
+    if chat_id and mid:
+        tg_post(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": mid,
+            "text": f"🍽 <b>Питание за {human_date(date_iso)}</b>\n\n✅ Записано: <b>{label}</b>",
+            "parse_mode": "HTML",
+        })
+    print(f"  diet callback: {date_iso} → {level}")
+
+
+# ── update-poller loop ───────────────────────────────────────────────────────
+# Long-polls Telegram continuously so inline-button presses (diet answers) and new
+# subscribers are handled within ~1s, independent of the minute-aligned notifier.
+
+def updates_loop():
+    print("Updates poller thread started.")
+    while True:
+        token = get_token()
+        if not token or not requests:
+            time.sleep(5)
             continue
-        cid = msg["chat"]["id"]
-        if cid not in subs["chat_ids"]:
-            subs["chat_ids"].append(cid)
-            changed = True
-            print(f"  New subscriber: {cid}")
-            send_message(token, cid, WELCOME_TEXT)
+        subs = load_subscribers()
+        try:
+            r = requests.get(
+                f"https://api.telegram.org/bot{token}/getUpdates",
+                params={"offset": subs["offset"], "timeout": 25},
+                timeout=30,
+            )
+            updates = r.json().get("result", []) if r.ok else []
+        except Exception as e:
+            print(f"  getUpdates(long): {e}")
+            time.sleep(3)
+            continue
 
-    return changed
+        changed = False
+        for upd in updates:
+            subs["offset"] = upd["update_id"] + 1
+            changed = True
+            cq = upd.get("callback_query")
+            if cq:
+                try:
+                    handle_diet_callback(token, cq)
+                except Exception as e:
+                    print(f"  diet callback error: {e}")
+                continue
+            msg = upd.get("message") or upd.get("channel_post")
+            if not msg:
+                continue
+            cid = msg["chat"]["id"]
+            if cid not in subs["chat_ids"]:
+                subs["chat_ids"].append(cid)
+                print(f"  New subscriber: {cid}")
+                send_message(token, cid, WELCOME_TEXT)
+        if changed:
+            save_subscribers(subs)
 
 
 # ── notifier loop ──────────────────────────────────────────────────────────
@@ -199,7 +288,6 @@ def _tick():
         return
 
     subs = load_subscribers()
-    changed = poll_updates(token, subs)
 
     # Read chores from app data (source of truth), fall back to config file
     chores = []
@@ -323,8 +411,30 @@ def _tick():
         for cid in subs["chat_ids"]:
             send_message(token, cid, text)
 
-    if changed:
-        save_subscribers(subs)
+    # Diet compliance: recurring «Как ты кушал сегодня?» with inline buttons
+    reminder = {}
+    diet_log = []
+    if APP_DATA_FILE.exists():
+        try:
+            app_data_raw = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
+            reminder = app_data_raw.get("dietReminder") or {}
+            diet_log = app_data_raw.get("dietLog", [])
+        except Exception:
+            pass
+    if reminder.get("enabled") and reminder.get("time", "") == now_str:
+        today_js = today_msk().isoweekday() % 7  # 0=Sun..6=Sat, matches JS getDay()
+        days = reminder.get("days", [0, 1, 2, 3, 4, 5, 6])
+        already = any(e.get("date") == today_iso for e in diet_log)
+        if today_js in days and not already:
+            kb = diet_keyboard(today_iso)
+            print(f"[{now_str} MSK] → diet ask ({len(subs['chat_ids'])} subscriber(s))")
+            for cid in subs["chat_ids"]:
+                tg_post(token, "sendMessage", {
+                    "chat_id": cid,
+                    "text": f"🍽 <b>Как ты кушал сегодня?</b>\n📅 {human_date(today_iso)}",
+                    "parse_mode": "HTML",
+                    "reply_markup": kb,
+                })
 
 
 # ── HTTP handler ───────────────────────────────────────────────────────────
@@ -591,6 +701,7 @@ def main():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     threading.Thread(target=notifier_loop, daemon=True).start()
+    threading.Thread(target=updates_loop, daemon=True).start()
 
     server = HTTPServer(("0.0.0.0", args.port), JarvisHandler)
     print(f"Jarvis is running → http://localhost:{args.port}")

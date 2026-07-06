@@ -242,6 +242,7 @@ const DEFAULT_DATA = () => ({
   savingsTransactions: [],
   budgetDebts: [],
   bodyModes: [],
+  dietReminder: { enabled: false, time: '20:00', days: [0, 1, 2, 3, 4, 5, 6] },
   settings: { ...DEFAULT_SETTINGS },
 });
 
@@ -594,6 +595,20 @@ function App() {
       document.removeEventListener('visibilitychange', onHide);
       window.removeEventListener('pagehide', flush);
     };
+  }, []);
+
+  // Re-sync from server when the app becomes visible again, so entries written
+  // server-side (e.g. diet answers from the Telegram bot) merge back in and
+  // aren't clobbered by a later local push.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible' || !serverLoaded.current) return;
+      fetchServerData().then(serverData => {
+        if (serverData) setData(prev => { const m = mergeAppData(prev, serverData); saveData(m); return m; });
+      });
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
   }, []);
 
   // Очистка отметок старше сегодняшнего дня
@@ -1092,7 +1107,7 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
       ) : (
         <>
           <div className="flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6 gap-0 overflow-x-auto">
-            {[{ id: 'plan', label: 'План' }, { id: 'compliance', label: 'Соблюдение' }, { id: 'cooking', label: 'Готовка' }, { id: 'containers', label: 'Контейнеры' }, { id: 'counter', label: 'Счётчик' }].map(t => (
+            {[{ id: 'plan', label: 'План' }, { id: 'cooking', label: 'Готовка' }, { id: 'containers', label: 'Контейнеры' }, { id: 'counter', label: 'Счётчик' }].map(t => (
               <button
                 key={t.id}
                 onClick={() => setMealTab(t.id)}
@@ -1106,7 +1121,6 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
           </div>
 
           {mealTab === 'plan' && <MealPlanView data={data} setData={setData} />}
-          {mealTab === 'compliance' && <DietComplianceView data={data} setData={setData} />}
           {mealTab === 'cooking' && <CookingView data={data} setData={setData} />}
           {mealTab === 'containers' && <ContainersView data={data} setData={setData} />}
           {mealTab === 'counter' && <RationCounter data={data} setData={setData} />}
@@ -5920,11 +5934,12 @@ function BodyView({ data, setData }) {
   }
 
   const tabs = [
-    { id: 'history',  label: 'История'  },
-    { id: 'photos',   label: 'Фото'     },
-    { id: 'progress', label: 'Прогресс' },
-    { id: 'modes',    label: 'Режим'    },
-    { id: 'fields',   icon: 'settings'  },
+    { id: 'history',    label: 'История'    },
+    { id: 'photos',     label: 'Фото'       },
+    { id: 'progress',   label: 'Прогресс'   },
+    { id: 'compliance', label: 'Соблюдение' },
+    { id: 'modes',      label: 'Режим'      },
+    { id: 'fields',     icon: 'settings'    },
   ];
 
   return (
@@ -5952,9 +5967,10 @@ function BodyView({ data, setData }) {
 
       {bodyTab === 'history'  && <BodyHistory entries={entries} fields={fields} categories={categories} onEdit={setEditEntry} onDelete={deleteEntry} />}
       {bodyTab === 'photos'   && <BodyPhotoGallery entries={entries} categories={categories} />}
-      {bodyTab === 'progress' && <BodyProgress entries={entries} fields={fields} />}
-      {bodyTab === 'modes'    && <BodyModesView data={data} setData={setData} />}
-      {bodyTab === 'fields'   && <BodyFieldsSettings data={data} setData={setData} />}
+      {bodyTab === 'progress'   && <BodyProgress entries={entries} fields={fields} />}
+      {bodyTab === 'compliance' && <DietComplianceView data={data} setData={setData} />}
+      {bodyTab === 'modes'      && <BodyModesView data={data} setData={setData} />}
+      {bodyTab === 'fields'     && <BodyFieldsSettings data={data} setData={setData} />}
     </div>
   );
 }
@@ -6665,8 +6681,57 @@ function BodyFieldsSettings({ data, setData }) {
 
   const available = [...DEFAULT_BODY_FIELDS, ...PRESET_BODY_FIELDS].filter(p => !fields.find(f => f.id === p.id));
 
+  const reminder = data.dietReminder || { enabled: false, time: '20:00', days: [0,1,2,3,4,5,6] };
+  const setReminder = (patch) => setData(d => ({ ...d, dietReminder: { ...(d.dietReminder || { enabled: false, time: '20:00', days: [0,1,2,3,4,5,6] }), ...patch } }));
+  const toggleDay = (dayId) => {
+    const cur = reminder.days || [];
+    setReminder({ days: cur.includes(dayId) ? cur.filter(x => x !== dayId) : [...cur, dayId].sort() });
+  };
+  const hasToken = !!(data.settings && data.settings.telegramToken);
+
   return (
     <div className="space-y-4">
+      {/* Telegram reminder for diet compliance */}
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="font-display text-lg">Напоминание в Telegram</h3>
+          <button onClick={() => setReminder({ enabled: !reminder.enabled })}
+            className={`relative w-11 h-6 rounded-full transition-colors ${reminder.enabled ? 'bg-green-500' : 'bg-[var(--border)]'}`}>
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${reminder.enabled ? 'translate-x-5' : ''}`} />
+          </button>
+        </div>
+        <p className="text-sm text-[var(--text-muted)] mb-4">Бот спросит «Как ты кушал сегодня?» и запишет ответ прямо из Telegram.</p>
+
+        {reminder.enabled && (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Время</label>
+              <input type="time" value={reminder.time || '20:00'} onChange={e => setReminder({ time: e.target.value })}
+                className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+            </div>
+            <div>
+              <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Дни недели</label>
+              <div className="flex flex-wrap gap-1.5">
+                {WEEKDAYS.map(w => {
+                  const on = (reminder.days || []).includes(w.id);
+                  return (
+                    <button key={w.id} onClick={() => toggleDay(w.id)}
+                      className={`w-10 h-10 rounded-xl text-sm font-medium transition-all ${on ? 'bg-[var(--text)] text-white' : 'bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
+                      {w.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            {!hasToken && (
+              <div className="text-xs text-amber-600 bg-amber-500/10 border border-amber-500/20 rounded-xl px-3 py-2">
+                Укажите токен Telegram-бота в Настройках → Общее, иначе напоминания не будут отправляться.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
         <h3 className="font-display text-lg mb-3">Текущие поля</h3>
         <div className="space-y-2">
