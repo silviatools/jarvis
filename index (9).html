@@ -503,9 +503,32 @@ const formatChoreDate = (dateStr) => {
 };
 
 // ============== APP ==============
+
+// Clean-URL deep links: /mybody → «Моё тело», etc. Keep in sync with
+// SPA_ROUTES in jarvis.py (the server serves index.html for these paths).
+const PATH_TAB_MAP = {
+  '/mybody': 'body',
+  '/budget': 'budget',
+  '/supplements': 'supplements',
+  '/meals': 'meals',
+  '/weather': 'weather',
+  '/house': 'house',
+  '/cars': 'cars',
+  '/holidays': 'holidays',
+  '/settings': 'settings',
+};
+const TAB_PATH_MAP = Object.fromEntries(Object.entries(PATH_TAB_MAP).map(([p, t]) => [t, p]));
+
+const getTabFromPath = () => {
+  try {
+    const path = window.location.pathname.replace(/\/+$/, '') || '/';
+    return PATH_TAB_MAP[path] || 'home';
+  } catch { return 'home'; }
+};
+
 function App() {
   const [data, setData] = useState(loadData());
-  const [tab, setTab] = useState('home'); // home | supplements | meals | weather | house | settings
+  const [tab, setTab] = useState(getTabFromPath); // home | supplements | meals | weather | house | settings
   const [settingsTab, setSettingsTab] = useState('general');
   const [houseTab, setHouseTab] = useState('boss');
   const [mealTab, setMealTab] = useState('plan');
@@ -609,6 +632,22 @@ function App() {
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
+
+  // Keep the URL in sync with the active tab (clean deep links like /mybody),
+  // and follow browser back/forward between tabs.
+  useEffect(() => {
+    const path = TAB_PATH_MAP[tab] || '/';
+    const currentPath = window.location.pathname.replace(/\/+$/, '') || '/';
+    if (currentPath !== path) {
+      window.history.replaceState(null, '', path);
+    }
+  }, [tab]);
+
+  useEffect(() => {
+    const onPopState = () => setTab(getTabFromPath());
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
   // Очистка отметок старше сегодняшнего дня

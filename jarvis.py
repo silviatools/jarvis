@@ -54,6 +54,14 @@ FREQ_DAYS = {
     "weekly": 7, "biweekly": 14, "monthly": 30,
 }
 
+# Clean-URL deep links (e.g. /mybody) → serve the SPA, which reads the path
+# client-side and jumps straight to the matching tab. Keep in sync with
+# PATH_TAB_MAP in index (9).html.
+SPA_ROUTES = {
+    "/mybody", "/budget", "/supplements", "/meals", "/weather",
+    "/house", "/cars", "/holidays", "/settings",
+}
+
 # Generic file uploads (e.g. training programs attached to «Режим»)
 ALLOWED_FILE_EXT = {
     "pdf", "doc", "docx", "xls", "xlsx", "txt", "rtf", "csv",
@@ -475,7 +483,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.end_headers()
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        route = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if route in ("/", "/index.html") or route in SPA_ROUTES:
             self._serve_html()
         elif self.path in ("/english", "/english.html"):
             p = Path(__file__).parent / "english.html"
