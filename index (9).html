@@ -2958,118 +2958,79 @@ function MealModal({ meal, onSave, onClose }) {
 
 // ============== DIET COMPLIANCE ==============
 
+// 5-уровневая шкала соблюдения питания (по плану или нет)
+const DIET_LEVELS = [
+  { id: 'much_below', label: 'Ниже',      offset: -2, color: '#ef4444' },
+  { id: 'below',      label: 'Чуть ниже', offset: -1, color: '#f59e0b' },
+  { id: 'on_plan',    label: 'По плану',  offset:  0, color: '#22c55e' },
+  { id: 'above',      label: 'Чуть выше', offset: +1, color: '#f59e0b' },
+  { id: 'much_above', label: 'Выше',      offset: +2, color: '#ef4444' },
+];
+const DIET_LEVEL_BY_ID = Object.fromEntries(DIET_LEVELS.map(l => [l.id, l]));
+const DOW_SHORT = ['вс','пн','вт','ср','чт','пт','сб'];
+const MONTHS_SHORT = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+
 function DietComplianceView({ data, setData }) {
   const today = new Date().toISOString().split('T')[0];
-  const plan = data.dietPlan || { calories: '', protein: '', fat: '', carbs: '' };
-  const log = data.dietLog || [];
 
-  const [showSettings, setShowSettings] = useState(false);
-  const [planForm, setPlanForm] = useState({ calories: plan.calories || '', protein: plan.protein || '', fat: plan.fat || '', carbs: plan.carbs || '' });
-  const [manualDate, setManualDate] = useState(today);
-  const [manualForm, setManualForm] = useState({ calories: '', protein: '', fat: '', carbs: '' });
-  const [editEntry, setEditEntry] = useState(null);
-  const [editForm, setEditForm] = useState({});
+  // Нормализация: старые записи (onPlan/калории) → уровень
+  const normLevel = (e) => e.level || (e.onPlan ? 'on_plan' : null);
+  const rawLog = data.dietLog || [];
+  const log = rawLog.map(e => ({ ...e, level: normLevel(e) })).filter(e => e.level);
+
+  const [selDate, setSelDate] = useState(today);
   const chartScrollRef = React.useRef(null);
 
-  const todayEntry = log.find(e => e.date === today);
-  const manualDateEntry = log.find(e => e.date === manualDate);
+  const selEntry = log.find(e => e.date === selDate);
 
-  const savePlan = () => {
-    setData(d => ({ ...d, dietPlan: { ...planForm } }));
-    setShowSettings(false);
-  };
-
-  const markOnPlan = () => {
-    const existing = log.find(e => e.date === manualDate);
-    const entry = {
-      id: existing ? existing.id : crypto.randomUUID(),
-      date: manualDate,
-      onPlan: true,
-      calories: plan.calories || '',
-      protein: plan.protein || '',
-      fat: plan.fat || '',
-      carbs: plan.carbs || '',
-    };
+  const setLevel = (level) => {
+    const existing = rawLog.find(e => e.date === selDate);
+    const entry = { id: existing ? existing.id : crypto.randomUUID(), date: selDate, level };
     setData(d => {
-      const list = (d.dietLog || []).filter(e => e.date !== manualDate);
+      const list = (d.dietLog || []).filter(e => e.date !== selDate);
       return { ...d, dietLog: [...list, entry].sort((a, b) => b.date.localeCompare(a.date)) };
     });
   };
 
-  const markManual = () => {
-    if (!manualForm.calories && !manualForm.protein && !manualForm.fat && !manualForm.carbs) return;
-    const autoCal = !manualForm.calories ? Math.round(calcKcal(manualForm)) : null;
-    const entry = {
-      id: manualDateEntry ? manualDateEntry.id : crypto.randomUUID(),
-      date: manualDate,
-      onPlan: false,
-      calories: manualForm.calories || (autoCal ? String(autoCal) : ''),
-      protein: manualForm.protein,
-      fat: manualForm.fat,
-      carbs: manualForm.carbs,
-    };
-    setData(d => {
-      const list = (d.dietLog || []).filter(e => e.date !== manualDate);
-      return { ...d, dietLog: [...list, entry].sort((a, b) => b.date.localeCompare(a.date)) };
-    });
-    setManualForm({ calories: '', protein: '', fat: '', carbs: '' });
-    setManualDate(today);
+  const deleteEntry = (date) => {
+    setData(d => ({ ...d, dietLog: (d.dietLog || []).filter(e => e.date !== date) }));
   };
 
-  const deleteEntry = (id) => {
-    if (!confirm('Удалить запись?')) return;
-    setData(d => ({ ...d, dietLog: (d.dietLog || []).filter(e => e.id !== id) }));
-  };
-
-  const startEdit = (entry) => {
-    setEditEntry(entry.id);
-    setEditForm({ date: entry.date, calories: entry.calories || '', protein: entry.protein || '', fat: entry.fat || '', carbs: entry.carbs || '', onPlan: entry.onPlan });
-  };
-
-  const saveEdit = (id) => {
-    setData(d => ({
-      ...d,
-      dietLog: (d.dietLog || [])
-        .map(e => e.id === id ? { ...e, ...editForm } : e)
-        .sort((a, b) => b.date.localeCompare(a.date)),
-    }));
-    setEditEntry(null);
-  };
-
-  const hasPlan = plan.calories || plan.protein || plan.fat || plan.carbs;
-  const sortedLog = [...log].sort((a, b) => b.date.localeCompare(a.date));
-
-  const onPlanCount = log.filter(e => e.onPlan).length;
+  const onPlanCount = log.filter(e => e.level === 'on_plan').length;
   const totalCount = log.length;
   const adherencePct = totalCount > 0 ? Math.round((onPlanCount / totalCount) * 100) : null;
 
   const formatDate = (dateStr) => {
     const d = new Date(dateStr + 'T00:00:00');
-    const months = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
-    const days = ['вс','пн','вт','ср','чт','пт','сб'];
-    return `${d.getDate()} ${months[d.getMonth()]} (${days[d.getDay()]})`;
+    return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]} (${DOW_SHORT[d.getDay()]})`;
   };
 
-  // Build last 90 days for chart
+  const sortedLog = [...log].sort((a, b) => b.date.localeCompare(a.date));
+
+  // ── Построение 90 дней для графика ──
   const CHART_DAYS = 90;
   const chartDays = [];
   for (let i = CHART_DAYS - 1; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
     const ds = d.toISOString().split('T')[0];
-    const entry = log.find(e => e.date === ds);
-    chartDays.push({ date: ds, entry });
+    chartDays.push({
+      date: ds,
+      entry: log.find(e => e.date === ds),
+      dow: d.getDay(),
+      dayNum: d.getDate(),
+      month: d.getMonth(),
+    });
   }
   const todayIndex = chartDays.findIndex(d => d.date === today);
 
-  // SVG bar chart — height = calories
-  const chartH = 90, barW = 12, gap = 5;
-  const totalBarW = barW + gap;
-  const planCal = parseFloat(plan.calories) || 0;
-  const allCals = chartDays.map(d => parseFloat(d.entry?.calories) || 0);
-  const maxCal = Math.max(planCal, ...allCals, 1);
+  // Диаграмма отклонений: центр = «По плану», вверх = выше, вниз = ниже
+  const barW = 16, gap = 8, totalBarW = barW + gap;
+  const TOP = 22, plotH = 96, center = TOP + plotH / 2, unit = (plotH / 2 - 8) / 2;
+  const svgW = chartDays.length * totalBarW;
+  const svgH = TOP + plotH + 36;
 
-  // Auto-scroll to center today
+  // Авто-скролл к сегодняшнему дню
   React.useEffect(() => {
     const el = chartScrollRef.current;
     if (!el) return;
@@ -3077,163 +3038,113 @@ function DietComplianceView({ data, setData }) {
     el.scrollLeft = todayX - el.offsetWidth / 2;
   }, [log.length]);
 
-  const calcKcal = (f) => {
-    const p = parseFloat(f.protein) || 0;
-    const fat = parseFloat(f.fat) || 0;
-    const c = parseFloat(f.carbs) || 0;
-    return p * 4 + fat * 9 + c * 4;
-  };
-
-  if (showSettings) {
-    return (
-      <div className="fade-in space-y-4">
-        <div className="flex items-center gap-3 mb-2">
-          <button onClick={() => setShowSettings(false)} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]"><Icon name="x" size={20} /></button>
-          <h2 className="font-display text-2xl">Плановое КБЖУ</h2>
-        </div>
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
-          {[['calories','Калории','ккал'],['protein','Белки','г'],['fat','Жиры','г'],['carbs','Углеводы','г']].map(([key,label,unit]) => (
-            <div key={key}>
-              <label className="block text-sm text-[var(--text-muted)] mb-1">{label} <span className="text-[var(--text-subtle)]">({unit})</span></label>
-              <input
-                type="number" min="0"
-                value={planForm[key]}
-                onChange={e => setPlanForm(f => ({ ...f, [key]: e.target.value }))}
-                className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-[var(--text)]"
-                placeholder={`Плановые ${label.toLowerCase()}`}
-              />
-            </div>
-          ))}
-          <button onClick={savePlan} className="btn-primary w-full">Сохранить план</button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="fade-in space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          {adherencePct !== null && (
-            <div className="text-[var(--text-subtle)] text-sm">Соблюдение: <span className={`font-semibold ${adherencePct >= 80 ? 'text-green-500' : adherencePct >= 50 ? 'text-yellow-500' : 'text-red-400'}`}>{adherencePct}%</span> <span className="text-[var(--text-subtle)]">({onPlanCount}/{totalCount} дней)</span></div>
-          )}
+      {adherencePct !== null && (
+        <div className="text-[var(--text-subtle)] text-sm">
+          По плану: <span className={`font-semibold ${adherencePct >= 80 ? 'text-green-500' : adherencePct >= 50 ? 'text-yellow-500' : 'text-red-400'}`}>{adherencePct}%</span>
+          <span className="text-[var(--text-subtle)]"> ({onPlanCount}/{totalCount} дней)</span>
         </div>
-        <button onClick={() => { setPlanForm({ calories: plan.calories||'', protein: plan.protein||'', fat: plan.fat||'', carbs: plan.carbs||'' }); setShowSettings(true); }}
-          className="flex items-center gap-2 px-3 py-3 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] transition-all">
-          <Icon name="settings" size={15} /> План КБЖУ
-        </button>
-      </div>
+      )}
 
       {/* Entry card */}
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
-        {/* Shared date picker */}
+        {/* Date picker */}
         <div>
           <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Дата</label>
-          <input type="date" value={manualDate} max={today}
-            onChange={e => setManualDate(e.target.value)}
+          <input type="date" value={selDate} max={today}
+            onChange={e => setSelDate(e.target.value)}
             className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]"
           />
         </div>
 
-        {/* Entry for selected date */}
-        {manualDateEntry ? (
-          <div className={`flex items-center gap-3 p-3 rounded-xl ${manualDateEntry.onPlan ? 'bg-green-500/10 border border-green-500/20' : 'bg-[var(--bg)] border border-[var(--border)]'}`}>
-            <div className={`w-2 h-2 rounded-full shrink-0 ${manualDateEntry.onPlan ? 'bg-green-500' : 'bg-yellow-400'}`} />
-            <div className="flex-1 text-sm">
-              <span className="font-medium">{manualDateEntry.onPlan ? 'По плану' : 'Вручную'}</span>
-              {(manualDateEntry.calories || manualDateEntry.protein) && (
-                <span className="text-[var(--text-muted)] ml-2">
-                  {manualDateEntry.calories && `${manualDateEntry.calories} ккал`}
-                  {manualDateEntry.protein && ` · Б ${manualDateEntry.protein}г`}
-                  {manualDateEntry.fat && ` · Ж ${manualDateEntry.fat}г`}
-                  {manualDateEntry.carbs && ` · У ${manualDateEntry.carbs}г`}
-                </span>
-              )}
-            </div>
-            <button onClick={() => deleteEntry(manualDateEntry.id)} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="trash" size={16} /></button>
-          </div>
-        ) : (
-          <div className="text-sm text-[var(--text-subtle)]">За эту дату ещё нет записи</div>
-        )}
-
-        {/* По плану */}
-        {hasPlan && (
-          <div className="space-y-2">
-            <div className="flex flex-wrap gap-2 text-xs text-[var(--text-muted)]">
-              {plan.calories && <span className="px-2 py-1 bg-[var(--bg)] rounded-lg border border-[var(--border)]">{plan.calories} ккал</span>}
-              {plan.protein && <span className="px-2 py-1 bg-[var(--bg)] rounded-lg border border-[var(--border)]">Б {plan.protein}г</span>}
-              {plan.fat && <span className="px-2 py-1 bg-[var(--bg)] rounded-lg border border-[var(--border)]">Ж {plan.fat}г</span>}
-              {plan.carbs && <span className="px-2 py-1 bg-[var(--bg)] rounded-lg border border-[var(--border)]">У {plan.carbs}г</span>}
-            </div>
-            <button onClick={markOnPlan} className="btn-primary w-full">✓ По плану</button>
-          </div>
-        )}
-
-        {/* Manual entry */}
-        <div className="space-y-3 pt-1">
-          <div className="text-xs text-[var(--text-muted)] font-medium uppercase tracking-wide">Вписать вручную</div>
-          <div className="grid grid-cols-2 gap-2">
-            {[['calories','Калории','ккал'],['protein','Белки','г'],['fat','Жиры','г'],['carbs','Углеводы','г']].map(([key,label,unit]) => {
-              const autoCal = key === 'calories' && !manualForm.calories
-                ? Math.round(calcKcal(manualForm)) || null
-                : null;
+        {/* Rating buttons */}
+        <div>
+          <div className="text-xs text-[var(--text-muted)] font-medium mb-2">Как кушал в этот день?</div>
+          <div className="grid grid-cols-5 gap-1.5">
+            {DIET_LEVELS.map(lvl => {
+              const active = selEntry?.level === lvl.id;
               return (
-              <div key={key}>
-                <label className="block text-xs text-[var(--text-subtle)] mb-1">{label} ({unit})</label>
-                <input type="number" min="0"
-                  value={manualForm[key]}
-                  onChange={e => setManualForm(f => ({ ...f, [key]: e.target.value }))}
-                  className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]"
-                  placeholder={autoCal ? `≈ ${autoCal}` : '—'}
-                />
-              </div>
+                <button key={lvl.id} onClick={() => setLevel(lvl.id)}
+                  className="flex flex-col items-center justify-center gap-1.5 py-2.5 px-1 rounded-xl border text-[11px] font-medium leading-tight text-center transition-all"
+                  style={active
+                    ? { background: lvl.color, borderColor: lvl.color, color: '#fff' }
+                    : { borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: active ? '#fff' : lvl.color }} />
+                  {lvl.label}
+                </button>
               );
             })}
           </div>
-          <button onClick={markManual} className="w-full px-4 py-3 rounded-xl border border-[var(--border)] text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--text)] transition-all">Отметить</button>
+          {selEntry && (
+            <button onClick={() => deleteEntry(selDate)}
+              className="mt-2 w-full text-xs text-[var(--text-subtle)] hover:text-red-400 py-1.5 transition-colors">
+              Убрать отметку за {formatDate(selDate)}
+            </button>
+          )}
         </div>
       </div>
 
       {/* Chart — last 90 days */}
       {log.length > 0 && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-          <div className="font-medium text-sm mb-1">90 дней</div>
-          {planCal > 0 && <div className="text-xs text-[var(--text-subtle)] mb-4">план: {planCal} ккал</div>}
+          <div className="font-medium text-sm mb-4">90 дней</div>
           <div className="overflow-x-auto" ref={chartScrollRef}>
-            <svg width={chartDays.length * totalBarW} height={chartH + 20} style={{ display: 'block' }}>
-              {/* Plan line */}
-              {planCal > 0 && (() => {
-                const planY = chartH - Math.round((planCal / maxCal) * chartH);
-                return <line x1={0} y1={planY} x2={chartDays.length * totalBarW} y2={planY} stroke="#22c55e" strokeWidth={1} strokeDasharray="3 3" opacity={0.6} />;
-              })()}
+            <svg width={svgW} height={svgH} style={{ display: 'block' }}>
+              {/* Baseline «По плану» */}
+              <line x1={0} y1={center} x2={svgW} y2={center} stroke="#22c55e" strokeWidth={1} strokeDasharray="3 3" opacity={0.5} />
               {chartDays.map((day, i) => {
                 const x = i * totalBarW;
-                const hasEntry = !!day.entry;
-                const isOnPlan = day.entry?.onPlan;
-                const cal = parseFloat(day.entry?.calories) || 0;
-                const color = !hasEntry ? 'var(--border)' : isOnPlan ? '#22c55e' : '#f59e0b';
-                const h = hasEntry && cal > 0
-                  ? Math.max(4, Math.round((cal / maxCal) * chartH))
-                  : hasEntry ? chartH : 4;
+                const cx = x + barW / 2;
+                const lvl = day.entry ? DIET_LEVEL_BY_ID[day.entry.level] : null;
                 const isToday = day.date === today;
+                const weekend = day.dow === 0 || day.dow === 6;
+                const showMonth = i === 0 || day.dayNum === 1;
                 return (
                   <g key={day.date}>
-                    <rect x={x} y={chartH - h} width={barW} height={h} rx={3} fill={color} />
-                    {isToday && <rect x={x} y={chartH + 6} width={barW} height={3} rx={1} fill="var(--text)" />}
-                    {hasEntry && cal > 0 && (
-                      <title>{day.date}: {cal} ккал</title>
+                    {/* Метка месяца при смене */}
+                    {showMonth && (
+                      <text x={x} y={12} fontSize="9" fill="var(--text-subtle)" fontWeight="600">
+                        {MONTHS_SHORT[day.month]}
+                      </text>
                     )}
+                    {/* Столбик отклонения / отметка «нет данных» */}
+                    {!lvl ? (
+                      <rect x={x} y={center - 1} width={barW} height={2} rx={1} fill="var(--border)" />
+                    ) : lvl.offset === 0 ? (
+                      <rect x={x} y={center - 5} width={barW} height={10} rx={3} fill={lvl.color} />
+                    ) : lvl.offset > 0 ? (
+                      <rect x={x} y={center - lvl.offset * unit} width={barW} height={lvl.offset * unit} rx={3} fill={lvl.color} />
+                    ) : (
+                      <rect x={x} y={center} width={barW} height={-lvl.offset * unit} rx={3} fill={lvl.color} />
+                    )}
+                    {/* Подсветка сегодня */}
+                    {isToday && <rect x={x - 1} y={TOP - 4} width={barW + 2} height={plotH + 8} rx={4} fill="none" stroke="var(--text)" strokeWidth={1.5} opacity={0.35} />}
+                    {/* День недели */}
+                    <text x={cx} y={svgH - 20} textAnchor="middle" fontSize="8"
+                      fill={weekend ? '#ef4444' : 'var(--text-subtle)'} opacity={weekend ? 0.75 : 0.6}>
+                      {DOW_SHORT[day.dow]}
+                    </text>
+                    {/* Число */}
+                    <text x={cx} y={svgH - 7} textAnchor="middle" fontSize="9"
+                      fill="var(--text-muted)" fontWeight={isToday ? 700 : 400}>
+                      {day.dayNum}
+                    </text>
+                    {lvl && <title>{formatDate(day.date)}: {lvl.label}</title>}
                   </g>
                 );
               })}
             </svg>
           </div>
-          <div className="flex items-center gap-4 mt-3 text-xs text-[var(--text-muted)]">
-            <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm bg-green-500" /> По плану</div>
-            <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm bg-yellow-400" /> Вручную</div>
-            <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm" style={{background:'var(--border)'}} /> Нет данных</div>
-            {planCal > 0 && <div className="flex items-center gap-1.5"><div className="w-4 h-px border-t border-dashed border-green-500 opacity-60" /> Норма</div>}
+          {/* Легенда */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-4 text-xs text-[var(--text-muted)]">
+            {DIET_LEVELS.map(lvl => (
+              <div key={lvl.id} className="flex items-center gap-1.5">
+                <div className="w-2.5 h-2.5 rounded-sm" style={{ background: lvl.color }} /> {lvl.label}
+              </div>
+            ))}
+            <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm" style={{ background: 'var(--border)' }} /> Нет данных</div>
           </div>
         </div>
       )}
@@ -3242,61 +3153,20 @@ function DietComplianceView({ data, setData }) {
       {sortedLog.length > 0 && (
         <div className="space-y-2">
           <div className="font-medium text-sm text-[var(--text-muted)] px-1">История</div>
-          {sortedLog.map(entry => (
-            <div key={entry.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3">
-              {editEntry === entry.id ? (
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs text-[var(--text-subtle)] mb-1">Дата</label>
-                    <input type="date" value={editForm.date || entry.date}
-                      onChange={e => setEditForm(f => ({ ...f, date: e.target.value }))}
-                      className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:border-[var(--text)]"
-                    />
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <label className="flex items-center gap-2 text-sm cursor-pointer">
-                      <input type="checkbox" checked={!!editForm.onPlan} onChange={e => setEditForm(f => ({ ...f, onPlan: e.target.checked }))}
-                        className="rounded" />
-                      По плану
-                    </label>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {[['calories','Ккал'],['protein','Белки'],['fat','Жиры'],['carbs','Углеводы']].map(([key,label]) => (
-                      <div key={key}>
-                        <label className="block text-xs text-[var(--text-subtle)] mb-1">{label}</label>
-                        <input type="number" min="0" value={editForm[key] || ''}
-                          onChange={e => setEditForm(f => ({ ...f, [key]: e.target.value }))}
-                          className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-1.5 text-sm focus:outline-none focus:border-[var(--text)]"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => saveEdit(entry.id)} className="btn-primary flex-1 text-sm py-2">Сохранить</button>
-                    <button onClick={() => setEditEntry(null)} className="flex-1 text-sm py-2 rounded-xl border border-[var(--border)] text-[var(--text-muted)]">Отмена</button>
-                  </div>
+          {sortedLog.map(entry => {
+            const lvl = DIET_LEVEL_BY_ID[entry.level] || DIET_LEVELS[2];
+            return (
+              <div key={entry.id || entry.date} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 flex items-center gap-3">
+                <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: lvl.color }} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium">{formatDate(entry.date)}</div>
+                  <div className="text-xs text-[var(--text-muted)] mt-0.5">{lvl.label}</div>
                 </div>
-              ) : (
-                <div className="flex items-center gap-3">
-                  <div className={`w-2 h-2 rounded-full shrink-0 ${entry.onPlan ? 'bg-green-500' : 'bg-yellow-400'}`} />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium">{formatDate(entry.date)}</div>
-                    <div className="text-xs text-[var(--text-muted)] mt-0.5">
-                      {entry.onPlan ? 'По плану' : 'Вручную'}
-                      {entry.calories && ` · ${entry.calories} ккал`}
-                      {entry.protein && ` · Б ${entry.protein}г`}
-                      {entry.fat && ` · Ж ${entry.fat}г`}
-                      {entry.carbs && ` · У ${entry.carbs}г`}
-                    </div>
-                  </div>
-                  <div className="flex gap-1 shrink-0">
-                    <button onClick={() => startEdit(entry)} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={16} /></button>
-                    <button onClick={() => deleteEntry(entry.id)} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="trash" size={16} /></button>
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
+                <button onClick={() => { setSelDate(entry.date); }} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Изменить"><Icon name="edit" size={16} /></button>
+                <button onClick={() => { if (confirm('Удалить запись?')) deleteEntry(entry.date); }} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="trash" size={16} /></button>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
