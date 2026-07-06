@@ -243,6 +243,7 @@ const DEFAULT_DATA = () => ({
   budgetDebts: [],
   bodyModes: [],
   activeBodyModeId: null,
+  bodyProgressStartDate: '',
   dietReminder: { enabled: false, time: '20:00', days: [0, 1, 2, 3, 4, 5, 6] },
   dailyChecklistFields: [],
   dailyChecklistReminder: { enabled: false, time: '21:00', days: [0, 1, 2, 3, 4, 5, 6] },
@@ -6368,7 +6369,14 @@ function BodyView({ data, setData }) {
               ))}
             </div>
           </div>
-          {measurementsTab === 'progress' && <BodyProgress entries={entries} fields={fields} />}
+          {measurementsTab === 'progress' && (
+            <BodyProgress
+              entries={entries}
+              fields={fields}
+              startDate={data.bodyProgressStartDate || ''}
+              onStartDateChange={d => setData(prev => ({ ...prev, bodyProgressStartDate: d }))}
+            />
+          )}
           {measurementsTab === 'history'  && <BodyHistory entries={entries} fields={fields} categories={categories} onEdit={setEditEntry} onDelete={deleteEntry} />}
           {measurementsTab === 'photos'   && <BodyPhotoGallery entries={entries} categories={categories} />}
         </div>
@@ -6533,6 +6541,13 @@ function BodyModeView({ mode, onClose, onEdit }) {
           </div>
         )}
 
+        {mode.notes && mode.notes.trim() && (
+          <div>
+            <div className="text-xs uppercase tracking-wide text-[var(--text-subtle)] font-medium mb-2">Заметки</div>
+            <div className="text-sm whitespace-pre-wrap bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2.5">{mode.notes.trim()}</div>
+          </div>
+        )}
+
         <div className="flex gap-3 pt-1">
           <button onClick={onClose} className="btn-secondary flex-1">Закрыть</button>
           <button onClick={onEdit} className="btn-primary flex-1">Редактировать</button>
@@ -6544,11 +6559,11 @@ function BodyModeView({ mode, onClose, onEdit }) {
 
 function BodyModeForm({ mode, onSave, onCancel }) {
   const [form, setForm] = useState(() => mode
-    ? { ...mode, supplements: (mode.supplements || []).map(s => ({ ...s })), nutrition: { ...(mode.nutrition || {}) } }
+    ? { ...mode, supplements: (mode.supplements || []).map(s => ({ ...s })), nutrition: { ...(mode.nutrition || {}) }, notes: mode.notes || '' }
     : {
         id: crypto.randomUUID(), name: '', startDate: '', endDate: '',
         supplements: [], nutrition: { protein: '', fat: '', carbs: '', calories: '' },
-        workoutFile: null, createdAt: new Date().toISOString(),
+        workoutFile: null, notes: '', createdAt: new Date().toISOString(),
       });
   const [uploading, setUploading] = useState(false);
 
@@ -6681,6 +6696,19 @@ function BodyModeForm({ mode, onSave, onCancel }) {
             <input type="file" className="hidden" accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,.rtf,.csv,image/*" onChange={onFile} disabled={uploading} />
           </label>
         )}
+      </div>
+
+      {/* Заметки */}
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div className="text-sm font-semibold mb-1">Заметки</div>
+        <p className="text-xs text-[var(--text-muted)] mb-3">Произвольные напоминания и правила режима</p>
+        <textarea
+          value={form.notes || ''}
+          onChange={e => set('notes', e.target.value)}
+          placeholder="Делать ежедневно вакуум, 1 день чит мил…"
+          rows={4}
+          className={`${inputCls} resize-y min-h-[96px]`}
+        />
       </div>
 
       <div className="flex gap-3">
@@ -6925,10 +6953,33 @@ function BodyHistory({ entries, fields, categories, onEdit, onDelete }) {
   );
 }
 
-function BodyProgress({ entries, fields }) {
-  if (entries.length < 2) return <EmptyState title="Мало данных" text="Добавьте хотя бы 2 записи чтобы увидеть прогресс" />;
+function BodyProgress({ entries, fields, startDate, onStartDateChange }) {
+  const filtered = startDate
+    ? entries.filter(e => e.date >= startDate)
+    : entries;
 
-  const sorted = [...entries].sort((a, b) => a.date.localeCompare(b.date));
+  if (filtered.length < 2) {
+    return (
+      <div className="space-y-4">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Начальная дата периода</label>
+          <input
+            type="date"
+            value={startDate}
+            onChange={e => onStartDateChange(e.target.value)}
+            className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]"
+          />
+          <p className="text-xs text-[var(--text-subtle)] mt-2">Дата сохраняется и используется для всех расчётов прогресса.</p>
+        </div>
+        <EmptyState
+          title="Мало данных"
+          text={startDate ? 'Нужно минимум 2 записи с выбранной даты' : 'Добавьте хотя бы 2 записи чтобы увидеть прогресс'}
+        />
+      </div>
+    );
+  }
+
+  const sorted = [...filtered].sort((a, b) => a.date.localeCompare(b.date));
   const first = sorted[0];
   const last = sorted[sorted.length - 1];
 
@@ -6939,7 +6990,19 @@ function BodyProgress({ entries, fields }) {
   return (
     <div className="space-y-4">
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-        <h3 className="font-display text-lg mb-1">Изменения за весь период</h3>
+        <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Начальная дата периода</label>
+        <input
+          type="date"
+          value={startDate}
+          max={last.date}
+          onChange={e => onStartDateChange(e.target.value)}
+          className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]"
+        />
+        <p className="text-xs text-[var(--text-subtle)] mt-2">Дата сохраняется и используется для всех расчётов прогресса.</p>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <h3 className="font-display text-lg mb-1">Изменения за период</h3>
         <div className="text-xs text-[var(--text-muted)] mb-4">{formatBodyDate(first.date)} → {formatBodyDate(last.date)}</div>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           {activeFields.map(f => {
