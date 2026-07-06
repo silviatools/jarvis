@@ -3748,11 +3748,13 @@ function MealModal({ meal, onSave, onClose }) {
 
 // 5-уровневая шкала соблюдения питания (по плану или нет)
 const DIET_LEVELS = [
-  { id: 'much_below', label: 'Ниже',      offset: -2, color: '#ef4444' },
-  { id: 'below',      label: 'Чуть ниже', offset: -1, color: '#f59e0b' },
-  { id: 'on_plan',    label: 'По плану',  offset:  0, color: '#22c55e' },
-  { id: 'above',      label: 'Чуть выше', offset: +1, color: '#f59e0b' },
-  { id: 'much_above', label: 'Выше',      offset: +2, color: '#ef4444' },
+  { id: 'much_below', label: 'Ниже',          offset: -2, color: '#ef4444' },
+  { id: 'below',      label: 'Чуть ниже',     offset: -1, color: '#f59e0b' },
+  { id: 'on_plan',    label: 'По плану',      offset:  0, color: '#22c55e' },
+  { id: 'above',      label: 'Чуть выше',     offset: +1, color: '#f59e0b' },
+  { id: 'much_above', label: 'Выше',          offset: +2, color: '#ef4444' },
+  { id: 'mini_cheat', label: 'Мини чит мил',  offset: +3, color: '#a855f7' },
+  { id: 'cheat',      label: 'Чит мил',       offset: +4, color: '#7e22ce' },
 ];
 const DIET_LEVEL_BY_ID = Object.fromEntries(DIET_LEVELS.map(l => [l.id, l]));
 const DOW_SHORT = ['вс','пн','вт','ср','чт','пт','сб'];
@@ -3815,7 +3817,8 @@ function DietComplianceView({ data, setData }) {
 
   // Диаграмма отклонений: центр = «По плану», вверх = выше, вниз = ниже
   const barW = 16, gap = 8, totalBarW = barW + gap;
-  const TOP = 22, plotH = 96, center = TOP + plotH / 2, unit = (plotH / 2 - 8) / 2;
+  const maxOffset = Math.max(1, ...DIET_LEVELS.map(l => Math.abs(l.offset)));
+  const TOP = 22, plotH = 96, center = TOP + plotH / 2, unit = (plotH / 2 - 8) / maxOffset;
   const svgW = chartDays.length * totalBarW;
   const svgH = TOP + plotH + 36;
 
@@ -3851,7 +3854,7 @@ function DietComplianceView({ data, setData }) {
         {/* Rating buttons */}
         <div>
           <div className="text-xs text-[var(--text-muted)] font-medium mb-2">Как кушал в этот день?</div>
-          <div className="grid grid-cols-5 gap-1.5">
+          <div className="grid grid-cols-4 gap-1.5">
             {DIET_LEVELS.map(lvl => {
               const active = selEntry?.level === lvl.id;
               return (

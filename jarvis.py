@@ -163,6 +163,7 @@ def send_message(token: str, chat_id: int, text: str):
 DIET_LABELS = {
     "much_below": "Ниже", "below": "Чуть ниже", "on_plan": "По плану",
     "above": "Чуть выше", "much_above": "Выше",
+    "mini_cheat": "Мини чит мил", "cheat": "Чит мил",
 }
 
 MONTHS_RU_GEN = ["", "января", "февраля", "марта", "апреля", "мая", "июня",
@@ -183,6 +184,7 @@ def diet_keyboard(date_iso: str) -> dict:
         [btn("much_below"), btn("below")],
         [btn("on_plan")],
         [btn("above"), btn("much_above")],
+        [btn("mini_cheat"), btn("cheat")],
     ]}
 
 
