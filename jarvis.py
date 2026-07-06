@@ -538,173 +538,172 @@ def _tick():
         return
 
     subs = load_subscribers()
-
-    # Read chores from app data (source of truth), fall back to config file
-    chores = []
-    if APP_DATA_FILE.exists():
-        try:
-            app_data = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
-            chores = [c for c in app_data.get("chores", []) if not c.get("archived")]
-        except Exception:
-            pass
-    if not chores and CONFIG_FILE.exists():
-        try:
-            config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-            chores = config.get("chores", [])
-        except Exception:
-            pass
-
     now_str = now_msk().strftime("%H:%M")
-    for chore in chores:
-        if not chore.get("notify"):
-            continue
-        if chore.get("notifyTime", "") != now_str:
-            continue
-        if not is_due_today(chore):
-            continue
-        text = f"🏠 <b>По дому — напоминание</b>\n\n{chore.get('name', 'Дело')}"
-        print(f"[{now_str} MSK] → {chore['name']} ({len(subs['chat_ids'])} subscriber(s))")
-        for cid in subs["chat_ids"]:
-            send_message(token, cid, text)
-
-    # Boss tasks: days stored as JS getDay() (0=Sun,1=Mon..6=Sat)
-    today_js = today_msk().isoweekday() % 7
-    boss_tasks = []
-    if APP_DATA_FILE.exists():
-        try:
-            app_data_raw = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
-            boss_tasks = [t for t in app_data_raw.get("bossTasks", []) if not t.get("archived")]
-        except Exception:
-            pass
-    for task in boss_tasks:
-        if not task.get("notify"):
-            continue
-        if task.get("notifyTime", "") != now_str:
-            continue
-        if today_js not in (task.get("days") or []):
-            continue
-        text = f"💼 <b>Босс — напоминание</b>\n\n{task.get('name', 'Задача')}"
-        print(f"[{now_str} MSK] → boss: {task['name']} ({len(subs['chat_ids'])} subscriber(s))")
-        for cid in subs["chat_ids"]:
-            send_message(token, cid, text)
-
-    # Holidays: date stored as "MM-DD", reminders have daysBefore + time
-    holidays = []
-    if APP_DATA_FILE.exists():
-        try:
-            app_data_raw = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
-            holidays = [h for h in app_data_raw.get("holidays", []) if not h.get("archived")]
-        except Exception:
-            pass
-    today_date = today_msk()
-    TYPE_EMOJI = {"birthday": "🎂", "anniversary": "💑", "other": "🎉"}
-    for holiday in holidays:
-        if not holiday.get("notify"):
-            continue
-        date_str = holiday.get("date", "")
-        if not date_str or date_str.count("-") != 1:
-            continue
-        try:
-            mm, dd = int(date_str.split("-")[0]), int(date_str.split("-")[1])
-        except (ValueError, IndexError):
-            continue
-        for reminder in holiday.get("reminders") or []:
-            if reminder.get("time", "") != now_str:
-                continue
-            days_before = int(reminder.get("daysBefore", 0))
-            # Check current year and next year to handle cross-year notifications
-            for year_offset in (0, 1):
-                try:
-                    holiday_date = date(today_date.year + year_offset, mm, dd)
-                    notify_date = holiday_date - timedelta(days=days_before)
-                    if notify_date != today_date:
-                        continue
-                    emoji = TYPE_EMOJI.get(holiday.get("type", "other"), "🎉")
-                    if days_before == 0:
-                        when = "сегодня!"
-                    elif days_before == 1:
-                        when = "завтра"
-                    elif 2 <= days_before <= 4:
-                        when = f"через {days_before} дня"
-                    else:
-                        when = f"через {days_before} дней"
-                    text = f"{emoji} <b>Праздник — напоминание</b>\n\n{holiday.get('name', 'Событие')}\n<i>{when}</i>"
-                    print(f"[{now_str} MSK] → holiday: {holiday['name']} in {days_before}d ({len(subs['chat_ids'])} subscriber(s))")
-                    for cid in subs["chat_ids"]:
-                        send_message(token, cid, text)
-                except (ValueError, OverflowError):
-                    pass
-
-    # Debts: one-off reminder at notifyDate + notifyTime (MSK)
-    debts = []
-    if APP_DATA_FILE.exists():
-        try:
-            app_data_raw = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
-            debts = app_data_raw.get("budgetDebts", [])
-        except Exception:
-            pass
+    today_js = today_msk().isoweekday() % 7  # 0=Sun..6=Sat, matches JS getDay()
     today_iso = today_msk().isoformat()
-    for debt in debts:
-        if not debt.get("notify") or debt.get("closed"):
-            continue
-        if debt.get("notifyDate", "") != today_iso:
-            continue
-        if debt.get("notifyTime", "") != now_str:
-            continue
-        amount = debt.get("amount", 0)
-        debtor = debt.get("debtor", "")
-        comment = debt.get("comment", "")
-        text = f"💰 <b>Долг — напоминание</b>\n\n{debtor} должен вернуть {amount} ₽"
-        if comment:
-            text += f"\n<i>{comment}</i>"
-        print(f"[{now_str} MSK] → debt: {debtor} {amount} ({len(subs['chat_ids'])} subscriber(s))")
-        for cid in subs["chat_ids"]:
-            send_message(token, cid, text)
+    today_date = today_msk()
 
-    # Diet compliance: recurring «Как ты кушал сегодня?» with inline buttons
-    reminder = {}
-    diet_log = []
+    # Single read of app data — reused by every block below. Each block runs
+    # in its own try/except so a bug or malformed entry in one reminder type
+    # (e.g. a bad chore/holiday date) can NEVER prevent the other reminder
+    # types (in particular the daily checklist) from firing on this tick.
+    app_data_raw = {}
     if APP_DATA_FILE.exists():
         try:
             app_data_raw = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
-            reminder = app_data_raw.get("dietReminder") or {}
-            diet_log = app_data_raw.get("dietLog", [])
-        except Exception:
-            pass
-    if reminder.get("enabled") and reminder.get("time", "") == now_str:
-        today_js = today_msk().isoweekday() % 7  # 0=Sun..6=Sat, matches JS getDay()
-        days = reminder.get("days", [0, 1, 2, 3, 4, 5, 6])
-        already = any(e.get("date") == today_iso for e in diet_log)
-        if today_js in days and not already:
-            kb = diet_keyboard(today_iso)
-            print(f"[{now_str} MSK] → diet ask ({len(subs['chat_ids'])} subscriber(s))")
+        except Exception as e:
+            print(f"[{now_str} MSK] app-data read error: {e}")
+
+    # ── Chores ───────────────────────────────────────────────────────────
+    try:
+        chores = [c for c in app_data_raw.get("chores", []) if not c.get("archived")]
+        if not chores and CONFIG_FILE.exists():
+            try:
+                config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+                chores = config.get("chores", [])
+            except Exception:
+                chores = []
+        for chore in chores:
+            if not chore.get("notify"):
+                continue
+            if chore.get("notifyTime", "") != now_str:
+                continue
+            if not is_due_today(chore):
+                continue
+            text = f"🏠 <b>По дому — напоминание</b>\n\n{chore.get('name', 'Дело')}"
+            print(f"[{now_str} MSK] → {chore['name']} ({len(subs['chat_ids'])} subscriber(s))")
             for cid in subs["chat_ids"]:
-                tg_post(token, "sendMessage", {
-                    "chat_id": cid,
-                    "text": f"🍽 <b>Как ты кушал сегодня?</b>\n📅 {human_date(today_iso)}",
-                    "parse_mode": "HTML",
-                    "reply_markup": kb,
-                })
+                send_message(token, cid, text)
+    except Exception as e:
+        print(f"[{now_str} MSK] chores reminder error: {e}")
 
-    # Daily checklist reminder
-    checklist_reminder = {}
-    checklist_fields = []
-    if APP_DATA_FILE.exists():
-        try:
-            app_data_raw = json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
-            checklist_reminder = app_data_raw.get("dailyChecklistReminder") or {}
-            checklist_fields = app_data_raw.get("dailyChecklistFields") or []
-        except Exception:
-            pass
-    if checklist_reminder.get("enabled") and checklist_reminder.get("time", "") == now_str:
-        today_js = today_msk().isoweekday() % 7
-        days = checklist_reminder.get("days", [0, 1, 2, 3, 4, 5, 6])
-        if today_js in days and checklist_fields:
-            app = load_app_data()
-            if next_unanswered_field_idx(app, today_iso) is not None:
-                print(f"[{now_str} MSK] → checklist ask ({len(subs['chat_ids'])} subscriber(s))")
+    # ── Boss tasks: days stored as JS getDay() (0=Sun,1=Mon..6=Sat) ───────
+    try:
+        boss_tasks = [t for t in app_data_raw.get("bossTasks", []) if not t.get("archived")]
+        for task in boss_tasks:
+            if not task.get("notify"):
+                continue
+            if task.get("notifyTime", "") != now_str:
+                continue
+            if today_js not in (task.get("days") or []):
+                continue
+            text = f"💼 <b>Босс — напоминание</b>\n\n{task.get('name', 'Задача')}"
+            print(f"[{now_str} MSK] → boss: {task['name']} ({len(subs['chat_ids'])} subscriber(s))")
+            for cid in subs["chat_ids"]:
+                send_message(token, cid, text)
+    except Exception as e:
+        print(f"[{now_str} MSK] boss tasks reminder error: {e}")
+
+    # ── Holidays: date stored as "MM-DD", reminders have daysBefore + time ─
+    try:
+        holidays = [h for h in app_data_raw.get("holidays", []) if not h.get("archived")]
+        TYPE_EMOJI = {"birthday": "🎂", "anniversary": "💑", "other": "🎉"}
+        for holiday in holidays:
+            if not holiday.get("notify"):
+                continue
+            date_str = holiday.get("date", "")
+            if not date_str or date_str.count("-") != 1:
+                continue
+            try:
+                mm, dd = int(date_str.split("-")[0]), int(date_str.split("-")[1])
+            except (ValueError, IndexError):
+                continue
+            for reminder in holiday.get("reminders") or []:
+                if reminder.get("time", "") != now_str:
+                    continue
+                try:
+                    days_before = int(reminder.get("daysBefore", 0) or 0)
+                except (ValueError, TypeError):
+                    continue
+                # Check current year and next year to handle cross-year notifications
+                for year_offset in (0, 1):
+                    try:
+                        holiday_date = date(today_date.year + year_offset, mm, dd)
+                        notify_date = holiday_date - timedelta(days=days_before)
+                        if notify_date != today_date:
+                            continue
+                        emoji = TYPE_EMOJI.get(holiday.get("type", "other"), "🎉")
+                        if days_before == 0:
+                            when = "сегодня!"
+                        elif days_before == 1:
+                            when = "завтра"
+                        elif 2 <= days_before <= 4:
+                            when = f"через {days_before} дня"
+                        else:
+                            when = f"через {days_before} дней"
+                        text = f"{emoji} <b>Праздник — напоминание</b>\n\n{holiday.get('name', 'Событие')}\n<i>{when}</i>"
+                        print(f"[{now_str} MSK] → holiday: {holiday['name']} in {days_before}d ({len(subs['chat_ids'])} subscriber(s))")
+                        for cid in subs["chat_ids"]:
+                            send_message(token, cid, text)
+                    except (ValueError, OverflowError):
+                        pass
+    except Exception as e:
+        print(f"[{now_str} MSK] holidays reminder error: {e}")
+
+    # ── Debts: one-off reminder at notifyDate + notifyTime (MSK) ──────────
+    try:
+        debts = app_data_raw.get("budgetDebts", [])
+        for debt in debts:
+            if not debt.get("notify") or debt.get("closed"):
+                continue
+            if debt.get("notifyDate", "") != today_iso:
+                continue
+            if debt.get("notifyTime", "") != now_str:
+                continue
+            amount = debt.get("amount", 0)
+            debtor = debt.get("debtor", "")
+            comment = debt.get("comment", "")
+            text = f"💰 <b>Долг — напоминание</b>\n\n{debtor} должен вернуть {amount} ₽"
+            if comment:
+                text += f"\n<i>{comment}</i>"
+            print(f"[{now_str} MSK] → debt: {debtor} {amount} ({len(subs['chat_ids'])} subscriber(s))")
+            for cid in subs["chat_ids"]:
+                send_message(token, cid, text)
+    except Exception as e:
+        print(f"[{now_str} MSK] debts reminder error: {e}")
+
+    # ── Diet compliance: recurring «Как ты кушал сегодня?» ────────────────
+    try:
+        reminder = app_data_raw.get("dietReminder") or {}
+        diet_log = app_data_raw.get("dietLog", [])
+        if reminder.get("enabled") and reminder.get("time", "") == now_str:
+            days = reminder.get("days", [0, 1, 2, 3, 4, 5, 6]) or []
+            already = any(e.get("date") == today_iso for e in diet_log)
+            if today_js in days and not already:
+                kb = diet_keyboard(today_iso)
+                print(f"[{now_str} MSK] → diet ask ({len(subs['chat_ids'])} subscriber(s))")
                 for cid in subs["chat_ids"]:
-                    send_checklist_question(token, cid, today_iso)
+                    tg_post(token, "sendMessage", {
+                        "chat_id": cid,
+                        "text": f"🍽 <b>Как ты кушал сегодня?</b>\n📅 {human_date(today_iso)}",
+                        "parse_mode": "HTML",
+                        "reply_markup": kb,
+                    })
+    except Exception as e:
+        print(f"[{now_str} MSK] diet reminder error: {e}")
+
+    # ── Daily checklist reminder ───────────────────────────────────────────
+    try:
+        checklist_reminder = app_data_raw.get("dailyChecklistReminder") or {}
+        checklist_fields = app_data_raw.get("dailyChecklistFields") or []
+        if checklist_reminder.get("enabled") and checklist_reminder.get("time", "") == now_str:
+            days = checklist_reminder.get("days", [0, 1, 2, 3, 4, 5, 6]) or []
+            if today_js not in days:
+                print(f"[{now_str} MSK] checklist reminder: today ({today_js}) not in days {days}")
+            elif not checklist_fields:
+                print(f"[{now_str} MSK] checklist reminder: no dailyChecklistFields configured")
+            elif not subs["chat_ids"]:
+                print(f"[{now_str} MSK] checklist reminder: no subscribers")
+            else:
+                idx = next_unanswered_field_idx(app_data_raw, today_iso)
+                if idx is None:
+                    print(f"[{now_str} MSK] checklist reminder: all fields already answered for {today_iso}")
+                else:
+                    print(f"[{now_str} MSK] → checklist ask ({len(subs['chat_ids'])} subscriber(s))")
+                    for cid in subs["chat_ids"]:
+                        send_checklist_question(token, cid, today_iso)
+    except Exception as e:
+        print(f"[{now_str} MSK] checklist reminder error: {e}")
 
 
 # ── HTTP handler ───────────────────────────────────────────────────────────
