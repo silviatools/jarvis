@@ -242,6 +242,7 @@ const DEFAULT_DATA = () => ({
   savingsTransactions: [],
   budgetDebts: [],
   bodyModes: [],
+  activeBodyModeId: null,
   dietReminder: { enabled: false, time: '20:00', days: [0, 1, 2, 3, 4, 5, 6] },
   settings: { ...DEFAULT_SETTINGS },
 });
@@ -5936,12 +5937,14 @@ async function deleteFile(filename) {
 }
 
 function BodyView({ data, setData }) {
-  const [bodyTab, setBodyTab] = useState('history');
+  const [bodyTab, setBodyTab] = useState('modes');
+  const [measurementsTab, setMeasurementsTab] = useState('history');
   const [editEntry, setEditEntry] = useState(null);
 
   const fields = data.bodyFields || DEFAULT_BODY_FIELDS;
   const categories = data.bodyPhotoCategories || DEFAULT_BODY_PHOTO_CATEGORIES;
   const entries = [...(data.bodyEntries || [])].sort((a, b) => b.date.localeCompare(a.date));
+  const activeMode = (data.bodyModes || []).find(m => m.id === data.activeBodyModeId) || null;
 
   const saveEntry = (entry) => {
     setData(d => {
@@ -5973,13 +5976,22 @@ function BodyView({ data, setData }) {
   }
 
   const tabs = [
-    { id: 'history',    label: 'История'    },
-    { id: 'photos',     label: 'Фото'       },
-    { id: 'progress',   label: 'Прогресс'   },
-    { id: 'compliance', label: 'Соблюдение' },
-    { id: 'modes',      label: 'Режим'      },
-    { id: 'fields',     icon: 'settings'    },
+    { id: 'modes',         label: 'Режим'                 },
+    { id: 'measurements',  label: 'Показатели и замеры'   },
+    { id: 'nutrition',     label: 'Питание'               },
+    { id: 'fields',        icon: 'settings'              },
   ];
+
+  const measurementsTabs = [
+    { id: 'progress', label: 'Прогресс' },
+    { id: 'history',  label: 'История'  },
+    { id: 'photos',   label: 'Фото'     },
+  ];
+
+  const fmtModeDate = (s) => s ? new Date(s + 'T00:00:00').toLocaleDateString('ru-RU') : '—';
+  const activeModeLabel = activeMode
+    ? ((activeMode.name && activeMode.name.trim()) ? activeMode.name.trim() : `${fmtModeDate(activeMode.startDate)} — ${fmtModeDate(activeMode.endDate)}`)
+    : null;
 
   return (
     <div className="fade-in">
@@ -5987,8 +5999,13 @@ function BodyView({ data, setData }) {
         <div>
           <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Раздел</div>
           <h1 className="font-display text-3xl md:text-4xl">Моё тело</h1>
+          {activeModeLabel && (
+            <div className="text-sm text-[var(--text-muted)] mt-1.5">
+              Текущий режим: <span className="text-[var(--text)] font-medium">{activeModeLabel}</span>
+            </div>
+          )}
         </div>
-        {bodyTab === 'history' && (
+        {bodyTab === 'measurements' && measurementsTab === 'history' && (
           <button onClick={() => setEditEntry('new')} className="btn-primary flex items-center gap-2 text-sm">
             <Icon name="plus" size={16} /> Запись
           </button>
@@ -6006,12 +6023,26 @@ function BodyView({ data, setData }) {
         </div>
       </div>
 
-      {bodyTab === 'history'  && <BodyHistory entries={entries} fields={fields} categories={categories} onEdit={setEditEntry} onDelete={deleteEntry} />}
-      {bodyTab === 'photos'   && <BodyPhotoGallery entries={entries} categories={categories} />}
-      {bodyTab === 'progress'   && <BodyProgress entries={entries} fields={fields} />}
-      {bodyTab === 'compliance' && <DietComplianceView data={data} setData={setData} />}
-      {bodyTab === 'modes'      && <BodyModesView data={data} setData={setData} />}
-      {bodyTab === 'fields'     && <BodyFieldsSettings data={data} setData={setData} />}
+      {bodyTab === 'modes' && <BodyModesView data={data} setData={setData} />}
+      {bodyTab === 'measurements' && (
+        <div className="fade-in">
+          <div className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-5">
+            <div className="inline-flex bg-[var(--bg)] border border-[var(--border)] rounded-xl p-1 gap-0">
+              {measurementsTabs.map(t => (
+                <button key={t.id} onClick={() => setMeasurementsTab(t.id)}
+                  className={`px-3 sm:px-4 py-1.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${measurementsTab===t.id?'bg-[var(--surface)] text-[var(--text)] shadow-sm':'text-[var(--text-muted)]'}`}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {measurementsTab === 'progress' && <BodyProgress entries={entries} fields={fields} />}
+          {measurementsTab === 'history'  && <BodyHistory entries={entries} fields={fields} categories={categories} onEdit={setEditEntry} onDelete={deleteEntry} />}
+          {measurementsTab === 'photos'   && <BodyPhotoGallery entries={entries} categories={categories} />}
+        </div>
+      )}
+      {bodyTab === 'nutrition' && <DietComplianceView data={data} setData={setData} />}
+      {bodyTab === 'fields'    && <BodyFieldsSettings data={data} setData={setData} />}
     </div>
   );
 }
@@ -6023,6 +6054,9 @@ function BodyModesView({ data, setData }) {
   const [viewing, setViewing] = useState(null);
 
   const modes = [...(data.bodyModes || [])].sort((a, b) => (b.startDate || '').localeCompare(a.startDate || ''));
+  const activeId = data.activeBodyModeId || null;
+
+  const setActiveMode = (id) => setData(d => ({ ...d, activeBodyModeId: id }));
 
   const save = (mode) => {
     setData(d => {
@@ -6036,7 +6070,11 @@ function BodyModesView({ data, setData }) {
   const remove = (mode) => {
     if (!confirm('Удалить режим?')) return;
     if (mode.workoutFile?.filename) deleteFile(mode.workoutFile.filename);
-    setData(d => ({ ...d, bodyModes: (d.bodyModes || []).filter(m => m.id !== mode.id) }));
+    setData(d => ({
+      ...d,
+      bodyModes: (d.bodyModes || []).filter(m => m.id !== mode.id),
+      activeBodyModeId: d.activeBodyModeId === mode.id ? null : d.activeBodyModeId,
+    }));
   };
 
   if (editing) {
@@ -6048,6 +6086,22 @@ function BodyModesView({ data, setData }) {
 
   return (
     <div className="fade-in space-y-4">
+      {modes.length > 0 && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+          <div className="text-xs uppercase tracking-wide text-[var(--text-subtle)] font-medium mb-2">Текущий режим</div>
+          <select
+            value={activeId || ''}
+            onChange={e => setActiveMode(e.target.value || null)}
+            className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--text)]"
+          >
+            <option value="">Не выбран</option>
+            {modes.map(m => (
+              <option key={m.id} value={m.id}>{label(m)}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <button onClick={() => setEditing('new')} className="btn-primary flex items-center gap-2 text-sm">
         <Icon name="plus" size={16} /> Добавить режим
       </button>
@@ -6056,11 +6110,18 @@ function BodyModesView({ data, setData }) {
         <EmptyState title="Нет режимов" text="Добавьте режим: период, БАДДы, КБЖУ и программу тренировок — всё в одном месте." />
       ) : (
         <div className="space-y-3">
-          {modes.map(m => (
-            <div key={m.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+          {modes.map(m => {
+            const isActive = m.id === activeId;
+            return (
+            <div key={m.id} className={`bg-[var(--surface)] border rounded-2xl p-4 transition-colors ${isActive ? 'border-[var(--text)]' : 'border-[var(--border)]'}`}>
               <div className="flex items-start justify-between gap-3">
                 <button onClick={() => setViewing(m)} className="text-left flex-1 min-w-0">
-                  <div className="font-medium">{label(m)}</div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium">{label(m)}</span>
+                    {isActive && (
+                      <span className="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full bg-[var(--text)] text-white">Текущий</span>
+                    )}
+                  </div>
                   <div className="text-xs text-[var(--text-muted)] mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
                     {m.name && m.name.trim() && <span>{fmt(m.startDate)} — {fmt(m.endDate)}</span>}
                     {m.supplements?.length > 0 && <span>💊 {m.supplements.length}</span>}
@@ -6069,12 +6130,18 @@ function BodyModesView({ data, setData }) {
                   </div>
                 </button>
                 <div className="flex gap-1 shrink-0">
+                  {!isActive && (
+                    <button onClick={() => setActiveMode(m.id)} title="Сделать текущим" className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+                      <Icon name="check" size={16} />
+                    </button>
+                  )}
                   <button onClick={() => setEditing(m)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={16} /></button>
                   <button onClick={() => remove(m)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={16} /></button>
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
