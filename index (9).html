@@ -244,6 +244,7 @@ const DEFAULT_DATA = () => ({
   bodyModes: [],
   activeBodyModeId: null,
   bodyProgressStartDate: '',
+  bodyFieldTargets: {},
   dietReminder: { enabled: false, time: '20:00', days: [0, 1, 2, 3, 4, 5, 6] },
   dailyChecklistFields: [],
   dailyChecklistReminder: { enabled: false, time: '21:00', days: [0, 1, 2, 3, 4, 5, 6] },
@@ -6749,6 +6750,7 @@ function BodyView({ data, setData }) {
               fields={fields}
               startDate={data.bodyProgressStartDate || ''}
               onStartDateChange={d => setData(prev => ({ ...prev, bodyProgressStartDate: d }))}
+              targets={data.bodyFieldTargets || {}}
             />
           )}
           {measurementsTab === 'history'  && <BodyHistory entries={entries} fields={fields} categories={categories} onEdit={setEditEntry} onDelete={deleteEntry} />}
@@ -7329,7 +7331,103 @@ function BodyHistory({ entries, fields, categories, onEdit, onDelete }) {
   );
 }
 
-function BodyProgress({ entries, fields, startDate, onStartDateChange }) {
+function addDaysStr(dateStr, days) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().split('T')[0];
+}
+
+function valueAtOrBefore(sorted, fieldId, dateStr) {
+  let val;
+  for (const e of sorted) {
+    if (e.date > dateStr) break;
+    if (e.values?.[fieldId] !== undefined) val = e.values[fieldId];
+  }
+  return val;
+}
+
+function BodyWeeklyPlanVsActual({ sorted, fields, targets, effectiveStart }) {
+  const todayStr = new Date().toISOString().split('T')[0];
+  const [expandedId, setExpandedId] = useState(null);
+  const targetFields = fields.filter(f => targets[f.id] !== undefined && targets[f.id] !== 0);
+  if (targetFields.length === 0 || !effectiveStart) return null;
+
+  const start = new Date(effectiveStart + 'T00:00:00');
+  const now = new Date(todayStr + 'T00:00:00');
+  const totalDays = Math.max(0, Math.round((now - start) / 86400000));
+  const totalWeeks = Math.max(1, Math.floor(totalDays / 7) + 1);
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+      <h3 className="font-display text-lg mb-1">План и факт по неделям</h3>
+      <p className="text-xs text-[var(--text-muted)] mb-4">Сравнение фактического изменения показателя с плановым (задаётся в ⚙ → Плановые изменения).</p>
+      <div className="space-y-5">
+        {targetFields.map(f => {
+          const target = targets[f.id];
+          const baseline = valueAtOrBefore(sorted, f.id, effectiveStart)
+            ?? sorted.find(e => e.values?.[f.id] !== undefined)?.values?.[f.id];
+          if (baseline === undefined) return null;
+
+          const rows = [];
+          for (let w = 1; w <= totalWeeks; w++) {
+            const weekStartStr = addDaysStr(effectiveStart, (w - 1) * 7);
+            const weekEndStr = w === totalWeeks ? todayStr : addDaysStr(effectiveStart, w * 7 - 1);
+            const actualVal = valueAtOrBefore(sorted, f.id, weekEndStr);
+            const plannedCum = target * w;
+            const actualCum = actualVal !== undefined ? actualVal - baseline : null;
+            const diff = actualCum !== null ? actualCum - plannedCum : null;
+            const good = diff !== null ? (target < 0 ? diff <= 0 : diff >= 0) : null;
+            rows.push({ w, weekStartStr, plannedCum, actualCum, diff, good, hasData: actualVal !== undefined });
+          }
+          const visibleRows = expandedId === f.id ? rows : rows.slice(-6);
+
+          return (
+            <div key={f.id} className="bg-[var(--bg)] rounded-xl p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-sm font-medium">{f.label}</div>
+                <div className="text-xs text-[var(--text-subtle)]">план: {target > 0 ? '+' : ''}{target} {f.unit}/нед</div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs" style={{ minWidth: 360 }}>
+                  <thead>
+                    <tr className="text-left border-b border-[var(--border)]">
+                      <th className="pb-1.5 pr-2 text-[10px] uppercase tracking-wide text-[var(--text-subtle)] font-medium">Неделя</th>
+                      <th className="pb-1.5 pr-2 text-right text-[10px] uppercase tracking-wide text-[var(--text-subtle)] font-medium">План</th>
+                      <th className="pb-1.5 pr-2 text-right text-[10px] uppercase tracking-wide text-[var(--text-subtle)] font-medium">Факт</th>
+                      <th className="pb-1.5 text-right text-[10px] uppercase tracking-wide text-[var(--text-subtle)] font-medium">Разница</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleRows.map(r => (
+                      <tr key={r.w} className="border-b border-[var(--border)] last:border-0">
+                        <td className="py-1.5 pr-2 whitespace-nowrap text-[var(--text-muted)]">#{r.w} · {formatBodyDate(r.weekStartStr)}</td>
+                        <td className="py-1.5 pr-2 text-right text-[var(--text-muted)]">{r.plannedCum > 0 ? '+' : ''}{r.plannedCum.toFixed(1)}</td>
+                        <td className="py-1.5 pr-2 text-right font-medium">
+                          {r.hasData ? `${r.actualCum > 0 ? '+' : ''}${r.actualCum.toFixed(1)}` : '—'}
+                        </td>
+                        <td className={`py-1.5 text-right font-medium ${r.diff === null ? 'text-[var(--text-subtle)]' : r.good ? 'text-green-500' : 'text-red-400'}`}>
+                          {r.diff === null ? '—' : `${r.diff > 0 ? '+' : ''}${r.diff.toFixed(1)}`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {rows.length > 6 && (
+                <button onClick={() => setExpandedId(expandedId === f.id ? null : f.id)}
+                  className="text-xs text-[var(--text-subtle)] hover:text-[var(--text)] mt-2">
+                  {expandedId === f.id ? 'Скрыть' : `Показать все ${rows.length} недель`}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function BodyProgress({ entries, fields, startDate, onStartDateChange, targets }) {
   const filtered = startDate
     ? entries.filter(e => e.date >= startDate)
     : entries;
@@ -7404,6 +7502,13 @@ function BodyProgress({ entries, fields, startDate, onStartDateChange }) {
           })}
         </div>
       </div>
+
+      <BodyWeeklyPlanVsActual
+        sorted={sorted}
+        fields={fields}
+        targets={targets || {}}
+        effectiveStart={startDate || first.date}
+      />
 
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 overflow-x-auto">
         <h3 className="font-display text-lg mb-3">Все записи</h3>
@@ -7513,6 +7618,55 @@ function BodyPhotoGallery({ entries, categories }) {
           <button className="mt-3 text-white/50 text-sm" onClick={() => setLightbox(null)}>Закрыть</button>
         </div>
       )}
+    </div>
+  );
+}
+
+function BodyFieldTargetsSettings({ data, setData, fields }) {
+  const targets = data.bodyFieldTargets || {};
+
+  const setTarget = (fieldId, raw) => {
+    setData(d => {
+      const cur = { ...(d.bodyFieldTargets || {}) };
+      const trimmed = (raw || '').trim();
+      if (trimmed === '' || trimmed === '-') {
+        delete cur[fieldId];
+      } else {
+        const num = parseFloat(trimmed.replace(',', '.'));
+        if (Number.isNaN(num)) return d;
+        cur[fieldId] = num;
+      }
+      return { ...d, bodyFieldTargets: cur };
+    });
+  };
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+      <h3 className="font-display text-lg mb-1">Плановые изменения</h3>
+      <p className="text-sm text-[var(--text-muted)] mb-4">
+        Ожидаемое изменение показателя за неделю. Можно указывать со знаком «−» для снижения (например, −0.5 для веса).
+        Используется во вкладке «Прогресс» для сравнения плана с фактом по неделям.
+      </p>
+      <div className="space-y-2">
+        {fields.map(f => {
+          const val = targets[f.id];
+          return (
+            <div key={f.id} className="flex items-center gap-3 bg-[var(--bg)] rounded-xl px-3 py-2.5">
+              <div className="flex-1 text-sm font-medium">{f.label}</div>
+              <input
+                type="text"
+                inputMode="decimal"
+                defaultValue={val !== undefined ? String(val) : ''}
+                onBlur={e => setTarget(f.id, e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+                placeholder="0"
+                className="w-20 bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:border-[var(--text)]"
+              />
+              <span className="text-xs text-[var(--text-subtle)] w-16 shrink-0">{f.unit ? `${f.unit}/нед` : '/нед'}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -7698,6 +7852,8 @@ function BodyFieldsSettings({ data, setData }) {
           ))}
         </div>
       </div>
+
+      <BodyFieldTargetsSettings data={data} setData={setData} fields={fields} />
 
       {available.length > 0 && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
