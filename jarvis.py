@@ -301,15 +301,36 @@ def _merge_id_arrays(local_arr, server_arr, prefer_local: bool, deleted_for_key:
                 out.append(v)
         return out
 
+    # Last-write-wins by `updatedAt` when both sides have a real timestamp
+    # for the same id — makes edits made on ANY device/client show up
+    # everywhere, instead of always losing to whichever copy the server
+    # happens to already have. Falls back to the old bias (prefer_local)
+    # when timestamps are missing, for legacy data.
     by_id: dict = {}
+
+    def _consider(e, is_preferred_pass):
+        if not isinstance(e, dict) or e.get("id") is None:
+            return
+        key = str(e["id"])
+        cur = by_id.get(key)
+        if cur is None:
+            by_id[key] = e
+            return
+        cur_ts = cur.get("updatedAt") if isinstance(cur.get("updatedAt"), (int, float)) else None
+        e_ts = e.get("updatedAt") if isinstance(e.get("updatedAt"), (int, float)) else None
+        if cur_ts is None and e_ts is None:
+            if is_preferred_pass:
+                by_id[key] = e
+            return
+        if e_ts is not None and (cur_ts is None or e_ts > cur_ts):
+            by_id[key] = e
+
     first = sa if prefer_local else la
     second = la if prefer_local else sa
     for e in first:
-        if isinstance(e, dict) and e.get("id") is not None:
-            by_id[str(e["id"])] = e
+        _consider(e, False)
     for e in second:
-        if isinstance(e, dict) and e.get("id") is not None:
-            by_id[str(e["id"])] = e
+        _consider(e, True)
     if deleted_for_key:
         for tid in deleted_for_key:
             by_id.pop(str(tid), None)

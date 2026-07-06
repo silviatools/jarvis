@@ -368,11 +368,29 @@ const mergeIdArrays = (localArr, serverArr, preferLocal, deletedForKey) => {
     return out;
   }
 
+  // Last-write-wins by `updatedAt` when BOTH sides have a real timestamp for
+  // the same id — this is what makes edits from a DIFFERENT device actually
+  // show up everywhere else, instead of always losing to whichever copy
+  // happens to be "local" on a given device. Falls back to the old bias
+  // (preferLocal decides) when timestamps are missing, for legacy data.
   const byId = new Map();
+  const consider = (e, isPreferredPass) => {
+    if (e?.id == null) return;
+    const key = String(e.id);
+    const cur = byId.get(key);
+    if (!cur) { byId.set(key, e); return; }
+    const curTs = typeof cur.updatedAt === 'number' ? cur.updatedAt : null;
+    const eTs = typeof e.updatedAt === 'number' ? e.updatedAt : null;
+    if (curTs == null && eTs == null) {
+      if (isPreferredPass) byId.set(key, e);
+      return;
+    }
+    if (eTs != null && (curTs == null || eTs > curTs)) byId.set(key, e);
+  };
   const first = preferLocal ? sa : la;
   const second = preferLocal ? la : sa;
-  first.forEach(e => { if (e?.id != null) byId.set(String(e.id), e); });
-  second.forEach(e => { if (e?.id != null) byId.set(String(e.id), e); });
+  first.forEach(e => consider(e, false));
+  second.forEach(e => consider(e, true));
   if (deletedForKey) {
     Object.keys(deletedForKey).forEach(id => byId.delete(id));
   }
@@ -3101,7 +3119,7 @@ function DailyChecklistFieldsConfig({ data, setData }) {
       return {
         ...d,
         dailyChecklistFields: (d.dailyChecklistFields || []).map(f =>
-          f.id === editingId ? { ...f, label, options } : f
+          f.id === editingId ? { ...f, label, options, updatedAt: Date.now() } : f
         ),
       };
     });
@@ -3113,7 +3131,7 @@ function DailyChecklistFieldsConfig({ data, setData }) {
     if (!label || labels.length === 0) return;
     setData(d => ({
       ...d,
-      dailyChecklistFields: [...(d.dailyChecklistFields || []), { id: crypto.randomUUID(), label, options: labelsToOptions(labels) }],
+      dailyChecklistFields: [...(d.dailyChecklistFields || []), { id: crypto.randomUUID(), label, options: labelsToOptions(labels), updatedAt: Date.now() }],
     }));
     setNewLabel('');
     setNewOptions('Да, Нет');
@@ -3433,6 +3451,7 @@ function SupplementSettings({ data, setData, isWorkout }) {
   const archived = (data[storageKey] || []).filter(s => s.archived);
 
   const save = (supp) => {
+    supp = { ...supp, updatedAt: Date.now() };
     setData(d => {
       const list = d[storageKey] || [];
       const exists = list.find(s => s.id === supp.id);
@@ -3642,6 +3661,7 @@ function MealSettings({ data, setData }) {
   const archived = (data.meals || []).filter(m => m.archived);
 
   const save = (meal) => {
+    meal = { ...meal, updatedAt: Date.now() };
     setData(d => {
       const list = d.meals || [];
       const exists = list.find(m => m.id === meal.id);
@@ -4071,6 +4091,7 @@ function CookingView({ data, setData }) {
   const plans = data.cookingPlans || [];
 
   const save = (plan) => {
+    plan = { ...plan, updatedAt: Date.now() };
     setData(d => {
       const list = d.cookingPlans || [];
       const exists = list.find(p => p.id === plan.id);
@@ -4376,6 +4397,7 @@ function ContainersView({ data, setData }) {
   const containers = data.containers || [];
 
   const save = (item) => {
+    item = { ...item, updatedAt: Date.now() };
     setData(d => {
       const list = d.containers || [];
       const exists = list.find(c => c.id === item.id);
@@ -4714,6 +4736,7 @@ function KanbanView({ data, setData }) {
 
   // ── tasks ──
   const saveTask = (task, colId) => {
+    task = { ...task, updatedAt: Date.now() };
     const prevColId = editingTask?.colId;
     let cols = columns.map(c => ({ ...c, tasks: [...c.tasks] }));
     // remove from old column
@@ -5077,6 +5100,7 @@ function ChoreSettings({ data, setData, dataKey }) {
   const archived = (data[dataKey] || []).filter(c => c.archived);
 
   const save = (chore) => {
+    chore = { ...chore, updatedAt: Date.now() };
     setData(d => {
       const list = d[dataKey] || [];
       const exists = list.find(c => c.id === chore.id);
@@ -5412,6 +5436,7 @@ function BossSettings({ data, setData }) {
   const dayLabel = { 1:'Пн', 2:'Вт', 3:'Ср', 4:'Чт', 5:'Пт', 6:'Сб', 0:'Вс' };
 
   const save = (task) => {
+    task = { ...task, updatedAt: Date.now() };
     setData(d => {
       const list = d.bossTasks || [];
       const exists = list.find(t => t.id === task.id);
@@ -6753,6 +6778,7 @@ function BodyView({ data, setData }) {
   const activeMode = (data.bodyModes || []).find(m => m.id === data.activeBodyModeId) || null;
 
   const saveEntry = (entry) => {
+    entry = { ...entry, updatedAt: Date.now() };
     setData(d => {
       const list = d.bodyEntries || [];
       if (entry.id && list.find(e => e.id === entry.id)) {
@@ -6879,6 +6905,7 @@ function BodyModesView({ data, setData }) {
   const setActiveMode = (id) => setData(d => ({ ...d, activeBodyModeId: id }));
 
   const save = (mode) => {
+    mode = { ...mode, updatedAt: Date.now() };
     setData(d => {
       const list = d.bodyModes || [];
       const exists = list.find(m => m.id === mode.id);
@@ -7800,13 +7827,13 @@ function BodyFieldsSettings({ data, setData }) {
   const addPreset = (p) => setData(d => {
     const cur = d.bodyFields || DEFAULT_BODY_FIELDS;
     if (cur.find(f => f.id === p.id)) return d;
-    return { ...d, bodyFields: [...cur, { ...p }] };
+    return { ...d, bodyFields: [...cur, { ...p, updatedAt: Date.now() }] };
   });
   const addCustom = () => {
     if (!customLabel.trim()) return;
     setData(d => ({
       ...d,
-      bodyFields: [...(d.bodyFields || DEFAULT_BODY_FIELDS), { id: 'custom_' + Date.now(), label: customLabel.trim(), unit: customUnit.trim() }],
+      bodyFields: [...(d.bodyFields || DEFAULT_BODY_FIELDS), { id: 'custom_' + Date.now(), label: customLabel.trim(), unit: customUnit.trim(), updatedAt: Date.now() }],
     }));
     setCustomLabel(''); setCustomUnit('');
   };
@@ -8062,6 +8089,7 @@ function CarsSettings({ data, setData }) {
   const archived = (data.cars || []).filter(c =>  c.archived);
 
   const save = (car) => {
+    car = { ...car, updatedAt: Date.now() };
     setData(d => {
       const list = d.cars || [];
       const exists = list.find(c => c.id === car.id);
@@ -8226,6 +8254,7 @@ function ServiceHistoryView({ data, setData }) {
   const getCarName = (carId) => (data.cars || []).find(c => c.id === carId)?.name || '—';
 
   const saveRecord = (record) => {
+    record = { ...record, updatedAt: Date.now() };
     setData(d => {
       const list = d.serviceRecords || [];
       const exists = list.find(r => r.id === record.id);
@@ -8545,6 +8574,7 @@ function HolidaysView({ data, setData }) {
   const holidays = (data.holidays || []).filter(h => !h.archived);
 
   const save = (holiday) => {
+    holiday = { ...holiday, updatedAt: Date.now() };
     setData(d => {
       const list = d.holidays || [];
       const exists = list.find(h => h.id === holiday.id);
@@ -9904,6 +9934,7 @@ function SavingsListView({ data, setData }) {
   };
 
   const save = (exp) => {
+    exp = { ...exp, updatedAt: Date.now() };
     setData(d => {
       const list = d.budgetExpenses || [];
       const exists = list.find(e => e.id === exp.id);
@@ -10662,6 +10693,7 @@ function BudgetRecurringView({ data, setData }) {
   const items = (data.budgetRecurring || []).filter(r => !r.archived);
 
   const save = (item) => {
+    item = { ...item, updatedAt: Date.now() };
     setData(d => {
       const list = d.budgetRecurring || [];
       const exists = list.find(r => r.id === item.id);
@@ -10866,6 +10898,7 @@ function BudgetDebtsView({ data, setData }) {
   const closed = debts.filter(d => d.closed);
 
   const save = (debt) => {
+    debt = { ...debt, updatedAt: Date.now() };
     setData(d => {
       const list = d.budgetDebts || [];
       const exists = list.find(x => x.id === debt.id);
@@ -11105,6 +11138,7 @@ function BudgetSupplementsView({ data, setData }) {
   );
 
   const save = (item) => {
+    item = { ...item, updatedAt: Date.now() };
     setData(d => {
       const list = d.budgetSupplements || [];
       const exists = list.find(s => s.id === item.id);
