@@ -196,6 +196,49 @@ const DEFAULT_SETTINGS = {
   voiceTtsVoice: 'nova',
 };
 
+// ── MSK time helpers ─────────────────────────────────────────────────────
+// All Telegram reminder times (chores, boss tasks, holidays, debts, diet,
+// checklist) are compared against the SERVER's Moscow-time clock. If the
+// user's device is not in the Moscow timezone, a time entered "as-is" would
+// never match. MskTimeInput below shows/edits the value in the user's own
+// local time while transparently storing/comparing it as MSK — so the
+// notification fires at the moment the user actually intends, regardless of
+// which timezone their device is in.
+const MSK_OFFSET_MS = 3 * 60 * 60 * 1000; // MSK = UTC+3, no DST
+const HHMM_RE = /^\d{2}:\d{2}$/;
+
+function localTimeToMsk(hhmm) {
+  if (!hhmm || !HHMM_RE.test(hhmm)) return hhmm;
+  const [h, m] = hhmm.split(':').map(Number);
+  const now = new Date();
+  const localInstantMs = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0).getTime();
+  const msk = new Date(localInstantMs + MSK_OFFSET_MS);
+  return `${String(msk.getUTCHours()).padStart(2, '0')}:${String(msk.getUTCMinutes()).padStart(2, '0')}`;
+}
+
+function mskTimeToLocal(hhmm) {
+  if (!hhmm || !HHMM_RE.test(hhmm)) return hhmm;
+  const [h, m] = hhmm.split(':').map(Number);
+  const now = new Date();
+  const asUtcInstantMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), h, m, 0, 0);
+  const local = new Date(asUtcInstantMs - MSK_OFFSET_MS);
+  return `${String(local.getHours()).padStart(2, '0')}:${String(local.getMinutes()).padStart(2, '0')}`;
+}
+
+// Drop-in replacement for <input type="time">: displays/edits in the user's
+// local time, stores/reports the MSK-equivalent value via onChange.
+function MskTimeInput({ value, onChange, className, style }) {
+  return (
+    <input
+      type="time"
+      value={mskTimeToLocal(value || '')}
+      onChange={e => onChange(localTimeToMsk(e.target.value))}
+      className={className}
+      style={style}
+    />
+  );
+}
+
 const DEFAULT_BODY_FIELDS = [
   { id: 'weight',       label: 'Вес',               unit: 'кг'  },
   { id: 'bodyFat',      label: 'Жир',               unit: '%'   },
@@ -5162,10 +5205,9 @@ function ChoreModal({ chore, onSave, onClose }) {
           {form.notify && (
             <div className="fade-in">
               <label>Время напоминания</label>
-              <input
-                type="time"
+              <MskTimeInput
                 value={form.notifyTime || '09:00'}
-                onChange={e => set('notifyTime', e.target.value)}
+                onChange={t => set('notifyTime', t)}
               />
             </div>
           )}
@@ -5495,10 +5537,9 @@ function BossTaskModal({ task, onSave, onClose }) {
           {form.notify && (
             <div className="fade-in">
               <label>Время напоминания</label>
-              <input
-                type="time"
+              <MskTimeInput
                 value={form.notifyTime || '09:00'}
-                onChange={e => set('notifyTime', e.target.value)}
+                onChange={t => set('notifyTime', t)}
               />
             </div>
           )}
@@ -7769,6 +7810,7 @@ function BodyFieldsSettings({ data, setData }) {
         <div>
           <h3 className="font-display text-lg mb-1">Напоминания в Telegram</h3>
           <p className="text-sm text-[var(--text-muted)]">Бот пришлёт вопросы и запишет ответы прямо из Telegram.</p>
+          <p className="text-xs text-[var(--text-subtle)] mt-1">Время указывается по вашему часовому поясу — на сервер автоматически передаётся московское время.</p>
         </div>
 
         <div className="border border-[var(--border)] rounded-xl p-4 space-y-4">
@@ -7786,7 +7828,7 @@ function BodyFieldsSettings({ data, setData }) {
             <div className="space-y-3">
               <div>
                 <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Время</label>
-                <input type="time" value={reminder.time || '20:00'} onChange={e => setReminder({ time: e.target.value })}
+                <MskTimeInput value={reminder.time || '20:00'} onChange={t => setReminder({ time: t })}
                   className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
               </div>
               <div>
@@ -7812,7 +7854,7 @@ function BodyFieldsSettings({ data, setData }) {
             <div className="space-y-3">
               <div>
                 <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Время</label>
-                <input type="time" value={checklistReminder.time || '21:00'} onChange={e => setChecklistReminder({ time: e.target.value })}
+                <MskTimeInput value={checklistReminder.time || '21:00'} onChange={t => setChecklistReminder({ time: t })}
                   className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
               </div>
               <div>
@@ -8701,10 +8743,9 @@ function HolidayForm({ initial, onSave, onClose }) {
                   >
                     {DAYS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
-                  <input
-                    type="time"
+                  <MskTimeInput
                     value={r.time}
-                    onChange={e => setReminder(r.id, 'time', e.target.value)}
+                    onChange={t => setReminder(r.id, 'time', t)}
                     style={{ width: '110px', flexShrink: 0 }}
                   />
                   <button
@@ -10953,7 +10994,7 @@ function BudgetDebtModal({ debt, onSave, onClose }) {
               </div>
               <div className="w-28">
                 <label>Время</label>
-                <input type="time" value={form.notifyTime || '12:00'} onChange={e => set('notifyTime', e.target.value)} />
+                <MskTimeInput value={form.notifyTime || '12:00'} onChange={t => set('notifyTime', t)} />
               </div>
             </div>
           )}
