@@ -299,6 +299,40 @@ const DEFAULT_DATA = () => ({
 // backward compat: photos were stored as strings, now as {filename, category}
 const normalizePhoto = (p) => typeof p === 'string' ? { filename: p, category: '' } : p;
 
+// backward compat: meal sections (завтрак/перекус/обед/ужин) were one freeform
+// string with one dish per line ("Гречка 230г\nКофе"), now an array of
+// {id, product, amount} items. Best-effort split of legacy lines into
+// product + trailing amount ("230г", "1 шт", "1"); if no amount is found,
+// the whole line becomes the product with an empty amount — no text is lost.
+const parseMealLine = (line) => {
+  const trimmed = (line || '').trim();
+  if (!trimmed) return null;
+  const m = trimmed.match(/^(.+?)\s+(\d+(?:[.,]\d+)?\s?[^\d\s]{0,15})\s*$/u);
+  return m
+    ? { id: crypto.randomUUID(), product: m[1].trim(), amount: m[2].trim() }
+    : { id: crypto.randomUUID(), product: trimmed, amount: '' };
+};
+
+const normalizeMealSection = (val) => {
+  if (Array.isArray(val)) {
+    return val.map(it => (it && typeof it === 'object')
+      ? { id: it.id || crypto.randomUUID(), product: it.product || '', amount: it.amount || '' }
+      : { id: crypto.randomUUID(), product: String(it ?? ''), amount: '' });
+  }
+  if (typeof val === 'string') {
+    return val.split('\n').map(parseMealLine).filter(Boolean);
+  }
+  return [];
+};
+
+const normalizeMeal = (meal) => ({
+  ...meal,
+  breakfast: normalizeMealSection(meal.breakfast),
+  snack: normalizeMealSection(meal.snack),
+  lunch: normalizeMealSection(meal.lunch),
+  dinner: normalizeMealSection(meal.dinner),
+});
+
 const loadData = () => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -1392,9 +1426,11 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
   );
 }
 
+const formatMealItem = (item) => item.amount ? `${item.product} ${item.amount}` : item.product;
+
 function MealPlanView({ data, setData }) {
   const [expanded, setExpanded] = useState(null);
-  const meals = (data.meals || []).filter(m => !m.archived);
+  const meals = (data.meals || []).filter(m => !m.archived).map(normalizeMeal);
   const starredIds = data.starredMealIds || [];
 
   const toggleStar = (e, mealId) => {
@@ -1424,10 +1460,10 @@ function MealPlanView({ data, setData }) {
         const isOpen = expanded === meal.id;
         const isStarred = starredIds.includes(meal.id);
         const summary = [
-          meal.breakfast && `Завтрак: ${meal.breakfast.split('\n')[0]}`,
-          meal.snack && `Перекус: ${meal.snack.split('\n')[0]}`,
-          meal.lunch && `Обед: ${meal.lunch.split('\n')[0]}`,
-          meal.dinner && `Ужин: ${meal.dinner.split('\n')[0]}`,
+          meal.breakfast[0] && `Завтрак: ${formatMealItem(meal.breakfast[0])}`,
+          meal.snack[0] && `Перекус: ${formatMealItem(meal.snack[0])}`,
+          meal.lunch[0] && `Обед: ${formatMealItem(meal.lunch[0])}`,
+          meal.dinner[0] && `Ужин: ${formatMealItem(meal.dinner[0])}`,
         ].filter(Boolean).join(' · ');
 
         return (
@@ -1465,10 +1501,10 @@ function MealPlanView({ data, setData }) {
             {isOpen && (
               <div className="slide-down border-t border-[var(--border)] px-5 py-6 space-y-5">
                 <NutritionRow meal={meal} />
-                <MealSection title="Завтрак" content={meal.breakfast} />
-                <MealSection title="Перекус" content={meal.snack} />
-                <MealSection title="Обед" content={meal.lunch} />
-                <MealSection title="Ужин" content={meal.dinner} />
+                <MealSection title="Завтрак" items={meal.breakfast} />
+                <MealSection title="Перекус" items={meal.snack} />
+                <MealSection title="Обед" items={meal.lunch} />
+                <MealSection title="Ужин" items={meal.dinner} />
               </div>
             )}
           </div>
@@ -1622,12 +1658,19 @@ function NutritionRow({ meal, compact }) {
   );
 }
 
-function MealSection({ title, content }) {
-  if (!content?.trim()) return null;
+function MealSection({ title, items }) {
+  if (!items || !items.length) return null;
   return (
     <div>
       <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] mb-2 font-medium">{title}</div>
-      <div className="text-[var(--text)] whitespace-pre-line leading-relaxed">{content}</div>
+      <div className="space-y-1">
+        {items.map(item => (
+          <div key={item.id} className="flex items-baseline justify-between gap-3 text-[var(--text)] leading-relaxed">
+            <span>{item.product}</span>
+            {item.amount && <span className="text-[var(--text-muted)] text-sm shrink-0">{item.amount}</span>}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -3692,7 +3735,7 @@ function MealSettings({ data, setData }) {
       <button
         onClick={() => setEditing({
           id: crypto.randomUUID(),
-          name: '', breakfast: '', snack: '', lunch: '', dinner: '',
+          name: '', breakfast: [], snack: [], lunch: [], dinner: [],
           calories: '', protein: '', fat: '', carbs: '',
           archived: false,
         })}
@@ -3709,7 +3752,7 @@ function MealSettings({ data, setData }) {
         {active.map(m => (
           <SettingsMealRow
             key={m.id} meal={m}
-            onEdit={() => setEditing(m)}
+            onEdit={() => setEditing(normalizeMeal(m))}
             onArchive={() => toggleArchive(m.id)}
             onDelete={() => remove(m.id)}
           />
@@ -3733,7 +3776,7 @@ function MealSettings({ data, setData }) {
               {archived.map(m => (
                 <SettingsMealRow
                   key={m.id} meal={m} archived
-                  onEdit={() => setEditing(m)}
+                  onEdit={() => setEditing(normalizeMeal(m))}
                   onArchive={() => toggleArchive(m.id)}
                   onDelete={() => remove(m.id)}
                 />
@@ -3775,12 +3818,25 @@ function SettingsMealRow({ meal, archived, onEdit, onArchive, onDelete }) {
 }
 
 function MealModal({ meal, onSave, onClose }) {
-  const [form, setForm] = useState(meal);
+  const [form, setForm] = useState(() => normalizeMeal(meal));
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const addItem = (key) => set(key, [...form[key], { id: crypto.randomUUID(), product: '', amount: '' }]);
+  const updItem = (key, id, field, val) => set(key, form[key].map(it => it.id === id ? { ...it, [field]: val } : it));
+  const delItem = (key, id) => set(key, form[key].filter(it => it.id !== id));
 
   const submit = () => {
     if (!form.name.trim()) return alert('Введите название рациона');
-    onSave(form);
+    const clean = (arr) => arr
+      .filter(it => it.product.trim())
+      .map(it => ({ ...it, product: it.product.trim(), amount: (it.amount || '').trim() }));
+    onSave({
+      ...form,
+      breakfast: clean(form.breakfast),
+      snack: clean(form.snack),
+      lunch: clean(form.lunch),
+      dinner: clean(form.dinner),
+    });
   };
 
   return (
@@ -3844,13 +3900,31 @@ function MealModal({ meal, onSave, onClose }) {
           { key: 'dinner', label: 'Ужин' },
         ].map(({ key, label }) => (
           <div key={key}>
-            <label>{label}</label>
-            <textarea
-              value={form[key]}
-              onChange={e => set(key, e.target.value)}
-              rows={3}
-              placeholder="Каждое блюдо с новой строки..."
-            />
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="!mb-0">{label}</label>
+              <button type="button" onClick={() => addItem(key)}
+                className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1">
+                <Icon name="plus" size={13} /> Добавить продукт
+              </button>
+            </div>
+            {form[key].length === 0 ? (
+              <div className="text-xs text-[var(--text-subtle)] py-1">Нет продуктов</div>
+            ) : (
+              <div className="space-y-2">
+                {form[key].map(item => (
+                  <div key={item.id} className="flex gap-2">
+                    <input value={item.product} onChange={e => updItem(key, item.id, 'product', e.target.value)}
+                      placeholder="Продукт" className="flex-1" />
+                    <input value={item.amount} onChange={e => updItem(key, item.id, 'amount', e.target.value)}
+                      placeholder="Кол-во/гр" style={{ width: '110px' }} />
+                    <button type="button" onClick={() => delItem(key, item.id)}
+                      className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0">
+                      <Icon name="trash" size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ))}
         <div className="flex gap-3 pt-2">
