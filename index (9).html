@@ -355,21 +355,29 @@ let getAppDataSnapshot = () => null;
 
 const pushServerData = (() => {
   let timer = null;
-  return () => {
-    clearTimeout(timer);
-    timer = setTimeout(async () => {
-      const local = getAppDataSnapshot();
-      if (!local) return;
-      try {
-        const serverData = await fetchServerData();
-        const toPush = serverData ? mergeAppData(local, serverData, 'push') : local;
-        await fetch('/api/data', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(toPush),
-        });
-      } catch (_) {}
-    }, 1500);
+  const doPush = async () => {
+    const local = getAppDataSnapshot();
+    if (!local) return;
+    try {
+      const serverData = await fetchServerData();
+      const toPush = serverData ? mergeAppData(local, serverData, 'push') : local;
+      await fetch('/api/data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(toPush),
+      });
+    } catch (_) {}
+  };
+  return {
+    schedule: () => {
+      clearTimeout(timer);
+      timer = setTimeout(doPush, 400);
+    },
+    flush: () => {
+      clearTimeout(timer);
+      timer = null;
+      return doPush();
+    },
   };
 })();
 
@@ -648,7 +656,7 @@ function App() {
     if (initialLoad.current) { initialLoad.current = false; return; }
     saveData(data);
     if (serverLoaded.current) {
-      pushServerData();
+      pushServerData.schedule();
     }
   }, [data]);
 
@@ -658,9 +666,20 @@ function App() {
     const flush = () => {
       if (!serverLoaded.current) return;
       try {
-        const blob = new Blob([JSON.stringify(dataRef.current)], { type: 'application/json' });
-        if (navigator.sendBeacon) navigator.sendBeacon('/api/data', blob);
+        const body = JSON.stringify(dataRef.current);
+        const blob = new Blob([body], { type: 'application/json' });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon('/api/data', blob);
+        } else {
+          fetch('/api/data', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+            keepalive: true,
+          });
+        }
       } catch (_) {}
+      pushServerData.flush();
     };
     const onHide = () => { if (document.visibilityState === 'hidden') flush(); };
     document.addEventListener('visibilitychange', onHide);
@@ -2930,36 +2949,74 @@ function ChecklistFieldChart({ field, log, today, formatDate }) {
 
 function DailyChecklistFieldsConfig({ data, setData }) {
   const fields = data.dailyChecklistFields || [];
-  const setFields = (f) => setData(d => ({ ...d, dailyChecklistFields: f }));
 
   const [newLabel, setNewLabel] = useState('');
   const [newOptions, setNewOptions] = useState('Да, Нет');
   const [editingId, setEditingId] = useState(null);
   const [editLabel, setEditLabel] = useState('');
   const [editOptionsList, setEditOptionsList] = useState([]);
+  const editSnapshotRef = React.useRef(null);
 
   const parseLabels = (str) => str.split(/[,;]/).map(s => s.trim()).filter(Boolean);
+
+  // Сразу сохраняем правки (название, цвета, варианты) в data
+  React.useEffect(() => {
+    if (!editingId) return;
+    const label = editLabel.trim();
+    const options = editOptionsList
+      .map(o => ({ label: (o.label || '').trim(), color: o.color }))
+      .filter(o => o.label);
+    if (!label || options.length === 0) return;
+    setData(d => {
+      const cur = (d.dailyChecklistFields || []).find(f => f.id === editingId);
+      if (!cur) return d;
+      const same = cur.label === label && JSON.stringify(cur.options) === JSON.stringify(options);
+      if (same) return d;
+      return {
+        ...d,
+        dailyChecklistFields: (d.dailyChecklistFields || []).map(f =>
+          f.id === editingId ? { ...f, label, options } : f
+        ),
+      };
+    });
+  }, [editingId, editLabel, editOptionsList, setData]);
 
   const addField = () => {
     const label = newLabel.trim();
     const labels = parseLabels(newOptions);
     if (!label || labels.length === 0) return;
-    setFields([...fields, { id: crypto.randomUUID(), label, options: labelsToOptions(labels) }]);
+    setData(d => ({
+      ...d,
+      dailyChecklistFields: [...(d.dailyChecklistFields || []), { id: crypto.randomUUID(), label, options: labelsToOptions(labels) }],
+    }));
     setNewLabel('');
     setNewOptions('Да, Нет');
   };
 
   const startEdit = (f) => {
+    const opts = getFieldOptions(f).map(o => ({ ...o }));
+    editSnapshotRef.current = { label: f.label, options: opts };
     setEditingId(f.id);
     setEditLabel(f.label);
-    setEditOptionsList(getFieldOptions(f).map(o => ({ ...o })));
+    setEditOptionsList(opts);
   };
 
-  const saveEdit = () => {
-    const label = editLabel.trim();
-    const options = editOptionsList.filter(o => o.label.trim()).map(o => ({ label: o.label.trim(), color: o.color }));
-    if (!label || options.length === 0) return;
-    setFields(fields.map(f => f.id === editingId ? { ...f, label, options } : f));
+  const finishEdit = () => {
+    editSnapshotRef.current = null;
+    setEditingId(null);
+  };
+
+  const cancelEdit = () => {
+    const snap = editSnapshotRef.current;
+    if (snap && editingId) {
+      setData(d => ({
+        ...d,
+        dailyChecklistFields: (d.dailyChecklistFields || []).map(f =>
+          f.id === editingId ? { ...f, label: snap.label, options: snap.options } : f
+        ),
+      }));
+    }
+    editSnapshotRef.current = null;
     setEditingId(null);
   };
 
@@ -2978,23 +3035,29 @@ function DailyChecklistFieldsConfig({ data, setData }) {
 
   const removeField = (id) => {
     if (!confirm('Удалить поле?')) return;
-    setFields(fields.filter(f => f.id !== id));
     setData(d => ({
       ...d,
+      dailyChecklistFields: (d.dailyChecklistFields || []).filter(f => f.id !== id),
       dailyChecklistLog: (d.dailyChecklistLog || []).map(e => {
         const answers = { ...(e.answers || {}) };
         delete answers[id];
         return { ...e, answers };
       }),
     }));
+    if (editingId === id) {
+      editSnapshotRef.current = null;
+      setEditingId(null);
+    }
   };
 
   const moveField = (idx, dir) => {
-    const arr = [...fields];
-    const to = idx + dir;
-    if (to < 0 || to >= arr.length) return;
-    [arr[idx], arr[to]] = [arr[to], arr[idx]];
-    setFields(arr);
+    setData(d => {
+      const arr = [...(d.dailyChecklistFields || [])];
+      const to = idx + dir;
+      if (to < 0 || to >= arr.length) return d;
+      [arr[idx], arr[to]] = [arr[to], arr[idx]];
+      return { ...d, dailyChecklistFields: arr };
+    });
   };
 
   return (
@@ -3030,8 +3093,8 @@ function DailyChecklistFieldsConfig({ data, setData }) {
                     </button>
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={saveEdit} className="btn-primary text-sm flex-1">Сохранить</button>
-                    <button onClick={() => setEditingId(null)} className="btn-secondary text-sm flex-1">Отмена</button>
+                    <button onClick={finishEdit} className="btn-primary text-sm flex-1">Готово</button>
+                    <button onClick={cancelEdit} className="btn-secondary text-sm flex-1">Отмена</button>
                   </div>
                 </div>
               ) : (
@@ -6685,6 +6748,7 @@ function BodyModesView({ data, setData }) {
       const exists = list.find(m => m.id === mode.id);
       return { ...d, bodyModes: exists ? list.map(m => m.id === mode.id ? mode : m) : [...list, mode] };
     });
+    if (viewing?.id === mode.id) setViewing(mode);
     setEditing(null);
   };
 
@@ -6756,7 +6820,7 @@ function BodyModesView({ data, setData }) {
                       <Icon name="check" size={16} />
                     </button>
                   )}
-                  <button onClick={() => setEditing(m)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={16} /></button>
+                  <button onClick={() => setEditing({ ...m, supplements: (m.supplements || []).map(s => ({ ...s })), nutrition: { ...(m.nutrition || {}) } })} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={16} /></button>
                   <button onClick={() => remove(m)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={16} /></button>
                 </div>
               </div>
@@ -7428,38 +7492,50 @@ function BodyFieldsSettings({ data, setData }) {
   const [newCatName, setNewCatName] = useState('');
 
   const fields = data.bodyFields || DEFAULT_BODY_FIELDS;
-  const setFields = (f) => setData(d => ({ ...d, bodyFields: f }));
-
   const cats = data.bodyPhotoCategories || DEFAULT_BODY_PHOTO_CATEGORIES;
-  const setCats = (c) => setData(d => ({ ...d, bodyPhotoCategories: c }));
 
-  const remove = (id) => setFields(fields.filter(f => f.id !== id));
+  const remove = (id) => setData(d => ({ ...d, bodyFields: (d.bodyFields || DEFAULT_BODY_FIELDS).filter(f => f.id !== id) }));
   const move = (idx, dir) => {
-    const arr = [...fields];
-    const to = idx + dir;
-    if (to < 0 || to >= arr.length) return;
-    [arr[idx], arr[to]] = [arr[to], arr[idx]];
-    setFields(arr);
+    setData(d => {
+      const arr = [...(d.bodyFields || DEFAULT_BODY_FIELDS)];
+      const to = idx + dir;
+      if (to < 0 || to >= arr.length) return d;
+      [arr[idx], arr[to]] = [arr[to], arr[idx]];
+      return { ...d, bodyFields: arr };
+    });
   };
-  const addPreset = (p) => { if (!fields.find(f => f.id === p.id)) setFields([...fields, { ...p }]); };
+  const addPreset = (p) => setData(d => {
+    const cur = d.bodyFields || DEFAULT_BODY_FIELDS;
+    if (cur.find(f => f.id === p.id)) return d;
+    return { ...d, bodyFields: [...cur, { ...p }] };
+  });
   const addCustom = () => {
     if (!customLabel.trim()) return;
-    setFields([...fields, { id: 'custom_' + Date.now(), label: customLabel.trim(), unit: customUnit.trim() }]);
+    setData(d => ({
+      ...d,
+      bodyFields: [...(d.bodyFields || DEFAULT_BODY_FIELDS), { id: 'custom_' + Date.now(), label: customLabel.trim(), unit: customUnit.trim() }],
+    }));
     setCustomLabel(''); setCustomUnit('');
   };
 
-  const removeCat = (c) => setCats(cats.filter(x => x !== c));
+  const removeCat = (c) => setData(d => ({ ...d, bodyPhotoCategories: (d.bodyPhotoCategories || DEFAULT_BODY_PHOTO_CATEGORIES).filter(x => x !== c) }));
   const moveCat = (idx, dir) => {
-    const arr = [...cats];
-    const to = idx + dir;
-    if (to < 0 || to >= arr.length) return;
-    [arr[idx], arr[to]] = [arr[to], arr[idx]];
-    setCats(arr);
+    setData(d => {
+      const arr = [...(d.bodyPhotoCategories || DEFAULT_BODY_PHOTO_CATEGORIES)];
+      const to = idx + dir;
+      if (to < 0 || to >= arr.length) return d;
+      [arr[idx], arr[to]] = [arr[to], arr[idx]];
+      return { ...d, bodyPhotoCategories: arr };
+    });
   };
   const addCat = () => {
     const name = newCatName.trim();
-    if (!name || cats.includes(name)) return;
-    setCats([...cats, name]);
+    if (!name) return;
+    setData(d => {
+      const cur = d.bodyPhotoCategories || DEFAULT_BODY_PHOTO_CATEGORIES;
+      if (cur.includes(name)) return d;
+      return { ...d, bodyPhotoCategories: [...cur, name] };
+    });
     setNewCatName('');
   };
 
