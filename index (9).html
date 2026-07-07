@@ -240,15 +240,24 @@ function mskTimeToLocal(hhmm) {
 
 // Drop-in replacement for <input type="time">: displays/edits in the user's
 // local time, stores/reports the MSK-equivalent value via onChange.
-function MskTimeInput({ value, onChange, className, style }) {
+function MskTimeInput({ value, onChange, className, style, hint }) {
+  const mskValue = value || '';
   return (
-    <input
-      type="time"
-      value={mskTimeToLocal(value || '')}
-      onChange={e => onChange(localTimeToMsk(e.target.value))}
-      className={className}
-      style={style}
-    />
+    <>
+      <input
+        type="time"
+        value={mskTimeToLocal(mskValue)}
+        onChange={e => onChange(localTimeToMsk(e.target.value))}
+        className={className}
+        style={style}
+        title={mskValue ? `Хранится и сравнивается на сервере как ${mskValue} МСК` : undefined}
+      />
+      {hint && mskValue && (
+        <div className="text-[11px] text-[var(--text-subtle)] mt-1">
+          На сервере (МСК): <span className="font-mono">{mskValue}</span> — если время устройства/часовой пояс настроены неверно, здесь будет видно расхождение.
+        </div>
+      )}
+    </>
   );
 }
 
@@ -8347,7 +8356,7 @@ function BodyFieldsSettings({ data, setData }) {
             <div className="space-y-3">
               <div>
                 <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Время</label>
-                <MskTimeInput value={reminder.time || '20:00'} onChange={t => setReminder({ time: t })}
+                <MskTimeInput value={reminder.time || '20:00'} onChange={t => setReminder({ time: t })} hint
                   className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
               </div>
               <div>
@@ -8373,7 +8382,7 @@ function BodyFieldsSettings({ data, setData }) {
             <div className="space-y-3">
               <div>
                 <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Время</label>
-                <MskTimeInput value={checklistReminder.time || '21:00'} onChange={t => setChecklistReminder({ time: t })}
+                <MskTimeInput value={checklistReminder.time || '21:00'} onChange={t => setChecklistReminder({ time: t })} hint
                   className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
               </div>
               <div>
