@@ -4550,6 +4550,7 @@ function CookingView({ data, setData }) {
       cookingPlans: (d.cookingPlans || []).map(p =>
         p.id !== planId ? p : {
           ...p,
+          updatedAt: Date.now(),
           ingredients: p.ingredients.map(i =>
             i.id !== ingId ? i : { ...i, [field]: value }
           ),
