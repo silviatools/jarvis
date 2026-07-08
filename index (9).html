@@ -591,6 +591,44 @@ const mergeAppData = (local, server, mode = 'pull') => {
   return merged;
 };
 
+// Auto-stamps `updatedAt` on any id-array item that actually changed, so no
+// individual setData() call site has to remember to do it. The cross-device
+// merge (mergeAppData → mergeIdArrays) picks the newer updatedAt on conflict;
+// forgetting to bump it anywhere let the periodic 20s server pull silently
+// revert a just-made edit back to a stale server copy on a tie. This wrapper
+// closes that whole bug class centrally, instead of relying on every present
+// and future reducer getting it right by hand.
+const withoutUpdatedAt = (obj) => {
+  if (!obj || typeof obj !== 'object') return obj;
+  const { updatedAt, ...rest } = obj;
+  return rest;
+};
+
+const stampUpdatedAt = (prev, next) => {
+  if (!prev || !next || prev === next) return next;
+  let changed = false;
+  const out = { ...next };
+  for (const key of Object.keys(next)) {
+    const nv = next[key];
+    const pv = prev[key];
+    if (nv === pv || !Array.isArray(nv) || !looksLikeIdArray(nv)) continue;
+    const prevById = new Map((Array.isArray(pv) ? pv : []).map(e => [e && e.id, e]));
+    let arrChanged = false;
+    const stamped = nv.map(item => {
+      if (!item || typeof item !== 'object' || item.id == null) return item;
+      const prevItem = prevById.get(item.id);
+      if (item === prevItem) return item; // untouched reference
+      if (prevItem && JSON.stringify(withoutUpdatedAt(prevItem)) === JSON.stringify(withoutUpdatedAt(item))) {
+        return item; // same content (e.g. reorder pass-through) — nothing to stamp
+      }
+      arrChanged = true;
+      return { ...item, updatedAt: Date.now() };
+    });
+    if (arrChanged) { out[key] = stamped; changed = true; }
+  }
+  return changed ? out : next;
+};
+
 const saveData = (data) => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 };
@@ -858,7 +896,15 @@ const getTabFromPath = () => {
 };
 
 function App() {
-  const [data, setData] = useState(loadData());
+  const [data, setRawData] = useState(loadData());
+  // Every setData() call is auto-stamped (see stampUpdatedAt) so a changed
+  // array item always gets a fresh updatedAt — no call site can forget it.
+  const setData = React.useCallback((updater) => {
+    setRawData(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      return stampUpdatedAt(prev, next);
+    });
+  }, []);
   const [tab, setTab] = useState(getTabFromPath); // home | supplements | meals | weather | house | settings
   const [settingsTab, setSettingsTab] = useState('general');
   const [houseTab, setHouseTab] = useState('boss');
@@ -870,7 +916,10 @@ function App() {
   useEffect(() => {
     fetchServerData().then(serverData => {
       if (serverData) {
-        setData(prev => {
+        // Use the raw setter (not the auto-stamping setData) — this is a
+        // trusted merge of already-timestamped data, not a fresh local edit,
+        // and re-stamping it here would erase real cross-device timestamps.
+        setRawData(prev => {
           // Whitelist-free merge so no entered data is ever lost, for any field
           const merged = mergeAppData(prev, serverData);
           saveData(merged);
@@ -970,7 +1019,8 @@ function App() {
     const syncFromServer = () => {
       if (!serverLoaded.current) return;
       fetchServerData().then(serverData => {
-        if (serverData) setData(prev => { const m = mergeAppData(prev, serverData, 'pull'); saveData(m); return m; });
+        // Raw setter here too — same reasoning as the on-mount merge above.
+        if (serverData) setRawData(prev => { const m = mergeAppData(prev, serverData, 'pull'); saveData(m); return m; });
       });
     };
     const onVisible = () => {
@@ -3874,7 +3924,7 @@ function SupplementSettings({ data, setData, isWorkout }) {
     setData(d => ({
       ...d,
       [storageKey]: (d[storageKey] || []).map(s =>
-        s.id === id ? { ...s, archived: !s.archived } : s
+        s.id === id ? { ...s, archived: !s.archived, updatedAt: Date.now() } : s
       ),
     }));
   };
@@ -4084,7 +4134,7 @@ function MealSettings({ data, setData }) {
     setData(d => ({
       ...d,
       meals: (d.meals || []).map(m =>
-        m.id === id ? { ...m, archived: !m.archived } : m
+        m.id === id ? { ...m, archived: !m.archived, updatedAt: Date.now() } : m
       ),
     }));
   };
@@ -5430,7 +5480,7 @@ function ChoreSection({ data, setData, dataKey, title }) {
   const markDone = (id) => {
     setData(d => ({
       ...d,
-      [dataKey]: (d[dataKey] || []).map(c => c.id === id ? { ...c, lastDone: getTodayKey() } : c),
+      [dataKey]: (d[dataKey] || []).map(c => c.id === id ? { ...c, lastDone: getTodayKey(), updatedAt: Date.now() } : c),
     }));
   };
 
@@ -5554,7 +5604,7 @@ function ChoreSettings({ data, setData, dataKey }) {
   const toggleArchive = (id) => {
     setData(d => ({
       ...d,
-      [dataKey]: (d[dataKey] || []).map(c => c.id === id ? { ...c, archived: !c.archived } : c),
+      [dataKey]: (d[dataKey] || []).map(c => c.id === id ? { ...c, archived: !c.archived, updatedAt: Date.now() } : c),
     }));
   };
 
@@ -5890,7 +5940,7 @@ function BossSettings({ data, setData }) {
   const toggleArchive = (id) => {
     setData(d => ({
       ...d,
-      bossTasks: (d.bossTasks || []).map(t => t.id === id ? { ...t, archived: !t.archived } : t),
+      bossTasks: (d.bossTasks || []).map(t => t.id === id ? { ...t, archived: !t.archived, updatedAt: Date.now() } : t),
     }));
   };
 
@@ -6846,6 +6896,7 @@ function applyVoiceTask(parsed, setData) {
         notify: false,
         notifyTime: '09:00',
         archived: false,
+        updatedAt: Date.now(),
       }],
     }));
   } else if (parsed.section === 'boss') {
@@ -6857,6 +6908,7 @@ function applyVoiceTask(parsed, setData) {
         period: parsed.period || 'morning',
         days: parsed.days || [1, 2, 3, 4, 5],
         archived: false,
+        updatedAt: Date.now(),
       }],
     }));
   }
@@ -8544,7 +8596,7 @@ function CarsSettings({ data, setData }) {
   const toggleArchive = (id) => {
     setData(d => ({
       ...d,
-      cars: (d.cars || []).map(c => c.id === id ? { ...c, archived: !c.archived } : c),
+      cars: (d.cars || []).map(c => c.id === id ? { ...c, archived: !c.archived, updatedAt: Date.now() } : c),
     }));
   };
 
@@ -10383,7 +10435,7 @@ function SavingsListView({ data, setData }) {
   };
 
   const toggleArchive = (id) => {
-    setData(d => ({ ...d, budgetExpenses: (d.budgetExpenses || []).map(e => e.id === id ? { ...e, archived: !e.archived } : e) }));
+    setData(d => ({ ...d, budgetExpenses: (d.budgetExpenses || []).map(e => e.id === id ? { ...e, archived: !e.archived, updatedAt: Date.now() } : e) }));
   };
 
   const newExp = () => setEditing({
@@ -10396,7 +10448,7 @@ function SavingsListView({ data, setData }) {
     setData(d => ({
       ...d,
       savingsTransactions: [...(d.savingsTransactions || []), {
-        id: crypto.randomUUID(), expenseId, type, amount, date,
+        id: crypto.randomUUID(), expenseId, type, amount, date, updatedAt: Date.now(),
       }],
     }));
   };
@@ -10870,7 +10922,7 @@ function SavingsDDSView({ data, setData }) {
             setData(d => ({
               ...d,
               savingsTransactions: [...(d.savingsTransactions || []), {
-                id: crypto.randomUUID(), expenseId: expId, type, amount, date,
+                id: crypto.randomUUID(), expenseId: expId, type, amount, date, updatedAt: Date.now(),
               }],
             }));
             setShowAdd(false);
@@ -11347,7 +11399,7 @@ function BudgetDebtsView({ data, setData }) {
   };
 
   const toggleClosed = (id) => {
-    setData(d => ({ ...d, budgetDebts: (d.budgetDebts || []).map(x => x.id === id ? { ...x, closed: !x.closed } : x) }));
+    setData(d => ({ ...d, budgetDebts: (d.budgetDebts || []).map(x => x.id === id ? { ...x, closed: !x.closed, updatedAt: Date.now() } : x) }));
   };
 
   const newDebt = () => setEditing({
