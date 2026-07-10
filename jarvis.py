@@ -21,6 +21,8 @@ import json
 import os
 import time
 import threading
+import io
+import zipfile
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -137,7 +139,7 @@ def subscriber_name(subs: dict, chat_id) -> str:
 # sync with NOTIFICATION_CATEGORIES in index (9).html — a subscriber with no
 # entry in data.settings.notifyRouting receives every category (default-on,
 # so nobody currently relying on notifications silently loses them).
-NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist"}
+NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "backup"}
 
 
 def recipients_for(app_data: dict, subs: dict, category: str) -> list:
@@ -267,6 +269,145 @@ def load_app_data() -> dict:
 def save_app_data(app: dict):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     APP_DATA_FILE.write_text(json.dumps(app, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+# ── backup (full project + data, sent to Telegram) ──────────────────────────
+
+MAX_TG_FILE = 45 * 1024 * 1024  # stay safely under Telegram's ~50 MB bot upload limit
+
+RESTORE_README = """\
+Jarvis — резервная копия проекта и данных
+==========================================
+
+Что внутри:
+  code/   — все файлы сайта (index (9).html, jarvis.py, notify.py,
+            requirements.txt, иконки и т.д.) — то же самое, что лежит
+            в GitHub-репозитории. Достаточно для полного передеплоя
+            без доступа к GitHub.
+  data/   — данные приложения:
+              jarvis_app_data.json       — вся база (планы, БАДДы,
+                                            бюджет, режимы и т.д.)
+              jarvis_subscribers.json    — подписчики ТГ-бота
+              jarvis_notify_config.json  — старый конфиг уведомлений
+              photos/                    — загруженные фото («Моё тело»)
+              files/                     — загруженные файлы («Режим»)
+
+Как восстановить с нуля (если Railway и GitHub недоступны):
+  1. Создайте новый репозиторий на GitHub, скопируйте туда всё
+     содержимое папки code/ (как есть, с сохранением имён файлов).
+  2. Разверните его на Railway (или любом хостинге с Python 3):
+       pip install -r requirements.txt
+       python3 jarvis.py
+  3. Если используете Railway Volume — смонтируйте его и укажите путь
+     через переменную окружения DATA_DIR. Скопируйте на этот volume
+     всё содержимое папки data/ (файлы jarvis_app_data.json,
+     jarvis_subscribers.json, jarvis_notify_config.json и
+     папки photos/, files/ — как есть).
+  4. Если DATA_DIR не используется — просто положите содержимое data/
+     рядом с кодом (в ту же папку, где jarvis.py).
+  5. В Settings → Общее укажите токен Telegram-бота (или переменная
+     окружения TELEGRAM_TOKEN) — бот подхватит подписчиков из
+     jarvis_subscribers.json автоматически.
+
+Если бэкап пришёл несколькими файлами (part001, part002, ...) —
+склейте их по порядку перед распаковкой:
+  Linux/macOS:  cat jarvis_backup_*.zip.part* > jarvis_backup.zip
+  Windows (cmd): copy /b part001+part002+part003 jarvis_backup.zip
+"""
+
+
+def build_backup_zip() -> bytes:
+    """Zips the whole project (code) + all app data (data) into one archive."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        seen_arcnames = set()
+
+        def add_file(path: Path, arcname: str):
+            if arcname in seen_arcnames:
+                return  # DATA_DIR can coincide with DIR (no volume) — avoid double-zipping
+            seen_arcnames.add(arcname)
+            zf.write(path, arcname=arcname)
+
+        # 1. Project code — every file directly in the script's directory
+        #    (skips subdirectories, e.g. .git, so no VCS history is dragged in)
+        for p in sorted(DIR.iterdir()):
+            if p.is_file():
+                add_file(p, f"code/{p.name}")
+
+        # 2. Core data files
+        for fname in ("jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json"):
+            fp = DATA_DIR / fname
+            if fp.exists():
+                add_file(fp, f"data/{fname}")
+
+        # 3. User-uploaded content (body photos, mode training-program files)
+        for sub in ("photos", "files"):
+            d = DATA_DIR / sub
+            if d.exists():
+                for f in sorted(d.rglob("*")):
+                    if f.is_file():
+                        add_file(f, f"data/{sub}/{f.relative_to(d)}")
+
+        zf.writestr("README.txt", RESTORE_README)
+    return buf.getvalue()
+
+
+def send_document(token: str, chat_id: int, filename: str, data: bytes, caption: str = "") -> bool:
+    if not requests:
+        return False
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{token}/sendDocument",
+            data={"chat_id": chat_id, "caption": caption},
+            files={"document": (filename, data)},
+            timeout=120,
+        )
+        return r.ok
+    except Exception as e:
+        print(f"  [sendDocument] {e}")
+        return False
+
+
+def record_backup_sent():
+    app = load_app_data()
+    settings = dict(app.get("settings") or {})
+    settings["lastBackupSentAt"] = now_msk().isoformat()
+    app["settings"] = settings
+    save_app_data(app)
+
+
+def send_backup_to(token: str, chat_ids: list) -> dict:
+    """Builds the backup once and sends it (chunked if needed) to every chat_id.
+    Returns a small status dict for the manual 'send now' API response."""
+    if not chat_ids:
+        return {"ok": False, "error": "no recipients"}
+    zip_bytes = build_backup_zip()
+    stamp = now_msk().strftime("%Y%m%d_%H%M")
+    base_name = f"jarvis_backup_{stamp}.zip"
+
+    chunks = [zip_bytes[i:i + MAX_TG_FILE] for i in range(0, len(zip_bytes), MAX_TG_FILE)] or [b""]
+    ok_count = 0
+    for cid in chat_ids:
+        all_sent = True
+        for i, chunk in enumerate(chunks):
+            if len(chunks) == 1:
+                fname, caption = base_name, f"📦 Бэкап Jarvis · {stamp}"
+            else:
+                fname = f"{base_name}.part{i + 1:03d}"
+                caption = f"📦 Бэкап Jarvis · {stamp} · часть {i + 1}/{len(chunks)}"
+            if not send_document(token, cid, fname, chunk, caption):
+                all_sent = False
+        if all_sent:
+            ok_count += 1
+
+    record_backup_sent()
+    return {
+        "ok": ok_count > 0,
+        "recipients": len(chat_ids),
+        "sentTo": ok_count,
+        "sizeBytes": len(zip_bytes),
+        "parts": len(chunks),
+    }
 
 
 DATE_LOG_KEYS = frozenset({"dietLog", "dailyChecklistLog"})
@@ -826,6 +967,30 @@ def _tick():
     except Exception as e:
         print(f"[{now_str} MSK] checklist reminder error: {e}")
 
+    # ── Scheduled backup: full project + data zipped and sent to Telegram ──
+    try:
+        backup_reminder = (app_data_raw.get("settings") or {}).get("backupReminder") or {}
+        cfg_time = str(backup_reminder.get("time", "")).strip()
+        if backup_reminder.get("enabled") and cfg_time == now_str:
+            freq = backup_reminder.get("frequency", "weekly")
+            should_fire = False
+            if freq == "daily":
+                should_fire = True
+            elif freq == "weekly":
+                should_fire = today_js == int(backup_reminder.get("dayOfWeek", 0) or 0)
+            elif freq == "monthly":
+                should_fire = today_date.day == int(backup_reminder.get("dayOfMonth", 1) or 1)
+            if should_fire:
+                recipients = recipients_for(app_data_raw, subs, "backup")
+                if not recipients:
+                    print(f"[{now_str} MSK] backup: no subscribers routed to backup")
+                else:
+                    print(f"[{now_str} MSK] → sending scheduled backup ({len(recipients)} recipient(s))")
+                    result = send_backup_to(token, recipients)
+                    print(f"[{now_str} MSK]   backup result: {result}")
+    except Exception as e:
+        print(f"[{now_str} MSK] backup reminder error: {e}")
+
 
 # ── HTTP handler ───────────────────────────────────────────────────────────
 
@@ -1066,6 +1231,22 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(200, {"ok": True})
             except Exception as e:
                 self._json(400, {"error": str(e)})
+        elif self.path == "/api/backup/send-now":
+            token = get_token()
+            if not token:
+                self._json(400, {"error": "Telegram bot token not configured"})
+                return
+            try:
+                app_data = load_app_data()
+                subs = load_subscribers()
+                recipients = recipients_for(app_data, subs, "backup")
+                if not recipients:
+                    self._json(400, {"error": "no subscribers routed to backup"})
+                    return
+                result = send_backup_to(token, recipients)
+                self._json(200, result)
+            except Exception as e:
+                self._json(500, {"error": str(e)})
         else:
             self.send_response(404)
             self.end_headers()

@@ -195,6 +195,8 @@ const DEFAULT_SETTINGS = {
   voiceModel: '',
   voiceTtsVoice: 'nova',
   notifyRouting: {},
+  backupReminder: { enabled: false, frequency: 'weekly', time: '03:00', dayOfWeek: 0, dayOfMonth: 1 },
+  lastBackupSentAt: '',
 };
 
 // Which Telegram section each background reminder belongs to. Keep the ids in
@@ -207,6 +209,7 @@ const NOTIFICATION_CATEGORIES = [
   { id: 'debts',     label: 'Долги' },
   { id: 'diet',      label: 'Питание' },
   { id: 'checklist', label: 'Чек-лист' },
+  { id: 'backup',    label: 'Бэкапы' },
 ];
 
 // ── MSK time helpers ─────────────────────────────────────────────────────
@@ -3086,7 +3089,134 @@ function GeneralSettings({ data, setData }) {
         </p>
       </div>
 
+      <BackupSettings data={data} setData={setData} />
       <NotifyRoutingSettings data={data} setData={setData} />
+    </div>
+  );
+}
+
+function BackupSettings({ data, setData }) {
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState(null); // { ok, error?, sentTo?, recipients?, sizeBytes? }
+
+  const reminder = (data.settings || {}).backupReminder
+    || { enabled: false, frequency: 'weekly', time: '03:00', dayOfWeek: 0, dayOfMonth: 1 };
+  const lastSentAt = (data.settings || {}).lastBackupSentAt || '';
+
+  const setReminder = (patch) => setData(d => ({
+    ...d,
+    settings: {
+      ...DEFAULT_SETTINGS, ...(d.settings || {}),
+      backupReminder: {
+        ...(d.settings || {}).backupReminder || { enabled: false, frequency: 'weekly', time: '03:00', dayOfWeek: 0, dayOfMonth: 1 },
+        ...patch,
+      },
+    },
+  }));
+
+  const sendNow = async () => {
+    setSending(true);
+    setResult(null);
+    try {
+      const res = await fetch('/api/backup/send-now', { method: 'POST' });
+      const json = await res.json();
+      setResult(res.ok ? { ok: true, ...json } : { ok: false, error: json.error || 'Ошибка' });
+    } catch (e) {
+      setResult({ ok: false, error: 'Не удалось связаться с сервером' });
+    }
+    setSending(false);
+  };
+
+  const fmtBytes = (n) => {
+    if (!n) return '';
+    if (n < 1024 * 1024) return `${Math.round(n / 1024)} КБ`;
+    return `${(n / (1024 * 1024)).toFixed(1)} МБ`;
+  };
+  const fmtDate = (iso) => {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleString('ru-RU'); } catch { return iso; }
+  };
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="font-display text-lg mb-1">Резервное копирование</h3>
+          <p className="text-sm text-[var(--text-muted)]">
+            Полный бэкап проекта (код сайта + все данные, включая фото) файлом в Telegram — на случай, если Railway или GitHub станут недоступны.
+          </p>
+        </div>
+        <button onClick={() => setReminder({ enabled: !reminder.enabled })}
+          className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${reminder.enabled ? 'bg-green-500' : 'bg-[var(--border)]'}`}>
+          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${reminder.enabled ? 'translate-x-5' : ''}`} />
+        </button>
+      </div>
+
+      {reminder.enabled && (
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Периодичность</label>
+            <select value={reminder.frequency} onChange={e => setReminder({ frequency: e.target.value })}
+              className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]">
+              <option value="daily">Ежедневно</option>
+              <option value="weekly">Раз в неделю</option>
+              <option value="monthly">Раз в месяц</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Время</label>
+            <MskTimeInput value={reminder.time || '03:00'} onChange={t => setReminder({ time: t })} hint
+              className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+          </div>
+
+          {reminder.frequency === 'weekly' && (
+            <div>
+              <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">День недели</label>
+              <div className="flex flex-wrap gap-1.5">
+                {WEEKDAYS.map(w => (
+                  <button key={w.id} onClick={() => setReminder({ dayOfWeek: w.id })}
+                    className={`w-10 h-10 rounded-xl text-sm font-medium transition-all ${reminder.dayOfWeek === w.id ? 'bg-[var(--text)] text-white' : 'bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
+                    {w.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {reminder.frequency === 'monthly' && (
+            <div>
+              <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Число месяца</label>
+              <select value={reminder.dayOfMonth || 1} onChange={e => setReminder({ dayOfMonth: Number(e.target.value) })}
+                className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]">
+                {Array.from({ length: 28 }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <p className="text-xs text-[var(--text-subtle)] mt-1">До 28-го, чтобы дата существовала в любом месяце.</p>
+            </div>
+          )}
+
+          <p className="text-xs text-[var(--text-subtle)]">
+            Кому отправлять — выбирается ниже, в «Маршрутизации уведомлений», категория «Бэкапы».
+          </p>
+        </div>
+      )}
+
+      <div className="pt-1 border-t border-[var(--border)] space-y-2">
+        <button onClick={sendNow} disabled={sending}
+          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] transition-all disabled:opacity-50">
+          <Icon name="download" size={16} />
+          {sending ? 'Отправка...' : 'Отправить бэкап сейчас'}
+        </button>
+        {lastSentAt && <div className="text-xs text-[var(--text-subtle)]">Последний бэкап: {fmtDate(lastSentAt)}</div>}
+        {result && result.ok && (
+          <div className="text-xs text-green-600">
+            Отправлено {result.sentTo}/{result.recipients} получателям{result.sizeBytes ? ` · ${fmtBytes(result.sizeBytes)}` : ''}{result.parts > 1 ? ` · ${result.parts} частей` : ''}
+          </div>
+        )}
+        {result && !result.ok && (
+          <div className="text-xs text-red-500">Ошибка: {result.error}</div>
+        )}
+      </div>
     </div>
   );
 }
