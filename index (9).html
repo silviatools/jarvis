@@ -540,7 +540,22 @@ const mergeIdArrays = (localArr, serverArr, preferLocal, deletedForKey) => {
   if (deletedForKey) {
     Object.keys(deletedForKey).forEach(id => byId.delete(id));
   }
-  return [...byId.values()];
+
+  // ORDER matters too (checklist items, body fields are user-arranged). The
+  // Map's insertion order above follows the first pass — i.e. the SERVER —
+  // which silently reverted every local reorder within one sync cycle. Emit
+  // in the order of the side edited most recently (max updatedAt), tie →
+  // local; items known only to the other side are appended in their order.
+  const maxTs = (arr) => arr.reduce((m, e) => Math.max(m, typeof e?.updatedAt === 'number' ? e.updatedAt : 0), 0);
+  const orderSides = maxTs(la) >= maxTs(sa) ? [la, sa] : [sa, la];
+  const out = [];
+  const emitted = new Set();
+  orderSides.forEach(side => side.forEach(e => {
+    if (e?.id == null) return;
+    const k = String(e.id);
+    if (byId.has(k) && !emitted.has(k)) { emitted.add(k); out.push(byId.get(k)); }
+  }));
+  return out;
 };
 
 const mergeDateLogEntries = (localArr, serverArr, preferLocal, deletedForKey) => {
@@ -3862,7 +3877,10 @@ function DailyChecklistFieldsConfig({ data, setData }) {
       const arr = [...(d.dailyChecklistFields || [])];
       const to = idx + dir;
       if (to < 0 || to >= arr.length) return d;
-      [arr[idx], arr[to]] = [arr[to], arr[idx]];
+      // Штамп на обоих переставленных: слияние упорядочивает по стороне с
+      // самой свежей правкой — без штампа новый порядок откатился бы сервером.
+      const now = Date.now();
+      [arr[idx], arr[to]] = [{ ...arr[to], updatedAt: now }, { ...arr[idx], updatedAt: now }];
       return { ...d, dailyChecklistFields: arr };
     });
   };
@@ -8548,7 +8566,10 @@ function BodyFieldsSettings({ data, setData }) {
       const arr = [...(d.bodyFields || DEFAULT_BODY_FIELDS)];
       const to = idx + dir;
       if (to < 0 || to >= arr.length) return d;
-      [arr[idx], arr[to]] = [arr[to], arr[idx]];
+      // Штамп на обоих переставленных — см. moveField: иначе слияние вернёт
+      // серверный порядок при ближайшей синхронизации.
+      const now = Date.now();
+      [arr[idx], arr[to]] = [{ ...arr[to], updatedAt: now }, { ...arr[idx], updatedAt: now }];
       return { ...d, bodyFields: arr };
     });
   };

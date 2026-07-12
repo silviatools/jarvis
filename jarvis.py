@@ -553,7 +553,31 @@ def _merge_id_arrays(local_arr, server_arr, prefer_local: bool, deleted_for_key:
     if deleted_for_key:
         for tid in deleted_for_key:
             by_id.pop(str(tid), None)
-    return list(by_id.values())
+
+    # Mirror of the JS ordering rule: user-arranged order (checklist fields,
+    # body fields) follows the side edited most recently; ties → `la`.
+    # Without this, a reorder pushed by the client was re-emitted in the old
+    # file order and reverted on the next pull.
+    def _max_ts(arr):
+        best = 0
+        for e in arr:
+            ts = e.get("updatedAt") if isinstance(e, dict) else None
+            if isinstance(ts, (int, float)) and ts > best:
+                best = ts
+        return best
+
+    order_sides = (la, sa) if _max_ts(la) >= _max_ts(sa) else (sa, la)
+    out = []
+    emitted = set()
+    for side in order_sides:
+        for e in side:
+            if not isinstance(e, dict) or e.get("id") is None:
+                continue
+            key = str(e["id"])
+            if key in by_id and key not in emitted:
+                emitted.add(key)
+                out.append(by_id[key])
+    return out
 
 
 def _merge_date_log_entries(local_arr, server_arr, prefer_local: bool, deleted_for_key: dict | None = None) -> list:
