@@ -220,12 +220,14 @@ def diet_keyboard(date_iso: str) -> dict:
 def save_diet_entry(date_iso: str, level: str):
     """Записать/обновить оценку питания за день прямо в файл БД."""
     import uuid as _uuid
-    app = load_app_data()
-    log = [e for e in app.get("dietLog", []) if e.get("date") != date_iso]
-    log.append({"id": str(_uuid.uuid4()), "date": date_iso, "level": level})
-    log.sort(key=lambda e: e.get("date", ""), reverse=True)
-    app["dietLog"] = log
-    save_app_data(app)
+    with APP_DATA_LOCK:
+        app = load_app_data()
+        log = [e for e in app.get("dietLog", []) if e.get("date") != date_iso]
+        log.append({"id": str(_uuid.uuid4()), "date": date_iso, "level": level,
+                    "updatedAt": int(time.time() * 1000)})
+        log.sort(key=lambda e: e.get("date", ""), reverse=True)
+        app["dietLog"] = log
+        save_app_data(app)
 
 
 def handle_diet_callback(token: str, cq: dict):
@@ -255,20 +257,31 @@ def handle_diet_callback(token: str, cq: dict):
     print(f"  diet callback: {date_iso} → {level}")
 
 
-# ── daily checklist ────────────────────────────────────────────────────────────
+# ── app data store ─────────────────────────────────────────────────────────────
+# Three threads mutate APP_DATA_FILE (HTTP handler, Telegram updates_loop,
+# notifier_loop). Every read-modify-write MUST hold APP_DATA_LOCK, and writes
+# are atomic (tmp file + os.replace) so a concurrent reader can never observe
+# a truncated/partial JSON file.
+
+APP_DATA_LOCK = threading.RLock()
+
 
 def load_app_data() -> dict:
-    if APP_DATA_FILE.exists():
-        try:
-            return json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
+    with APP_DATA_LOCK:
+        if APP_DATA_FILE.exists():
+            try:
+                return json.loads(APP_DATA_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {}
 
 
 def save_app_data(app: dict):
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    APP_DATA_FILE.write_text(json.dumps(app, ensure_ascii=False, indent=2), encoding="utf-8")
+    with APP_DATA_LOCK:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = APP_DATA_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(app, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, APP_DATA_FILE)
 
 
 # ── backup (full project + data, sent to Telegram) ──────────────────────────
@@ -328,14 +341,17 @@ def build_backup_zip() -> bytes:
             seen_arcnames.add(arcname)
             zf.write(path, arcname=arcname)
 
+        data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json"}
+
         # 1. Project code — every file directly in the script's directory
-        #    (skips subdirectories, e.g. .git, so no VCS history is dragged in)
+        #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
+        #    skips data JSONs — when DATA_DIR == DIR they belong under data/ only)
         for p in sorted(DIR.iterdir()):
-            if p.is_file():
+            if p.is_file() and p.name not in data_names and p.suffix != ".tmp":
                 add_file(p, f"code/{p.name}")
 
         # 2. Core data files
-        for fname in ("jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json"):
+        for fname in data_names:
             fp = DATA_DIR / fname
             if fp.exists():
                 add_file(fp, f"data/{fname}")
@@ -369,11 +385,12 @@ def send_document(token: str, chat_id: int, filename: str, data: bytes, caption:
 
 
 def record_backup_sent():
-    app = load_app_data()
-    settings = dict(app.get("settings") or {})
-    settings["lastBackupSentAt"] = now_msk().isoformat()
-    app["settings"] = settings
-    save_app_data(app)
+    with APP_DATA_LOCK:
+        app = load_app_data()
+        settings = dict(app.get("settings") or {})
+        settings["lastBackupSentAt"] = now_msk().isoformat()
+        app["settings"] = settings
+        save_app_data(app)
 
 
 def send_backup_to(token: str, chat_ids: list) -> dict:
@@ -410,6 +427,33 @@ def send_backup_to(token: str, chat_ids: list) -> dict:
     }
 
 
+# Backup uploads can take minutes (45 MB × recipients, 120 s timeouts). They
+# must never run on the notifier thread (blocking it skips every reminder due
+# in those minutes) nor on the single HTTP thread (freezing the whole site) —
+# always fire them on a dedicated worker thread. The flag prevents a second
+# backup from piling on while one is still uploading.
+_backup_in_progress = threading.Event()
+
+
+def start_backup_async(token: str, chat_ids: list) -> bool:
+    """Kick off a backup send in the background. False if one is already running."""
+    if _backup_in_progress.is_set():
+        return False
+
+    def _run():
+        try:
+            result = send_backup_to(token, chat_ids)
+            print(f"  backup finished: {result}")
+        except Exception as e:
+            print(f"  backup failed: {e}")
+        finally:
+            _backup_in_progress.clear()
+
+    _backup_in_progress.set()
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
 DATE_LOG_KEYS = frozenset({"dietLog", "dailyChecklistLog"})
 
 
@@ -437,16 +481,23 @@ def _looks_like_id_array(a) -> bool:
     return any(isinstance(e, dict) and e.get("id") is not None for e in (a if isinstance(a, list) else []))
 
 
+TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000  # prune tombstones after 90 days
+
+
 def _merge_deleted_ids_maps(local_all: dict | None, server_all: dict | None) -> dict:
     """Merge per-collection {id: deletedAtMs} tombstone maps, keeping the
-    newest timestamp for any id present on both sides."""
+    newest timestamp for any id present on both sides. Tombstones older than
+    TOMBSTONE_TTL_MS are dropped so the map can't grow forever."""
+    cutoff = int(time.time() * 1000) - TOMBSTONE_TTL_MS
     merged: dict = {}
     for ck in set((local_all or {}).keys()) | set((server_all or {}).keys()):
         l = (local_all or {}).get(ck) or {}
         s = (server_all or {}).get(ck) or {}
         out = {}
         for tid in set(l.keys()) | set(s.keys()):
-            out[tid] = max(l.get(tid, 0) or 0, s.get(tid, 0) or 0)
+            ts = max(l.get(tid, 0) or 0, s.get(tid, 0) or 0)
+            if ts >= cutoff:
+                out[tid] = ts
         merged[ck] = out
     return merged
 
@@ -505,7 +556,7 @@ def _merge_id_arrays(local_arr, server_arr, prefer_local: bool, deleted_for_key:
     return list(by_id.values())
 
 
-def _merge_date_log_entries(local_arr, server_arr, prefer_local: bool) -> list:
+def _merge_date_log_entries(local_arr, server_arr, prefer_local: bool, deleted_for_key: dict | None = None) -> list:
     def _norm(e):
         if not isinstance(e, dict) or not e.get("date"):
             return None
@@ -513,6 +564,27 @@ def _merge_date_log_entries(local_arr, server_arr, prefer_local: bool) -> list:
         if "answers" in e or any(isinstance(v, dict) for v in [e.get("answers")]):
             out["answers"] = {**(e.get("answers") or {})}
         return out
+
+    def _ts(e):
+        v = e.get("updatedAt")
+        return v if isinstance(v, (int, float)) else None
+
+    def _combine(base, over):
+        """Merge two same-date entries with `over` taking precedence — unless
+        `base` carries a strictly newer updatedAt, in which case the newer
+        edit wins wholesale (fixes the pull reverting a just-made edit)."""
+        b_ts, o_ts = _ts(base), _ts(over)
+        if b_ts is not None and (o_ts is None or b_ts > o_ts):
+            base, over = over, base
+        merged = {**base, **over}
+        if "answers" in base or "answers" in over:
+            merged["answers"] = {**(base.get("answers") or {}), **(over.get("answers") or {})}
+        if "level" in over:
+            merged["level"] = over["level"]
+        elif "level" in base:
+            merged["level"] = base["level"]
+        merged["id"] = over.get("id") or base.get("id")
+        return merged
 
     local = [x for x in ((_norm(e) for e in (local_arr or []))) if x]
     server = [x for x in ((_norm(e) for e in (server_arr or []))) if x]
@@ -522,36 +594,19 @@ def _merge_date_log_entries(local_arr, server_arr, prefer_local: bool) -> list:
         result = []
         for entry in local:
             srv = server_by_date.get(entry["date"])
-            if not srv:
-                result.append(entry)
-                continue
-            merged = {**srv, **entry}
-            if "answers" in srv or "answers" in entry:
-                merged["answers"] = {**(srv.get("answers") or {}), **(entry.get("answers") or {})}
-            if "level" in entry:
-                merged["level"] = entry["level"]
-            elif "level" in srv:
-                merged["level"] = srv["level"]
-            merged["id"] = entry.get("id") or srv.get("id")
-            result.append(merged)
-        return sorted(result, key=lambda e: e.get("date", ""), reverse=True)
-
-    by_date: dict[str, dict] = {}
-    for e in local:
-        by_date[e["date"]] = dict(e)
-    for e in server:
-        prev = by_date.get(e["date"])
-        if not prev:
+            result.append(_combine(srv, entry) if srv else entry)
+    else:
+        by_date: dict[str, dict] = {}
+        for e in local:
             by_date[e["date"]] = dict(e)
-            continue
-        merged = {**prev, **e}
-        if "answers" in prev or "answers" in e:
-            merged["answers"] = {**(prev.get("answers") or {}), **(e.get("answers") or {})}
-        if "level" in e:
-            merged["level"] = e["level"]
-        merged["id"] = e.get("id") or prev.get("id")
-        by_date[e["date"]] = merged
-    return sorted(by_date.values(), key=lambda e: e.get("date", ""), reverse=True)
+        for e in server:
+            prev = by_date.get(e["date"])
+            by_date[e["date"]] = _combine(prev, e) if prev else dict(e)
+        result = list(by_date.values())
+
+    if deleted_for_key:
+        result = [e for e in result if str(e.get("date")) not in deleted_for_key]
+    return sorted(result, key=lambda e: e.get("date", ""), reverse=True)
 
 
 def merge_app_data(local: dict, server: dict, mode: str = "pull") -> dict:
@@ -576,7 +631,7 @@ def merge_app_data(local: dict, server: dict, mode: str = "pull") -> dict:
         else:
             prefer_local = _prefer_local_for_key(key, mode)
             if key in DATE_LOG_KEYS and (isinstance(l, list) or isinstance(s, list)):
-                merged[key] = _merge_date_log_entries(l, s, prefer_local)
+                merged[key] = _merge_date_log_entries(l, s, prefer_local, merged_deleted_ids.get(key))
             elif isinstance(l, list) or isinstance(s, list):
                 merged[key] = _merge_id_arrays(l, s, prefer_local, merged_deleted_ids.get(key))
             elif _is_plain_object(l) and _is_plain_object(s):
@@ -596,29 +651,32 @@ def get_checklist_entry(app: dict, date_iso: str) -> dict | None:
 def save_checklist_answer(date_iso: str, field_idx: int, opt_idx: int) -> tuple[str, str] | None:
     """Save one checklist answer. Returns (field_label, option_text) or None."""
     import uuid as _uuid
-    app = load_app_data()
-    fields = app.get("dailyChecklistFields") or []
-    if field_idx < 0 or field_idx >= len(fields):
-        return None
-    field = fields[field_idx]
-    options = field.get("options") or []
-    if opt_idx < 0 or opt_idx >= len(options):
-        return None
-    option_text = _option_label(options[opt_idx])
-    field_id = field.get("id", str(field_idx))
-    entry = get_checklist_entry(app, date_iso)
-    if entry:
-        answers = {**(entry.get("answers") or {}), field_id: option_text}
-        entry = {**entry, "answers": answers}
-        log = [e for e in app.get("dailyChecklistLog", []) if e.get("date") != date_iso]
-    else:
-        entry = {"id": str(_uuid.uuid4()), "date": date_iso, "answers": {field_id: option_text}}
-        log = list(app.get("dailyChecklistLog", []))
-    log.append(entry)
-    log.sort(key=lambda e: e.get("date", ""), reverse=True)
-    app["dailyChecklistLog"] = log
-    save_app_data(app)
-    return field.get("label", ""), option_text
+    with APP_DATA_LOCK:
+        app = load_app_data()
+        fields = app.get("dailyChecklistFields") or []
+        if field_idx < 0 or field_idx >= len(fields):
+            return None
+        field = fields[field_idx]
+        options = field.get("options") or []
+        if opt_idx < 0 or opt_idx >= len(options):
+            return None
+        option_text = _option_label(options[opt_idx])
+        field_id = field.get("id", str(field_idx))
+        now_ms = int(time.time() * 1000)
+        entry = get_checklist_entry(app, date_iso)
+        if entry:
+            answers = {**(entry.get("answers") or {}), field_id: option_text}
+            entry = {**entry, "answers": answers, "updatedAt": now_ms}
+            log = [e for e in app.get("dailyChecklistLog", []) if e.get("date") != date_iso]
+        else:
+            entry = {"id": str(_uuid.uuid4()), "date": date_iso,
+                     "answers": {field_id: option_text}, "updatedAt": now_ms}
+            log = list(app.get("dailyChecklistLog", []))
+        log.append(entry)
+        log.sort(key=lambda e: e.get("date", ""), reverse=True)
+        app["dailyChecklistLog"] = log
+        save_app_data(app)
+        return field.get("label", ""), option_text
 
 
 def next_unanswered_field_idx(app: dict, date_iso: str) -> int | None:
@@ -772,6 +830,24 @@ def notifier_loop():
         time.sleep(60 - now.second)
 
 
+# Guards chores/boss/backup against double-fire when the minute loop happens
+# to run twice inside one clock-minute (sleep jitter near a second boundary).
+# Keys look like "chore:<name>:<date> <HH:MM>"; pruned when the date changes.
+_fired_reminders: set = set()
+_fired_reminders_day = [""]
+
+
+def _already_fired(kind: str, ident, today_iso: str, now_str: str) -> bool:
+    if _fired_reminders_day[0] != today_iso:
+        _fired_reminders.clear()
+        _fired_reminders_day[0] = today_iso
+    key = f"{kind}:{ident}:{today_iso} {now_str}"
+    if key in _fired_reminders:
+        return True
+    _fired_reminders.add(key)
+    return False
+
+
 def _tick():
     token = get_token()
     if not token:
@@ -810,6 +886,8 @@ def _tick():
                 continue
             if not is_due_today(chore):
                 continue
+            if _already_fired("chore", chore.get("id") or chore.get("name"), today_iso, now_str):
+                continue
             text = f"🏠 <b>По дому — напоминание</b>\n\n{chore.get('name', 'Дело')}"
             recipients = recipients_for(app_data_raw, subs, "chores")
             print(f"[{now_str} MSK] → {chore['name']} ({len(recipients)} subscriber(s))")
@@ -827,6 +905,8 @@ def _tick():
             if task.get("notifyTime", "") != now_str:
                 continue
             if today_js not in (task.get("days") or []):
+                continue
+            if _already_fired("boss", task.get("id") or task.get("name"), today_iso, now_str):
                 continue
             text = f"💼 <b>Босс — напоминание</b>\n\n{task.get('name', 'Задача')}"
             recipients = recipients_for(app_data_raw, subs, "boss")
@@ -980,14 +1060,15 @@ def _tick():
                 should_fire = today_js == int(backup_reminder.get("dayOfWeek", 0) or 0)
             elif freq == "monthly":
                 should_fire = today_date.day == int(backup_reminder.get("dayOfMonth", 1) or 1)
+            if should_fire and _already_fired("backup", "scheduled", today_iso, now_str):
+                should_fire = False
             if should_fire:
                 recipients = recipients_for(app_data_raw, subs, "backup")
                 if not recipients:
                     print(f"[{now_str} MSK] backup: no subscribers routed to backup")
                 else:
-                    print(f"[{now_str} MSK] → sending scheduled backup ({len(recipients)} recipient(s))")
-                    result = send_backup_to(token, recipients)
-                    print(f"[{now_str} MSK]   backup result: {result}")
+                    started = start_backup_async(token, recipients)
+                    print(f"[{now_str} MSK] → scheduled backup {'started' if started else 'skipped (already running)'} ({len(recipients)} recipient(s))")
     except Exception as e:
         print(f"[{now_str} MSK] backup reminder error: {e}")
 
@@ -1067,7 +1148,6 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 "server_date": now.strftime("%Y-%m-%d"),
                 "timezone": "Europe/Moscow (UTC+3, hardcoded)",
                 "token_present": bool(token),
-                "token_prefix": token[:10] + "..." if token else "",
                 "subscribers": len(subs["chat_ids"]),
                 "config_file_exists": CONFIG_FILE.exists(),
                 "app_data_file_exists": APP_DATA_FILE.exists(),
@@ -1131,7 +1211,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/api/config":
-            length = int(self.headers.get("Content-Length", 0))
+            length = self._content_length()
+            if length is None:
+                self._json(411, {"error": "Content-Length required"})
+                return
             body = self.rfile.read(length)
             try:
                 config = json.loads(body)
@@ -1153,17 +1236,17 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                         if raw in ("jpg", "jpeg", "png", "webp", "heic", "gif"):
                             ext = raw
                         break
-            length = int(self.headers.get("Content-Length", 0))
+            length = self._content_length()
             MAX_PHOTO = 20 * 1024 * 1024  # 20 MB hard cap
+            if length is None:
+                self._json(411, {"error": "Content-Length required"})
+                return
             if length > MAX_PHOTO:
                 self._json(413, {"error": "file too large"})
                 return
-            body = self.rfile.read(length) if length else self.rfile.read(MAX_PHOTO)
+            body = self.rfile.read(length)
             if not body:
                 self._json(400, {"error": "empty body"})
-                return
-            if len(body) > MAX_PHOTO:
-                self._json(413, {"error": "file too large"})
                 return
             filename = str(_uuid.uuid4()) + "." + ext
             photos_dir = DATA_DIR / "photos"
@@ -1180,17 +1263,17 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                         if raw in ALLOWED_FILE_EXT:
                             ext = raw
                         break
-            length = int(self.headers.get("Content-Length", 0))
+            length = self._content_length()
             MAX_FILE = 25 * 1024 * 1024  # 25 MB hard cap
+            if length is None:
+                self._json(411, {"error": "Content-Length required"})
+                return
             if length > MAX_FILE:
                 self._json(413, {"error": "file too large"})
                 return
-            body = self.rfile.read(length) if length else self.rfile.read(MAX_FILE)
+            body = self.rfile.read(length)
             if not body:
                 self._json(400, {"error": "empty body"})
-                return
-            if len(body) > MAX_FILE:
-                self._json(413, {"error": "file too large"})
                 return
             filename = str(_uuid.uuid4()) + "." + ext
             files_dir = DATA_DIR / "files"
@@ -1198,13 +1281,17 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             (files_dir / filename).write_bytes(body)
             self._json(200, {"filename": filename})
         elif self.path == "/api/data":
-            length = int(self.headers.get("Content-Length", 0))
+            length = self._content_length()
+            if length is None:
+                self._json(411, {"error": "Content-Length required"})
+                return
             body = self.rfile.read(length)
             try:
                 incoming = json.loads(body)
-                existing = load_app_data() if APP_DATA_FILE.exists() else {}
-                merged = merge_app_data(existing, incoming, mode="push")
-                save_app_data(merged)
+                with APP_DATA_LOCK:
+                    existing = load_app_data() if APP_DATA_FILE.exists() else {}
+                    merged = merge_app_data(existing, incoming, mode="push")
+                    save_app_data(merged)
                 self._json(200, {"ok": True})
             except Exception as e:
                 self._json(400, {"error": str(e)})
@@ -1213,7 +1300,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             # (dailyChecklistLog / dietLog). Bypasses the generic merge logic
             # so a deleted entry can never be resurrected by a racing pull
             # that fetches a server snapshot taken just before this delete.
-            length = int(self.headers.get("Content-Length", 0))
+            length = self._content_length()
+            if length is None:
+                self._json(411, {"error": "Content-Length required"})
+                return
             body = self.rfile.read(length)
             try:
                 payload = json.loads(body)
@@ -1222,12 +1312,20 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 if key not in DATE_LOG_KEYS or not date:
                     self._json(400, {"error": "invalid key/date"})
                     return
-                app_data = load_app_data() if APP_DATA_FILE.exists() else {}
-                app_data[key] = [
-                    e for e in (app_data.get(key) or [])
-                    if not (isinstance(e, dict) and e.get("date") == date)
-                ]
-                save_app_data(app_data)
+                with APP_DATA_LOCK:
+                    app_data = load_app_data() if APP_DATA_FILE.exists() else {}
+                    app_data[key] = [
+                        e for e in (app_data.get(key) or [])
+                        if not (isinstance(e, dict) and e.get("date") == date)
+                    ]
+                    # Date-keyed tombstone so a pull-merge with a stale server
+                    # snapshot (or another device) can't resurrect this day.
+                    deleted = dict(app_data.get("deletedIds") or {})
+                    coll = dict(deleted.get(key) or {})
+                    coll[str(date)] = int(time.time() * 1000)
+                    deleted[key] = coll
+                    app_data["deletedIds"] = deleted
+                    save_app_data(app_data)
                 self._json(200, {"ok": True})
             except Exception as e:
                 self._json(400, {"error": str(e)})
@@ -1243,8 +1341,13 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 if not recipients:
                     self._json(400, {"error": "no subscribers routed to backup"})
                     return
-                result = send_backup_to(token, recipients)
-                self._json(200, result)
+                # Upload runs on a worker thread — a multi-minute send must not
+                # freeze the single-threaded HTTP server for every other client.
+                started = start_backup_async(token, recipients)
+                if started:
+                    self._json(200, {"ok": True, "started": True, "recipients": len(recipients)})
+                else:
+                    self._json(409, {"error": "backup already in progress"})
             except Exception as e:
                 self._json(500, {"error": str(e)})
         else:
@@ -1264,6 +1367,19 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"index (9).html not found")
+
+    def _content_length(self):
+        """Parsed Content-Length, or None when missing/malformed. Body-reading
+        endpoints must reject None — reading without a length on the
+        single-threaded server would block the whole site until EOF."""
+        raw = self.headers.get("Content-Length")
+        if raw is None:
+            return None
+        try:
+            n = int(raw)
+            return n if n >= 0 else None
+        except (TypeError, ValueError):
+            return None
 
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")

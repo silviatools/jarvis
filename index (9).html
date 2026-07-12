@@ -334,9 +334,11 @@ const parseMealLine = (line) => {
   const trimmed = (line || '').trim();
   if (!trimmed) return null;
   const m = trimmed.match(/^(.+?)\s+(\d+(?:[.,]\d+)?\s?[^\d\s]{0,15})\s*$/u);
-  return m
-    ? { id: crypto.randomUUID(), product: m[1].trim(), amount: m[2].trim() }
-    : { id: crypto.randomUUID(), product: trimmed, amount: '' };
+  if (m) return { id: crypto.randomUUID(), product: m[1].trim(), amount: m[2].trim() };
+  // leading-number form: "2 яйца", "1.5 л молоко"
+  const lead = trimmed.match(/^(\d+(?:[.,]\d+)?)\s+(.+)$/u);
+  if (lead) return { id: crypto.randomUUID(), product: lead[2].trim(), amount: lead[1].trim() };
+  return { id: crypto.randomUUID(), product: trimmed, amount: '' };
 };
 
 const normalizeMealSection = (val) => {
@@ -452,8 +454,12 @@ const DATE_LOG_KEYS = new Set(['dietLog', 'dailyChecklistLog']);
 const preferLocalForKey = (key, mode) => mode === 'push' || !DATE_LOG_KEYS.has(key);
 
 // Merge two per-collection "deleted id" tombstone maps ({ [id]: deletedAtMs }),
-// keeping the newest timestamp for any id present on both sides.
+// keeping the newest timestamp for any id present on both sides. Tombstones
+// older than TOMBSTONE_TTL_MS are pruned so the map can't grow forever.
+const TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
 const mergeDeletedIdsMaps = (localAll, serverAll) => {
+  const cutoff = Date.now() - TOMBSTONE_TTL_MS;
   const merged = {};
   const collKeys = new Set([...Object.keys(localAll || {}), ...Object.keys(serverAll || {})]);
   collKeys.forEach(ck => {
@@ -461,7 +467,8 @@ const mergeDeletedIdsMaps = (localAll, serverAll) => {
     const s = (serverAll || {})[ck] || {};
     const out = {};
     new Set([...Object.keys(l), ...Object.keys(s)]).forEach(id => {
-      out[id] = Math.max(l[id] || 0, s[id] || 0);
+      const ts = Math.max(l[id] || 0, s[id] || 0);
+      if (ts >= cutoff) out[id] = ts;
     });
     merged[ck] = out;
   });
@@ -491,10 +498,17 @@ const mergeIdArrays = (localArr, serverArr, preferLocal, deletedForKey) => {
     // side's entries are ever silently wiped out by a merge (this used to
     // always collapse to [] since nothing in a string array has `.id`),
     // while still respecting explicit deletions recorded by value.
+    // Key objects with sorted keys — matches Python's json.dumps(sort_keys=True)
+    // so value-tombstones agree on both sides regardless of key insertion order.
+    const stableKey = (v) => {
+      if (v === null || typeof v !== 'object') return v;
+      if (Array.isArray(v)) return JSON.stringify(v.map(stableKey));
+      return JSON.stringify(Object.keys(v).sort().reduce((o, k) => { o[k] = v[k]; return o; }, {}));
+    };
     const seen = new Set();
     const out = [];
     [...la, ...sa].forEach(v => {
-      const k = v && typeof v === 'object' ? JSON.stringify(v) : v;
+      const k = stableKey(v);
       if (!seen.has(k) && !(deletedForKey && deletedForKey[k] !== undefined)) { seen.add(k); out.push(v); }
     });
     return out;
@@ -529,45 +543,53 @@ const mergeIdArrays = (localArr, serverArr, preferLocal, deletedForKey) => {
   return [...byId.values()];
 };
 
-const mergeDateLogEntries = (localArr, serverArr, preferLocal) => {
+const mergeDateLogEntries = (localArr, serverArr, preferLocal, deletedForKey) => {
   const norm = (e) => ({ ...e, answers: { ...(e.answers || {}) } });
+  const ts = (e) => typeof e.updatedAt === 'number' ? e.updatedAt : null;
+
+  // Merge two same-date entries with `over` taking precedence — unless `base`
+  // carries a strictly newer updatedAt, in which case the newer edit wins
+  // wholesale (fixes the 20s pull reverting a rating changed seconds ago).
+  const combine = (base, over) => {
+    const bTs = ts(base), oTs = ts(over);
+    if (bTs != null && (oTs == null || bTs > oTs)) { const t = base; base = over; over = t; }
+    const merged = {
+      ...base,
+      ...over,
+      answers: { ...(base.answers || {}), ...(over.answers || {}) },
+      id: over.id || base.id,
+    };
+    if (over.level !== undefined) merged.level = over.level;
+    else if (base.level !== undefined) merged.level = base.level;
+    return merged;
+  };
+
   const local = (Array.isArray(localArr) ? localArr : []).filter(e => e?.date).map(norm);
   const server = (Array.isArray(serverArr) ? serverArr : []).filter(e => e?.date).map(norm);
   const serverByDate = new Map(server.map(e => [e.date, e]));
 
+  let result;
   if (preferLocal) {
     // push: локальный список дат — источник правды (удаления сохраняются)
-    return local.map(localEntry => {
+    result = local.map(localEntry => {
       const srv = serverByDate.get(localEntry.date);
-      if (!srv) return localEntry;
-      return {
-        ...srv,
-        ...localEntry,
-        answers: { ...(srv.answers || {}), ...(localEntry.answers || {}) },
-        level: localEntry.level !== undefined ? localEntry.level : srv.level,
-        id: localEntry.id || srv.id,
-      };
-    }).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+      return srv ? combine(srv, localEntry) : localEntry;
+    });
+  } else {
+    // pull: сервер/бот побеждает, но новые дни с бота добавляются
+    const byDate = new Map();
+    local.forEach(e => byDate.set(e.date, { ...e }));
+    server.forEach(e => {
+      const prev = byDate.get(e.date);
+      byDate.set(e.date, prev ? combine(prev, e) : { ...e });
+    });
+    result = [...byDate.values()];
   }
 
-  // pull: сервер/бот побеждает, но новые дни с бота добавляются
-  const byDate = new Map();
-  local.forEach(e => byDate.set(e.date, { ...e }));
-  server.forEach(e => {
-    const prev = byDate.get(e.date);
-    if (!prev) {
-      byDate.set(e.date, { ...e });
-      return;
-    }
-    byDate.set(e.date, {
-      ...prev,
-      ...e,
-      answers: { ...(prev.answers || {}), ...(e.answers || {}) },
-      level: e.level !== undefined ? e.level : prev.level,
-      id: e.id || prev.id,
-    });
-  });
-  return [...byDate.values()].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  if (deletedForKey) {
+    result = result.filter(e => deletedForKey[String(e.date)] === undefined);
+  }
+  return result.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 };
 
 const mergeAppData = (local, server, mode = 'pull') => {
@@ -582,7 +604,7 @@ const mergeAppData = (local, server, mode = 'pull') => {
     if (l === undefined) { merged[key] = s; continue; }
     const preferLocal = preferLocalForKey(key, mode);
     if (DATE_LOG_KEYS.has(key) && (Array.isArray(l) || Array.isArray(s))) {
-      merged[key] = mergeDateLogEntries(l, s, preferLocal);
+      merged[key] = mergeDateLogEntries(l, s, preferLocal, mergedDeletedIds[key]);
     } else if (Array.isArray(l) || Array.isArray(s)) {
       merged[key] = mergeIdArrays(l, s, preferLocal, mergedDeletedIds[key]);
     } else if (isPlainObject(l) && isPlainObject(s)) {
@@ -607,6 +629,20 @@ const withoutUpdatedAt = (obj) => {
   return rest;
 };
 
+// Cheap first pass before the (expensive) JSON.stringify content compare:
+// same key set + all top-level values reference-equal ⇒ definitely unchanged.
+// Reducers that rebuild every object ({...x}) keep nested value refs, so this
+// short-circuits the common "rebuilt but not edited" case without stringify.
+const shallowEqualItems = (a, b) => {
+  const ka = Object.keys(a), kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    if (k === 'updatedAt') continue;
+    if (a[k] !== b[k]) return false;
+  }
+  return true;
+};
+
 const stampUpdatedAt = (prev, next) => {
   if (!prev || !next || prev === next) return next;
   let changed = false;
@@ -621,7 +657,8 @@ const stampUpdatedAt = (prev, next) => {
       if (!item || typeof item !== 'object' || item.id == null) return item;
       const prevItem = prevById.get(item.id);
       if (item === prevItem) return item; // untouched reference
-      if (prevItem && JSON.stringify(withoutUpdatedAt(prevItem)) === JSON.stringify(withoutUpdatedAt(item))) {
+      if (prevItem && (shallowEqualItems(prevItem, item)
+          || JSON.stringify(withoutUpdatedAt(prevItem)) === JSON.stringify(withoutUpdatedAt(item)))) {
         return item; // same content (e.g. reorder pass-through) — nothing to stamp
       }
       arrChanged = true;
@@ -633,7 +670,14 @@ const stampUpdatedAt = (prev, next) => {
 };
 
 const saveData = (data) => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  // Never throw: this runs inside React state updaters (mount/pull merges) —
+  // a quota/private-mode exception here would crash the whole tree. The server
+  // copy still persists everything even when localStorage is unavailable.
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (e) {
+    console.warn('saveData: localStorage write failed', e);
+  }
 };
 
 const fetchServerData = async () => {
@@ -782,10 +826,13 @@ const getCurrentPeriod = () => {
   return 'morning';
 };
 
-const getTodayKey = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-};
+// Local calendar date as YYYY-MM-DD. Never use toISOString() for day-level
+// values: it converts to UTC, so between 00:00 and 03:00 MSK "today" would
+// silently become yesterday.
+const dateToLocalStr = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
+const getTodayKey = () => dateToLocalStr(new Date());
 
 // Сколько дней прошло с эпохи (для "через день")
 const getDayNumber = () => {
@@ -840,7 +887,12 @@ const getChoreNextDate = (chore) => {
   if (!chore.lastDone) {
     const d = new Date(); d.setHours(0, 0, 0, 0); return d;
   }
-  const last = new Date(chore.lastDone); last.setHours(0, 0, 0, 0);
+  // Parse as LOCAL midnight: new Date('YYYY-MM-DD') would be UTC midnight,
+  // which lands on the previous local day west of UTC and makes a chore
+  // marked done today look due again immediately.
+  const [ly, lm, ld] = String(chore.lastDone).split('-').map(Number);
+  const last = lm ? new Date(ly, lm - 1, ld) : new Date(chore.lastDone);
+  last.setHours(0, 0, 0, 0);
   last.setDate(last.getDate() + days);
   return last;
 };
@@ -937,10 +989,10 @@ function App() {
   // Worker работает в отдельном потоке — Safari его не throttleит
   // даже при полном отсутствии активности на экране.
   useEffect(() => {
-    const todayAtMount = new Date().toISOString().slice(0, 10);
+    const todayAtMount = getTodayKey();
 
     const checkDate = () => {
-      if (new Date().toISOString().slice(0, 10) !== todayAtMount) {
+      if (getTodayKey() !== todayAtMount) {
         window.location.reload();
       }
     };
@@ -993,9 +1045,11 @@ function App() {
       try {
         const body = JSON.stringify(dataRef.current);
         const blob = new Blob([body], { type: 'application/json' });
-        if (navigator.sendBeacon) {
-          navigator.sendBeacon('/api/data', blob);
-        } else {
+        // sendBeacon returns false when it refuses the payload (UA queue limit
+        // is ~64 KB — this app's snapshot easily exceeds it). Fall back to a
+        // keepalive fetch in that case too, not only when the API is missing.
+        const queued = !!(navigator.sendBeacon && navigator.sendBeacon('/api/data', blob));
+        if (!queued) {
           fetch('/api/data', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1040,31 +1094,53 @@ function App() {
   }, []);
 
   // Keep the URL in sync with the active tab (clean deep links like /mybody),
-  // and follow browser back/forward between tabs.
+  // and follow browser back/forward between tabs. User-driven tab switches
+  // PUSH a history entry (so the Back button walks between tabs); popstate-
+  // driven changes must NOT push again or Back would be undone immediately.
+  const navFromPopstate = React.useRef(false);
   useEffect(() => {
     const path = TAB_PATH_MAP[tab] || '/';
     const currentPath = window.location.pathname.replace(/\/+$/, '') || '/';
     if (currentPath !== path) {
-      window.history.replaceState(null, '', path);
+      if (navFromPopstate.current) {
+        window.history.replaceState(null, '', path);
+      } else {
+        window.history.pushState(null, '', path);
+      }
     }
+    navFromPopstate.current = false;
   }, [tab]);
 
   useEffect(() => {
-    const onPopState = () => setTab(getTabFromPath());
+    const onPopState = () => { navFromPopstate.current = true; setTab(getTabFromPath()); };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  // Очистка отметок старше сегодняшнего дня
+  // Разовая миграция legacy-рационов: строки блюд → массивы {product, amount}.
+  // Раньше нормализация была только «на лету» и никогда не сохранялась, так что
+  // старые рационы вечно перепарсивались при каждом рендере.
+  useEffect(() => {
+    const isLegacy = (m) => ['breakfast', 'snack', 'lunch', 'dinner'].some(k => typeof m[k] === 'string');
+    if ((data.meals || []).some(isLegacy)) {
+      setData(d => ({ ...d, meals: (d.meals || []).map(m => isLegacy(m) ? normalizeMeal(m) : m) }));
+    }
+  }, [data.meals]);
+
+  // Очистка отметок старше сегодняшнего дня. Всё считается ВНУТРИ функционального
+  // апдейтера — снимок из первого рендера здесь был бы устаревшим и мог стереть
+  // отметки, домёрженные с сервера между монтированием и запуском эффекта.
   useEffect(() => {
     const today = getTodayKey();
-    const cleaned = {};
-    Object.keys(data.taken || {}).forEach(k => {
-      if (k.startsWith(today)) cleaned[k] = data.taken[k];
+    setData(d => {
+      const taken = d.taken || {};
+      const cleaned = {};
+      Object.keys(taken).forEach(k => {
+        if (k.startsWith(today)) cleaned[k] = taken[k];
+      });
+      if (Object.keys(cleaned).length === Object.keys(taken).length) return d;
+      return { ...d, taken: cleaned };
     });
-    if (Object.keys(cleaned).length !== Object.keys(data.taken || {}).length) {
-      setData(d => ({ ...d, taken: cleaned }));
-    }
   }, []);
 
   // Авто-переключение на Погоду при бездействии
@@ -1688,7 +1764,7 @@ function RationCounter({ data, setData }) {
   const daysLabel = () => {
     if (rations === 0) return 'Рационов нет';
     const parts = [];
-    if (wholeDays > 0) parts.push(`${wholeDays} ${wholeDays === 1 ? 'день' : wholeDays < 5 ? 'дня' : 'дней'}`);
+    if (wholeDays > 0) parts.push(`${wholeDays} ${pluralRu(wholeDays, ['день', 'дня', 'дней'])}`);
     if (halfDay) parts.push('½ дня');
     return `Хватит на ${parts.join(' и ')}`;
   };
@@ -1843,7 +1919,7 @@ function MealPurchaseView({ data, setData }) {
 
   const remove = (id) => {
     if (!confirm('Удалить закупку?')) return;
-    setData(d => ({ ...d, shoppingLists: (d.shoppingLists || []).filter(x => x.id !== id) }));
+    setData(d => ({ ...d, shoppingLists: (d.shoppingLists || []).filter(x => x.id !== id), deletedIds: withDeletedId(d, 'shoppingLists', id) }));
   };
 
   if (editing) {
@@ -1879,7 +1955,7 @@ function MealPurchaseView({ data, setData }) {
                   <button onClick={() => setEditing(list)} className="text-left flex-1 min-w-0">
                     <div className="font-medium">{list.name || 'Закупка'}</div>
                     <div className="text-xs text-[var(--text-muted)] mt-1">
-                      {fmtDate(list.createdAt)} · {count} {count === 1 ? 'рацион' : count < 5 ? 'рациона' : 'рационов'}
+                      {fmtDate(list.createdAt)} · {count} {pluralRu(count, ['рацион', 'рациона', 'рационов'])}
                     </div>
                   </button>
                   <div className="flex gap-1 shrink-0">
@@ -2062,14 +2138,14 @@ function MiniWeatherCard({ onClick }) {
   useEffect(() => {
     let cancelled = false;
 
-    const fetchByCoords = async (loc) => {
+    const fetchByCoords = async (loc, forCity = '') => {
       const url = `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat}&longitude=${loc.lon}` +
         `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m` +
         `&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1`;
       const res = await fetch(url);
       if (!res.ok) throw new Error('Ошибка загрузки');
       const weather = await res.json();
-      localStorage.setItem(WEATHER_MINI_CACHE_KEY, JSON.stringify({ ts: Date.now(), weather, location: loc }));
+      localStorage.setItem(WEATHER_MINI_CACHE_KEY, JSON.stringify({ ts: Date.now(), weather, location: loc, forCity }));
       if (!cancelled) setState({ loading: false, error: null, data: weather, location: loc });
     };
 
@@ -2083,9 +2159,11 @@ function MiniWeatherCard({ onClick }) {
           } catch { return ''; }
         })();
 
-        // Кэш: использовать только если совпадает источник (с городом или без)
+        // Кэш: использовать только если он для ТОГО ЖЕ настроенного города —
+        // иначе после смены города до 30 минут показывалась погода старого.
         const cached = JSON.parse(localStorage.getItem(WEATHER_MINI_CACHE_KEY) || 'null');
-        if (cached && Date.now() - cached.ts < 30 * 60 * 1000) {
+        const cacheMatchesCity = cached && (cached.forCity || '') === weatherCity;
+        if (cached && cacheMatchesCity && Date.now() - cached.ts < 30 * 60 * 1000) {
           if (!cancelled) setState({ loading: false, error: null, data: cached.weather, location: cached.location });
           return;
         }
@@ -2099,7 +2177,7 @@ function MiniWeatherCard({ onClick }) {
           if (!results.length) throw new Error(`Город «${weatherCity}» не найден`);
           const { lat, lon, display_name } = results[0];
           const loc = { lat: parseFloat(lat), lon: parseFloat(lon), name: display_name.split(',')[0].trim() };
-          await fetchByCoords(loc);
+          await fetchByCoords(loc, weatherCity);
           return;
         }
 
@@ -2382,7 +2460,7 @@ function RationWidget({ data, setData, onGo }) {
   const daysLabel = () => {
     if (rations === 0) return 'Рационов нет';
     const parts = [];
-    if (wholeDays > 0) parts.push(`${wholeDays} ${wholeDays === 1 ? 'день' : wholeDays < 5 ? 'дня' : 'дней'}`);
+    if (wholeDays > 0) parts.push(`${wholeDays} ${pluralRu(wholeDays, ['день', 'дня', 'дней'])}`);
     if (halfDay) parts.push('½ дня');
     return `На ${parts.join(' и ')}`;
   };
@@ -2581,7 +2659,7 @@ function WeatherView({ settings }) {
     } catch { return null; }
   };
 
-  const loadByCoords = async (lat, lon, cityName) => {
+  const loadByCoords = async (lat, lon, cityName, forCity = '') => {
     try {
       const weather = await fetchWeather(lat, lon);
       const name = cityName || await reverseGeocode(lat, lon) || `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
@@ -2589,7 +2667,7 @@ function WeatherView({ settings }) {
       setLocation({ lat, lon, name });
       localStorage.setItem(WEATHER_LOC_KEY, JSON.stringify({ lat, lon, name }));
       localStorage.setItem(WEATHER_CACHE_KEY, JSON.stringify({
-        ts: Date.now(), weather, location: { lat, lon, name }
+        ts: Date.now(), weather, location: { lat, lon, name }, forCity
       }));
       setStatus('ready');
     } catch (e) {
@@ -2615,7 +2693,7 @@ function WeatherView({ settings }) {
     try {
       setStatus('loading');
       const coords = await geocodeCity(cityName);
-      await loadByCoords(coords.lat, coords.lon, coords.name);
+      await loadByCoords(coords.lat, coords.lon, coords.name, cityName);
     } catch (e) {
       setError(e.message);
       setStatus('error');
@@ -2670,7 +2748,9 @@ function WeatherView({ settings }) {
     if (weatherCity) {
       try {
         const cached = JSON.parse(localStorage.getItem(WEATHER_CACHE_KEY) || 'null');
-        if (cached && cached.location?.name && Date.now() - cached.ts < 30 * 60 * 1000) {
+        // Кэш валиден только для ЭТОГО города — после смены города в
+        // настройках старый кэш игнорируется, а не показывается ещё 30 минут.
+        if (cached && (cached.forCity || '') === weatherCity && Date.now() - cached.ts < 30 * 60 * 1000) {
           setData(cached.weather);
           setLocation(cached.location);
           setStatus('ready');
@@ -2683,7 +2763,7 @@ function WeatherView({ settings }) {
     // Иначе: кэш → сохранённые координаты → геолокация
     try {
       const cached = JSON.parse(localStorage.getItem(WEATHER_CACHE_KEY) || 'null');
-      if (cached && Date.now() - cached.ts < 30 * 60 * 1000) {
+      if (cached && !cached.forCity && Date.now() - cached.ts < 30 * 60 * 1000) {
         setData(cached.weather);
         setLocation(cached.location);
         setStatus('ready');
@@ -3446,7 +3526,7 @@ function buildChecklistChartDays(log, days = CHECKLIST_CHART_DAYS) {
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
-    const ds = d.toISOString().split('T')[0];
+    const ds = dateToLocalStr(d);
     chartDays.push({
       date: ds,
       entry: byDate[ds] || null,
@@ -3461,14 +3541,14 @@ function buildChecklistChartDays(log, days = CHECKLIST_CHART_DAYS) {
 function getChecklistFieldStats(field, log, periodDays) {
   const from = new Date();
   from.setDate(from.getDate() - periodDays + 1);
-  const fromIso = from.toISOString().split('T')[0];
-  const today = new Date().toISOString().split('T')[0];
+  const fromIso = dateToLocalStr(from);
+  const today = getTodayKey();
 
   const periodDaysList = [];
   for (let i = periodDays - 1; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
-    periodDaysList.push(d.toISOString().split('T')[0]);
+    periodDaysList.push(dateToLocalStr(d));
   }
 
   const answered = log.filter(e => e.date >= fromIso && e.answers?.[field.id]);
@@ -3863,7 +3943,7 @@ function DailyChecklistFieldsConfig({ data, setData }) {
 }
 
 function DailyChecklistStats({ data, setData }) {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getTodayKey();
   const fields = data.dailyChecklistFields || [];
   const log = [...(data.dailyChecklistLog || [])].sort((a, b) => b.date.localeCompare(a.date));
   const [selDate, setSelDate] = useState(today);
@@ -3889,7 +3969,7 @@ function DailyChecklistStats({ data, setData }) {
   const deleteDay = (date) => {
     if (!confirm('Удалить запись за этот день?')) return;
     deleteLogEntryOnServer('dailyChecklistLog', date);
-    setData(d => ({ ...d, dailyChecklistLog: (d.dailyChecklistLog || []).filter(e => e.date !== date) }));
+    setData(d => ({ ...d, dailyChecklistLog: (d.dailyChecklistLog || []).filter(e => e.date !== date), deletedIds: withDeletedId(d, 'dailyChecklistLog', date) }));
     if (selDate === date) setSelDate(today);
   };
 
@@ -4047,7 +4127,7 @@ function SupplementSettings({ data, setData, isWorkout }) {
 
   const remove = (id) => {
     if (!confirm('Удалить БАДД полностью?')) return;
-    setData(d => ({ ...d, [storageKey]: (d[storageKey] || []).filter(s => s.id !== id) }));
+    setData(d => ({ ...d, [storageKey]: (d[storageKey] || []).filter(s => s.id !== id), deletedIds: withDeletedId(d, storageKey, id) }));
   };
 
   const toggleArchive = (id) => {
@@ -4257,7 +4337,7 @@ function MealSettings({ data, setData }) {
 
   const remove = (id) => {
     if (!confirm('Удалить рацион полностью?')) return;
-    setData(d => ({ ...d, meals: (d.meals || []).filter(m => m.id !== id) }));
+    setData(d => ({ ...d, meals: (d.meals || []).filter(m => m.id !== id), deletedIds: withDeletedId(d, 'meals', id) }));
   };
 
   const toggleArchive = (id) => {
@@ -4492,7 +4572,7 @@ const DOW_SHORT = ['вс','пн','вт','ср','чт','пт','сб'];
 const MONTHS_SHORT = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
 
 function DietComplianceView({ data, setData }) {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getTodayKey();
 
   // Нормализация: старые записи (onPlan/калории) → уровень
   const normLevel = (e) => e.level || (e.onPlan ? 'on_plan' : null);
@@ -4515,7 +4595,7 @@ function DietComplianceView({ data, setData }) {
 
   const deleteEntry = (date) => {
     deleteLogEntryOnServer('dietLog', date);
-    setData(d => ({ ...d, dietLog: (d.dietLog || []).filter(e => e.date !== date) }));
+    setData(d => ({ ...d, dietLog: (d.dietLog || []).filter(e => e.date !== date), deletedIds: withDeletedId(d, 'dietLog', date) }));
   };
 
   const onPlanCount = log.filter(e => e.level === 'on_plan').length;
@@ -4535,7 +4615,7 @@ function DietComplianceView({ data, setData }) {
   for (let i = CHART_DAYS - 1; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
-    const ds = d.toISOString().split('T')[0];
+    const ds = dateToLocalStr(d);
     chartDays.push({
       date: ds,
       entry: log.find(e => e.date === ds),
@@ -4720,7 +4800,7 @@ function CookingView({ data, setData }) {
 
   const remove = (id) => {
     if (!confirm('Удалить план готовки?')) return;
-    setData(d => ({ ...d, cookingPlans: (d.cookingPlans || []).filter(p => p.id !== id) }));
+    setData(d => ({ ...d, cookingPlans: (d.cookingPlans || []).filter(p => p.id !== id), deletedIds: withDeletedId(d, 'cookingPlans', id) }));
     if (expanded === id) setExpanded(null);
   };
 
@@ -5027,7 +5107,7 @@ function ContainersView({ data, setData }) {
 
   const remove = (id) => {
     if (!confirm('Удалить контейнер?')) return;
-    setData(d => ({ ...d, containers: (d.containers || []).filter(c => c.id !== id) }));
+    setData(d => ({ ...d, containers: (d.containers || []).filter(c => c.id !== id), deletedIds: withDeletedId(d, 'containers', id) }));
   };
 
   const newContainer = () => setEditing({
@@ -5728,7 +5808,7 @@ function ChoreSettings({ data, setData, dataKey }) {
 
   const remove = (id) => {
     if (!confirm('Удалить дело полностью?')) return;
-    setData(d => ({ ...d, [dataKey]: (d[dataKey] || []).filter(c => c.id !== id) }));
+    setData(d => ({ ...d, [dataKey]: (d[dataKey] || []).filter(c => c.id !== id), deletedIds: withDeletedId(d, dataKey, id) }));
   };
 
   const toggleArchive = (id) => {
@@ -6064,7 +6144,7 @@ function BossSettings({ data, setData }) {
 
   const remove = (id) => {
     if (!confirm('Удалить задачу?')) return;
-    setData(d => ({ ...d, bossTasks: (d.bossTasks || []).filter(t => t.id !== id) }));
+    setData(d => ({ ...d, bossTasks: (d.bossTasks || []).filter(t => t.id !== id), deletedIds: withDeletedId(d, 'bossTasks', id) }));
   };
 
   const toggleArchive = (id) => {
@@ -6907,7 +6987,7 @@ function buildVoiceSystemPrompt(appData) {
   const FREQ_LABELS = { daily:'каждый день', every2:'каждые 2 дня', every3:'каждые 3 дня', weekly:'раз в неделю', biweekly:'раз в 2 нед', monthly:'раз в месяц', custom:'своя' };
 
   const today = new Date();
-  const todayStr = today.toISOString().split('T')[0];
+  const todayStr = dateToLocalStr(today);
   const todayDayName = DAY_NAMES[today.getDay()];
 
   const chores = (appData.chores || []).filter(c => !c.archived);
@@ -6916,7 +6996,7 @@ function buildVoiceSystemPrompt(appData) {
   const choreLines = chores.length
     ? chores.map(c => {
         const next = getChoreNextDate(c);
-        const nextStr = isChoreDueToday(c) ? 'СЕГОДНЯ' : next.toISOString().split('T')[0];
+        const nextStr = isChoreDueToday(c) ? 'СЕГОДНЯ' : dateToLocalStr(next);
         const freq = FREQ_LABELS[c.frequency] || c.frequency;
         const custom = c.frequency === 'custom' ? ` (${c.customDays} дн)` : '';
         return `  • ${c.name} | ${freq}${custom} | последний раз: ${c.lastDone || 'никогда'} | следующий: ${nextStr}`;
@@ -7348,15 +7428,22 @@ async function compressImage(file, maxPx = 1200, quality = 0.85) {
 }
 
 async function uploadPhoto(file) {
-  let blob;
+  let blob, ext, ctype;
   try {
     blob = await compressImage(file);
+    ext = 'jpg';
+    ctype = 'image/jpeg';
   } catch {
+    // Compression failed — send the ORIGINAL bytes with their real type, not
+    // mislabelled as jpeg (a PNG/HEIC stored as .jpg is technically corrupt).
     blob = file;
+    const nameExt = (file.name.split('.').pop() || '').toLowerCase();
+    ext = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'gif'].includes(nameExt) ? nameExt : 'jpg';
+    ctype = file.type || 'application/octet-stream';
   }
-  const res = await fetch('/api/photos?ext=jpg', {
+  const res = await fetch(`/api/photos?ext=${ext}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'image/jpeg' },
+    headers: { 'Content-Type': ctype },
     body: blob,
   });
   if (!res.ok) throw new Error('upload failed');
@@ -7707,13 +7794,22 @@ function BodyModeForm({ mode, onSave, onCancel }) {
   const updSupp = (id, k, v) => set('supplements', form.supplements.map(s => s.id === id ? { ...s, [k]: v } : s));
   const delSupp = (id) => set('supplements', form.supplements.filter(s => s.id !== id));
 
+  // The file persisted with the mode BEFORE this editing session. It must be
+  // deleted from the server only AFTER a successful save that no longer
+  // references it — deleting eagerly on pick/remove meant «Отмена» left the
+  // saved mode pointing at a dead (404) file.
+  const originalFilename = mode?.workoutFile?.filename || null;
+  const isSessionUpload = (fn) => fn && fn !== originalFilename;
+
   const onFile = async (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
     setUploading(true);
     try {
-      if (form.workoutFile?.filename) deleteFile(form.workoutFile.filename);
       const filename = await uploadFile(file);
+      // A file uploaded earlier in THIS session (not yet persisted anywhere)
+      // is safe to delete as soon as it's replaced.
+      if (isSessionUpload(form.workoutFile?.filename)) deleteFile(form.workoutFile.filename);
       set('workoutFile', { filename, originalName: file.name, ext: (file.name.split('.').pop() || '').toLowerCase() });
     } catch {
       alert('Не удалось загрузить файл');
@@ -7722,11 +7818,21 @@ function BodyModeForm({ mode, onSave, onCancel }) {
   };
 
   const removeFile = () => {
-    if (form.workoutFile?.filename) deleteFile(form.workoutFile.filename);
+    if (isSessionUpload(form.workoutFile?.filename)) deleteFile(form.workoutFile.filename);
     set('workoutFile', null);
   };
 
+  const cancel = () => {
+    // Discard any orphan uploaded during this session, keep the persisted file.
+    if (isSessionUpload(form.workoutFile?.filename)) deleteFile(form.workoutFile.filename);
+    onCancel();
+  };
+
   const submit = () => {
+    // Persisted old file is only deleted now, when the save stops referencing it.
+    if (originalFilename && form.workoutFile?.filename !== originalFilename) {
+      deleteFile(originalFilename);
+    }
     onSave({ ...form, supplements: form.supplements.filter(s => (s.name || '').trim()) });
   };
 
@@ -7735,7 +7841,7 @@ function BodyModeForm({ mode, onSave, onCancel }) {
   return (
     <div className="fade-in space-y-5">
       <div className="flex items-center gap-3">
-        <button onClick={onCancel} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]"><Icon name="x" size={20} /></button>
+        <button onClick={cancel} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]"><Icon name="x" size={20} /></button>
         <h2 className="font-display text-2xl">{mode ? 'Редактировать режим' : 'Новый режим'}</h2>
       </div>
 
@@ -7837,7 +7943,7 @@ function BodyModeForm({ mode, onSave, onCancel }) {
       </div>
 
       <div className="flex gap-3">
-        <button onClick={onCancel} className="btn-secondary flex-1">Отмена</button>
+        <button onClick={cancel} className="btn-secondary flex-1">Отмена</button>
         <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
       </div>
     </div>
@@ -7845,7 +7951,7 @@ function BodyModeForm({ mode, onSave, onCancel }) {
 }
 
 function BodyEntryForm({ entry, fields, categories, onSave, onCancel }) {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getTodayKey();
   const [date, setDate] = useState(entry?.date || today);
   const [values, setValues] = useState(entry?.values || {});
   const [photos, setPhotos] = useState((entry?.photos || []).map(normalizePhoto));
@@ -7881,14 +7987,20 @@ function BodyEntryForm({ entry, fields, categories, onSave, onCancel }) {
   const handleSave = async () => {
     setUploading(true);
     try {
-      const uploaded = await Promise.all(pending.map(async p => {
+      // Upload photos independently: one failed upload (offline, server hiccup)
+      // must not discard the whole entry — measurements and notes still save,
+      // together with whichever photos DID upload.
+      const results = await Promise.allSettled(pending.map(async p => {
         const filename = await uploadPhoto(p.file);
         return { filename, category: p.category || '' };
       }));
+      const uploaded = results.filter(r => r.status === 'fulfilled').map(r => r.value);
+      const failed = results.length - uploaded.length;
       pending.forEach(p => URL.revokeObjectURL(p.preview));
+      if (failed > 0) {
+        alert(`Не удалось загрузить ${failed} фото — запись сохранена без них.`);
+      }
       onSave({ ...entry, date, values, photos: [...photos, ...uploaded], notes });
-    } catch(e) {
-      alert('Ошибка загрузки фото: ' + e.message);
     } finally {
       setUploading(false);
     }
@@ -8081,7 +8193,7 @@ function BodyHistory({ entries, fields, categories, onEdit, onDelete }) {
 function addDaysStr(dateStr, days) {
   const d = new Date(dateStr + 'T00:00:00');
   d.setDate(d.getDate() + days);
-  return d.toISOString().split('T')[0];
+  return dateToLocalStr(d);
 }
 
 function valueAtOrBefore(sorted, fieldId, dateStr) {
@@ -8094,7 +8206,7 @@ function valueAtOrBefore(sorted, fieldId, dateStr) {
 }
 
 function BodyWeeklyPlanVsActual({ sorted, fields, targets, effectiveStart }) {
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getTodayKey();
   const [expandedId, setExpandedId] = useState(null);
   const targetFields = fields.filter(f => targets[f.id] !== undefined && targets[f.id] !== 0);
   if (targetFields.length === 0 || !effectiveStart) return null;
@@ -8716,11 +8828,18 @@ function CarsSettings({ data, setData }) {
 
   const remove = (id) => {
     if (!confirm('Удалить автомобиль? Вся история обслуживания этого автомобиля будет удалена.')) return;
-    setData(d => ({
-      ...d,
-      cars: (d.cars || []).filter(c => c.id !== id),
-      serviceRecords: (d.serviceRecords || []).filter(r => r.carId !== id),
-    }));
+    setData(d => {
+      let deleted = withDeletedId(d, 'cars', id);
+      (d.serviceRecords || []).filter(r => r.carId === id).forEach(r => {
+        deleted = withDeletedId({ ...d, deletedIds: deleted }, 'serviceRecords', r.id);
+      });
+      return {
+        ...d,
+        cars: (d.cars || []).filter(c => c.id !== id),
+        serviceRecords: (d.serviceRecords || []).filter(r => r.carId !== id),
+        deletedIds: deleted,
+      };
+    });
   };
 
   const toggleArchive = (id) => {
@@ -8881,7 +9000,7 @@ function ServiceHistoryView({ data, setData }) {
 
   const deleteRecord = (id) => {
     if (!confirm('Удалить запись?')) return;
-    setData(d => ({ ...d, serviceRecords: (d.serviceRecords || []).filter(r => r.id !== id) }));
+    setData(d => ({ ...d, serviceRecords: (d.serviceRecords || []).filter(r => r.id !== id), deletedIds: withDeletedId(d, 'serviceRecords', id) }));
   };
 
   const fmtDate = (s) => {
@@ -8898,7 +9017,7 @@ function ServiceHistoryView({ data, setData }) {
   const newRecord = () => ({
     id: crypto.randomUUID(),
     carId: filterCar !== 'all' ? filterCar : cars[0].id,
-    date: new Date().toISOString().split('T')[0],
+    date: getTodayKey(),
     items: [{ id: crypto.randomUUID(), service: '', price: '' }],
     mileage: '', notes: '',
   });
@@ -9074,7 +9193,7 @@ function ServiceRecordModal({ record, cars, allServiceNames, onSave, onClose }) 
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label>Дата</label>
-            <input type="date" value={date} max={new Date().toISOString().split('T')[0]} onChange={e => setDate(e.target.value)} />
+            <input type="date" value={date} max={getTodayKey()} onChange={e => setDate(e.target.value)} />
           </div>
           <div>
             <label>Пробег (км)</label>
@@ -9206,7 +9325,7 @@ function HolidaysView({ data, setData }) {
 
   const remove = (id) => {
     if (!confirm('Удалить событие?')) return;
-    setData(d => ({ ...d, holidays: (d.holidays || []).filter(h => h.id !== id) }));
+    setData(d => ({ ...d, holidays: (d.holidays || []).filter(h => h.id !== id), deletedIds: withDeletedId(d, 'holidays', id) }));
   };
 
   const newHoliday = () => setEditing({
@@ -9559,11 +9678,14 @@ const formatMonthShortBudget = (ym) => {
   return `${names[m - 1]} ${y}`;
 };
 
-const calcMonthly = (exp, balance) => {
-  const curMonth = getCurrentMonthStr();
+// Monthly contribution = remaining amount / months left. `asOfMonth` lets the
+// plan table compute the figure for a specific column month instead of always
+// showing the current month's number in all twelve columns.
+const calcMonthly = (exp, balance, asOfMonth) => {
+  const fromMonth = asOfMonth || getCurrentMonthStr();
   const remaining = Math.max((exp.amount || 0) - (balance || 0), 0);
   if (remaining <= 0) return 0;
-  const mLeft = exp.targetDate <= curMonth ? 1 : monthsBetweenStr(curMonth, exp.targetDate);
+  const mLeft = exp.targetDate <= fromMonth ? 1 : monthsBetweenStr(fromMonth, exp.targetDate);
   return Math.ceil(remaining / mLeft);
 };
 
@@ -9572,7 +9694,14 @@ const formatRub = (n) => {
   return new Intl.NumberFormat('ru-RU').format(Math.round(n));
 };
 
-const pluralMonths = (n) => n === 1 ? 'месяц' : n < 5 ? 'месяца' : 'месяцев';
+// Правильная русская плюрализация: 21 день / 22 дня / 25 дней, 111 дней.
+const pluralRu = (n, [one, few, many]) => {
+  const n10 = Math.abs(n) % 10, n100 = Math.abs(n) % 100;
+  if (n10 === 1 && n100 !== 11) return one;
+  if (n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14)) return few;
+  return many;
+};
+const pluralMonths = (n) => pluralRu(n, ['месяц', 'месяца', 'месяцев']);
 
 function BudgetView({ data, setData }) {
   const [budgetTab, setBudgetTab] = useState('monthly');
@@ -9655,11 +9784,13 @@ function BudgetMonthlyView({ data, setData }) {
     return b;
   };
 
-  // Накопления: per savings-category, sum calcMonthly for expenses active in that month
+  // Накопления: per savings-category, sum calcMonthly for expenses active in
+  // that month — computed AS OF that column's month, so future columns show
+  // their own required contribution, not this month's figure twelve times.
   const getExpCatVal = (catId, month) =>
     activeExp
       .filter(e => e.category === catId && e.startDate <= month && e.targetDate >= month)
-      .reduce((s, e) => s + calcMonthly(e, getExpBalance(e)), 0);
+      .reduce((s, e) => s + calcMonthly(e, getExpBalance(e), month), 0);
 
   // Постоянные: per recurring-category, fixed monthly sum (same every month)
   const getRecCatVal = (catId) =>
@@ -9717,7 +9848,7 @@ function BudgetMonthlyView({ data, setData }) {
     const bi = savedOrder.indexOf(b.id);
     if (ai === -1 && bi === -1) return 0;
     if (ai === -1) return 1;
-    if (bi === -1) return 1;
+    if (bi === -1) return -1;
     return ai - bi;
   });
 
@@ -10061,13 +10192,18 @@ function BudgetCopyMonthModal({ year, userCats, incomeSources, data, setData, on
     const newInc = { ...(data.budgetIncomeValues || {}) };
 
     dstMonths.forEach(dstMonth => {
+      // Exact copy: the destination becomes IDENTICAL to the source month.
+      // Cells empty in the source are cleared in the destination too —
+      // merging left stale old values behind when copying a "clean" month.
       manualItemIds.forEach(id => {
         const v = vals[`${id}_${srcMonth}`] || 0;
         if (v > 0) newVals[`${id}_${dstMonth}`] = v;
+        else delete newVals[`${id}_${dstMonth}`];
       });
       incomeIds.forEach(id => {
         const v = incomeVals[`${id}_${srcMonth}`] || 0;
         if (v > 0) newInc[`${id}_${dstMonth}`] = v;
+        else delete newInc[`${id}_${dstMonth}`];
       });
     });
 
@@ -10561,7 +10697,20 @@ function SavingsListView({ data, setData }) {
 
   const remove = (id) => {
     if (!confirm('Удалить накопление?')) return;
-    setData(d => ({ ...d, budgetExpenses: (d.budgetExpenses || []).filter(e => e.id !== id) }));
+    setData(d => {
+      // Cascade: remove the item's transactions too, else they'd stay orphaned
+      // in the DDS log (unreachable, but still summed into totals) forever.
+      let deleted = withDeletedId(d, 'budgetExpenses', id);
+      (d.savingsTransactions || []).filter(t => t.expenseId === id).forEach(t => {
+        deleted = withDeletedId({ ...d, deletedIds: deleted }, 'savingsTransactions', t.id);
+      });
+      return {
+        ...d,
+        budgetExpenses: (d.budgetExpenses || []).filter(e => e.id !== id),
+        savingsTransactions: (d.savingsTransactions || []).filter(t => t.expenseId !== id),
+        deletedIds: deleted,
+      };
+    });
   };
 
   const toggleArchive = (id) => {
@@ -10589,7 +10738,7 @@ function SavingsListView({ data, setData }) {
   };
 
   const curMonth = getCurrentMonthStr();
-  const today    = new Date().toISOString().slice(0, 10);
+  const today    = getTodayKey();
 
   const catOptions = [...new Set(expenses.map(e => e.category))].map(cid => {
     const cat = cats.find(c => c.id === cid) || { emoji: '💡', label: cid };
@@ -10646,7 +10795,9 @@ function SavingsListView({ data, setData }) {
     { col: 'months',     label: 'Месяцев',     cls: 'text-right' },
   ];
 
-  const totalBalance = sorted.reduce((s, e) => s + getItemBalance(e).balance, 0);
+  // Account balance = net of ALL transactions (incl. archived items), so the
+  // card always matches the ДДС totals — one denominator, not two.
+  const totalBalance = transactions.reduce((s, t) => s + (t.type === 'income' ? 1 : -1) * (t.amount || 0), 0);
   const totalTarget = sorted.reduce((s, e) => s + (e.amount || 0), 0);
 
   return (
@@ -10757,9 +10908,10 @@ function SavingsListView({ data, setData }) {
                             <button onClick={() => addTransaction(e.id, 'income', monthly, today)}
                               title={`Записать доход ${formatRub(monthly)} ₽ (план/мес) на ${today}`}
                               className="p-1.5 rounded-lg hover:bg-green-50 text-green-500 hover:text-green-700 font-bold text-base leading-none">+</button>
-                            <button onClick={() => addTransaction(e.id, 'expense', e.amount || 0, today)}
-                              title={`Записать расход ${formatRub(e.amount || 0)} ₽ (вся сумма) на ${today}`}
-                              className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 hover:text-red-600 font-bold text-base leading-none">−</button>
+                            <button onClick={() => { if (bal.balance > 0) addTransaction(e.id, 'expense', bal.balance, today); }}
+                              disabled={bal.balance <= 0}
+                              title={bal.balance > 0 ? `Записать расход ${formatRub(bal.balance)} ₽ (всё накопленное) на ${today}` : 'Нечего списывать — баланс 0'}
+                              className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 hover:text-red-600 font-bold text-base leading-none disabled:opacity-30 disabled:cursor-not-allowed">−</button>
                             <button onClick={() => setEditing(e)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать"><Icon name="edit" size={14} /></button>
                             <button onClick={() => toggleArchive(e.id)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="В архив"><Icon name="archive" size={14} /></button>
                           </div>
@@ -10820,7 +10972,7 @@ function SavingsListView({ data, setData }) {
         </div>
       )}
 
-      {editing && <BudgetExpenseModal expense={editing} cats={cats} onSave={save} onClose={() => setEditing(null)} />}
+      {editing && <BudgetExpenseModal expense={editing} cats={cats} balance={getItemBalance(editing).balance} onSave={save} onClose={() => setEditing(null)} />}
       {showSettings && (
         <BudgetCategoriesModal
           title="Категории накоплений"
@@ -10843,12 +10995,14 @@ function SavingsDDSView({ data, setData }) {
   const [filterAnchor, setFilterAnchor] = useState(null);
   const [filters, setFilters] = useState({});
 
-  const expenses = (data.budgetExpenses || []).filter(e => !e.archived);
+  const allExpenses = data.budgetExpenses || [];
+  const expenses = allExpenses.filter(e => !e.archived);
   const transactions = data.savingsTransactions || [];
 
   const getExpName = (id) => {
-    const e = expenses.find(x => x.id === id);
-    return e ? e.name : '(удалено)';
+    // Resolve against the FULL list — an archived goal is not "(удалено)"
+    const e = allExpenses.find(x => x.id === id);
+    return e ? (e.archived ? `${e.name} (в архиве)` : e.name) : '(удалено)';
   };
 
   const formatDate = (d) => {
@@ -10926,6 +11080,7 @@ function SavingsDDSView({ data, setData }) {
     setData(d => ({
       ...d,
       savingsTransactions: (d.savingsTransactions || []).filter(t => t.id !== id),
+      deletedIds: withDeletedId(d, 'savingsTransactions', id),
     }));
   };
 
@@ -11065,7 +11220,7 @@ function SavingsDDSView({ data, setData }) {
 }
 
 function SavingsTransactionModal({ expenses, transactions = [], preselectedId, preselectedType, onSave, onClose }) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getTodayKey();
   const [expenseId, setExpenseId] = useState(preselectedId || (expenses[0]?.id || ''));
   const [type, setType] = useState(preselectedType || 'income');
   const [amount, setAmount] = useState('');
@@ -11130,12 +11285,16 @@ function SavingsTransactionModal({ expenses, transactions = [], preselectedId, p
   );
 }
 
-function BudgetExpenseModal({ expense, cats, onSave, onClose }) {
+function BudgetExpenseModal({ expense, cats, balance = 0, onSave, onClose }) {
   const [form, setForm] = useState({ ...expense });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   const months  = form.startDate && form.targetDate ? monthsBetweenStr(form.startDate, form.targetDate) : 0;
-  const monthly = months > 0 && form.amount > 0 ? Math.ceil(Number(form.amount) / months) : 0;
+  // Same formula as the list/plan: (remaining − already saved) / months left
+  // from the current month — so the preview matches what shows after saving.
+  const monthly = (form.targetDate && Number(form.amount) > 0)
+    ? calcMonthly({ ...form, amount: Number(form.amount) }, balance)
+    : 0;
 
   const submit = () => {
     if (!form.name.trim()) return;
@@ -11320,7 +11479,7 @@ function BudgetRecurringView({ data, setData }) {
 
   const remove = (id) => {
     if (!confirm('Удалить платёж?')) return;
-    setData(d => ({ ...d, budgetRecurring: (d.budgetRecurring || []).filter(r => r.id !== id) }));
+    setData(d => ({ ...d, budgetRecurring: (d.budgetRecurring || []).filter(r => r.id !== id), deletedIds: withDeletedId(d, 'budgetRecurring', id) }));
   };
 
   const newItem = () => setEditing({
@@ -11525,7 +11684,7 @@ function BudgetDebtsView({ data, setData }) {
 
   const remove = (id) => {
     if (!confirm('Удалить долг?')) return;
-    setData(d => ({ ...d, budgetDebts: (d.budgetDebts || []).filter(x => x.id !== id) }));
+    setData(d => ({ ...d, budgetDebts: (d.budgetDebts || []).filter(x => x.id !== id), deletedIds: withDeletedId(d, 'budgetDebts', id) }));
   };
 
   const toggleClosed = (id) => {
@@ -11545,7 +11704,7 @@ function BudgetDebtsView({ data, setData }) {
     const [y, m, dd] = s.split('-');
     return `${dd}.${m}.${y}`;
   };
-  const isOverdue = (d) => d.returnDate && !d.closed && d.returnDate < new Date().toISOString().slice(0, 10);
+  const isOverdue = (d) => d.returnDate && !d.closed && d.returnDate < getTodayKey();
 
   const DebtRow = ({ d }) => (
     <tr className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${d.closed ? 'opacity-50' : ''}`}>
@@ -11771,7 +11930,7 @@ function BudgetSupplementsView({ data, setData }) {
         newAssign[m] = (newAssign[m] || []).map(x => typeof x === 'string' ? { id: x, qty: 1 } : x).filter(x => x.id !== id);
         if (newAssign[m].length === 0) delete newAssign[m];
       });
-      return { ...d, budgetSupplements: (d.budgetSupplements || []).filter(s => s.id !== id), budgetSupplementAssignments: newAssign };
+      return { ...d, budgetSupplements: (d.budgetSupplements || []).filter(s => s.id !== id), budgetSupplementAssignments: newAssign, deletedIds: withDeletedId(d, 'budgetSupplements', id) };
     });
   };
 
@@ -11781,7 +11940,10 @@ function BudgetSupplementsView({ data, setData }) {
   });
 
   const toggleSelect = (id) => setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
-  const selectAll = () => setSelected(items.length === selected.length ? [] : items.map(i => i.id));
+  // Operates on the VISIBLE (filtered+sorted) rows so the header checkbox and
+  // the selection always agree when a filter is active. `sorted` is defined
+  // below; the closure resolves it at click time.
+  const selectAll = () => setSelected(sorted.length === selected.length ? [] : sorted.map(i => i.id));
 
   const assignToMonth = (month, quantities) => {
     setData(d => {
@@ -12306,9 +12468,9 @@ function BudgetSupplementAssignModal({ selectedItems, onAssign, onClose }) {
 
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-0 bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden">
-            <button onClick={() => setSelYear(y => y - 1)} className="px-3 py-2 text-[var(--text-muted)] hover:text-[var(--text)] text-base leading-none">‹</button>
+            <button onClick={() => { setSelYear(y => y - 1); setSelMonth(m => m ? `${selYear - 1}-${m.split('-')[1]}` : m); }} className="px-3 py-2 text-[var(--text-muted)] hover:text-[var(--text)] text-base leading-none">‹</button>
             <span className="px-3 py-2 text-sm font-semibold min-w-[56px] text-center">{selYear}</span>
-            <button onClick={() => setSelYear(y => y + 1)} className="px-3 py-2 text-[var(--text-muted)] hover:text-[var(--text)] text-base leading-none">›</button>
+            <button onClick={() => { setSelYear(y => y + 1); setSelMonth(m => m ? `${selYear + 1}-${m.split('-')[1]}` : m); }} className="px-3 py-2 text-[var(--text-muted)] hover:text-[var(--text)] text-base leading-none">›</button>
           </div>
         </div>
 
