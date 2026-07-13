@@ -654,7 +654,16 @@ def merge_app_data(local: dict, server: dict, mode: str = "pull") -> dict:
             merged[key] = s
         else:
             prefer_local = _prefer_local_for_key(key, mode)
-            if key in DATE_LOG_KEYS and (isinstance(l, list) or isinstance(s, list)):
+            if key == "kanban" and _is_plain_object(l) and _is_plain_object(s):
+                # Mirror of the JS rule: the board object merges per-key, but its
+                # columns merge AS ID-RECORDS (newest updatedAt wins per column) —
+                # otherwise one device's board wholesale-clobbered the other's.
+                base = {**s, **l} if prefer_local else {**l, **s}
+                base["columns"] = _merge_id_arrays(
+                    l.get("columns") or [], s.get("columns") or [],
+                    prefer_local, merged_deleted_ids.get("kanbanColumns"))
+                merged[key] = base
+            elif key in DATE_LOG_KEYS and (isinstance(l, list) or isinstance(s, list)):
                 merged[key] = _merge_date_log_entries(l, s, prefer_local, merged_deleted_ids.get(key))
             elif isinstance(l, list) or isinstance(s, list):
                 merged[key] = _merge_id_arrays(l, s, prefer_local, merged_deleted_ids.get(key))

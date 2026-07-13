@@ -618,7 +618,14 @@ const mergeAppData = (local, server, mode = 'pull') => {
     if (s === undefined) { merged[key] = l; continue; }
     if (l === undefined) { merged[key] = s; continue; }
     const preferLocal = preferLocalForKey(key, mode);
-    if (DATE_LOG_KEYS.has(key) && (Array.isArray(l) || Array.isArray(s))) {
+    if (key === 'kanban' && isPlainObject(l) && isPlainObject(s)) {
+      // Доска задач — один объект, но её колонки должны сливаться КАК ЗАПИСИ
+      // (по id, «новее — побеждает»). Слияние объекта целиком означало, что
+      // локальная доска всегда затирала изменения с другого устройства.
+      const base = preferLocal ? { ...s, ...l } : { ...l, ...s };
+      base.columns = mergeIdArrays(l.columns || [], s.columns || [], preferLocal, mergedDeletedIds['kanbanColumns']);
+      merged[key] = base;
+    } else if (DATE_LOG_KEYS.has(key) && (Array.isArray(l) || Array.isArray(s))) {
       merged[key] = mergeDateLogEntries(l, s, preferLocal, mergedDeletedIds[key]);
     } else if (Array.isArray(l) || Array.isArray(s)) {
       merged[key] = mergeIdArrays(l, s, preferLocal, mergedDeletedIds[key]);
@@ -5393,7 +5400,19 @@ const PRIORITY_ORDER = { high: 0, medium: 1, low: 2, none: 3 };
 
 function KanbanView({ data, setData }) {
   const columns = data.kanban?.columns || DEFAULT_KANBAN_COLUMNS;
-  const setColumns = (cols) => setData(d => ({ ...d, kanban: { ...d.kanban, columns: cols } }));
+  // Каждая изменившаяся колонка получает свежий updatedAt: kanban.columns
+  // сливаются между устройствами по принципу «новее — побеждает» на уровне
+  // колонки. Без штампа отметка задачи на одном устройстве никогда не
+  // показывалась на другом (каждое устройство держало свою копию доски).
+  const setColumns = (cols) => setData(d => {
+    const prevCols = new Map(((d.kanban && d.kanban.columns) || DEFAULT_KANBAN_COLUMNS).map(c => [c.id, c]));
+    const norm = (c) => JSON.stringify({ ...c, updatedAt: 0 });
+    const stamped = cols.map(c => {
+      const prev = prevCols.get(c.id);
+      return (prev && norm(prev) === norm(c)) ? c : { ...c, updatedAt: Date.now() };
+    });
+    return { ...d, kanban: { ...d.kanban, columns: stamped } };
+  });
 
   const [editingTask, setEditingTask] = useState(null); // { task, colId }
   const [editingCol, setEditingCol] = useState(null);   // column object or 'new'
@@ -5434,7 +5453,11 @@ function KanbanView({ data, setData }) {
   };
   const deleteColumn = (id) => {
     if (!confirm('Удалить колонку со всеми задачами?')) return;
-    setColumns(columns.filter(c => c.id !== id));
+    setData(d => ({
+      ...d,
+      kanban: { ...d.kanban, columns: (d.kanban?.columns || DEFAULT_KANBAN_COLUMNS).filter(c => c.id !== id) },
+      deletedIds: withDeletedId(d, 'kanbanColumns', id),
+    }));
   };
   const moveColumn = (id, dir) => {
     const idx = columns.findIndex(c => c.id === id);
