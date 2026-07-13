@@ -139,7 +139,7 @@ def subscriber_name(subs: dict, chat_id) -> str:
 # sync with NOTIFICATION_CATEGORIES in index (9).html — a subscriber with no
 # entry in data.settings.notifyRouting receives every category (default-on,
 # so nobody currently relying on notifications silently loses them).
-NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "backup"}
+NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "tasks", "backup"}
 
 
 def recipients_for(app_data: dict, subs: dict, category: str) -> list:
@@ -612,21 +612,22 @@ def _merge_date_log_entries(local_arr, server_arr, prefer_local: bool, deleted_f
 
     local = [x for x in ((_norm(e) for e in (local_arr or []))) if x]
     server = [x for x in ((_norm(e) for e in (server_arr or []))) if x]
-    server_by_date = {e["date"]: e for e in server}
 
-    if prefer_local:
-        result = []
-        for entry in local:
-            srv = server_by_date.get(entry["date"])
-            result.append(_combine(srv, entry) if srv else entry)
-    else:
-        by_date: dict[str, dict] = {}
-        for e in local:
-            by_date[e["date"]] = dict(e)
-        for e in server:
-            prev = by_date.get(e["date"])
-            by_date[e["date"]] = _combine(prev, e) if prev else dict(e)
-        result = list(by_date.values())
+    # UNION by date in both modes: an entry present on only one side is kept
+    # (e.g. a bot answer written seconds ago that the pushing client hasn't
+    # pulled yet). Deletions are enforced exclusively by date-tombstones, so
+    # "missing from the preferred list" no longer implies "deleted". On a
+    # same-date conflict `_combine` gives the strictly newer updatedAt the
+    # win; with no timestamps the preferred side's entry wins.
+    first = server if prefer_local else local
+    second = local if prefer_local else server
+    by_date: dict[str, dict] = {}
+    for e in first:
+        by_date[e["date"]] = dict(e)
+    for e in second:
+        prev = by_date.get(e["date"])
+        by_date[e["date"]] = _combine(prev, e) if prev else dict(e)
+    result = list(by_date.values())
 
     if deleted_for_key:
         result = [e for e in result if str(e.get("date")) not in deleted_for_key]
@@ -668,7 +669,16 @@ def merge_app_data(local: dict, server: dict, mode: str = "pull") -> dict:
             elif isinstance(l, list) or isinstance(s, list):
                 merged[key] = _merge_id_arrays(l, s, prefer_local, merged_deleted_ids.get(key))
             elif _is_plain_object(l) and _is_plain_object(s):
-                merged[key] = {**s, **l} if prefer_local else {**l, **s}
+                # Mirror of the JS rule: a plain object carrying an updatedAt
+                # stamp (dietReminder, dailyChecklistReminder, settings…) merges
+                # newest-wins WHOLESALE — otherwise a device holding a stale
+                # copy forever clobbered a freshly changed reminder time.
+                l_ts = l.get("updatedAt") if isinstance(l.get("updatedAt"), (int, float)) else None
+                s_ts = s.get("updatedAt") if isinstance(s.get("updatedAt"), (int, float)) else None
+                if l_ts is not None or s_ts is not None:
+                    merged[key] = s if (s_ts is not None and (l_ts is None or s_ts > l_ts)) else l
+                else:
+                    merged[key] = {**s, **l} if prefer_local else {**l, **s}
             else:
                 merged[key] = l if prefer_local else s
     return merged
@@ -1019,6 +1029,31 @@ def _tick():
     except Exception as e:
         print(f"[{now_str} MSK] debts reminder error: {e}")
 
+    # ── Kanban tasks: one-off reminder at notifyDate + notifyTime (MSK) ────
+    try:
+        kanban_columns = (app_data_raw.get("kanban") or {}).get("columns") or []
+        for col in kanban_columns:
+            for task in (col.get("tasks") or []):
+                if not task.get("notify") or task.get("closed"):
+                    continue
+                if task.get("notifyDate", "") != today_iso:
+                    continue
+                if task.get("notifyTime", "") != now_str:
+                    continue
+                if _already_fired("task", task.get("id") or task.get("title"), today_iso, now_str):
+                    continue
+                title = task.get("title", "Задача")
+                text = f"📋 <b>Задача — напоминание</b>\n\n{title}"
+                due = task.get("dueDate", "")
+                if due:
+                    text += f"\n<i>Дедлайн: {human_date(due)}</i>"
+                recipients = recipients_for(app_data_raw, subs, "tasks")
+                print(f"[{now_str} MSK] → task: {title} ({len(recipients)} subscriber(s))")
+                for cid in recipients:
+                    send_message(token, cid, text)
+    except Exception as e:
+        print(f"[{now_str} MSK] tasks reminder error: {e}")
+
     # ── Diet compliance: recurring «Как ты кушал сегодня?» ────────────────
     try:
         reminder = app_data_raw.get("dietReminder") or {}
@@ -1323,7 +1358,13 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 incoming = json.loads(body)
                 with APP_DATA_LOCK:
                     existing = load_app_data() if APP_DATA_FILE.exists() else {}
-                    merged = merge_app_data(existing, incoming, mode="push")
+                    # ARG ORDER MATTERS: the first («local», preferred) side must
+                    # be the INCOMING payload — the client already merged before
+                    # pushing, so its snapshot is the fresh one. Passing the file
+                    # first made the server prefer its own stale copy for every
+                    # plain-object key: changed reminder times (checklist etc.)
+                    # were silently discarded on arrival, forever.
+                    merged = merge_app_data(incoming, existing, mode="push")
                     save_app_data(merged)
                 self._json(200, {"ok": True})
             except Exception as e:

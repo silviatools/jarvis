@@ -209,6 +209,7 @@ const NOTIFICATION_CATEGORIES = [
   { id: 'debts',     label: 'Долги' },
   { id: 'diet',      label: 'Питание' },
   { id: 'checklist', label: 'Чек-лист' },
+  { id: 'tasks',     label: 'Задачи' },
   { id: 'backup',    label: 'Бэкапы' },
 ];
 
@@ -581,25 +582,21 @@ const mergeDateLogEntries = (localArr, serverArr, preferLocal, deletedForKey) =>
 
   const local = (Array.isArray(localArr) ? localArr : []).filter(e => e?.date).map(norm);
   const server = (Array.isArray(serverArr) ? serverArr : []).filter(e => e?.date).map(norm);
-  const serverByDate = new Map(server.map(e => [e.date, e]));
 
-  let result;
-  if (preferLocal) {
-    // push: локальный список дат — источник правды (удаления сохраняются)
-    result = local.map(localEntry => {
-      const srv = serverByDate.get(localEntry.date);
-      return srv ? combine(srv, localEntry) : localEntry;
-    });
-  } else {
-    // pull: сервер/бот побеждает, но новые дни с бота добавляются
-    const byDate = new Map();
-    local.forEach(e => byDate.set(e.date, { ...e }));
-    server.forEach(e => {
-      const prev = byDate.get(e.date);
-      byDate.set(e.date, prev ? combine(prev, e) : { ...e });
-    });
-    result = [...byDate.values()];
-  }
+  // ОБЪЕДИНЕНИЕ по датам в обоих режимах: запись, известная только одной
+  // стороне, сохраняется (например, ответ бота, который клиент ещё не успел
+  // подтянуть). Удаления обеспечиваются исключительно date-tombstone-ами.
+  // При конфликте одной даты в combine побеждает строго более свежий
+  // updatedAt; без штампов — запись предпочитаемой стороны.
+  const first = preferLocal ? server : local;
+  const second = preferLocal ? local : server;
+  const byDate = new Map();
+  first.forEach(e => byDate.set(e.date, { ...e }));
+  second.forEach(e => {
+    const prev = byDate.get(e.date);
+    byDate.set(e.date, prev ? combine(prev, e) : { ...e });
+  });
+  let result = [...byDate.values()];
 
   if (deletedForKey) {
     result = result.filter(e => deletedForKey[String(e.date)] === undefined);
@@ -630,7 +627,17 @@ const mergeAppData = (local, server, mode = 'pull') => {
     } else if (Array.isArray(l) || Array.isArray(s)) {
       merged[key] = mergeIdArrays(l, s, preferLocal, mergedDeletedIds[key]);
     } else if (isPlainObject(l) && isPlainObject(s)) {
-      merged[key] = preferLocal ? { ...s, ...l } : { ...l, ...s };
+      // Цельный объект со штампом updatedAt (dietReminder, checklist-reminder,
+      // settings…) сливается «новее — побеждает» ЦЕЛИКОМ. Иначе устройство со
+      // старой копией вечно затирало свежую настройку с другого устройства —
+      // время напоминания «не обновлялось», как его ни меняй.
+      const lTs = typeof l.updatedAt === 'number' ? l.updatedAt : null;
+      const sTs = typeof s.updatedAt === 'number' ? s.updatedAt : null;
+      if (lTs != null || sTs != null) {
+        merged[key] = (sTs != null && (lTs == null || sTs > lTs)) ? s : l;
+      } else {
+        merged[key] = preferLocal ? { ...s, ...l } : { ...l, ...s };
+      }
     } else {
       merged[key] = preferLocal ? l : s;
     }
@@ -3056,7 +3063,7 @@ function GeneralSettings({ data, setData }) {
   const updateSetting = (key, value) => {
     setData(d => ({
       ...d,
-      settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), [key]: value },
+      settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), [key]: value, updatedAt: Date.now() },
     }));
   };
 
@@ -3213,6 +3220,7 @@ function BackupSettings({ data, setData }) {
         ...(d.settings || {}).backupReminder || { enabled: false, frequency: 'weekly', time: '03:00', dayOfWeek: 0, dayOfMonth: 1 },
         ...patch,
       },
+      updatedAt: Date.now(),
     },
   }));
 
@@ -3351,7 +3359,7 @@ function NotifyRoutingSettings({ data, setData }) {
       const idx = current.indexOf(catId);
       if (idx >= 0) current.splice(idx, 1); else current.push(catId);
       r[chatId] = current;
-      return { ...d, settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), notifyRouting: r } };
+      return { ...d, settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), notifyRouting: r, updatedAt: Date.now() } };
     });
   };
 
@@ -3409,7 +3417,7 @@ function VoiceAssistantSettings({ data, setData }) {
   const updateSetting = (key, value) => {
     setData(d => ({
       ...d,
-      settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), [key]: value },
+      settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), [key]: value, updatedAt: Date.now() },
     }));
   };
 
@@ -5307,7 +5315,7 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
 
   const submit = () => {
     if (!f.title.trim()) return alert('Введите заголовок задачи');
-    onSave(f, moveTo);
+    onSave({ ...f, notify: !!(f.notify && f.notifyDate), notifyTime: f.notifyTime || '12:00' }, moveTo);
   };
 
   const pri = KANBAN_PRIORITIES.find(p => p.id === f.priority) || KANBAN_PRIORITIES[0];
@@ -5321,6 +5329,25 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
         <div className="flex gap-3">
           <div className="flex-1"><label>Дата начала</label><input type="date" value={f.startDate || ''} onChange={e => set('startDate', e.target.value)} /></div>
           <div className="flex-1"><label>Дедлайн</label><input type="date" value={f.dueDate || ''} onChange={e => set('dueDate', e.target.value)} /></div>
+        </div>
+
+        <div className="border border-[var(--border)] rounded-xl p-3 space-y-3">
+          <label className="flex items-center gap-2 cursor-pointer !mb-0">
+            <input type="checkbox" className="!w-auto" checked={!!f.notify} onChange={e => set('notify', e.target.checked)} />
+            <span className="text-sm font-medium">Напоминание в Telegram</span>
+          </label>
+          {f.notify && (
+            <div className="flex gap-2 fade-in">
+              <div className="flex-1">
+                <label>Дата</label>
+                <input type="date" value={f.notifyDate || ''} onChange={e => set('notifyDate', e.target.value)} />
+              </div>
+              <div className="w-28">
+                <label>Время</label>
+                <MskTimeInput value={f.notifyTime || '12:00'} onChange={t => set('notifyTime', t)} />
+              </div>
+            </div>
+          )}
         </div>
 
         <div>
@@ -8638,7 +8665,7 @@ function BodyFieldsSettings({ data, setData }) {
   const available = [...DEFAULT_BODY_FIELDS, ...PRESET_BODY_FIELDS].filter(p => !fields.find(f => f.id === p.id));
 
   const reminder = data.dietReminder || { enabled: false, time: '20:00', days: [0,1,2,3,4,5,6] };
-  const setReminder = (patch) => setData(d => ({ ...d, dietReminder: { ...(d.dietReminder || { enabled: false, time: '20:00', days: [0,1,2,3,4,5,6] }), ...patch } }));
+  const setReminder = (patch) => setData(d => ({ ...d, dietReminder: { ...(d.dietReminder || { enabled: false, time: '20:00', days: [0,1,2,3,4,5,6] }), ...patch, updatedAt: Date.now() } }));
   const toggleDietDay = (dayId) => {
     const cur = reminder.days || [];
     setReminder({ days: cur.includes(dayId) ? cur.filter(x => x !== dayId) : [...cur, dayId].sort() });
@@ -8647,7 +8674,7 @@ function BodyFieldsSettings({ data, setData }) {
   const checklistReminder = data.dailyChecklistReminder || { enabled: false, time: '21:00', days: [0,1,2,3,4,5,6] };
   const setChecklistReminder = (patch) => setData(d => ({
     ...d,
-    dailyChecklistReminder: { ...(d.dailyChecklistReminder || { enabled: false, time: '21:00', days: [0,1,2,3,4,5,6] }), ...patch },
+    dailyChecklistReminder: { ...(d.dailyChecklistReminder || { enabled: false, time: '21:00', days: [0,1,2,3,4,5,6] }), ...patch, updatedAt: Date.now() },
   }));
   const toggleChecklistDay = (dayId) => {
     const cur = checklistReminder.days || [];
