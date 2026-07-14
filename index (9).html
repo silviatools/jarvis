@@ -1685,15 +1685,22 @@ const formatMealItem = (item) => item.amount ? `${item.product} ${item.amount}` 
 function MealPlanView({ data, setData }) {
   const [expanded, setExpanded] = useState(null);
   const meals = (data.meals || []).filter(m => !m.archived).map(normalizeMeal);
-  const starredIds = data.starredMealIds || [];
+  // Избранное живёт в staredMeals = { ids, updatedAt }: штампованный объект
+  // сливается «новее — побеждает» целиком, поэтому СНЯТИЕ звёздочки реально
+  // сохраняется. Старый формат (простой массив starredMealIds) при слиянии
+  // объединялся — сервер возвращал снятую звёздочку через секунды.
+  // Fallback на старый ключ — миграция при первом же клике.
+  const starredIds = data.starredMeals?.ids || data.starredMealIds || [];
 
   const toggleStar = (e, mealId) => {
     e.stopPropagation();
     setData(d => {
-      const ids = d.starredMealIds || [];
+      const ids = d.starredMeals?.ids || d.starredMealIds || [];
+      const next = ids.includes(mealId) ? ids.filter(id => id !== mealId) : [mealId, ...ids];
       return {
         ...d,
-        starredMealIds: ids.includes(mealId) ? ids.filter(id => id !== mealId) : [mealId, ...ids],
+        starredMeals: { ids: next, updatedAt: Date.now() },
+        starredMealIds: [], // очищаем legacy-ключ, чтобы union-слияние его не воскрешало
       };
     });
   };
