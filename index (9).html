@@ -1225,7 +1225,7 @@ function App() {
     <div className="min-h-screen pb-24 md:pb-8">
       <Header tab={tab} setTab={setTab} />
       {tab === 'english' ? (
-        <EngErrorBoundary><EnglishView /></EngErrorBoundary>
+        <EngErrorBoundary><EnglishView data={data} setData={setData} /></EngErrorBoundary>
       ) : tab === 'house' ? (
         <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />
       ) : tab === 'budget' ? (
@@ -6982,19 +6982,53 @@ function TypingTab({rawData,ai}){
   );
 }
 
-function EnglishView(){
-  const [cfg,setCfg]=useState(()=>({apiKey:localStorage.getItem('eng_api_key')||'',clientId:localStorage.getItem('eng_client_id')||'',sheetId:localStorage.getItem('eng_sheet_id')||'13njpnDojuZKWO5xOXm7WBPcnTIhkm0-Wt60SdjqDUns',sheetName:localStorage.getItem('eng_sheet_name')||'words b3 anki'}));
-  const [ai,setAi]=useState(()=>({provider:localStorage.getItem('ai_provider')||'anthropic',anthropicKey:localStorage.getItem('ai_anthropic_key')||'',anthropicModel:localStorage.getItem('ai_anthropic_model')||'claude-sonnet-4-6',openaiKey:localStorage.getItem('ai_openai_key')||'',openaiModel:localStorage.getItem('ai_openai_model')||'gpt-4o-mini',ollamaUrl:localStorage.getItem('ai_ollama_url')||'http://localhost:11434',ollamaModel:localStorage.getItem('ai_ollama_model')||'llama3'}));
-  const [rawData,setRawData]=useState(()=>JSON.parse(localStorage.getItem('eng_raw_data')||'null'));
+// Legacy-чтение настроек English из localStorage (так они хранились раньше —
+// на каждом устройстве отдельно, и Safari стирал их через ~7 дней простоя).
+const engLegacyCfg = () => ({
+  apiKey: localStorage.getItem('eng_api_key') || '',
+  clientId: localStorage.getItem('eng_client_id') || '',
+  sheetId: localStorage.getItem('eng_sheet_id') || '13njpnDojuZKWO5xOXm7WBPcnTIhkm0-Wt60SdjqDUns',
+  sheetName: localStorage.getItem('eng_sheet_name') || 'words b3 anki',
+});
+const engLegacyAI = () => ({
+  provider: localStorage.getItem('ai_provider') || 'anthropic',
+  anthropicKey: localStorage.getItem('ai_anthropic_key') || '',
+  anthropicModel: localStorage.getItem('ai_anthropic_model') || 'claude-sonnet-4-6',
+  openaiKey: localStorage.getItem('ai_openai_key') || '',
+  openaiModel: localStorage.getItem('ai_openai_model') || 'gpt-4o-mini',
+  ollamaUrl: localStorage.getItem('ai_ollama_url') || 'http://localhost:11434',
+  ollamaModel: localStorage.getItem('ai_ollama_model') || 'llama3',
+});
+
+function EnglishView({ data, setData }){
+  // Источник правды — синхронизируемая БД (data.engConfig / data.engAI), как
+  // у всех остальных настроек: переживает чистку localStorage и доступна со
+  // всех устройств. localStorage остаётся только как источник миграции.
+  const cfg = data.engConfig || engLegacyCfg();
+  const ai = data.engAI || engLegacyAI();
+  const [rawData,setRawData]=useState(()=>{try{return JSON.parse(localStorage.getItem('eng_raw_data')||'null');}catch{return null;}});
   const [loading,setLoading]=useState(false);
-  const initStatus=()=>{const d=localStorage.getItem('eng_raw_data');return d?{type:'ok',text:`${JSON.parse(d).length} слов`}:{type:'',text:'Загрузите из Google Sheets'};};
+  const initStatus=()=>{try{const d=localStorage.getItem('eng_raw_data');return d?{type:'ok',text:`${JSON.parse(d).length} слов`}:{type:'',text:'Загрузите из Google Sheets'};}catch{return{type:'',text:'Загрузите из Google Sheets'};}};
   const [status,setStatus]=useState(initStatus);
   const [engTab,setEngTab]=useState('cards');
   const [showCfg,setShowCfg]=useState(false);
   const [showAI,setShowAI]=useState(false);
 
-  const saveCfg=(c)=>{setCfg(c);localStorage.setItem('eng_api_key',c.apiKey);localStorage.setItem('eng_client_id',c.clientId);localStorage.setItem('eng_sheet_id',c.sheetId);localStorage.setItem('eng_sheet_name',c.sheetName);};
-  const saveAI=(a)=>{setAi(a);localStorage.setItem('ai_provider',a.provider);localStorage.setItem('ai_anthropic_key',a.anthropicKey);localStorage.setItem('ai_anthropic_model',a.anthropicModel);localStorage.setItem('ai_openai_key',a.openaiKey);localStorage.setItem('ai_openai_model',a.openaiModel);localStorage.setItem('ai_ollama_url',a.ollamaUrl);localStorage.setItem('ai_ollama_model',a.ollamaModel);};
+  const saveCfg=(c)=>setData(d=>({...d, engConfig:{...c, updatedAt: Date.now()}}));
+  const saveAI=(a)=>setData(d=>({...d, engAI:{...a, updatedAt: Date.now()}}));
+
+  // Разовая миграция: ключи, введённые до этого фикса, лежат только в
+  // localStorage этого браузера — переносим их в БД, чтобы больше не терялись.
+  useEffect(()=>{
+    if(!data.engConfig){
+      const legacy = engLegacyCfg();
+      if(legacy.apiKey || legacy.clientId) saveCfg(legacy);
+    }
+    if(!data.engAI){
+      const legacy = engLegacyAI();
+      if(legacy.anthropicKey || legacy.openaiKey) saveAI(legacy);
+    }
+  },[]);
 
   const loadSheets=async()=>{
     if(!cfg.apiKey){setShowCfg(true);return;}
