@@ -551,8 +551,15 @@ def _merge_id_arrays(local_arr, server_arr, prefer_local: bool, deleted_for_key:
     for e in second:
         _consider(e, True)
     if deleted_for_key:
-        for tid in deleted_for_key:
-            by_id.pop(str(tid), None)
+        # A tombstone only removes copies NOT NEWER than the deletion moment:
+        # an item re-created after its deletion (fresher updatedAt) survives —
+        # otherwise a once-deleted record could never be entered again.
+        for tid, del_ts in deleted_for_key.items():
+            item = by_id.get(str(tid))
+            if item is not None:
+                ts = item.get("updatedAt")
+                if not (isinstance(ts, (int, float)) and ts > (del_ts or 0)):
+                    by_id.pop(str(tid), None)
 
     # Mirror of the JS ordering rule: user-arranged order (checklist fields,
     # body fields) follows the side edited most recently; ties → `la`.
@@ -630,7 +637,15 @@ def _merge_date_log_entries(local_arr, server_arr, prefer_local: bool, deleted_f
     result = list(by_date.values())
 
     if deleted_for_key:
-        result = [e for e in result if str(e.get("date")) not in deleted_for_key]
+        # Same rule as id-arrays: the tombstone only drops entries not newer
+        # than the deletion — a manual re-entry for a once-deleted date sticks.
+        def _survives(e):
+            del_ts = deleted_for_key.get(str(e.get("date")))
+            if del_ts is None:
+                return True
+            ts = e.get("updatedAt")
+            return isinstance(ts, (int, float)) and ts > (del_ts or 0)
+        result = [e for e in result if _survives(e)]
     return sorted(result, key=lambda e: e.get("date", ""), reverse=True)
 
 

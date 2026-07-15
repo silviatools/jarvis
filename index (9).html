@@ -539,7 +539,16 @@ const mergeIdArrays = (localArr, serverArr, preferLocal, deletedForKey) => {
   first.forEach(e => consider(e, false));
   second.forEach(e => consider(e, true));
   if (deletedForKey) {
-    Object.keys(deletedForKey).forEach(id => byId.delete(id));
+    // Tombstone — не вечная стена: он убирает только копии СТАРШЕ момента
+    // удаления. Элемент, созданный заново после удаления (updatedAt новее),
+    // выживает — иначе однажды удалённую запись невозможно было бы завести
+    // снова: синхронизация сбрасывала бы её через секунды.
+    Object.entries(deletedForKey).forEach(([id, delTs]) => {
+      const item = byId.get(id);
+      if (item && !(typeof item.updatedAt === 'number' && item.updatedAt > delTs)) {
+        byId.delete(id);
+      }
+    });
   }
 
   // ORDER matters too (checklist items, body fields are user-arranged). The
@@ -599,7 +608,14 @@ const mergeDateLogEntries = (localArr, serverArr, preferLocal, deletedForKey) =>
   let result = [...byDate.values()];
 
   if (deletedForKey) {
-    result = result.filter(e => deletedForKey[String(e.date)] === undefined);
+    // Как и для id-массивов: tombstone убирает лишь записи не новее момента
+    // удаления. Ручная запись за когда-то удалённую дату (штамп свежее)
+    // сохраняется, а не сбрасывается каждой синхронизацией.
+    result = result.filter(e => {
+      const delTs = deletedForKey[String(e.date)];
+      if (delTs === undefined) return true;
+      return typeof e.updatedAt === 'number' && e.updatedAt > delTs;
+    });
   }
   return result.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 };
@@ -4001,7 +4017,9 @@ function DailyChecklistStats({ data, setData }) {
       const list = d.dailyChecklistLog || [];
       const existing = list.find(e => e.date === selDate);
       const answers = { ...(existing?.answers || {}), [fieldId]: option };
-      const entry = { id: existing?.id || crypto.randomUUID(), date: selDate, answers };
+      // Явный updatedAt: запись за когда-то удалённую дату должна быть НОВЕЕ
+      // её tombstone-а, иначе слияние сбрасывало бы её каждой синхронизацией.
+      const entry = { id: existing?.id || crypto.randomUUID(), date: selDate, answers, updatedAt: Date.now() };
       return { ...d, dailyChecklistLog: [...list.filter(e => e.date !== selDate), entry].sort((a, b) => b.date.localeCompare(a.date)) };
     });
   };
@@ -4626,7 +4644,9 @@ function DietComplianceView({ data, setData }) {
 
   const setLevel = (level) => {
     const existing = rawLog.find(e => e.date === selDate);
-    const entry = { id: existing ? existing.id : crypto.randomUUID(), date: selDate, level };
+    // Явный updatedAt — см. setAnswer чек-листа: перекрывает tombstone
+    // когда-то удалённой даты.
+    const entry = { id: existing ? existing.id : crypto.randomUUID(), date: selDate, level, updatedAt: Date.now() };
     setData(d => {
       const list = (d.dietLog || []).filter(e => e.date !== selDate);
       return { ...d, dietLog: [...list, entry].sort((a, b) => b.date.localeCompare(a.date)) };
