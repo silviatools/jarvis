@@ -1023,8 +1023,20 @@ def _tick():
 
     # ── Debts: one-off reminder at notifyDate + notifyTime (MSK) ──────────
     try:
-        debts = app_data_raw.get("budgetDebts", [])
+        debts = list(app_data_raw.get("budgetDebts") or [])
+        # Per-user budget slices (budgetByUser) — collect debts from every user.
+        by_user = app_data_raw.get("budgetByUser") or {}
+        if isinstance(by_user, dict):
+            for slice_data in by_user.values():
+                if isinstance(slice_data, dict):
+                    debts.extend(slice_data.get("budgetDebts") or [])
+        seen_debt_ids = set()
         for debt in debts:
+            debt_id = debt.get("id")
+            if debt_id:
+                if debt_id in seen_debt_ids:
+                    continue
+                seen_debt_ids.add(debt_id)
             if not debt.get("notify") or debt.get("closed"):
                 continue
             if debt.get("notifyDate", "") != today_iso:
