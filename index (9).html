@@ -10576,7 +10576,7 @@ function BudgetStatementImportModal({ rows, fileName, data, setData, allCats, in
   const expenseCatsMapped = expenseCatsTotal - unmappedExpenseStats.length;
 
   const visibleStats = categoryStats.filter(st => {
-    if (filter === 'unmapped') return !isMapped(st.category);
+    if (filter === 'unmapped') return isExpenseCat(st) && !isMapped(st.category);
     if (filter === 'expenses') return st.expense > 0;
     if (filter === 'income') return st.income > 0 && st.expense <= 0;
     return true;
