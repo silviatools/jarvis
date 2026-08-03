@@ -9838,7 +9838,7 @@ const pluralMonths = (n) => pluralRu(n, ['месяц', 'месяца', 'меся
 function BudgetView({ data, setData }) {
   const [budgetTab, setBudgetTab] = useState('monthly');
   return (
-    <main className="max-w-5xl mx-auto px-4 sm:px-6 pt-6 md:pt-8 pb-8 fade-in">
+    <main className="w-full max-w-5xl md:w-fit md:min-w-[min(100%,64rem)] md:max-w-full mx-auto px-4 sm:px-6 pt-6 md:pt-8 pb-8 fade-in">
       <div className="mb-6 flex items-baseline justify-between gap-4">
         <div className="font-display text-2xl">Бюджет</div>
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Планирование</div>
@@ -10979,9 +10979,9 @@ function SavingsListView({ data, setData }) {
         <EmptyState title="Нет накоплений" text="Добавьте плановые накопления и получите план по месяцам" />
       ) : (
         <>
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm" style={{ minWidth: '940px' }}>
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
+            <div className="overflow-x-auto md:overflow-x-visible">
+              <table className="text-sm w-max max-w-full md:max-w-none">
                 <thead>
                   <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                     {COLS.map(({ col, label, cls }) => (
@@ -11169,10 +11169,11 @@ function SavingsDDSView({ data, setData }) {
   };
 
   const COLUMNS = [
-    { id: 'date',   label: 'Дата',   align: 'left',  getValue: t => t.date || '' },
-    { id: 'name',   label: 'Статья', align: 'left',  getValue: t => getExpName(t.expenseId) },
-    { id: 'type',   label: 'Тип',    align: 'left',  getValue: t => t.type === 'income' ? 'Доход' : 'Расход' },
-    { id: 'amount', label: 'Сумма',  align: 'right', getValue: t => t.amount || 0 },
+    { id: 'date',    label: 'Дата',        align: 'left',  getValue: t => t.date || '' },
+    { id: 'name',    label: 'Статья',      align: 'left',  getValue: t => getExpName(t.expenseId) },
+    { id: 'type',    label: 'Тип',         align: 'left',  getValue: t => t.type === 'income' ? 'Доход' : 'Расход' },
+    { id: 'amount',  label: 'Сумма',       align: 'right', getValue: t => t.amount || 0 },
+    { id: 'comment', label: 'Комментарий', align: 'left',  getValue: t => t.comment || '' },
   ];
 
   const getUniqueVals = (colId) => {
@@ -11243,9 +11244,9 @@ function SavingsDDSView({ data, setData }) {
       {transactions.length === 0 ? (
         <EmptyState title="Нет операций" text="Добавьте операцию — пополнение или списание со счёта накоплений" />
       ) : (
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm" style={{ minWidth: '520px' }}>
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
+          <div className="overflow-x-auto md:overflow-x-visible">
+            <table className="text-sm w-max max-w-full md:max-w-none">
               <thead>
                 <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                   {COLUMNS.map(col => (
@@ -11273,7 +11274,7 @@ function SavingsDDSView({ data, setData }) {
                   return (
                     <tr key={t.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${i % 2 === 1 ? 'bg-[var(--bg)]/50' : ''}`}>
                       <td className="px-3 py-2.5 whitespace-nowrap text-[var(--text-muted)]">{formatDate(t.date)}</td>
-                      <td className="px-3 py-2.5 font-medium">{getExpName(t.expenseId)}</td>
+                      <td className="px-3 py-2.5 font-medium whitespace-nowrap">{getExpName(t.expenseId)}</td>
                       <td className="px-3 py-2.5 whitespace-nowrap">
                         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${isIncome ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
                           {isIncome ? '↑ Доход' : '↓ Расход'}
@@ -11281,6 +11282,9 @@ function SavingsDDSView({ data, setData }) {
                       </td>
                       <td className={`px-3 py-2.5 text-right whitespace-nowrap font-semibold ${isIncome ? 'text-green-600' : 'text-red-500'}`}>
                         {isIncome ? '+' : '−'}{formatRub(t.amount)} ₽
+                      </td>
+                      <td className="px-3 py-2.5 text-[var(--text-subtle)] text-sm max-w-[280px]">
+                        {t.comment || '—'}
                       </td>
                       <td className="px-2 py-2.5">
                         <button onClick={() => removeTransaction(t.id)}
@@ -11335,11 +11339,13 @@ function SavingsDDSView({ data, setData }) {
         <SavingsTransactionModal
           expenses={expenses}
           transactions={transactions}
-          onSave={(expId, type, amount, date) => {
+          onSave={(expId, type, amount, date, comment) => {
             setData(d => ({
               ...d,
               savingsTransactions: [...(d.savingsTransactions || []), {
-                id: crypto.randomUUID(), expenseId: expId, type, amount, date, updatedAt: Date.now(),
+                id: crypto.randomUUID(), expenseId: expId, type, amount, date,
+                comment: (comment || '').trim(),
+                updatedAt: Date.now(),
               }],
             }));
             setShowAdd(false);
@@ -11357,6 +11363,7 @@ function SavingsTransactionModal({ expenses, transactions = [], preselectedId, p
   const [type, setType] = useState(preselectedType || 'income');
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(today);
+  const [comment, setComment] = useState('');
 
   const selectedExp = expenses.find(e => e.id === expenseId);
   const expBalance = selectedExp ? transactions.filter(t => t.expenseId === selectedExp.id).reduce((s, t) => s + (t.type === 'income' ? 1 : -1) * (t.amount || 0), 0) : 0;
@@ -11366,7 +11373,7 @@ function SavingsTransactionModal({ expenses, transactions = [], preselectedId, p
     const val = Number(amount);
     if (!val || val <= 0) return;
     if (!expenseId) return;
-    onSave(expenseId, type, val, date || today);
+    onSave(expenseId, type, val, date || today, comment);
   };
 
   return (
@@ -11404,6 +11411,10 @@ function SavingsTransactionModal({ expenses, transactions = [], preselectedId, p
         <div>
           <label>Дата</label>
           <input type="date" value={date} onChange={e => setDate(e.target.value)} />
+        </div>
+        <div>
+          <label>Комментарий <span className="text-[var(--text-subtle)] font-normal text-sm">— необязательно</span></label>
+          <textarea value={comment} onChange={e => setComment(e.target.value)} rows={2} placeholder="Например: перевод с карты, аванс..." />
         </div>
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
@@ -11682,9 +11693,9 @@ function BudgetRecurringView({ data, setData }) {
           </div>
 
           {/* Table */}
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm" style={{ minWidth: '480px' }}>
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
+            <div className="overflow-x-auto md:overflow-x-visible">
+              <table className="text-sm w-max max-w-full md:max-w-none">
                 <thead>
                   <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                     {[
@@ -11884,9 +11895,9 @@ function BudgetDebtsView({ data, setData }) {
           </div>
 
           {active.length > 0 && (
-            <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm" style={{ minWidth: '720px' }}>
+            <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
+              <div className="overflow-x-auto md:overflow-x-visible">
+                <table className="text-sm w-max max-w-full md:max-w-none">
                   <thead>
                     <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                       {headCells.map(h => (
@@ -11915,9 +11926,9 @@ function BudgetDebtsView({ data, setData }) {
                 Закрытые ({closed.length})
               </button>
               {showClosed && (
-                <div className="mt-3 bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm" style={{ minWidth: '720px' }}>
+                <div className="mt-3 bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
+                  <div className="overflow-x-auto md:overflow-x-visible">
+                    <table className="text-sm w-max max-w-full md:max-w-none">
                       <thead>
                         <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                           {headCells.map(h => (
@@ -12218,9 +12229,9 @@ function BudgetSupplementsView({ data, setData }) {
       {!items.length ? (
         <EmptyState title="Нет добавок" text="Добавьте БАДы или спортивное питание — укажите количество, дозировку и стоимость" />
       ) : (
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm" style={{ minWidth: '640px' }}>
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
+          <div className="overflow-x-auto md:overflow-x-visible">
+            <table className="text-sm w-max max-w-full md:max-w-none">
               <thead>
                 <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                   <th className="px-3 py-3 w-10">
