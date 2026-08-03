@@ -9976,7 +9976,8 @@ const getDebtRemaining = (debt, transactions) =>
   Math.max(getDebtEffectiveAmount(debt, transactions) - getDebtPaid(debt, transactions), 0);
 
 const calcDebtMonthly = (debt, transactions, _asOfMonth) => {
-  if (!debt || debt.closed || !debt.startDate || !debt.targetDate) return 0;
+  // Closed debts still keep their schedule in «По месяцу».
+  if (!debt || !debt.startDate || !debt.targetDate) return 0;
   const effective = getDebtEffectiveAmount(debt, transactions);
   return calcMonthly({ ...debt, amount: effective });
 };
@@ -10401,7 +10402,7 @@ function BudgetMonthlyView({ data, setData }) {
   const activeRec    = (data.budgetRecurring || []).filter(r => !r.archived);
   const savTx        = data.savingsTransactions || [];
   const debtTx       = data.debtTransactions || [];
-  const activeDebts  = (data.budgetDebts || []).filter(d => !d.closed && d.startDate && d.targetDate);
+  const planDebts    = (data.budgetDebts || []).filter(d => d.startDate && d.targetDate);
 
   const monthKey = (dateStr) => (dateStr || '').slice(0, 7);
 
@@ -10463,10 +10464,12 @@ function BudgetMonthlyView({ data, setData }) {
                  getAutoFact: (m) => getExpCatFact(cid, m) };
       }),
     } : null,
-    activeDebts.length > 0 ? {
+    planDebts.length > 0 ? {
       id: '__debts', emoji: '💳', label: 'Долги', isAuto: true, autoColor: 'rose',
-      items: activeDebts.map(d => ({
-        id: `__debt_${d.id}`, emoji: '💳', label: d.debtor || 'Долг', isAuto: true,
+      items: planDebts.map(d => ({
+        id: `__debt_${d.id}`, emoji: '💳',
+        label: d.closed ? `${d.debtor || 'Долг'} (закрыт)` : (d.debtor || 'Долг'),
+        isAuto: true,
         getAutoVal: (m) => getDebtVal(d, m),
         getAutoFact: (m) => (d.startDate <= m && d.targetDate >= m) ? getDebtFact(d.id, m) : 0,
       })),
