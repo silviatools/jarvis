@@ -310,6 +310,7 @@ const DEFAULT_DATA = () => ({
   savingsCorrections: [],
   savingsTransactions: [],
   budgetDebts: [],
+  debtTransactions: [],
   bodyModes: [],
   activeBodyModeId: null,
   bodyProgressStartDate: '',
@@ -9821,6 +9822,34 @@ const calcMonthly = (exp, balance, asOfMonth) => {
   return Math.ceil(remaining / mLeft);
 };
 
+// Debt payments: payment reduces remaining; increase adds to principal
+// (внеплановое пополнение суммы долга). Remaining drives /мес and «По месяцу».
+const getDebtTxTotals = (debtId, transactions) => {
+  let paid = 0, increased = 0;
+  (transactions || []).forEach(t => {
+    if (t.debtId !== debtId) return;
+    if (t.type === 'increase') increased += t.amount || 0;
+    else paid += t.amount || 0;
+  });
+  return { paid, increased };
+};
+
+const getDebtEffectiveAmount = (debt, transactions) =>
+  (debt.amount || 0) + getDebtTxTotals(debt.id, transactions).increased;
+
+const getDebtPaid = (debt, transactions) =>
+  getDebtTxTotals(debt.id, transactions).paid;
+
+const getDebtRemaining = (debt, transactions) =>
+  Math.max(getDebtEffectiveAmount(debt, transactions) - getDebtPaid(debt, transactions), 0);
+
+const calcDebtMonthly = (debt, transactions, asOfMonth) => {
+  if (!debt || debt.closed || !debt.startDate || !debt.targetDate) return 0;
+  const paid = getDebtPaid(debt, transactions);
+  const effective = getDebtEffectiveAmount(debt, transactions);
+  return calcMonthly({ ...debt, amount: effective }, paid, asOfMonth);
+};
+
 const formatRub = (n) => {
   if (n == null || n === '') return '—';
   return new Intl.NumberFormat('ru-RU').format(Math.round(n));
@@ -9909,6 +9938,8 @@ function BudgetMonthlyView({ data, setData }) {
   const activeExp    = (data.budgetExpenses  || []).filter(e => !e.archived);
   const activeRec    = (data.budgetRecurring || []).filter(r => !r.archived);
   const savTx        = data.savingsTransactions || [];
+  const debtTx       = data.debtTransactions || [];
+  const activeDebts  = (data.budgetDebts || []).filter(d => !d.closed && d.startDate && d.targetDate);
 
   const getExpBalance = (exp) => {
     let b = 0;
@@ -9928,10 +9959,15 @@ function BudgetMonthlyView({ data, setData }) {
   const getRecCatVal = (catId) =>
     activeRec.filter(r => r.category === catId).reduce((s, r) => s + (r.amount || 0), 0);
 
+  const getDebtVal = (debt, month) =>
+    (debt.startDate <= month && debt.targetDate >= month)
+      ? calcDebtMonthly(debt, debtTx, month)
+      : 0;
+
   const usedExpCatIds = [...new Set(activeExp.map(e => e.category))];
   const usedRecCatIds = [...new Set(activeRec.map(r => r.category))];
 
-  // Order: Постоянные first, Накопления second (appended after user cats)
+  // Order: Постоянные, Накопления, Долги, Спортпит (appended after user cats)
   const autoCategories = [
     usedRecCatIds.length > 0 ? {
       id: '__recurring', emoji: '🔄', label: 'Постоянные', isAuto: true, autoColor: 'emerald',
@@ -9948,6 +9984,13 @@ function BudgetMonthlyView({ data, setData }) {
         return { id: `__sav_${cid}`, emoji: c.emoji, label: c.label, isAuto: true,
                  getAutoVal: (m) => getExpCatVal(cid, m) };
       }),
+    } : null,
+    activeDebts.length > 0 ? {
+      id: '__debts', emoji: '💳', label: 'Долги', isAuto: true, autoColor: 'rose',
+      items: activeDebts.map(d => ({
+        id: `__debt_${d.id}`, emoji: '💳', label: d.debtor || 'Долг', isAuto: true,
+        getAutoVal: (m) => getDebtVal(d, m),
+      })),
     } : null,
     (() => {
       const suppAssign = data.budgetSupplementAssignments || {};
@@ -10057,7 +10100,7 @@ function BudgetMonthlyView({ data, setData }) {
         <div className="text-center py-16 text-[var(--text-subtle)]">
           <div className="text-4xl mb-3">📊</div>
           <div className="font-medium mb-1">Нет данных для отображения</div>
-          <div className="text-sm mb-4">Добавьте накопления или постоянные платежи — они появятся здесь автоматически. Или нажмите на шестерёнку, чтобы добавить ручные статьи.</div>
+          <div className="text-sm mb-4">Добавьте накопления, долги или постоянные платежи — они появятся здесь автоматически. Или нажмите на шестерёнку, чтобы добавить ручные статьи.</div>
           <button onClick={() => setShowSettings(true)} className="btn-primary inline-flex items-center gap-2">
             <Icon name="settings" size={16} />Настроить статьи
           </button>
@@ -10392,7 +10435,7 @@ function BudgetCopyMonthModal({ year, userCats, incomeSources, data, setData, on
         )}
 
         <div className="text-xs text-[var(--text-subtle)]">
-          Копируются только ручные плановые значения статей расходов и источников дохода. Авто-статьи (Постоянные, Накопления) не затрагиваются.
+          Копируются только ручные плановые значения статей расходов и источников дохода. Авто-статьи (Постоянные, Накопления, Долги) не затрагиваются.
         </div>
       </div>
 
@@ -11797,12 +11840,34 @@ function BudgetRecurringModal({ item, cats, onSave, onClose }) {
 const DEBT_SOURCES = ['Альфа', '9816', 'Накопления'];
 
 function BudgetDebtsView({ data, setData }) {
-  const [editing,   setEditing]   = useState(null);
+  const [subTab, setSubTab] = useState('list');
+  return (
+    <div>
+      <div className="inline-flex bg-[var(--bg)] border border-[var(--border)] rounded-xl p-1 mb-6">
+        {[['list','Список'],['payments','Платежи']].map(([id, label]) => (
+          <button key={id} onClick={() => setSubTab(id)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${subTab === id ? 'bg-rose-600 text-white' : 'text-[var(--text-muted)]'}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {subTab === 'list' && <DebtsListView data={data} setData={setData} />}
+      {subTab === 'payments' && <DebtsPaymentsView data={data} setData={setData} />}
+    </div>
+  );
+}
+
+function DebtsListView({ data, setData }) {
+  const [editing, setEditing] = useState(null);
+  const [payModal, setPayModal] = useState(null); // debt | null — custom payment
   const [showClosed, setShowClosed] = useState(false);
 
   const debts = data.budgetDebts || [];
+  const transactions = data.debtTransactions || [];
   const active = debts.filter(d => !d.closed);
   const closed = debts.filter(d => d.closed);
+  const curMonth = getCurrentMonthStr();
+  const today = getTodayKey();
 
   const save = (debt) => {
     debt = { ...debt, updatedAt: Date.now() };
@@ -11815,94 +11880,168 @@ function BudgetDebtsView({ data, setData }) {
   };
 
   const remove = (id) => {
-    if (!confirm('Удалить долг?')) return;
-    setData(d => ({ ...d, budgetDebts: (d.budgetDebts || []).filter(x => x.id !== id), deletedIds: withDeletedId(d, 'budgetDebts', id) }));
+    if (!confirm('Удалить долг и его платежи?')) return;
+    setData(d => {
+      let deleted = withDeletedId(d, 'budgetDebts', id);
+      (d.debtTransactions || []).filter(t => t.debtId === id).forEach(t => {
+        deleted = withDeletedId({ ...d, deletedIds: deleted }, 'debtTransactions', t.id);
+      });
+      return {
+        ...d,
+        budgetDebts: (d.budgetDebts || []).filter(x => x.id !== id),
+        debtTransactions: (d.debtTransactions || []).filter(t => t.debtId !== id),
+        deletedIds: deleted,
+      };
+    });
   };
 
   const toggleClosed = (id) => {
     setData(d => ({ ...d, budgetDebts: (d.budgetDebts || []).map(x => x.id === id ? { ...x, closed: !x.closed, updatedAt: Date.now() } : x) }));
   };
 
+  const addTx = (debtId, type, amount, date, comment) => {
+    setData(d => ({
+      ...d,
+      debtTransactions: [...(d.debtTransactions || []), {
+        id: crypto.randomUUID(), debtId, type, amount, date,
+        comment: (comment || '').trim(), updatedAt: Date.now(),
+      }],
+    }));
+  };
+
   const newDebt = () => setEditing({
     id: crypto.randomUUID(), amount: '', debtor: '', source: DEBT_SOURCES[0],
+    startDate: getCurrentMonthStr(), targetDate: addMonthsStr(getCurrentMonthStr(), 6),
     returnDate: '', notify: false, notifyDate: '', notifyTime: '12:00',
     comment: '', closed: false,
   });
 
-  const totalActive = active.reduce((s, d) => s + (d.amount || 0), 0);
+  const totalRemaining = active.reduce((s, d) => s + getDebtRemaining(d, transactions), 0);
+  const totalMonthly = active.reduce((s, d) => s + calcDebtMonthly(d, transactions), 0);
 
   const fmtDate = (s) => {
     if (!s) return '—';
     const [y, m, dd] = s.split('-');
     return `${dd}.${m}.${y}`;
   };
-  const isOverdue = (d) => d.returnDate && !d.closed && d.returnDate < getTodayKey();
-
-  const DebtRow = ({ d }) => (
-    <tr className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${d.closed ? 'opacity-50' : ''}`}>
-      <td className="px-3 py-3 whitespace-nowrap font-semibold text-[var(--text)]">{formatRub(d.amount)} ₽</td>
-      <td className="px-3 py-3 whitespace-nowrap font-medium">{d.debtor || '—'}</td>
-      <td className="px-3 py-3 whitespace-nowrap text-[var(--text-muted)]">{d.source || '—'}</td>
-      <td className={`px-3 py-3 whitespace-nowrap ${isOverdue(d) ? 'text-red-500 font-medium' : 'text-[var(--text-muted)]'}`}>
-        {fmtDate(d.returnDate)}
-        {isOverdue(d) && <span className="block text-[10px] text-red-400">просрочен</span>}
-      </td>
-      <td className="px-3 py-3 whitespace-nowrap text-[var(--text-muted)] text-xs">
-        {d.notify && d.notifyDate ? `🔔 ${fmtDate(d.notifyDate)} ${d.notifyTime || ''}` : '—'}
-      </td>
-      <td className="px-3 py-3 text-[var(--text-subtle)] text-sm max-w-[200px] truncate">{d.comment || '—'}</td>
-      <td className="px-2 py-3">
-        <div className="flex gap-0.5 justify-end">
-          <button onClick={() => toggleClosed(d.id)} title={d.closed ? 'Вернуть в активные' : 'Отметить закрытым'}
-            className={`p-1.5 rounded-lg hover:bg-black/5 ${d.closed ? 'text-[var(--text-muted)]' : 'text-green-500 hover:text-green-700'}`}>
-            <Icon name={d.closed ? 'restore' : 'check'} size={14} />
-          </button>
-          <button onClick={() => setEditing(d)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать"><Icon name="edit" size={14} /></button>
-          <button onClick={() => remove(d.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500" title="Удалить"><Icon name="trash" size={14} /></button>
-        </div>
-      </td>
-    </tr>
-  );
-
-  const headCells = ['Сумма', 'Кому', 'Откуда', 'Вернуть до', 'Напоминание', 'Комментарий'];
 
   return (
     <div>
+      {active.length > 0 && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 mb-6 flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-1">Осталось вернуть</div>
+            <div className="font-display text-3xl">{formatRub(totalRemaining)} <span className="text-base">₽</span></div>
+          </div>
+          <div className="text-right text-sm text-[var(--text-muted)]">
+            <div>{formatRub(totalMonthly)} ₽/мес по плану</div>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center gap-2 flex-wrap mb-6">
         <button onClick={newDebt} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
-          <Icon name="plus" size={16} />Добавить
+          <Icon name="plus" size={16} />Добавить долг
         </button>
       </div>
 
       {!debts.length ? (
-        <EmptyState title="Нет долгов" text="Добавьте долг: сумму, кому дали, откуда и когда должны вернуть" />
+        <EmptyState title="Нет долгов" text="Добавьте долг с периодичностью выплат — план появится в «По месяцу», а платежи уменьшат остаток" />
       ) : (
         <>
-          <div className="inline-flex items-baseline gap-2 bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-5 py-3 mb-4">
-            <span className="font-display text-3xl">{formatRub(totalActive)}</span>
-            <span className="text-[var(--text-muted)]">₽ в долгах</span>
-          </div>
-
           {active.length > 0 && (
             <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="w-full text-sm" style={{ minWidth: '720px' }}>
+                <table className="w-full text-sm" style={{ minWidth: '860px' }}>
                   <thead>
                     <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
-                      {headCells.map(h => (
-                        <th key={h} className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap">{h}</th>
+                      {['Кому', 'Осталось', 'Сумма', '/ мес', 'Начало', 'До', 'Откуда', 'Напоминание'].map(h => (
+                        <th key={h} className={`px-3 py-3 text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap ${['Осталось','Сумма','/ мес'].includes(h) ? 'text-right' : 'text-left'}`}>{h}</th>
                       ))}
-                      <th className="px-3 py-3 w-24" />
+                      <th className="px-3 py-3 w-28" />
                     </tr>
                   </thead>
                   <tbody>
-                    {active.map(d => <DebtRow key={d.id} d={d} />)}
+                    {active.map((d, i) => {
+                      const remaining = getDebtRemaining(d, transactions);
+                      const paid = getDebtPaid(d, transactions);
+                      const effective = getDebtEffectiveAmount(d, transactions);
+                      const monthly = calcDebtMonthly(d, transactions);
+                      const pct = effective > 0 ? Math.min(100, Math.round((paid / effective) * 100)) : 0;
+                      const hasSchedule = !!(d.startDate && d.targetDate);
+                      const isOver = hasSchedule && d.targetDate < curMonth && remaining > 0;
+                      const mLeft = hasSchedule
+                        ? (d.targetDate < curMonth ? 0 : monthsBetweenStr(curMonth, d.targetDate))
+                        : 0;
+                      return (
+                        <tr key={d.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${i % 2 === 1 ? 'bg-[var(--bg)]/50' : ''}`}>
+                          <td className="px-3 py-3">
+                            <div className="font-medium whitespace-nowrap">{d.debtor || '—'}</div>
+                            {d.comment && <div className="text-xs text-[var(--text-subtle)] truncate max-w-[180px]">{d.comment}</div>}
+                          </td>
+                          <td className="px-3 py-3 text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-2">
+                              <div className="w-14 bg-[var(--bg)] rounded-full h-1.5 overflow-hidden">
+                                <div className={`h-full rounded-full ${pct >= 100 ? 'bg-green-500' : pct >= 50 ? 'bg-blue-500' : 'bg-rose-500'}`}
+                                  style={{ width: Math.max(0, pct) + '%' }} />
+                              </div>
+                              <span className={`font-medium ${remaining > 0 ? 'text-[var(--text)]' : 'text-green-600'}`}>
+                                {formatRub(remaining)} ₽
+                              </span>
+                              <span className="text-[10px] text-[var(--text-subtle)]">{pct}%</span>
+                            </div>
+                          </td>
+                          <td className="px-3 py-3 text-right whitespace-nowrap font-medium">{formatRub(effective)} ₽</td>
+                          <td className="px-3 py-3 text-right whitespace-nowrap font-semibold">
+                            {hasSchedule ? `${formatRub(monthly)} ₽` : <span className="text-[var(--text-subtle)] font-normal">—</span>}
+                          </td>
+                          <td className="px-3 py-3 whitespace-nowrap text-[var(--text-muted)]">
+                            {hasSchedule ? formatMonthShortBudget(d.startDate) : '—'}
+                          </td>
+                          <td className={`px-3 py-3 whitespace-nowrap ${isOver ? 'text-red-500 font-medium' : 'text-[var(--text-muted)]'}`}>
+                            {hasSchedule ? formatMonthShortBudget(d.targetDate) : (d.returnDate ? fmtDate(d.returnDate) : '—')}
+                            {isOver
+                              ? <span className="block text-[10px] text-red-400">просрочен</span>
+                              : mLeft > 0 && <span className="block text-[10px] text-[var(--text-subtle)]">ещё {mLeft} мес</span>}
+                          </td>
+                          <td className="px-3 py-3 whitespace-nowrap text-[var(--text-muted)]">{d.source || '—'}</td>
+                          <td className="px-3 py-3 whitespace-nowrap text-[var(--text-muted)] text-xs">
+                            {d.notify && d.notifyDate ? `🔔 ${fmtDate(d.notifyDate)} ${d.notifyTime || ''}` : '—'}
+                          </td>
+                          <td className="px-2 py-3">
+                            <div className="flex gap-0.5 justify-end">
+                              <button
+                                onClick={() => {
+                                  if (monthly > 0) addTx(d.id, 'payment', monthly, today);
+                                  else setPayModal(d);
+                                }}
+                                title={monthly > 0
+                                  ? `Отметить платёж ${formatRub(monthly)} ₽ (план/мес) на ${today}`
+                                  : 'Внести платёж'}
+                                className="p-1.5 rounded-lg hover:bg-green-50 text-green-500 hover:text-green-700 font-bold text-base leading-none">+</button>
+                              <button onClick={() => setPayModal(d)}
+                                title="Внести платёж или пополнить долг"
+                                className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] text-xs font-medium px-1.5">₽</button>
+                              <button onClick={() => toggleClosed(d.id)} title="Отметить закрытым"
+                                className="p-1.5 rounded-lg hover:bg-black/5 text-green-500 hover:text-green-700">
+                                <Icon name="check" size={14} />
+                              </button>
+                              <button onClick={() => setEditing(d)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать"><Icon name="edit" size={14} /></button>
+                              <button onClick={() => remove(d.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500" title="Удалить"><Icon name="trash" size={14} /></button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
-              <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] flex justify-between items-center">
+              <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] flex justify-between items-center flex-wrap gap-2">
                 <span className="text-xs text-[var(--text-subtle)] uppercase tracking-wide">{active.length} активных</span>
-                <span className="font-display text-base">{formatRub(totalActive)} ₽</span>
+                <div className="text-right flex gap-4 items-baseline">
+                  <span className="text-xs text-[var(--text-subtle)]">Осталось: <b className="text-[var(--text)]">{formatRub(totalRemaining)} ₽</b></span>
+                  <span className="text-xs text-[var(--text-subtle)]">{formatRub(totalMonthly)} ₽/мес</span>
+                </div>
               </div>
             </div>
           )}
@@ -11911,26 +12050,32 @@ function BudgetDebtsView({ data, setData }) {
             <div className="mt-4">
               <button onClick={() => setShowClosed(v => !v)}
                 className="flex items-center gap-2 text-sm text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">
-                <Icon name={showClosed ? 'chevronDown' : 'chevronDown'} size={14} />
+                <Icon name="chevronDown" size={14} style={{ transform: showClosed ? 'none' : 'rotate(-90deg)', transition: 'transform 0.15s ease' }} />
                 Закрытые ({closed.length})
               </button>
               {showClosed && (
-                <div className="mt-3 bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm" style={{ minWidth: '720px' }}>
-                      <thead>
-                        <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
-                          {headCells.map(h => (
-                            <th key={h} className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap">{h}</th>
-                          ))}
-                          <th className="px-3 py-3 w-24" />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {closed.map(d => <DebtRow key={d.id} d={d} />)}
-                      </tbody>
-                    </table>
-                  </div>
+                <div className="mt-3 space-y-2">
+                  {closed.map(d => {
+                    const rem = getDebtRemaining(d, transactions);
+                    return (
+                      <div key={d.id} className="flex items-center justify-between bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3 opacity-60">
+                        <div>
+                          <div className="font-medium">{d.debtor || '—'}</div>
+                          <div className="text-xs text-[var(--text-subtle)]">
+                            {formatRub(getDebtEffectiveAmount(d, transactions))} ₽ · осталось {formatRub(rem)} ₽
+                          </div>
+                        </div>
+                        <div className="flex gap-1">
+                          <button onClick={() => toggleClosed(d.id)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Вернуть в активные">
+                            <Icon name="restore" size={16} />
+                          </button>
+                          <button onClick={() => remove(d.id)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500" title="Удалить">
+                            <Icon name="trash" size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -11938,23 +12083,314 @@ function BudgetDebtsView({ data, setData }) {
         </>
       )}
 
-      {editing && <BudgetDebtModal debt={editing} onSave={save} onClose={() => setEditing(null)} />}
+      {editing && (
+        <BudgetDebtModal
+          debt={editing}
+          paid={getDebtPaid(editing, transactions)}
+          increased={getDebtTxTotals(editing.id, transactions).increased}
+          onSave={save}
+          onClose={() => setEditing(null)}
+        />
+      )}
+      {payModal && (
+        <DebtPaymentModal
+          debt={payModal}
+          transactions={transactions}
+          onSave={(type, amount, date, comment) => {
+            addTx(payModal.id, type, amount, date, comment);
+            setPayModal(null);
+          }}
+          onClose={() => setPayModal(null)}
+        />
+      )}
     </div>
   );
 }
 
-function BudgetDebtModal({ debt, onSave, onClose }) {
-  const [form, setForm] = useState({ ...debt });
+function DebtsPaymentsView({ data, setData }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [sortCol, setSortCol] = useState('date');
+  const [sortDir, setSortDir] = useState('desc');
+
+  const debts = data.budgetDebts || [];
+  const activeDebts = debts.filter(d => !d.closed);
+  const transactions = data.debtTransactions || [];
+
+  const getDebtName = (id) => {
+    const d = debts.find(x => x.id === id);
+    return d ? (d.closed ? `${d.debtor || 'Долг'} (закрыт)` : (d.debtor || 'Долг')) : '(удалено)';
+  };
+
+  const formatDate = (d) => {
+    if (!d) return '—';
+    const [y, m, day] = d.split('-');
+    return `${day}.${m}.${y}`;
+  };
+
+  const toggleSort = (col) => {
+    if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortCol(col); setSortDir('desc'); }
+  };
+
+  const sorted = [...transactions].sort((a, b) => {
+    const vals = {
+      date: [a.date || '', b.date || ''],
+      name: [getDebtName(a.debtId), getDebtName(b.debtId)],
+      type: [a.type === 'increase' ? 1 : 0, b.type === 'increase' ? 1 : 0],
+      amount: [a.amount || 0, b.amount || 0],
+    };
+    const [av, bv] = vals[sortCol] || vals.date;
+    const cmp = typeof av === 'string' ? av.localeCompare(bv, 'ru') : av - bv;
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+
+  const removeTx = (id) => {
+    if (!confirm('Удалить операцию?')) return;
+    setData(d => ({
+      ...d,
+      debtTransactions: (d.debtTransactions || []).filter(t => t.id !== id),
+      deletedIds: withDeletedId(d, 'debtTransactions', id),
+    }));
+  };
+
+  const totalPaid = sorted.filter(t => t.type !== 'increase').reduce((s, t) => s + (t.amount || 0), 0);
+  const totalInc = sorted.filter(t => t.type === 'increase').reduce((s, t) => s + (t.amount || 0), 0);
+
+  const SortArrow = ({ col }) => (
+    <span className={`ml-0.5 text-[11px] ${sortCol === col ? 'opacity-100' : 'opacity-25'}`}>
+      {sortCol === col ? (sortDir === 'asc' ? '↑' : '↓') : '↕'}
+    </span>
+  );
+
+  const COLS = [
+    { col: 'date', label: 'Дата', cls: 'text-left' },
+    { col: 'name', label: 'Долг', cls: 'text-left' },
+    { col: 'type', label: 'Тип', cls: 'text-left' },
+    { col: 'amount', label: 'Сумма', cls: 'text-right' },
+  ];
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 flex-wrap mb-6">
+        <button onClick={() => setShowAdd(true)} disabled={!activeDebts.length && !debts.length}
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all disabled:opacity-40">
+          <Icon name="plus" size={16} />Добавить операцию
+        </button>
+      </div>
+
+      {!transactions.length ? (
+        <EmptyState title="Нет платежей" text="Отмечайте плановые платежи или вносите внеплановые — остаток и план в «По месяцу» пересчитаются сами" />
+      ) : (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm" style={{ minWidth: '520px' }}>
+              <thead>
+                <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
+                  {COLS.map(({ col, label, cls }) => (
+                    <th key={col} onClick={() => toggleSort(col)}
+                      className={`px-3 py-3 text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] cursor-pointer hover:text-[var(--text)] transition-colors select-none whitespace-nowrap ${cls}`}>
+                      {label}<SortArrow col={col} />
+                    </th>
+                  ))}
+                  <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Коммент</th>
+                  <th className="px-3 py-3 w-10" />
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((t, i) => {
+                  const isInc = t.type === 'increase';
+                  return (
+                    <tr key={t.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${i % 2 === 1 ? 'bg-[var(--bg)]/50' : ''}`}>
+                      <td className="px-3 py-2.5 whitespace-nowrap text-[var(--text-muted)]">{formatDate(t.date)}</td>
+                      <td className="px-3 py-2.5 font-medium">{getDebtName(t.debtId)}</td>
+                      <td className="px-3 py-2.5 whitespace-nowrap">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${isInc ? 'bg-amber-50 text-amber-700' : 'bg-green-50 text-green-700'}`}>
+                          {isInc ? '↑ Пополнение долга' : '↓ Платёж'}
+                        </span>
+                      </td>
+                      <td className={`px-3 py-2.5 text-right whitespace-nowrap font-semibold ${isInc ? 'text-amber-700' : 'text-green-600'}`}>
+                        {isInc ? '+' : '−'}{formatRub(t.amount)} ₽
+                      </td>
+                      <td className="px-3 py-2.5 text-[var(--text-subtle)] text-sm max-w-[180px] truncate">{t.comment || '—'}</td>
+                      <td className="px-2 py-2.5">
+                        <button onClick={() => removeTx(t.id)}
+                          className="p-1 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500">
+                          <Icon name="trash" size={13} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] flex flex-wrap gap-4 justify-between items-center">
+            <span className="text-xs text-[var(--text-subtle)] uppercase tracking-wide">{sorted.length} операций</span>
+            <div className="flex gap-5 text-sm">
+              <span className="text-green-600">Платежи: <b>−{formatRub(totalPaid)} ₽</b></span>
+              <span className="text-amber-700">Пополнения: <b>+{formatRub(totalInc)} ₽</b></span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAdd && (
+        <DebtPaymentModal
+          debts={debts}
+          transactions={transactions}
+          onSave={(debtId, type, amount, date, comment) => {
+            setData(d => ({
+              ...d,
+              debtTransactions: [...(d.debtTransactions || []), {
+                id: crypto.randomUUID(), debtId, type, amount, date,
+                comment: (comment || '').trim(), updatedAt: Date.now(),
+              }],
+            }));
+            setShowAdd(false);
+          }}
+          onClose={() => setShowAdd(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function DebtPaymentModal({ debt, debts, transactions = [], onSave, onClose }) {
+  const today = getTodayKey();
+  const list = debt ? [debt] : (debts || []);
+  const [debtId, setDebtId] = useState(debt?.id || (list.find(d => !d.closed)?.id || list[0]?.id || ''));
+  const [type, setType] = useState('payment');
+  const [amount, setAmount] = useState('');
+  const [date, setDate] = useState(today);
+  const [comment, setComment] = useState('');
+
+  const selected = list.find(d => d.id === debtId) || debt;
+  const rem = selected ? getDebtRemaining(selected, transactions) : 0;
+  const planMonthly = selected ? calcDebtMonthly(selected, transactions) : 0;
+
+  const submit = () => {
+    const val = Number(amount);
+    if (!val || val <= 0) return;
+    if (!debtId) return;
+    if (debt) onSave(type, val, date || today, comment);
+    else onSave(debtId, type, val, date || today, comment);
+  };
+
+  return (
+    <Modal title="Операция по долгу" onClose={onClose}>
+      <div className="space-y-4">
+        <div>
+          <label>Тип</label>
+          <div className="flex gap-2">
+            <button onClick={() => setType('payment')}
+              className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${type === 'payment' ? 'bg-green-50 border-green-300 text-green-700' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
+              ↓ Платёж
+            </button>
+            <button onClick={() => setType('increase')}
+              className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${type === 'increase' ? 'bg-amber-50 border-amber-300 text-amber-700' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
+              ↑ Пополнение долга
+            </button>
+          </div>
+          <div className="text-xs text-[var(--text-subtle)] mt-1.5">
+            {type === 'payment'
+              ? 'Уменьшает остаток и пересчитывает план в «По месяцу»'
+              : 'Увеличивает сумму долга (доп. выдача) — остаток и /мес пересчитаются'}
+          </div>
+        </div>
+
+        {!debt && (
+          <div>
+            <label>Долг</label>
+            <select value={debtId} onChange={e => setDebtId(e.target.value)}>
+              {list.map(d => <option key={d.id} value={d.id}>{d.debtor || 'Долг'}{d.closed ? ' (закрыт)' : ''}</option>)}
+            </select>
+          </div>
+        )}
+
+        {debt && (
+          <div className="text-sm text-[var(--text-muted)]">
+            {debt.debtor || 'Долг'}
+            {rem > 0 && <span className="text-[var(--text-subtle)]"> · осталось {formatRub(rem)} ₽</span>}
+          </div>
+        )}
+
+        <div>
+          <label>Сумма (₽)</label>
+          <input type="number" inputMode="numeric" min="1" value={amount}
+            onChange={e => setAmount(e.target.value)} placeholder="5 000" autoFocus />
+          {type === 'payment' && planMonthly > 0 && (
+            <button type="button" onClick={() => setAmount(String(planMonthly))}
+              className="text-xs text-blue-600 hover:underline mt-1">
+              По плану: {formatRub(planMonthly)} ₽/мес
+            </button>
+          )}
+          {type === 'payment' && rem > 0 && (
+            <button type="button" onClick={() => setAmount(String(rem))}
+              className="block text-xs text-[var(--text-subtle)] hover:text-[var(--text)] mt-0.5">
+              Весь остаток: {formatRub(rem)} ₽
+            </button>
+          )}
+        </div>
+
+        <div>
+          <label>Дата</label>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)} />
+        </div>
+
+        <div>
+          <label>Комментарий (необязательно)</label>
+          <input value={comment} onChange={e => setComment(e.target.value)} placeholder="Внеплановый платёж..." />
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit}
+            className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-white transition-all hover:opacity-90 ${type === 'payment' ? 'bg-green-600' : 'bg-amber-600'}`}>
+            {type === 'payment' ? 'Внести платёж' : 'Пополнить долг'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
+  const [form, setForm] = useState(() => ({
+    ...debt,
+    startDate: debt.startDate || getCurrentMonthStr(),
+    targetDate: debt.targetDate || (debt.returnDate ? debt.returnDate.slice(0, 7) : addMonthsStr(getCurrentMonthStr(), 6)),
+  }));
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const effective = (Number(form.amount) || 0) + (increased || 0);
+  const remaining = Math.max(effective - (paid || 0), 0);
+  const months = form.startDate && form.targetDate ? monthsBetweenStr(form.startDate, form.targetDate) : 0;
+  const monthsLeft = form.targetDate
+    ? (form.targetDate < getCurrentMonthStr() ? 0 : monthsBetweenStr(getCurrentMonthStr(), form.targetDate))
+    : 0;
+  const monthly = (form.targetDate && effective > 0)
+    ? calcMonthly({ ...form, amount: effective }, paid)
+    : 0;
 
   const submit = () => {
     if (!form.amount || Number(form.amount) <= 0) return;
     if (!form.debtor.trim()) return;
+    if (form.startDate && form.targetDate && form.startDate > form.targetDate) {
+      alert('Дата начала выплат должна быть раньше или равна дате окончания');
+      return;
+    }
+    // Keep returnDate in sync with end of schedule when schedule is set
+    let returnDate = form.returnDate || '';
+    if (form.targetDate && !returnDate) {
+      const [y, m] = form.targetDate.split('-');
+      returnDate = `${y}-${m}-${new Date(Number(y), Number(m), 0).getDate()}`;
+    }
     onSave({
       ...form,
       amount: Number(form.amount),
       debtor: form.debtor.trim(),
       comment: (form.comment || '').trim(),
+      returnDate,
       notify: !!(form.notify && form.notifyDate),
     });
   };
@@ -11965,7 +12401,7 @@ function BudgetDebtModal({ debt, onSave, onClose }) {
     <Modal title={isNew ? 'Новый долг' : 'Редактировать долг'} onClose={onClose}>
       <div className="space-y-4">
         <div>
-          <label>Сумма (₽)</label>
+          <label>Сумма долга (₽)</label>
           <input type="number" inputMode="numeric" min="1" autoFocus
             value={form.amount || ''}
             onChange={e => set('amount', e.target.value)}
@@ -11984,8 +12420,47 @@ function BudgetDebtModal({ debt, onSave, onClose }) {
           </select>
         </div>
 
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label>Начать выплаты</label>
+            <input type="month" value={form.startDate || ''} onChange={e => set('startDate', e.target.value)} />
+          </div>
+          <div>
+            <label>Выплатить к</label>
+            <input type="month" value={form.targetDate || ''} onChange={e => set('targetDate', e.target.value)} />
+          </div>
+        </div>
+
+        {monthly > 0 && (
+          <div className="bg-[var(--bg)] border border-[var(--border)] rounded-2xl p-4 fade-in">
+            <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-3">План выплат</div>
+            <div className="flex items-baseline gap-2 mb-1">
+              <span className="font-display text-4xl">{formatRub(monthly)}</span>
+              <span className="text-[var(--text-muted)] text-base">₽ в месяц</span>
+            </div>
+            <div className="text-sm text-[var(--text-subtle)]">
+              Осталось {formatRub(remaining)} ₽ · {monthsLeft || months} {pluralMonths(monthsLeft || months)}
+              {paid > 0 && <span> · уже выплачено {formatRub(paid)} ₽</span>}
+            </div>
+            {form.startDate && months > 0 && (
+              <div className="mt-3 flex gap-1 flex-wrap">
+                {Array.from({ length: Math.min(months, 12) }).map((_, i) => {
+                  const mo = addMonthsStr(form.startDate, i);
+                  return (
+                    <div key={mo} className="flex-1 min-w-[32px] text-center">
+                      <div className="h-6 bg-rose-600 rounded" style={{ opacity: 0.3 + (i / Math.max(months - 1, 1)) * 0.7 }} />
+                      <div className="text-[9px] text-[var(--text-subtle)] mt-0.5">{formatMonthShortBudget(mo).split(' ')[0]}</div>
+                    </div>
+                  );
+                })}
+                {months > 12 && <div className="text-xs text-[var(--text-subtle)] self-end">+{months - 12} мес</div>}
+              </div>
+            )}
+          </div>
+        )}
+
         <div>
-          <label>Вернуть до</label>
+          <label>Вернуть до (дата, необязательно)</label>
           <input type="date" value={form.returnDate || ''} onChange={e => set('returnDate', e.target.value)} />
         </div>
 
