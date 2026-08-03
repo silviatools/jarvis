@@ -10285,9 +10285,12 @@ function BudgetMonthlyView({ data, setData }) {
   const getRecCatVal = (catId) =>
     activeRec.filter(r => r.category === catId).reduce((s, r) => s + (r.amount || 0), 0);
 
+  // Долги: одна сумма /мес от текущего остатка на все месяцы графика.
+  // Не передаём колонку как asOfMonth — иначе один и тот же остаток делился
+  // на всё меньшее число месяцев и платежи «росли» к концу срока.
   const getDebtVal = (debt, month) =>
     (debt.startDate <= month && debt.targetDate >= month)
-      ? calcDebtMonthly(debt, debtTx, month)
+      ? calcDebtMonthly(debt, debtTx)
       : 0;
 
   const usedExpCatIds = [...new Set(activeExp.map(e => e.category))];
