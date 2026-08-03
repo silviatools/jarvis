@@ -291,15 +291,17 @@ const PRESET_BODY_FIELDS = [
 
 const DEFAULT_BODY_PHOTO_CATEGORIES = ['Спереди', 'Сбоку', 'Спина'];
 
-const DEFAULT_DATA = () => ({
-  supplements: [], meals: [], taken: {}, rationStock: 0, cookingPlans: [], containers: [],
-  dietLog: [],
-  dietPlan: { calories: '', protein: '', fat: '', carbs: '' },
-  bodyFields: DEFAULT_BODY_FIELDS.map(f => ({ ...f })),
-  bodyEntries: [],
-  bodyPhotoCategories: [...DEFAULT_BODY_PHOTO_CATEGORIES],
-  cars: [],
-  serviceRecords: [],
+const DEFAULT_BUDGET_USER_ID = 'default-budget-user';
+
+const BUDGET_SLICE_KEYS = [
+  'budgetExpenses', 'budgetCategories', 'budgetRecurring',
+  'budgetPlanCategories', 'budgetPlanValues', 'budgetRecurringCategories',
+  'savingsActual', 'savingsCorrections', 'savingsTransactions',
+  'budgetDebts', 'debtTransactions', 'budgetIncomeSources', 'budgetIncomeValues',
+  'budgetCategoryOrder', 'budgetSupplements', 'budgetSupplementAssignments',
+];
+
+const emptyBudgetSlice = () => ({
   budgetExpenses: [],
   budgetCategories: [],
   budgetRecurring: [],
@@ -311,6 +313,72 @@ const DEFAULT_DATA = () => ({
   savingsTransactions: [],
   budgetDebts: [],
   debtTransactions: [],
+  budgetIncomeSources: [],
+  budgetIncomeValues: {},
+  budgetCategoryOrder: [],
+  budgetSupplements: [],
+  budgetSupplementAssignments: {},
+});
+
+const extractBudgetSlice = (data) => {
+  const slice = emptyBudgetSlice();
+  BUDGET_SLICE_KEYS.forEach(k => {
+    if (data && data[k] !== undefined) slice[k] = data[k];
+  });
+  return slice;
+};
+
+const budgetSliceHasData = (slice) => BUDGET_SLICE_KEYS.some(k => {
+  const v = slice && slice[k];
+  if (Array.isArray(v)) return v.length > 0;
+  if (v && typeof v === 'object') return Object.keys(v).length > 0;
+  return false;
+});
+
+// Migrates legacy flat budget keys into per-user buckets. Stable default id
+// keeps independently-migrating devices from creating duplicate "Основной" users.
+const normalizeBudgetUsers = (data) => {
+  if (!data || typeof data !== 'object') return data;
+  const d = { ...data };
+  const legacySlice = extractBudgetSlice(d);
+  const hasLegacy = budgetSliceHasData(legacySlice);
+
+  if (Array.isArray(d.budgetUsers) && d.budgetUsers.length > 0) {
+    const byUser = { ...(d.budgetByUser || {}) };
+    d.budgetUsers.forEach(u => {
+      if (u?.id && !byUser[u.id]) byUser[u.id] = emptyBudgetSlice();
+    });
+    if (hasLegacy) {
+      const firstId = d.budgetUsers[0].id;
+      if (!budgetSliceHasData(byUser[firstId] || {})) byUser[firstId] = legacySlice;
+    }
+    BUDGET_SLICE_KEYS.forEach(k => { delete d[k]; });
+    let active = d.activeBudgetUserId;
+    if (!active || !d.budgetUsers.some(u => u.id === active)) active = d.budgetUsers[0].id;
+    return { ...d, budgetByUser: byUser, activeBudgetUserId: active };
+  }
+
+  BUDGET_SLICE_KEYS.forEach(k => { delete d[k]; });
+  return {
+    ...d,
+    budgetUsers: [{ id: DEFAULT_BUDGET_USER_ID, name: 'Основной', createdAt: Date.now(), updatedAt: Date.now() }],
+    activeBudgetUserId: DEFAULT_BUDGET_USER_ID,
+    budgetByUser: { [DEFAULT_BUDGET_USER_ID]: legacySlice },
+  };
+};
+
+const DEFAULT_DATA = () => ({
+  supplements: [], meals: [], taken: {}, rationStock: 0, cookingPlans: [], containers: [],
+  dietLog: [],
+  dietPlan: { calories: '', protein: '', fat: '', carbs: '' },
+  bodyFields: DEFAULT_BODY_FIELDS.map(f => ({ ...f })),
+  bodyEntries: [],
+  bodyPhotoCategories: [...DEFAULT_BODY_PHOTO_CATEGORIES],
+  cars: [],
+  serviceRecords: [],
+  budgetUsers: [{ id: DEFAULT_BUDGET_USER_ID, name: 'Основной', createdAt: 0, updatedAt: 0 }],
+  activeBudgetUserId: DEFAULT_BUDGET_USER_ID,
+  budgetByUser: { [DEFAULT_BUDGET_USER_ID]: emptyBudgetSlice() },
   bodyModes: [],
   activeBodyModeId: null,
   bodyProgressStartDate: '',
@@ -441,7 +509,7 @@ const loadData = () => {
     if (!raw) return DEFAULT_DATA();
     const parsed = JSON.parse(raw);
     parsed.settings = { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) };
-    return parsed;
+    return normalizeBudgetUsers(parsed);
   } catch {
     return DEFAULT_DATA();
   }
@@ -621,12 +689,36 @@ const mergeDateLogEntries = (localArr, serverArr, preferLocal, deletedForKey) =>
   return result.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 };
 
+const mergeBudgetSlice = (localSlice, serverSlice, preferLocal, mergedDeletedIds) => {
+  const ls = localSlice || {};
+  const ss = serverSlice || {};
+  const out = {};
+  const keys = new Set([...Object.keys(ls), ...Object.keys(ss), ...BUDGET_SLICE_KEYS]);
+  keys.forEach(sk => {
+    const lv = ls[sk], sv = ss[sk];
+    if (sv === undefined) { out[sk] = lv; return; }
+    if (lv === undefined) { out[sk] = sv; return; }
+    if (Array.isArray(lv) || Array.isArray(sv)) {
+      out[sk] = mergeIdArrays(lv, sv, preferLocal, mergedDeletedIds[sk]);
+    } else if (isPlainObject(lv) && isPlainObject(sv)) {
+      out[sk] = preferLocal ? { ...sv, ...lv } : { ...lv, ...sv };
+    } else {
+      out[sk] = preferLocal ? lv : sv;
+    }
+  });
+  return out;
+};
+
 const mergeAppData = (local, server, mode = 'pull') => {
+  local = normalizeBudgetUsers(local || {});
+  server = normalizeBudgetUsers(server || {});
   const merged = { ...local, ...server };
   const mergedDeletedIds = mergeDeletedIdsMaps(local?.deletedIds, server?.deletedIds);
   const keys = new Set([...Object.keys(local || {}), ...Object.keys(server || {})]);
   for (const key of keys) {
     if (key === 'deletedIds') { merged[key] = mergedDeletedIds; continue; }
+    // Flat legacy budget keys are folded into budgetByUser by normalizeBudgetUsers.
+    if (BUDGET_SLICE_KEYS.includes(key)) continue;
     const l = local ? local[key] : undefined;
     const s = server ? server[key] : undefined;
     if (s === undefined) { merged[key] = l; continue; }
@@ -639,6 +731,13 @@ const mergeAppData = (local, server, mode = 'pull') => {
       const base = preferLocal ? { ...s, ...l } : { ...l, ...s };
       base.columns = mergeIdArrays(l.columns || [], s.columns || [], preferLocal, mergedDeletedIds['kanbanColumns']);
       merged[key] = base;
+    } else if (key === 'budgetByUser' && isPlainObject(l) && isPlainObject(s)) {
+      const userIds = new Set([...Object.keys(l), ...Object.keys(s)]);
+      const out = {};
+      userIds.forEach(uid => {
+        out[uid] = mergeBudgetSlice(l[uid], s[uid], preferLocal, mergedDeletedIds);
+      });
+      merged[key] = out;
     } else if (DATE_LOG_KEYS.has(key) && (Array.isArray(l) || Array.isArray(s))) {
       merged[key] = mergeDateLogEntries(l, s, preferLocal, mergedDeletedIds[key]);
     } else if (Array.isArray(l) || Array.isArray(s)) {
@@ -659,7 +758,9 @@ const mergeAppData = (local, server, mode = 'pull') => {
       merged[key] = preferLocal ? l : s;
     }
   }
-  return merged;
+  // Drop any residual flat budget keys so budgetByUser stays the only source.
+  BUDGET_SLICE_KEYS.forEach(k => { delete merged[k]; });
+  return normalizeBudgetUsers(merged);
 };
 
 // Auto-stamps `updatedAt` on any id-array item that actually changed, so no
@@ -712,6 +813,21 @@ const stampUpdatedAt = (prev, next) => {
     });
     if (arrChanged) { out[key] = stamped; changed = true; }
   }
+  // Per-user budget slices hold the real entity arrays — stamp them too.
+  if (isPlainObject(out.budgetByUser)) {
+    const prevBy = isPlainObject(prev.budgetByUser) ? prev.budgetByUser : {};
+    let byChanged = false;
+    const nextBy = { ...out.budgetByUser };
+    for (const uid of Object.keys(nextBy)) {
+      if (!isPlainObject(nextBy[uid])) continue;
+      const stampedSlice = stampUpdatedAt(prevBy[uid] || {}, nextBy[uid]);
+      if (stampedSlice !== nextBy[uid]) {
+        nextBy[uid] = stampedSlice;
+        byChanged = true;
+      }
+    }
+    if (byChanged) { out.budgetByUser = nextBy; changed = true; }
+  }
   return changed ? out : next;
 };
 
@@ -733,7 +849,7 @@ const fetchServerData = async () => {
     const json = await res.json();
     if (!json || Object.keys(json).length === 0) return null;
     json.settings = { ...DEFAULT_SETTINGS, ...(json.settings || {}) };
-    return json;
+    return normalizeBudgetUsers(json);
   } catch {
     return null;
   }
@@ -9811,15 +9927,29 @@ const formatMonthShortBudget = (ym) => {
   return `${names[m - 1]} ${y}`;
 };
 
-// Monthly contribution = remaining amount / months left. `asOfMonth` lets the
-// plan table compute the figure for a specific column month instead of always
-// showing the current month's number in all twelve columns.
+// Monthly contribution is always derived (never stored):
+//   (цель − уже накоплено) / оставшиеся месяцы
+// so a mid-period amount change or an unplanned top-up instantly changes /мес.
+// `asOfMonth` lets the plan table compute the figure for a specific column
+// month instead of repeating the current month's number in all twelve columns.
+// Period starts at max(asOfMonth, startDate) so months before «Начать копить»
+// are not counted.
 const calcMonthly = (exp, balance, asOfMonth) => {
   const fromMonth = asOfMonth || getCurrentMonthStr();
   const remaining = Math.max((exp.amount || 0) - (balance || 0), 0);
   if (remaining <= 0) return 0;
-  const mLeft = exp.targetDate <= fromMonth ? 1 : monthsBetweenStr(fromMonth, exp.targetDate);
+  const periodStart = (exp.startDate && exp.startDate > fromMonth) ? exp.startDate : fromMonth;
+  if (!exp.targetDate || exp.targetDate < periodStart) return remaining;
+  const mLeft = exp.targetDate <= periodStart ? 1 : monthsBetweenStr(periodStart, exp.targetDate);
   return Math.ceil(remaining / mLeft);
+};
+
+const monthsLeftFor = (exp, asOfMonth) => {
+  const fromMonth = asOfMonth || getCurrentMonthStr();
+  if (!exp?.targetDate) return 0;
+  const periodStart = (exp.startDate && exp.startDate > fromMonth) ? exp.startDate : fromMonth;
+  if (exp.targetDate < periodStart) return 0;
+  return monthsBetweenStr(periodStart, exp.targetDate);
 };
 
 // Debt payments: payment reduces remaining; increase adds to principal
@@ -9866,28 +9996,224 @@ const pluralMonths = (n) => pluralRu(n, ['месяц', 'месяца', 'меся
 
 function BudgetView({ data, setData }) {
   const [budgetTab, setBudgetTab] = useState('monthly');
+  const [showUsers, setShowUsers] = useState(false);
+
+  const users = data.budgetUsers || [];
+  const activeId = data.activeBudgetUserId || users[0]?.id || DEFAULT_BUDGET_USER_ID;
+  const activeUser = users.find(u => u.id === activeId) || users[0] || null;
+  const slice = (data.budgetByUser && data.budgetByUser[activeId]) || emptyBudgetSlice();
+
+  // Child views still read/write flat budget* keys; this adapter maps them
+  // onto the active user's slice inside budgetByUser.
+  const scopedData = { ...data, ...slice };
+
+  const scopedSetData = React.useCallback((updater) => {
+    setData(d => {
+      const uid = d.activeBudgetUserId || (d.budgetUsers || [])[0]?.id || DEFAULT_BUDGET_USER_ID;
+      const curSlice = { ...emptyBudgetSlice(), ...((d.budgetByUser || {})[uid] || {}) };
+      const virtual = { ...d, ...curSlice };
+      const nextVirtual = typeof updater === 'function' ? updater(virtual) : updater;
+      if (!nextVirtual || typeof nextVirtual !== 'object') return d;
+
+      const newSlice = { ...curSlice };
+      BUDGET_SLICE_KEYS.forEach(k => {
+        if (k in nextVirtual) newSlice[k] = nextVirtual[k];
+      });
+
+      const root = { ...nextVirtual };
+      BUDGET_SLICE_KEYS.forEach(k => { delete root[k]; });
+
+      return {
+        ...root,
+        budgetUsers: nextVirtual.budgetUsers !== undefined ? nextVirtual.budgetUsers : d.budgetUsers,
+        activeBudgetUserId: nextVirtual.activeBudgetUserId !== undefined ? nextVirtual.activeBudgetUserId : d.activeBudgetUserId,
+        budgetByUser: {
+          ...(d.budgetByUser || {}),
+          ...(nextVirtual.budgetByUser || {}),
+          [uid]: newSlice,
+        },
+      };
+    });
+  }, [setData]);
+
+  const setActiveUser = (id) => setData(d => ({ ...d, activeBudgetUserId: id }));
+
   return (
-    <main className="max-w-5xl mx-auto px-4 sm:px-6 pt-6 md:pt-8 pb-8 fade-in">
-      <div className="mb-6 flex items-baseline justify-between gap-4">
-        <div className="font-display text-2xl">Бюджет</div>
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Планирование</div>
-      </div>
-      <div className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-6">
-        <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
-          {[['monthly','По месяцу'],['expenses','Накопления'],['recurring','Постоянные'],['supplements','Спортпит'],['debts','Долги']].map(([id, label]) => (
-            <button key={id} onClick={() => setBudgetTab(id)}
-              className={`px-3 sm:px-4 py-2.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${budgetTab === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
-              {label}
-            </button>
-          ))}
+    <main className="w-full mx-auto px-4 sm:px-6 pt-6 md:pt-8 pb-8 fade-in">
+      {/* Шапка и табы — фиксированная ширина, не прыгает при смене таблиц */}
+      <div className="max-w-5xl mx-auto">
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-display text-2xl">Бюджет</div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <select
+                value={activeId}
+                onChange={e => setActiveUser(e.target.value)}
+                className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm font-medium focus:outline-none focus:border-[var(--text)] min-w-[10rem]"
+                aria-label="Пользователь бюджета"
+              >
+                {users.map(u => (
+                  <option key={u.id} value={u.id}>{u.name || 'Без имени'}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setShowUsers(true)}
+                className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors"
+                title="Управление пользователями"
+              >
+                Пользователи
+              </button>
+            </div>
+            <div className="text-xs text-[var(--text-subtle)] mt-1.5">
+              Выбор действует на все вкладки раздела
+            </div>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-6">
+          <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
+            {[['monthly','По месяцу'],['expenses','Накопления'],['recurring','Постоянные'],['supplements','Спортпит'],['debts','Долги']].map(([id, label]) => (
+              <button key={id} onClick={() => setBudgetTab(id)}
+                className={`px-3 sm:px-4 py-2.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${budgetTab === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
-      {budgetTab === 'monthly'   && <BudgetMonthlyView   data={data} setData={setData} />}
-      {budgetTab === 'expenses'  && <BudgetExpensesView  data={data} setData={setData} />}
-      {budgetTab === 'recurring' && <BudgetRecurringView data={data} setData={setData} />}
-      {budgetTab === 'supplements' && <BudgetSupplementsView data={data} setData={setData} />}
-      {budgetTab === 'debts' && <BudgetDebtsView data={data} setData={setData} />}
+
+      {/* Контент: на ПК таблицы могут быть шире шапки, сама шапка не меняется */}
+      <div className="max-w-5xl mx-auto md:w-fit md:min-w-[min(100%,64rem)] md:max-w-full">
+        {budgetTab === 'monthly'   && <BudgetMonthlyView   key={activeId} data={scopedData} setData={scopedSetData} />}
+        {budgetTab === 'expenses'  && <BudgetExpensesView  key={activeId} data={scopedData} setData={scopedSetData} />}
+        {budgetTab === 'recurring' && <BudgetRecurringView key={activeId} data={scopedData} setData={scopedSetData} />}
+        {budgetTab === 'supplements' && <BudgetSupplementsView key={activeId} data={scopedData} setData={scopedSetData} />}
+        {budgetTab === 'debts' && <BudgetDebtsView key={activeId} data={scopedData} setData={scopedSetData} />}
+      </div>
+
+      {showUsers && (
+        <BudgetUsersModal data={data} setData={setData} onClose={() => setShowUsers(false)} />
+      )}
     </main>
+  );
+}
+
+function BudgetUsersModal({ data, setData, onClose }) {
+  const users = data.budgetUsers || [];
+  const activeId = data.activeBudgetUserId;
+  const [newName, setNewName] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState('');
+
+  const addUser = () => {
+    const name = newName.trim();
+    if (!name) return;
+    const id = crypto.randomUUID();
+    const user = { id, name, createdAt: Date.now(), updatedAt: Date.now() };
+    setData(d => ({
+      ...d,
+      budgetUsers: [...(d.budgetUsers || []), user],
+      activeBudgetUserId: id,
+      budgetByUser: { ...(d.budgetByUser || {}), [id]: emptyBudgetSlice() },
+    }));
+    setNewName('');
+  };
+
+  const startRename = (u) => {
+    setEditingId(u.id);
+    setEditName(u.name || '');
+  };
+
+  const saveRename = (id) => {
+    const name = editName.trim();
+    if (!name) return;
+    setData(d => ({
+      ...d,
+      budgetUsers: (d.budgetUsers || []).map(u => u.id === id ? { ...u, name, updatedAt: Date.now() } : u),
+    }));
+    setEditingId(null);
+  };
+
+  const removeUser = (id) => {
+    if (users.length <= 1) {
+      alert('Нельзя удалить последнего пользователя');
+      return;
+    }
+    const u = users.find(x => x.id === id);
+    if (!confirm(`Удалить пользователя «${u?.name || ''}» и все его данные бюджета?`)) return;
+    setData(d => {
+      const nextUsers = (d.budgetUsers || []).filter(x => x.id !== id);
+      const nextByUser = { ...(d.budgetByUser || {}) };
+      delete nextByUser[id];
+      const nextActive = d.activeBudgetUserId === id ? nextUsers[0]?.id : d.activeBudgetUserId;
+      return {
+        ...d,
+        budgetUsers: nextUsers,
+        budgetByUser: nextByUser,
+        activeBudgetUserId: nextActive,
+        deletedIds: withDeletedId(d, 'budgetUsers', id),
+      };
+    });
+  };
+
+  return (
+    <Modal title="Пользователи бюджета" onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-sm text-[var(--text-muted)]">
+          У каждого пользователя свой бюджет: план по месяцам, накопления, постоянные расходы, спортпит и долги.
+        </p>
+
+        <div className="space-y-2">
+          {users.map(u => (
+            <div key={u.id} className={`flex items-center gap-2 p-3 rounded-xl border ${u.id === activeId ? 'border-[var(--text)] bg-[var(--surface)]' : 'border-[var(--border)]'}`}>
+              {editingId === u.id ? (
+                <>
+                  <input
+                    autoFocus
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') saveRename(u.id); if (e.key === 'Escape') setEditingId(null); }}
+                    className="flex-1 bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-[var(--text)]"
+                  />
+                  <button type="button" onClick={() => saveRename(u.id)} className="text-sm px-2 py-1.5 rounded-lg bg-[var(--text)] text-white">OK</button>
+                  <button type="button" onClick={() => setEditingId(null)} className="text-sm px-2 py-1.5 text-[var(--text-muted)]">Отмена</button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setData(d => ({ ...d, activeBudgetUserId: u.id }))}
+                    className="flex-1 text-left text-sm font-medium min-w-0 truncate"
+                  >
+                    {u.name || 'Без имени'}
+                    {u.id === activeId && <span className="ml-2 text-[10px] uppercase tracking-wide text-[var(--text-subtle)]">активен</span>}
+                  </button>
+                  <button type="button" onClick={() => startRename(u)} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] px-2 py-1">Переименовать</button>
+                  <button type="button" onClick={() => removeUser(u.id)} className="text-xs text-red-500 hover:text-red-600 px-2 py-1" disabled={users.length <= 1}>Удалить</button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="pt-2 border-t border-[var(--border)]">
+          <div className="text-xs uppercase tracking-wide text-[var(--text-subtle)] font-medium mb-2">Новый пользователь</div>
+          <div className="flex gap-2">
+            <input
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') addUser(); }}
+              placeholder="Имя"
+              className="flex-1 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]"
+            />
+            <button type="button" onClick={addUser} className="btn-primary text-sm px-4 py-2 flex items-center gap-1.5">
+              <Icon name="plus" size={14} /> Добавить
+            </button>
+          </div>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -10946,7 +11272,7 @@ function SavingsListView({ data, setData }) {
       monthly:    [calcMonthly(a, getItemBalance(a).balance),  calcMonthly(b, getItemBalance(b).balance)],
       startDate:  [a.startDate,     b.startDate],
       targetDate: [a.targetDate,    b.targetDate],
-      months:     [monthsBetweenStr(a.startDate, a.targetDate), monthsBetweenStr(b.startDate, b.targetDate)],
+      months:     [monthsLeftFor(a), monthsLeftFor(b)],
     };
     const [av, bv] = vals[sortCol] || vals.targetDate;
     const cmp = typeof av === 'string' ? av.localeCompare(bv, 'ru') : av - bv;
@@ -10967,7 +11293,7 @@ function SavingsListView({ data, setData }) {
     { col: 'monthly',    label: '/ мес',       cls: 'text-right' },
     { col: 'startDate',  label: 'Начало',      cls: 'text-left' },
     { col: 'targetDate', label: 'До даты',     cls: 'text-left' },
-    { col: 'months',     label: 'Месяцев',     cls: 'text-right' },
+    { col: 'months',     label: 'Осталось',    cls: 'text-right' },
   ];
 
   // Account balance = net of ALL transactions (incl. archived items), so the
@@ -11022,9 +11348,9 @@ function SavingsListView({ data, setData }) {
         <EmptyState title="Нет накоплений" text="Добавьте плановые накопления и получите план по месяцам" />
       ) : (
         <>
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm" style={{ minWidth: '940px' }}>
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
+            <div className="overflow-x-auto md:overflow-x-visible">
+              <table className="text-sm w-max max-w-full md:max-w-none">
                 <thead>
                   <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                     {COLS.map(({ col, label, cls }) => (
@@ -11041,8 +11367,7 @@ function SavingsListView({ data, setData }) {
                     const cat      = cats.find(c => c.id === e.category) || { emoji: '💡', label: e.category };
                     const bal      = getItemBalance(e);
                     const monthly  = calcMonthly(e, bal.balance);
-                    const mTotal   = monthsBetweenStr(e.startDate, e.targetDate);
-                    const mLeft    = e.targetDate < curMonth ? 0 : monthsBetweenStr(curMonth, e.targetDate);
+                    const mLeft    = monthsLeftFor(e);
                     const isOver   = e.targetDate < curMonth;
                     const pct      = e.amount > 0 ? Math.min(100, Math.round((bal.balance / e.amount) * 100)) : 0;
                     return (
@@ -11073,10 +11398,10 @@ function SavingsListView({ data, setData }) {
                           {formatMonthShortBudget(e.targetDate)}
                           {isOver
                             ? <span className="block text-[10px] text-red-400">просрочен</span>
-                            : mLeft > 0 && <span className="block text-[10px] text-[var(--text-subtle)]">через {mLeft} мес</span>}
+                            : mLeft > 0 && <span className="block text-[10px] text-[var(--text-subtle)]">осталось {mLeft} мес</span>}
                         </td>
                         <td className="px-3 py-3 text-right whitespace-nowrap text-[var(--text-muted)]">
-                          {mTotal}
+                          {mLeft}
                         </td>
                         <td className="px-2 py-3">
                           <div className="flex gap-0.5 justify-end">
@@ -11212,10 +11537,11 @@ function SavingsDDSView({ data, setData }) {
   };
 
   const COLUMNS = [
-    { id: 'date',   label: 'Дата',   align: 'left',  getValue: t => t.date || '' },
-    { id: 'name',   label: 'Статья', align: 'left',  getValue: t => getExpName(t.expenseId) },
-    { id: 'type',   label: 'Тип',    align: 'left',  getValue: t => t.type === 'income' ? 'Доход' : 'Расход' },
-    { id: 'amount', label: 'Сумма',  align: 'right', getValue: t => t.amount || 0 },
+    { id: 'date',    label: 'Дата',        align: 'left',  getValue: t => t.date || '' },
+    { id: 'name',    label: 'Статья',      align: 'left',  getValue: t => getExpName(t.expenseId) },
+    { id: 'type',    label: 'Тип',         align: 'left',  getValue: t => t.type === 'income' ? 'Доход' : 'Расход' },
+    { id: 'amount',  label: 'Сумма',       align: 'right', getValue: t => t.amount || 0 },
+    { id: 'comment', label: 'Комментарий', align: 'left',  getValue: t => t.comment || '' },
   ];
 
   const getUniqueVals = (colId) => {
@@ -11286,9 +11612,9 @@ function SavingsDDSView({ data, setData }) {
       {transactions.length === 0 ? (
         <EmptyState title="Нет операций" text="Добавьте операцию — пополнение или списание со счёта накоплений" />
       ) : (
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm" style={{ minWidth: '520px' }}>
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
+          <div className="overflow-x-auto md:overflow-x-visible">
+            <table className="text-sm w-max max-w-full md:max-w-none">
               <thead>
                 <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                   {COLUMNS.map(col => (
@@ -11316,7 +11642,7 @@ function SavingsDDSView({ data, setData }) {
                   return (
                     <tr key={t.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${i % 2 === 1 ? 'bg-[var(--bg)]/50' : ''}`}>
                       <td className="px-3 py-2.5 whitespace-nowrap text-[var(--text-muted)]">{formatDate(t.date)}</td>
-                      <td className="px-3 py-2.5 font-medium">{getExpName(t.expenseId)}</td>
+                      <td className="px-3 py-2.5 font-medium whitespace-nowrap">{getExpName(t.expenseId)}</td>
                       <td className="px-3 py-2.5 whitespace-nowrap">
                         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${isIncome ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
                           {isIncome ? '↑ Доход' : '↓ Расход'}
@@ -11324,6 +11650,9 @@ function SavingsDDSView({ data, setData }) {
                       </td>
                       <td className={`px-3 py-2.5 text-right whitespace-nowrap font-semibold ${isIncome ? 'text-green-600' : 'text-red-500'}`}>
                         {isIncome ? '+' : '−'}{formatRub(t.amount)} ₽
+                      </td>
+                      <td className="px-3 py-2.5 text-[var(--text-subtle)] text-sm max-w-[280px]">
+                        {t.comment || '—'}
                       </td>
                       <td className="px-2 py-2.5">
                         <button onClick={() => removeTransaction(t.id)}
@@ -11378,11 +11707,13 @@ function SavingsDDSView({ data, setData }) {
         <SavingsTransactionModal
           expenses={expenses}
           transactions={transactions}
-          onSave={(expId, type, amount, date) => {
+          onSave={(expId, type, amount, date, comment) => {
             setData(d => ({
               ...d,
               savingsTransactions: [...(d.savingsTransactions || []), {
-                id: crypto.randomUUID(), expenseId: expId, type, amount, date, updatedAt: Date.now(),
+                id: crypto.randomUUID(), expenseId: expId, type, amount, date,
+                comment: (comment || '').trim(),
+                updatedAt: Date.now(),
               }],
             }));
             setShowAdd(false);
@@ -11400,6 +11731,7 @@ function SavingsTransactionModal({ expenses, transactions = [], preselectedId, p
   const [type, setType] = useState(preselectedType || 'income');
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(today);
+  const [comment, setComment] = useState('');
 
   const selectedExp = expenses.find(e => e.id === expenseId);
   const expBalance = selectedExp ? transactions.filter(t => t.expenseId === selectedExp.id).reduce((s, t) => s + (t.type === 'income' ? 1 : -1) * (t.amount || 0), 0) : 0;
@@ -11409,7 +11741,7 @@ function SavingsTransactionModal({ expenses, transactions = [], preselectedId, p
     const val = Number(amount);
     if (!val || val <= 0) return;
     if (!expenseId) return;
-    onSave(expenseId, type, val, date || today);
+    onSave(expenseId, type, val, date || today, comment);
   };
 
   return (
@@ -11448,6 +11780,10 @@ function SavingsTransactionModal({ expenses, transactions = [], preselectedId, p
           <label>Дата</label>
           <input type="date" value={date} onChange={e => setDate(e.target.value)} />
         </div>
+        <div>
+          <label>Комментарий <span className="text-[var(--text-subtle)] font-normal text-sm">— необязательно</span></label>
+          <textarea value={comment} onChange={e => setComment(e.target.value)} rows={2} placeholder="Например: перевод с карты, аванс..." />
+        </div>
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
           <button onClick={submit}
@@ -11464,11 +11800,13 @@ function BudgetExpenseModal({ expense, cats, balance = 0, onSave, onClose }) {
   const [form, setForm] = useState({ ...expense });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  const months  = form.startDate && form.targetDate ? monthsBetweenStr(form.startDate, form.targetDate) : 0;
-  // Same formula as the list/plan: (remaining − already saved) / months left
-  // from the current month — so the preview matches what shows after saving.
-  const monthly = (form.targetDate && Number(form.amount) > 0)
-    ? calcMonthly({ ...form, amount: Number(form.amount) }, balance)
+  const formExp = { ...form, amount: Number(form.amount) || 0 };
+  const monthsTotal = form.startDate && form.targetDate ? monthsBetweenStr(form.startDate, form.targetDate) : 0;
+  const monthsLeft  = form.targetDate ? monthsLeftFor(formExp) : 0;
+  const remaining   = Math.max(formExp.amount - (balance || 0), 0);
+  // Same formula as the list/plan: (цель − накоплено) / оставшиеся месяцы
+  const monthly = (form.targetDate && formExp.amount > 0)
+    ? calcMonthly(formExp, balance)
     : 0;
 
   const submit = () => {
@@ -11520,21 +11858,31 @@ function BudgetExpenseModal({ expense, cats, balance = 0, onSave, onClose }) {
               <span className="font-display text-4xl">{formatRub(monthly)}</span>
               <span className="text-[var(--text-muted)] text-base">₽ в месяц</span>
             </div>
-            <div className="text-sm text-[var(--text-subtle)]">
-              {months} {pluralMonths(months)} · {formatRub(Number(form.amount))} ₽ итого
+            <div className="text-sm text-[var(--text-subtle)] space-y-0.5">
+              <div>
+                Осталось {formatRub(remaining)} ₽ · {monthsLeft} {pluralMonths(monthsLeft)}
+                {balance > 0 ? ` (уже ${formatRub(balance)} ₽)` : ''}
+              </div>
+              {monthsTotal > 0 && monthsTotal !== monthsLeft && (
+                <div className="text-xs">Весь срок: {monthsTotal} {pluralMonths(monthsTotal)} · цель {formatRub(formExp.amount)} ₽</div>
+              )}
+              {monthsTotal > 0 && monthsTotal === monthsLeft && (
+                <div className="text-xs">Цель {formatRub(formExp.amount)} ₽</div>
+              )}
             </div>
-            {/* Mini timeline */}
+            {/* Mini timeline — remaining months from now (or start) to target */}
             <div className="mt-3 flex gap-1 flex-wrap">
-              {Array.from({ length: Math.min(months, 12) }).map((_, i) => {
-                const mo = addMonthsStr(form.startDate, i);
+              {Array.from({ length: Math.min(monthsLeft, 12) }).map((_, i) => {
+                const periodStart = (form.startDate && form.startDate > getCurrentMonthStr()) ? form.startDate : getCurrentMonthStr();
+                const mo = addMonthsStr(periodStart, i);
                 return (
                   <div key={mo} className="flex-1 min-w-[32px] text-center">
-                    <div className="h-6 bg-[var(--text)] rounded opacity-80" style={{ opacity: 0.3 + (i / Math.max(months - 1, 1)) * 0.7 }} />
+                    <div className="h-6 bg-[var(--text)] rounded opacity-80" style={{ opacity: 0.3 + (i / Math.max(monthsLeft - 1, 1)) * 0.7 }} />
                     <div className="text-[9px] text-[var(--text-subtle)] mt-0.5">{formatMonthShortBudget(mo).split(' ')[0]}</div>
                   </div>
                 );
               })}
-              {months > 12 && <div className="text-xs text-[var(--text-subtle)] self-end">+{months - 12} мес</div>}
+              {monthsLeft > 12 && <div className="text-xs text-[var(--text-subtle)] self-end">+{monthsLeft - 12} мес</div>}
             </div>
           </div>
         )}
@@ -11725,9 +12073,9 @@ function BudgetRecurringView({ data, setData }) {
           </div>
 
           {/* Table */}
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm" style={{ minWidth: '480px' }}>
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
+            <div className="overflow-x-auto md:overflow-x-visible">
+              <table className="text-sm w-max max-w-full md:max-w-none">
                 <thead>
                   <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                     {[
@@ -11950,9 +12298,9 @@ function DebtsListView({ data, setData }) {
       ) : (
         <>
           {active.length > 0 && (
-            <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm" style={{ minWidth: '860px' }}>
+            <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
+              <div className="overflow-x-auto md:overflow-x-visible">
+                <table className="text-sm w-max max-w-full md:max-w-none">
                   <thead>
                     <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                       {['Кому', 'Осталось', 'Сумма', '/ мес', 'Начало', 'До', 'Откуда', 'Напоминание'].map(h => (
@@ -11970,9 +12318,7 @@ function DebtsListView({ data, setData }) {
                       const pct = effective > 0 ? Math.min(100, Math.round((paid / effective) * 100)) : 0;
                       const hasSchedule = !!(d.startDate && d.targetDate);
                       const isOver = hasSchedule && d.targetDate < curMonth && remaining > 0;
-                      const mLeft = hasSchedule
-                        ? (d.targetDate < curMonth ? 0 : monthsBetweenStr(curMonth, d.targetDate))
-                        : 0;
+                      const mLeft = hasSchedule ? monthsLeftFor(d) : 0;
                       return (
                         <tr key={d.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${i % 2 === 1 ? 'bg-[var(--bg)]/50' : ''}`}>
                           <td className="px-3 py-3">
@@ -12181,9 +12527,9 @@ function DebtsPaymentsView({ data, setData }) {
       {!transactions.length ? (
         <EmptyState title="Нет платежей" text="Отмечайте плановые платежи или вносите внеплановые — остаток и план в «По месяцу» пересчитаются сами" />
       ) : (
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm" style={{ minWidth: '520px' }}>
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
+          <div className="overflow-x-auto md:overflow-x-visible">
+            <table className="text-sm w-max max-w-full md:max-w-none">
               <thead>
                 <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                   {COLS.map(({ col, label, cls }) => (
@@ -12365,9 +12711,7 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
   const effective = (Number(form.amount) || 0) + (increased || 0);
   const remaining = Math.max(effective - (paid || 0), 0);
   const months = form.startDate && form.targetDate ? monthsBetweenStr(form.startDate, form.targetDate) : 0;
-  const monthsLeft = form.targetDate
-    ? (form.targetDate < getCurrentMonthStr() ? 0 : monthsBetweenStr(getCurrentMonthStr(), form.targetDate))
-    : 0;
+  const monthsLeft = monthsLeftFor({ ...form, amount: effective });
   const monthly = (form.targetDate && effective > 0)
     ? calcMonthly({ ...form, amount: effective }, paid)
     : 0;
@@ -12693,9 +13037,9 @@ function BudgetSupplementsView({ data, setData }) {
       {!items.length ? (
         <EmptyState title="Нет добавок" text="Добавьте БАДы или спортивное питание — укажите количество, дозировку и стоимость" />
       ) : (
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm" style={{ minWidth: '640px' }}>
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
+          <div className="overflow-x-auto md:overflow-x-visible">
+            <table className="text-sm w-max max-w-full md:max-w-none">
               <thead>
                 <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
                   <th className="px-3 py-3 w-10">
