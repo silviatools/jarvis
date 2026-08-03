@@ -10413,13 +10413,13 @@ function BudgetMonthlyView({ data, setData }) {
     return b;
   };
 
-  // Накопления: per savings-category, sum calcMonthly for expenses active in
-  // that month — computed AS OF that column's month, so future columns show
-  // their own required contribution, not this month's figure twelve times.
+  // Накопления: одна сумма /мес от текущего остатка на все месяцы графика.
+  // Не передаём колонку как asOfMonth — иначе один и тот же остаток делился
+  // на всё меньшее число месяцев и взносы «росли» к концу срока.
   const getExpCatVal = (catId, month) =>
     activeExp
       .filter(e => e.category === catId && e.startDate <= month && e.targetDate >= month)
-      .reduce((s, e) => s + calcMonthly(e, getExpBalance(e), month), 0);
+      .reduce((s, e) => s + calcMonthly(e, getExpBalance(e)), 0);
 
   // Постоянные: per recurring-category, fixed monthly sum (same every month)
   const getRecCatVal = (catId) =>
