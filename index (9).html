@@ -291,15 +291,17 @@ const PRESET_BODY_FIELDS = [
 
 const DEFAULT_BODY_PHOTO_CATEGORIES = ['Спереди', 'Сбоку', 'Спина'];
 
-const DEFAULT_DATA = () => ({
-  supplements: [], meals: [], taken: {}, rationStock: 0, cookingPlans: [], containers: [],
-  dietLog: [],
-  dietPlan: { calories: '', protein: '', fat: '', carbs: '' },
-  bodyFields: DEFAULT_BODY_FIELDS.map(f => ({ ...f })),
-  bodyEntries: [],
-  bodyPhotoCategories: [...DEFAULT_BODY_PHOTO_CATEGORIES],
-  cars: [],
-  serviceRecords: [],
+const DEFAULT_BUDGET_USER_ID = 'default-budget-user';
+
+const BUDGET_SLICE_KEYS = [
+  'budgetExpenses', 'budgetCategories', 'budgetRecurring',
+  'budgetPlanCategories', 'budgetPlanValues', 'budgetRecurringCategories',
+  'savingsActual', 'savingsCorrections', 'savingsTransactions',
+  'budgetDebts', 'budgetIncomeSources', 'budgetIncomeValues',
+  'budgetCategoryOrder', 'budgetSupplements', 'budgetSupplementAssignments',
+];
+
+const emptyBudgetSlice = () => ({
   budgetExpenses: [],
   budgetCategories: [],
   budgetRecurring: [],
@@ -310,6 +312,72 @@ const DEFAULT_DATA = () => ({
   savingsCorrections: [],
   savingsTransactions: [],
   budgetDebts: [],
+  budgetIncomeSources: [],
+  budgetIncomeValues: {},
+  budgetCategoryOrder: [],
+  budgetSupplements: [],
+  budgetSupplementAssignments: {},
+});
+
+const extractBudgetSlice = (data) => {
+  const slice = emptyBudgetSlice();
+  BUDGET_SLICE_KEYS.forEach(k => {
+    if (data && data[k] !== undefined) slice[k] = data[k];
+  });
+  return slice;
+};
+
+const budgetSliceHasData = (slice) => BUDGET_SLICE_KEYS.some(k => {
+  const v = slice && slice[k];
+  if (Array.isArray(v)) return v.length > 0;
+  if (v && typeof v === 'object') return Object.keys(v).length > 0;
+  return false;
+});
+
+// Migrates legacy flat budget keys into per-user buckets. Stable default id
+// keeps independently-migrating devices from creating duplicate "Основной" users.
+const normalizeBudgetUsers = (data) => {
+  if (!data || typeof data !== 'object') return data;
+  const d = { ...data };
+  const legacySlice = extractBudgetSlice(d);
+  const hasLegacy = budgetSliceHasData(legacySlice);
+
+  if (Array.isArray(d.budgetUsers) && d.budgetUsers.length > 0) {
+    const byUser = { ...(d.budgetByUser || {}) };
+    d.budgetUsers.forEach(u => {
+      if (u?.id && !byUser[u.id]) byUser[u.id] = emptyBudgetSlice();
+    });
+    if (hasLegacy) {
+      const firstId = d.budgetUsers[0].id;
+      if (!budgetSliceHasData(byUser[firstId] || {})) byUser[firstId] = legacySlice;
+    }
+    BUDGET_SLICE_KEYS.forEach(k => { delete d[k]; });
+    let active = d.activeBudgetUserId;
+    if (!active || !d.budgetUsers.some(u => u.id === active)) active = d.budgetUsers[0].id;
+    return { ...d, budgetByUser: byUser, activeBudgetUserId: active };
+  }
+
+  BUDGET_SLICE_KEYS.forEach(k => { delete d[k]; });
+  return {
+    ...d,
+    budgetUsers: [{ id: DEFAULT_BUDGET_USER_ID, name: 'Основной', createdAt: Date.now(), updatedAt: Date.now() }],
+    activeBudgetUserId: DEFAULT_BUDGET_USER_ID,
+    budgetByUser: { [DEFAULT_BUDGET_USER_ID]: legacySlice },
+  };
+};
+
+const DEFAULT_DATA = () => ({
+  supplements: [], meals: [], taken: {}, rationStock: 0, cookingPlans: [], containers: [],
+  dietLog: [],
+  dietPlan: { calories: '', protein: '', fat: '', carbs: '' },
+  bodyFields: DEFAULT_BODY_FIELDS.map(f => ({ ...f })),
+  bodyEntries: [],
+  bodyPhotoCategories: [...DEFAULT_BODY_PHOTO_CATEGORIES],
+  cars: [],
+  serviceRecords: [],
+  budgetUsers: [{ id: DEFAULT_BUDGET_USER_ID, name: 'Основной', createdAt: 0, updatedAt: 0 }],
+  activeBudgetUserId: DEFAULT_BUDGET_USER_ID,
+  budgetByUser: { [DEFAULT_BUDGET_USER_ID]: emptyBudgetSlice() },
   bodyModes: [],
   activeBodyModeId: null,
   bodyProgressStartDate: '',
@@ -440,7 +508,7 @@ const loadData = () => {
     if (!raw) return DEFAULT_DATA();
     const parsed = JSON.parse(raw);
     parsed.settings = { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) };
-    return parsed;
+    return normalizeBudgetUsers(parsed);
   } catch {
     return DEFAULT_DATA();
   }
@@ -620,12 +688,36 @@ const mergeDateLogEntries = (localArr, serverArr, preferLocal, deletedForKey) =>
   return result.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 };
 
+const mergeBudgetSlice = (localSlice, serverSlice, preferLocal, mergedDeletedIds) => {
+  const ls = localSlice || {};
+  const ss = serverSlice || {};
+  const out = {};
+  const keys = new Set([...Object.keys(ls), ...Object.keys(ss), ...BUDGET_SLICE_KEYS]);
+  keys.forEach(sk => {
+    const lv = ls[sk], sv = ss[sk];
+    if (sv === undefined) { out[sk] = lv; return; }
+    if (lv === undefined) { out[sk] = sv; return; }
+    if (Array.isArray(lv) || Array.isArray(sv)) {
+      out[sk] = mergeIdArrays(lv, sv, preferLocal, mergedDeletedIds[sk]);
+    } else if (isPlainObject(lv) && isPlainObject(sv)) {
+      out[sk] = preferLocal ? { ...sv, ...lv } : { ...lv, ...sv };
+    } else {
+      out[sk] = preferLocal ? lv : sv;
+    }
+  });
+  return out;
+};
+
 const mergeAppData = (local, server, mode = 'pull') => {
+  local = normalizeBudgetUsers(local || {});
+  server = normalizeBudgetUsers(server || {});
   const merged = { ...local, ...server };
   const mergedDeletedIds = mergeDeletedIdsMaps(local?.deletedIds, server?.deletedIds);
   const keys = new Set([...Object.keys(local || {}), ...Object.keys(server || {})]);
   for (const key of keys) {
     if (key === 'deletedIds') { merged[key] = mergedDeletedIds; continue; }
+    // Flat legacy budget keys are folded into budgetByUser by normalizeBudgetUsers.
+    if (BUDGET_SLICE_KEYS.includes(key)) continue;
     const l = local ? local[key] : undefined;
     const s = server ? server[key] : undefined;
     if (s === undefined) { merged[key] = l; continue; }
@@ -638,6 +730,13 @@ const mergeAppData = (local, server, mode = 'pull') => {
       const base = preferLocal ? { ...s, ...l } : { ...l, ...s };
       base.columns = mergeIdArrays(l.columns || [], s.columns || [], preferLocal, mergedDeletedIds['kanbanColumns']);
       merged[key] = base;
+    } else if (key === 'budgetByUser' && isPlainObject(l) && isPlainObject(s)) {
+      const userIds = new Set([...Object.keys(l), ...Object.keys(s)]);
+      const out = {};
+      userIds.forEach(uid => {
+        out[uid] = mergeBudgetSlice(l[uid], s[uid], preferLocal, mergedDeletedIds);
+      });
+      merged[key] = out;
     } else if (DATE_LOG_KEYS.has(key) && (Array.isArray(l) || Array.isArray(s))) {
       merged[key] = mergeDateLogEntries(l, s, preferLocal, mergedDeletedIds[key]);
     } else if (Array.isArray(l) || Array.isArray(s)) {
@@ -658,7 +757,9 @@ const mergeAppData = (local, server, mode = 'pull') => {
       merged[key] = preferLocal ? l : s;
     }
   }
-  return merged;
+  // Drop any residual flat budget keys so budgetByUser stays the only source.
+  BUDGET_SLICE_KEYS.forEach(k => { delete merged[k]; });
+  return normalizeBudgetUsers(merged);
 };
 
 // Auto-stamps `updatedAt` on any id-array item that actually changed, so no
@@ -711,6 +812,21 @@ const stampUpdatedAt = (prev, next) => {
     });
     if (arrChanged) { out[key] = stamped; changed = true; }
   }
+  // Per-user budget slices hold the real entity arrays — stamp them too.
+  if (isPlainObject(out.budgetByUser)) {
+    const prevBy = isPlainObject(prev.budgetByUser) ? prev.budgetByUser : {};
+    let byChanged = false;
+    const nextBy = { ...out.budgetByUser };
+    for (const uid of Object.keys(nextBy)) {
+      if (!isPlainObject(nextBy[uid])) continue;
+      const stampedSlice = stampUpdatedAt(prevBy[uid] || {}, nextBy[uid]);
+      if (stampedSlice !== nextBy[uid]) {
+        nextBy[uid] = stampedSlice;
+        byChanged = true;
+      }
+    }
+    if (byChanged) { out.budgetByUser = nextBy; changed = true; }
+  }
   return changed ? out : next;
 };
 
@@ -732,7 +848,7 @@ const fetchServerData = async () => {
     const json = await res.json();
     if (!json || Object.keys(json).length === 0) return null;
     json.settings = { ...DEFAULT_SETTINGS, ...(json.settings || {}) };
-    return json;
+    return normalizeBudgetUsers(json);
   } catch {
     return null;
   }
@@ -9837,12 +9953,81 @@ const pluralMonths = (n) => pluralRu(n, ['месяц', 'месяца', 'меся
 
 function BudgetView({ data, setData }) {
   const [budgetTab, setBudgetTab] = useState('monthly');
+  const [showUsers, setShowUsers] = useState(false);
+
+  const users = data.budgetUsers || [];
+  const activeId = data.activeBudgetUserId || users[0]?.id || DEFAULT_BUDGET_USER_ID;
+  const activeUser = users.find(u => u.id === activeId) || users[0] || null;
+  const slice = (data.budgetByUser && data.budgetByUser[activeId]) || emptyBudgetSlice();
+
+  // Child views still read/write flat budget* keys; this adapter maps them
+  // onto the active user's slice inside budgetByUser.
+  const scopedData = { ...data, ...slice };
+
+  const scopedSetData = React.useCallback((updater) => {
+    setData(d => {
+      const uid = d.activeBudgetUserId || (d.budgetUsers || [])[0]?.id || DEFAULT_BUDGET_USER_ID;
+      const curSlice = { ...emptyBudgetSlice(), ...((d.budgetByUser || {})[uid] || {}) };
+      const virtual = { ...d, ...curSlice };
+      const nextVirtual = typeof updater === 'function' ? updater(virtual) : updater;
+      if (!nextVirtual || typeof nextVirtual !== 'object') return d;
+
+      const newSlice = { ...curSlice };
+      BUDGET_SLICE_KEYS.forEach(k => {
+        if (k in nextVirtual) newSlice[k] = nextVirtual[k];
+      });
+
+      const root = { ...nextVirtual };
+      BUDGET_SLICE_KEYS.forEach(k => { delete root[k]; });
+
+      return {
+        ...root,
+        budgetUsers: nextVirtual.budgetUsers !== undefined ? nextVirtual.budgetUsers : d.budgetUsers,
+        activeBudgetUserId: nextVirtual.activeBudgetUserId !== undefined ? nextVirtual.activeBudgetUserId : d.activeBudgetUserId,
+        budgetByUser: {
+          ...(d.budgetByUser || {}),
+          ...(nextVirtual.budgetByUser || {}),
+          [uid]: newSlice,
+        },
+      };
+    });
+  }, [setData]);
+
+  const setActiveUser = (id) => setData(d => ({ ...d, activeBudgetUserId: id }));
+
   return (
     <main className="max-w-5xl mx-auto px-4 sm:px-6 pt-6 md:pt-8 pb-8 fade-in">
       <div className="mb-6 flex items-baseline justify-between gap-4">
         <div className="font-display text-2xl">Бюджет</div>
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Планирование</div>
       </div>
+
+      <div className="mb-5 flex flex-wrap items-center gap-2">
+        <div className="text-xs uppercase tracking-wide text-[var(--text-subtle)] font-medium mr-1">Пользователь</div>
+        <select
+          value={activeId}
+          onChange={e => setActiveUser(e.target.value)}
+          className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)] min-w-[10rem]"
+        >
+          {users.map(u => (
+            <option key={u.id} value={u.id}>{u.name || 'Без имени'}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => setShowUsers(true)}
+          className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors"
+          title="Управление пользователями"
+        >
+          Управление
+        </button>
+        {activeUser && (
+          <span className="text-xs text-[var(--text-subtle)] ml-auto hidden sm:inline">
+            Данные только для: <span className="text-[var(--text-muted)] font-medium">{activeUser.name || 'Без имени'}</span>
+          </span>
+        )}
+      </div>
+
       <div className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-6">
         <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
           {[['monthly','По месяцу'],['expenses','Накопления'],['recurring','Постоянные'],['supplements','Спортпит'],['debts','Долги']].map(([id, label]) => (
@@ -9853,12 +10038,134 @@ function BudgetView({ data, setData }) {
           ))}
         </div>
       </div>
-      {budgetTab === 'monthly'   && <BudgetMonthlyView   data={data} setData={setData} />}
-      {budgetTab === 'expenses'  && <BudgetExpensesView  data={data} setData={setData} />}
-      {budgetTab === 'recurring' && <BudgetRecurringView data={data} setData={setData} />}
-      {budgetTab === 'supplements' && <BudgetSupplementsView data={data} setData={setData} />}
-      {budgetTab === 'debts' && <BudgetDebtsView data={data} setData={setData} />}
+      {budgetTab === 'monthly'   && <BudgetMonthlyView   data={scopedData} setData={scopedSetData} />}
+      {budgetTab === 'expenses'  && <BudgetExpensesView  data={scopedData} setData={scopedSetData} />}
+      {budgetTab === 'recurring' && <BudgetRecurringView data={scopedData} setData={scopedSetData} />}
+      {budgetTab === 'supplements' && <BudgetSupplementsView data={scopedData} setData={scopedSetData} />}
+      {budgetTab === 'debts' && <BudgetDebtsView data={scopedData} setData={scopedSetData} />}
+
+      {showUsers && (
+        <BudgetUsersModal data={data} setData={setData} onClose={() => setShowUsers(false)} />
+      )}
     </main>
+  );
+}
+
+function BudgetUsersModal({ data, setData, onClose }) {
+  const users = data.budgetUsers || [];
+  const activeId = data.activeBudgetUserId;
+  const [newName, setNewName] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState('');
+
+  const addUser = () => {
+    const name = newName.trim();
+    if (!name) return;
+    const id = crypto.randomUUID();
+    const user = { id, name, createdAt: Date.now(), updatedAt: Date.now() };
+    setData(d => ({
+      ...d,
+      budgetUsers: [...(d.budgetUsers || []), user],
+      activeBudgetUserId: id,
+      budgetByUser: { ...(d.budgetByUser || {}), [id]: emptyBudgetSlice() },
+    }));
+    setNewName('');
+  };
+
+  const startRename = (u) => {
+    setEditingId(u.id);
+    setEditName(u.name || '');
+  };
+
+  const saveRename = (id) => {
+    const name = editName.trim();
+    if (!name) return;
+    setData(d => ({
+      ...d,
+      budgetUsers: (d.budgetUsers || []).map(u => u.id === id ? { ...u, name, updatedAt: Date.now() } : u),
+    }));
+    setEditingId(null);
+  };
+
+  const removeUser = (id) => {
+    if (users.length <= 1) {
+      alert('Нельзя удалить последнего пользователя');
+      return;
+    }
+    const u = users.find(x => x.id === id);
+    if (!confirm(`Удалить пользователя «${u?.name || ''}» и все его данные бюджета?`)) return;
+    setData(d => {
+      const nextUsers = (d.budgetUsers || []).filter(x => x.id !== id);
+      const nextByUser = { ...(d.budgetByUser || {}) };
+      delete nextByUser[id];
+      const nextActive = d.activeBudgetUserId === id ? nextUsers[0]?.id : d.activeBudgetUserId;
+      return {
+        ...d,
+        budgetUsers: nextUsers,
+        budgetByUser: nextByUser,
+        activeBudgetUserId: nextActive,
+        deletedIds: withDeletedId(d, 'budgetUsers', id),
+      };
+    });
+  };
+
+  return (
+    <Modal title="Пользователи бюджета" onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-sm text-[var(--text-muted)]">
+          У каждого пользователя свой бюджет: план по месяцам, накопления, постоянные расходы, спортпит и долги.
+        </p>
+
+        <div className="space-y-2">
+          {users.map(u => (
+            <div key={u.id} className={`flex items-center gap-2 p-3 rounded-xl border ${u.id === activeId ? 'border-[var(--text)] bg-[var(--surface)]' : 'border-[var(--border)]'}`}>
+              {editingId === u.id ? (
+                <>
+                  <input
+                    autoFocus
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') saveRename(u.id); if (e.key === 'Escape') setEditingId(null); }}
+                    className="flex-1 bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-[var(--text)]"
+                  />
+                  <button type="button" onClick={() => saveRename(u.id)} className="text-sm px-2 py-1.5 rounded-lg bg-[var(--text)] text-white">OK</button>
+                  <button type="button" onClick={() => setEditingId(null)} className="text-sm px-2 py-1.5 text-[var(--text-muted)]">Отмена</button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setData(d => ({ ...d, activeBudgetUserId: u.id }))}
+                    className="flex-1 text-left text-sm font-medium min-w-0 truncate"
+                  >
+                    {u.name || 'Без имени'}
+                    {u.id === activeId && <span className="ml-2 text-[10px] uppercase tracking-wide text-[var(--text-subtle)]">активен</span>}
+                  </button>
+                  <button type="button" onClick={() => startRename(u)} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] px-2 py-1">Переименовать</button>
+                  <button type="button" onClick={() => removeUser(u.id)} className="text-xs text-red-500 hover:text-red-600 px-2 py-1" disabled={users.length <= 1}>Удалить</button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="pt-2 border-t border-[var(--border)]">
+          <div className="text-xs uppercase tracking-wide text-[var(--text-subtle)] font-medium mb-2">Новый пользователь</div>
+          <div className="flex gap-2">
+            <input
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') addUser(); }}
+              placeholder="Имя"
+              className="flex-1 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]"
+            />
+            <button type="button" onClick={addUser} className="btn-primary text-sm px-4 py-2 flex items-center gap-1.5">
+              <Icon name="plus" size={14} /> Добавить
+            </button>
+          </div>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
