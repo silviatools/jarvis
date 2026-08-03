@@ -9810,15 +9810,29 @@ const formatMonthShortBudget = (ym) => {
   return `${names[m - 1]} ${y}`;
 };
 
-// Monthly contribution = remaining amount / months left. `asOfMonth` lets the
-// plan table compute the figure for a specific column month instead of always
-// showing the current month's number in all twelve columns.
+// Monthly contribution is always derived (never stored):
+//   (цель − уже накоплено) / оставшиеся месяцы
+// so a mid-period amount change or an unplanned top-up instantly changes /мес.
+// `asOfMonth` lets the plan table compute the figure for a specific column
+// month instead of repeating the current month's number in all twelve columns.
+// Period starts at max(asOfMonth, startDate) so months before «Начать копить»
+// are not counted.
 const calcMonthly = (exp, balance, asOfMonth) => {
   const fromMonth = asOfMonth || getCurrentMonthStr();
   const remaining = Math.max((exp.amount || 0) - (balance || 0), 0);
   if (remaining <= 0) return 0;
-  const mLeft = exp.targetDate <= fromMonth ? 1 : monthsBetweenStr(fromMonth, exp.targetDate);
+  const periodStart = (exp.startDate && exp.startDate > fromMonth) ? exp.startDate : fromMonth;
+  if (!exp.targetDate || exp.targetDate < periodStart) return remaining;
+  const mLeft = exp.targetDate <= periodStart ? 1 : monthsBetweenStr(periodStart, exp.targetDate);
   return Math.ceil(remaining / mLeft);
+};
+
+const monthsLeftFor = (exp, asOfMonth) => {
+  const fromMonth = asOfMonth || getCurrentMonthStr();
+  if (!exp?.targetDate) return 0;
+  const periodStart = (exp.startDate && exp.startDate > fromMonth) ? exp.startDate : fromMonth;
+  if (exp.targetDate < periodStart) return 0;
+  return monthsBetweenStr(periodStart, exp.targetDate);
 };
 
 const formatRub = (n) => {
@@ -10903,7 +10917,7 @@ function SavingsListView({ data, setData }) {
       monthly:    [calcMonthly(a, getItemBalance(a).balance),  calcMonthly(b, getItemBalance(b).balance)],
       startDate:  [a.startDate,     b.startDate],
       targetDate: [a.targetDate,    b.targetDate],
-      months:     [monthsBetweenStr(a.startDate, a.targetDate), monthsBetweenStr(b.startDate, b.targetDate)],
+      months:     [monthsLeftFor(a), monthsLeftFor(b)],
     };
     const [av, bv] = vals[sortCol] || vals.targetDate;
     const cmp = typeof av === 'string' ? av.localeCompare(bv, 'ru') : av - bv;
@@ -10924,7 +10938,7 @@ function SavingsListView({ data, setData }) {
     { col: 'monthly',    label: '/ мес',       cls: 'text-right' },
     { col: 'startDate',  label: 'Начало',      cls: 'text-left' },
     { col: 'targetDate', label: 'До даты',     cls: 'text-left' },
-    { col: 'months',     label: 'Месяцев',     cls: 'text-right' },
+    { col: 'months',     label: 'Осталось',    cls: 'text-right' },
   ];
 
   // Account balance = net of ALL transactions (incl. archived items), so the
@@ -10998,8 +11012,7 @@ function SavingsListView({ data, setData }) {
                     const cat      = cats.find(c => c.id === e.category) || { emoji: '💡', label: e.category };
                     const bal      = getItemBalance(e);
                     const monthly  = calcMonthly(e, bal.balance);
-                    const mTotal   = monthsBetweenStr(e.startDate, e.targetDate);
-                    const mLeft    = e.targetDate < curMonth ? 0 : monthsBetweenStr(curMonth, e.targetDate);
+                    const mLeft    = monthsLeftFor(e);
                     const isOver   = e.targetDate < curMonth;
                     const pct      = e.amount > 0 ? Math.min(100, Math.round((bal.balance / e.amount) * 100)) : 0;
                     return (
@@ -11030,10 +11043,10 @@ function SavingsListView({ data, setData }) {
                           {formatMonthShortBudget(e.targetDate)}
                           {isOver
                             ? <span className="block text-[10px] text-red-400">просрочен</span>
-                            : mLeft > 0 && <span className="block text-[10px] text-[var(--text-subtle)]">через {mLeft} мес</span>}
+                            : mLeft > 0 && <span className="block text-[10px] text-[var(--text-subtle)]">осталось {mLeft} мес</span>}
                         </td>
                         <td className="px-3 py-3 text-right whitespace-nowrap text-[var(--text-muted)]">
-                          {mTotal}
+                          {mLeft}
                         </td>
                         <td className="px-2 py-3">
                           <div className="flex gap-0.5 justify-end">
@@ -11432,11 +11445,13 @@ function BudgetExpenseModal({ expense, cats, balance = 0, onSave, onClose }) {
   const [form, setForm] = useState({ ...expense });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  const months  = form.startDate && form.targetDate ? monthsBetweenStr(form.startDate, form.targetDate) : 0;
-  // Same formula as the list/plan: (remaining − already saved) / months left
-  // from the current month — so the preview matches what shows after saving.
-  const monthly = (form.targetDate && Number(form.amount) > 0)
-    ? calcMonthly({ ...form, amount: Number(form.amount) }, balance)
+  const formExp = { ...form, amount: Number(form.amount) || 0 };
+  const monthsTotal = form.startDate && form.targetDate ? monthsBetweenStr(form.startDate, form.targetDate) : 0;
+  const monthsLeft  = form.targetDate ? monthsLeftFor(formExp) : 0;
+  const remaining   = Math.max(formExp.amount - (balance || 0), 0);
+  // Same formula as the list/plan: (цель − накоплено) / оставшиеся месяцы
+  const monthly = (form.targetDate && formExp.amount > 0)
+    ? calcMonthly(formExp, balance)
     : 0;
 
   const submit = () => {
@@ -11488,21 +11503,31 @@ function BudgetExpenseModal({ expense, cats, balance = 0, onSave, onClose }) {
               <span className="font-display text-4xl">{formatRub(monthly)}</span>
               <span className="text-[var(--text-muted)] text-base">₽ в месяц</span>
             </div>
-            <div className="text-sm text-[var(--text-subtle)]">
-              {months} {pluralMonths(months)} · {formatRub(Number(form.amount))} ₽ итого
+            <div className="text-sm text-[var(--text-subtle)] space-y-0.5">
+              <div>
+                Осталось {formatRub(remaining)} ₽ · {monthsLeft} {pluralMonths(monthsLeft)}
+                {balance > 0 ? ` (уже ${formatRub(balance)} ₽)` : ''}
+              </div>
+              {monthsTotal > 0 && monthsTotal !== monthsLeft && (
+                <div className="text-xs">Весь срок: {monthsTotal} {pluralMonths(monthsTotal)} · цель {formatRub(formExp.amount)} ₽</div>
+              )}
+              {monthsTotal > 0 && monthsTotal === monthsLeft && (
+                <div className="text-xs">Цель {formatRub(formExp.amount)} ₽</div>
+              )}
             </div>
-            {/* Mini timeline */}
+            {/* Mini timeline — remaining months from now (or start) to target */}
             <div className="mt-3 flex gap-1 flex-wrap">
-              {Array.from({ length: Math.min(months, 12) }).map((_, i) => {
-                const mo = addMonthsStr(form.startDate, i);
+              {Array.from({ length: Math.min(monthsLeft, 12) }).map((_, i) => {
+                const periodStart = (form.startDate && form.startDate > getCurrentMonthStr()) ? form.startDate : getCurrentMonthStr();
+                const mo = addMonthsStr(periodStart, i);
                 return (
                   <div key={mo} className="flex-1 min-w-[32px] text-center">
-                    <div className="h-6 bg-[var(--text)] rounded opacity-80" style={{ opacity: 0.3 + (i / Math.max(months - 1, 1)) * 0.7 }} />
+                    <div className="h-6 bg-[var(--text)] rounded opacity-80" style={{ opacity: 0.3 + (i / Math.max(monthsLeft - 1, 1)) * 0.7 }} />
                     <div className="text-[9px] text-[var(--text-subtle)] mt-0.5">{formatMonthShortBudget(mo).split(' ')[0]}</div>
                   </div>
                 );
               })}
-              {months > 12 && <div className="text-xs text-[var(--text-subtle)] self-end">+{months - 12} мес</div>}
+              {monthsLeft > 12 && <div className="text-xs text-[var(--text-subtle)] self-end">+{monthsLeft - 12} мес</div>}
             </div>
           </div>
         )}
