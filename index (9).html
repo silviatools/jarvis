@@ -10038,11 +10038,11 @@ function BudgetView({ data, setData }) {
           ))}
         </div>
       </div>
-      {budgetTab === 'monthly'   && <BudgetMonthlyView   data={scopedData} setData={scopedSetData} />}
-      {budgetTab === 'expenses'  && <BudgetExpensesView  data={scopedData} setData={scopedSetData} />}
-      {budgetTab === 'recurring' && <BudgetRecurringView data={scopedData} setData={scopedSetData} />}
-      {budgetTab === 'supplements' && <BudgetSupplementsView data={scopedData} setData={scopedSetData} />}
-      {budgetTab === 'debts' && <BudgetDebtsView data={scopedData} setData={scopedSetData} />}
+      {budgetTab === 'monthly'   && <BudgetMonthlyView   key={activeId} data={scopedData} setData={scopedSetData} />}
+      {budgetTab === 'expenses'  && <BudgetExpensesView  key={activeId} data={scopedData} setData={scopedSetData} />}
+      {budgetTab === 'recurring' && <BudgetRecurringView key={activeId} data={scopedData} setData={scopedSetData} />}
+      {budgetTab === 'supplements' && <BudgetSupplementsView key={activeId} data={scopedData} setData={scopedSetData} />}
+      {budgetTab === 'debts' && <BudgetDebtsView key={activeId} data={scopedData} setData={scopedSetData} />}
 
       {showUsers && (
         <BudgetUsersModal data={data} setData={setData} onClose={() => setShowUsers(false)} />
