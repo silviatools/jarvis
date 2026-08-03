@@ -11207,7 +11207,7 @@ function BudgetStatementImportModal({ rows, fileName, editMode, data, setData, a
             className="btn-primary flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
             title={unmappedExpenseStats.length ? 'Сначала распределите все расходы' : 'Записать факт по месяцам'}
           >
-            Применить факт
+            {editMode ? 'Сохранить маппинг' : 'Применить факт'}
           </button>
         </div>
       </div>
