@@ -1170,48 +1170,45 @@ def _tick():
 
 # ── Alice (Yandex Dialogs) voice skill ──────────────────────────────────────
 # Webhook for a Yandex Dialogs skill: on "доброе утро" (or any invocation of
-# the skill) it reads back today's morning-relevant tasks. Point the skill's
-# webhook URL at POST /api/alice — see https://dialogs.yandex.ru/developer
+# the skill) it reads back today's tasks from the «Босс» section, using the
+# exact same morning/evening split as the BossWidget on the site
+# (index (9).html: getBossPeriod / BossWidget) so the voice answer always
+# matches what's shown on the homepage at that moment.
+# Point the skill's webhook URL at POST /api/alice — see https://dialogs.yandex.ru/developer
 
-WEEKDAYS_RU_FULL = ["понедельник", "вторник", "среда", "четверг",
-                     "пятница", "суббота", "воскресенье"]
+WEEKDAYS_RU_ACCUSATIVE = ["понедельник", "вторник", "среду", "четверг",
+                          "пятницу", "субботу", "воскресенье"]
 
 
-def build_morning_brief(app: dict) -> str:
-    today = today_msk()
-    today_iso = today.isoformat()
-    today_js = today.isoweekday() % 7  # 0=Sun..6=Sat, matches JS getDay()
+def get_boss_period() -> str | None:
+    """Mirrors getBossPeriod() in index (9).html: 5–13 → утро, 13–24 → вечер."""
+    h = now_msk().hour
+    if 5 <= h < 13:
+        return "morning"
+    if 13 <= h < 24:
+        return "evening"
+    return None
 
-    chores = [c for c in (app.get("chores") or [])
-              if not c.get("archived") and is_due_today(c)]
-    boss = [t for t in (app.get("bossTasks") or [])
-            if not t.get("archived")
-            and t.get("period") in ("morning", "allday")
-            and today_js in (t.get("days") or [])]
 
-    kanban_due = []
-    for col in (app.get("kanban") or {}).get("columns") or []:
-        title = (col.get("title") or "").lower()
-        if "готов" in title or "заверш" in title or "done" in title:
-            continue
-        for t in col.get("tasks") or []:
-            if t.get("dueDate") == today_iso:
-                kanban_due.append(t.get("title") or "Задача")
+def build_boss_brief(app: dict) -> str:
+    period = get_boss_period()
+    weekday = WEEKDAYS_RU_ACCUSATIVE[today_msk().weekday()]
 
-    parts = [f"Доброе утро! Сегодня {human_date(today_iso)}, {WEEKDAYS_RU_FULL[today.weekday()]}."]
+    if period is None:
+        return "Сейчас не время утренних или вечерних дел по разделу «Босс» — загляните после пяти утра."
 
-    if chores:
-        parts.append("По дому: " + ", ".join(c.get("name") or "дело" for c in chores) + ".")
-    if boss:
-        parts.append("По работе: " + ", ".join(t.get("name") or "задача" for t in boss) + ".")
-    if kanban_due:
-        parts.append("Задачи на сегодня: " + ", ".join(kanban_due) + ".")
+    period_label = "Утренние" if period == "morning" else "Вечерние"
+    today_js = today_msk().isoweekday() % 7  # 0=Sun..6=Sat, matches JS getDay()
+    tasks = [t for t in (app.get("bossTasks") or [])
+             if not t.get("archived")
+             and t.get("period") == period
+             and today_js in (t.get("days") or [])]
 
-    if not (chores or boss or kanban_due):
-        parts.append("На сегодня никаких дел не запланировано.")
+    if not tasks:
+        return f"{period_label} дела по разделу «Босс» на {weekday} не запланированы."
 
-    parts.append("Хорошего дня!")
-    return " ".join(parts)
+    names = ", ".join(t.get("name") or "задача" for t in tasks)
+    return f"{period_label} дела на {weekday}: {names}."
 
 
 def handle_alice_request(payload: dict) -> dict:
@@ -1220,10 +1217,11 @@ def handle_alice_request(payload: dict) -> dict:
     command = (request_data.get("command") or "").strip().lower()
     is_new_session = bool(session.get("new"))
 
-    if is_new_session or "утр" in command or "дела" in command or "задач" in command:
-        text = build_morning_brief(load_app_data())
+    trigger_words = ("утр", "вечер", "дела", "задач", "босс")
+    if is_new_session or any(w in command for w in trigger_words):
+        text = build_boss_brief(load_app_data())
     else:
-        text = "Скажите «доброе утро», чтобы услышать свои дела на сегодня."
+        text = "Скажите «доброе утро» или «добрый вечер», чтобы услышать свои дела по разделу «Босс»."
 
     return {
         "version": payload.get("version", "1.0"),
