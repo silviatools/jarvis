@@ -398,6 +398,8 @@ const DEFAULT_DATA = () => ({
   dailyChecklistLog: [],
   shoppingLists: [],
   deletedIds: {},
+  // План обучения English: произвольная заметка, LWW по updatedAt между устройствами
+  engStudyPlan: { text: '', updatedAt: 0 },
   settings: { ...DEFAULT_SETTINGS },
 });
 
@@ -6669,6 +6671,87 @@ function EngAIModal({ai,onSave,onClose}){
   );
 }
 
+// План обучения: заметка в БД. При sync с другого устройства — LWW по updatedAt;
+// если правили одновременно, показываем баннер и даём подтянуть чужую версию.
+function EngStudyPlanModal({ plan, onSave, onClose }) {
+  const remoteText = (plan && typeof plan.text === 'string') ? plan.text : '';
+  const remoteTs = (plan && typeof plan.updatedAt === 'number') ? plan.updatedAt : 0;
+  const [text, setText] = useState(remoteText);
+  const [baseTs, setBaseTs] = useState(remoteTs);
+  const [baseText, setBaseText] = useState(remoteText);
+  const [conflict, setConflict] = useState(false);
+  const dirty = text !== baseText;
+
+  useEffect(() => {
+    if (remoteTs <= baseTs) return;
+    if (remoteText === text) {
+      setBaseTs(remoteTs);
+      setBaseText(remoteText);
+      setConflict(false);
+      return;
+    }
+    if (!dirty) {
+      setText(remoteText);
+      setBaseTs(remoteTs);
+      setBaseText(remoteText);
+      setConflict(false);
+      return;
+    }
+    setConflict(true);
+  }, [remoteTs, remoteText, baseTs, text, dirty]);
+
+  const acceptRemote = () => {
+    setText(remoteText);
+    setBaseTs(remoteTs);
+    setBaseText(remoteText);
+    setConflict(false);
+  };
+
+  const handleSave = () => {
+    if (conflict && remoteTs > baseTs) {
+      if (!confirm('На другом устройстве план уже изменили. Сохранить вашу версию поверх?')) return;
+    }
+    onSave({ text, updatedAt: Date.now() });
+  };
+
+  const savedLabel = remoteTs
+    ? new Date(remoteTs).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+    : null;
+
+  return (
+    <Modal onClose={onClose} title="План обучения" wide>
+      <div className="space-y-4">
+        {conflict && (
+          <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-900 flex flex-col sm:flex-row sm:items-center gap-2 justify-between">
+            <span>План обновили на другом устройстве, пока вы редактировали.</span>
+            <button type="button" onClick={acceptRemote} className="btn-secondary text-xs py-1.5 px-3 whitespace-nowrap">
+              Загрузить их версию
+            </button>
+          </div>
+        )}
+        <div>
+          <label>Заметка</label>
+          <textarea
+            value={text}
+            onChange={e => setText(e.target.value)}
+            rows={14}
+            placeholder="Произвольный план: темы, расписание, цели…"
+            style={{ resize: 'vertical', minHeight: '220px', fontFamily: 'inherit' }}
+            className="w-full"
+          />
+          {savedLabel && (
+            <p className="text-xs text-[var(--text-subtle)] mt-1.5">Последнее сохранение: {savedLabel}</p>
+          )}
+        </div>
+        <div className="flex gap-3 pt-1">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={handleSave} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 const ENG_CARD_S={
   wrap:{perspective:'1200px'},
   card:(fl)=>({width:'100%',height:'280px',position:'relative',transformStyle:'preserve-3d',transition:'transform .55s cubic-bezier(.4,0,.2,1)',transform:fl?'rotateY(180deg)':'none',cursor:'pointer'}),
@@ -7159,6 +7242,7 @@ function EnglishView({ data, setData }){
   // всех устройств. localStorage остаётся только как источник миграции.
   const cfg = data.engConfig || engLegacyCfg();
   const ai = data.engAI || engLegacyAI();
+  const studyPlan = data.engStudyPlan || { text: '', updatedAt: 0 };
   const [rawData,setRawData]=useState(()=>{try{return JSON.parse(localStorage.getItem('eng_raw_data')||'null');}catch{return null;}});
   const [loading,setLoading]=useState(false);
   const initStatus=()=>{try{const d=localStorage.getItem('eng_raw_data');return d?{type:'ok',text:`${JSON.parse(d).length} слов`}:{type:'',text:'Загрузите из Google Sheets'};}catch{return{type:'',text:'Загрузите из Google Sheets'};}};
@@ -7166,9 +7250,11 @@ function EnglishView({ data, setData }){
   const [engTab,setEngTab]=useState('cards');
   const [showCfg,setShowCfg]=useState(false);
   const [showAI,setShowAI]=useState(false);
+  const [showPlan,setShowPlan]=useState(false);
 
   const saveCfg=(c)=>setData(d=>({...d, engConfig:{...c, updatedAt: Date.now()}}));
   const saveAI=(a)=>setData(d=>({...d, engAI:{...a, updatedAt: Date.now()}}));
+  const saveStudyPlan=(p)=>setData(d=>({...d, engStudyPlan:{ text: p.text || '', updatedAt: p.updatedAt || Date.now() }}));
 
   // Разовая миграция: ключи, введённые до этого фикса, лежат только в
   // localStorage этого браузера — переносим их в БД, чтобы больше не терялись.
@@ -7211,7 +7297,8 @@ function EnglishView({ data, setData }){
               <span className={`text-xs ${status.type==='ok'?'text-green-500':status.type==='err'?'text-red-500':'text-[var(--text-subtle)]'}`}>{status.text}</span>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <button onClick={()=>setShowPlan(true)} className="btn-secondary text-sm py-2 px-3">План обучения</button>
             <button onClick={()=>setShowAI(true)} className="btn-secondary text-sm py-2 px-3">🤖 {ai.provider==='anthropic'?'Anthropic':ai.provider==='openai'?'OpenAI':'Ollama'}</button>
             <button onClick={()=>setShowCfg(true)} className="btn-secondary text-sm py-2 px-3"><Icon name="settings" size={15}/></button>
             <button onClick={loadSheets} disabled={loading} className="btn-primary text-sm py-2 px-4">{loading?'⏳':'↻'} Загрузить</button>
@@ -7230,6 +7317,7 @@ function EnglishView({ data, setData }){
       </div>
       {showCfg&&<EngCfgModal cfg={cfg} onSave={(c)=>{saveCfg(c);setShowCfg(false);}} onClose={()=>setShowCfg(false)}/>}
       {showAI&&<EngAIModal ai={ai} onSave={(a)=>{saveAI(a);setShowAI(false);}} onClose={()=>setShowAI(false)}/>}
+      {showPlan&&<EngStudyPlanModal plan={studyPlan} onSave={(p)=>{saveStudyPlan(p);setShowPlan(false);}} onClose={()=>setShowPlan(false)}/>}
     </div>
   );
 }
