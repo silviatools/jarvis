@@ -397,6 +397,13 @@ const DEFAULT_DATA = () => ({
   dailyChecklistReminder: { enabled: false, time: '21:00', days: [0, 1, 2, 3, 4, 5, 6] },
   dailyChecklistLog: [],
   shoppingLists: [],
+  // Планировщик дел: друзья-участники, общие события и то, что друзья
+  // присылают по гостевой ссылке (ответы и комментарии) — отдельными
+  // коллекциями, чтобы правки админа и записи гостей не затирали друг друга.
+  plannerFriends: [],
+  plannerEvents: [],
+  plannerResponses: [],
+  plannerComments: [],
   deletedIds: {},
   // План обучения English: произвольная заметка, LWW по updatedAt между устройствами
   engStudyPlan: { text: '', updatedAt: 0 },
@@ -957,6 +964,11 @@ const Icon = ({ name, size = 22 }) => {
     star: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>,
     starFilled: <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>,
     gift: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 12v10H4V12"/><path d="M2 7h20v5H2z"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>,
+    calendar: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>,
+    users: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+    link: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>,
+    copy: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>,
+    share: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg>,
   };
   return icons[name] || null;
 };
@@ -1112,6 +1124,7 @@ const PATH_TAB_MAP = {
   '/house': 'house',
   '/cars': 'cars',
   '/holidays': 'holidays',
+  '/planner': 'planner',
   '/settings': 'settings',
 };
 const TAB_PATH_MAP = Object.fromEntries(Object.entries(PATH_TAB_MAP).map(([p, t]) => [t, p]));
@@ -1383,6 +1396,7 @@ function App() {
           {tab === 'body' && <BodyView data={data} setData={setData} />}
           {tab === 'cars' && <CarsView data={data} setData={setData} />}
           {tab === 'holidays' && <HolidaysView data={data} setData={setData} />}
+          {tab === 'planner' && <PlannerView data={data} setData={setData} />}
           {tab === 'settings' && (
             <SettingsView
               data={data}
@@ -1412,12 +1426,13 @@ function Header({ tab, setTab }) {
   ];
 
   const moreItems = [
-    { id: 'body',     icon: 'user',     label: 'Моё тело'   },
-    { id: 'cars',     icon: 'car',      label: 'Автомобили' },
-    { id: 'holidays', icon: 'gift',     label: 'Праздники'  },
-    { id: 'budget',   icon: 'wallet',   label: 'Бюджет'     },
-    { id: 'english',  icon: 'book',     label: 'English'    },
-    { id: 'settings', icon: 'settings', label: 'Настройки'  },
+    { id: 'body',     icon: 'user',     label: 'Моё тело'      },
+    { id: 'cars',     icon: 'car',      label: 'Автомобили'    },
+    { id: 'holidays', icon: 'gift',     label: 'Праздники'     },
+    { id: 'planner',  icon: 'calendar', label: 'Планировщик'   },
+    { id: 'budget',   icon: 'wallet',   label: 'Бюджет'        },
+    { id: 'english',  icon: 'book',     label: 'English'       },
+    { id: 'settings', icon: 'settings', label: 'Настройки'     },
   ];
 
   const moreActive = moreItems.some(i => i.id === tab);
@@ -1498,12 +1513,13 @@ function BottomNav({ tab, setTab }) {
   ];
 
   const moreItems = [
-    { id: 'body',     icon: 'user',     label: 'Моё тело'   },
-    { id: 'cars',     icon: 'car',      label: 'Автомобили' },
-    { id: 'holidays', icon: 'gift',     label: 'Праздники'  },
-    { id: 'budget',   icon: 'wallet',   label: 'Бюджет'     },
-    { id: 'english',  icon: 'book',     label: 'English'    },
-    { id: 'settings', icon: 'settings', label: 'Настройки'  },
+    { id: 'body',     icon: 'user',     label: 'Моё тело'      },
+    { id: 'cars',     icon: 'car',      label: 'Автомобили'    },
+    { id: 'holidays', icon: 'gift',     label: 'Праздники'     },
+    { id: 'planner',  icon: 'calendar', label: 'Планировщик'   },
+    { id: 'budget',   icon: 'wallet',   label: 'Бюджет'        },
+    { id: 'english',  icon: 'book',     label: 'English'       },
+    { id: 'settings', icon: 'settings', label: 'Настройки'     },
   ];
 
   const moreActive = moreItems.some(i => i.id === tab);
@@ -14180,6 +14196,847 @@ function FilterDropdownPortal({ anchorRef, isOpen, onClose, children }) {
       {children}
     </div>,
     document.body
+  );
+}
+
+// ============== ПЛАНИРОВЩИК ДЕЛ ==============
+// Общие события с друзьями. Друзья НЕ заходят в приложение: организатор
+// копирует ссылку /e/<token> и отправляет её. Ссылка открывает отдельную
+// страницу (event.html), которая знает только про одно это событие —
+// ни других разделов, ни /api/data оттуда не видно.
+
+const PLANNER_STATUSES = [
+  { id: 'yes',          label: 'Точно еду',             short: 'Точно еду',  color: '#16a34a' },
+  { id: 'probably',     label: 'Скорее всего еду',      short: 'Скорее да',  color: '#0891b2' },
+  { id: 'maybe',        label: 'Пока не знаю',          short: 'Не знаю',    color: '#ca8a04' },
+  { id: 'probably_not', label: 'Скорее всего не смогу', short: 'Скорее нет', color: '#ea580c' },
+  { id: 'no',           label: 'Не смогу',              short: 'Не смогу',   color: '#dc2626' },
+];
+const PLANNER_STATUS_BY_ID = Object.fromEntries(PLANNER_STATUSES.map(s => [s.id, s]));
+
+const PLANNER_MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+                        'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+
+// Токен гостевой ссылки: 32 hex-символа. Подобрать его перебором нельзя,
+// а знать его достаточно, чтобы открыть страницу события — поэтому ссылку
+// стоит слать только тем, кого действительно зовём.
+const makePlannerToken = () => {
+  try {
+    if (crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '');
+  } catch (_) {}
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+};
+
+// Дату разбираем вручную: new Date('YYYY-MM-DD') — это полночь UTC, которая
+// западнее Гринвича превращается во вчерашний день.
+const plannerParseDate = (iso) => {
+  if (!iso) return null;
+  const [y, m, d] = String(iso).split('-').map(Number);
+  if (!y || !m || !d) return null;
+  const date = new Date(y, m - 1, d);
+  date.setHours(0, 0, 0, 0);
+  return isNaN(date.getTime()) ? null : date;
+};
+
+const plannerFmtDate = (iso, withYear = true) => {
+  const d = plannerParseDate(iso);
+  if (!d) return '';
+  return `${d.getDate()} ${PLANNER_MONTHS[d.getMonth()]}${withYear ? ' ' + d.getFullYear() : ''}`;
+};
+
+const plannerFmtRange = (ev) => {
+  if (!ev.startDate) return 'Дата не назначена';
+  const a = plannerParseDate(ev.startDate);
+  const b = plannerParseDate(ev.endDate);
+  let s;
+  if (!b || +b === +a) s = plannerFmtDate(ev.startDate);
+  else if (a && b.getFullYear() === a.getFullYear()) {
+    s = a.getMonth() === b.getMonth()
+      ? `${a.getDate()}–${plannerFmtDate(ev.endDate)}`
+      : `${plannerFmtDate(ev.startDate, false)} – ${plannerFmtDate(ev.endDate)}`;
+  } else s = `${plannerFmtDate(ev.startDate)} – ${plannerFmtDate(ev.endDate)}`;
+  if (ev.startTime) s += `, ${ev.startTime}${ev.endTime ? '–' + ev.endTime : ''}`;
+  return s;
+};
+
+const plannerDaysUntil = (iso) => {
+  const d = plannerParseDate(iso);
+  if (!d) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return Math.round((d - today) / 86400000);
+};
+
+const plannerPlural = (n, one, few, many) => {
+  const a = Math.abs(n) % 100, b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b > 1 && b < 5) return few;
+  if (b === 1) return one;
+  return many;
+};
+
+// Событие «прошло», когда закончилась последняя его дата.
+const plannerIsPast = (ev) => {
+  const end = plannerParseDate(ev.endDate || ev.startDate);
+  if (!end) return false;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return end < today;
+};
+
+const plannerEventUrl = (ev) =>
+  ev.shareToken ? `${window.location.origin}/e/${ev.shareToken}` : '';
+
+const copyToClipboard = async (text) => {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (_) {}
+  // Fallback для http и старых webview, где Clipboard API недоступен.
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (_) { return false; }
+};
+
+const newPlannerEvent = () => ({
+  id: crypto.randomUUID(),
+  title: '',
+  description: '',
+  place: '',
+  address: '',
+  startDate: '',
+  endDate: '',
+  startTime: '',
+  endTime: '',
+  decisionDeadline: '',
+  participantIds: [],
+  organizer: '',
+  shareToken: makePlannerToken(),
+  shareEnabled: true,
+  createdAt: Date.now(),
+});
+
+function PlannerView({ data, setData }) {
+  const [sub, setSub] = useState('events');
+
+  const TABS = [
+    { id: 'events',  label: 'События', icon: 'calendar' },
+    { id: 'friends', label: 'Друзья',  icon: 'users'    },
+  ];
+
+  return (
+    <div className="fade-in">
+      <div className="mb-5 flex items-baseline justify-between gap-4">
+        <div className="font-display text-2xl">Планировщик дел</div>
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">С друзьями</div>
+      </div>
+
+      <div className="flex gap-1.5 mb-5">
+        {TABS.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setSub(t.id)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+              sub === t.id
+                ? 'bg-[var(--text)] text-white'
+                : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'
+            }`}
+          >
+            <Icon name={t.icon} size={16} />
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {sub === 'events'
+        ? <PlannerEventsView data={data} setData={setData} goToFriends={() => setSub('friends')} />
+        : <PlannerFriendsView data={data} setData={setData} />}
+    </div>
+  );
+}
+
+// ── События ────────────────────────────────────────────────────────────────
+function PlannerEventsView({ data, setData, goToFriends }) {
+  const [editing, setEditing] = useState(null);
+  const [filter, setFilter] = useState('active');
+
+  const friends = data.plannerFriends || [];
+  const events = data.plannerEvents || [];
+  const responses = data.plannerResponses || [];
+  const comments = data.plannerComments || [];
+
+  const save = (ev) => {
+    setData(d => {
+      const list = d.plannerEvents || [];
+      const exists = list.some(e => e.id === ev.id);
+      return {
+        ...d,
+        plannerEvents: exists ? list.map(e => e.id === ev.id ? ev : e) : [...list, ev],
+      };
+    });
+    setEditing(null);
+  };
+
+  const remove = (ev) => {
+    if (!confirm(`Удалить событие «${ev.title || 'без названия'}»?\n\nОтветы и комментарии друзей тоже удалятся, а ссылка перестанет открываться.`)) return;
+    setData(d => {
+      const deleted = { ...(d.deletedIds || {}) };
+      const stamp = (key, ids) => {
+        if (!ids.length) return;
+        const coll = { ...(deleted[key] || {}) };
+        ids.forEach(id => { coll[String(id)] = Date.now(); });
+        deleted[key] = coll;
+      };
+      stamp('plannerEvents', [ev.id]);
+      stamp('plannerResponses', (d.plannerResponses || []).filter(r => r.eventId === ev.id).map(r => r.id));
+      stamp('plannerComments', (d.plannerComments || []).filter(c => c.eventId === ev.id).map(c => c.id));
+      return {
+        ...d,
+        plannerEvents: (d.plannerEvents || []).filter(e => e.id !== ev.id),
+        plannerResponses: (d.plannerResponses || []).filter(r => r.eventId !== ev.id),
+        plannerComments: (d.plannerComments || []).filter(c => c.eventId !== ev.id),
+        deletedIds: deleted,
+      };
+    });
+  };
+
+  const removeComment = (id) => {
+    if (!confirm('Удалить комментарий?')) return;
+    setData(d => ({
+      ...d,
+      plannerComments: (d.plannerComments || []).filter(c => c.id !== id),
+      deletedIds: withDeletedId(d, 'plannerComments', id),
+    }));
+  };
+
+  const toggleShare = (ev) => {
+    setData(d => ({
+      ...d,
+      plannerEvents: (d.plannerEvents || []).map(e =>
+        e.id === ev.id ? { ...e, shareEnabled: !(e.shareEnabled !== false) } : e),
+    }));
+  };
+
+  const regenerateToken = (ev) => {
+    if (!confirm('Сделать новую ссылку?\n\nСтарая перестанет работать — тем, кому вы её уже отправили, придётся прислать новую.')) return;
+    setData(d => ({
+      ...d,
+      plannerEvents: (d.plannerEvents || []).map(e =>
+        e.id === ev.id ? { ...e, shareToken: makePlannerToken(), shareEnabled: true } : e),
+    }));
+  };
+
+  const FILTERS = [
+    { id: 'active', label: 'Актуальные' },
+    { id: 'past',   label: 'Прошедшие'  },
+    { id: 'all',    label: 'Все'        },
+  ];
+
+  const filtered = events.filter(e =>
+    filter === 'all' ? true : filter === 'past' ? plannerIsPast(e) : !plannerIsPast(e));
+
+  // Ближайшее — сверху; события без даты — в конце, прошедшие — от свежих к старым.
+  const sorted = [...filtered].sort((a, b) => {
+    const pa = plannerIsPast(a), pb = plannerIsPast(b);
+    if (pa !== pb) return pa ? 1 : -1;
+    const da = a.startDate || '', db = b.startDate || '';
+    if (!da && !db) return (b.createdAt || 0) - (a.createdAt || 0);
+    if (!da) return 1;
+    if (!db) return -1;
+    return pa ? db.localeCompare(da) : da.localeCompare(db);
+  });
+
+  return (
+    <div>
+      <button
+        onClick={() => setEditing(newPlannerEvent())}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-4"
+      >
+        <Icon name="plus" size={18} />
+        Новое событие
+      </button>
+
+      {friends.length === 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4 text-sm text-amber-900">
+          Сначала добавьте друзей на вкладке «Друзья» — из них выбираются участники события.{' '}
+          <button onClick={goToFriends} className="underline font-medium">Перейти</button>
+        </div>
+      )}
+
+      {events.length > 0 && (
+        <div className="flex gap-1.5 mb-4 flex-wrap">
+          {FILTERS.map(f => (
+            <button
+              key={f.id}
+              onClick={() => setFilter(f.id)}
+              className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${
+                filter === f.id
+                  ? 'bg-[var(--text)] text-white'
+                  : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'
+              }`}
+            >{f.label}</button>
+          ))}
+        </div>
+      )}
+
+      {sorted.length === 0 ? (
+        <EmptyState
+          title="Событий нет"
+          text={events.length === 0
+            ? 'Создайте событие, выберите участников и отправьте им ссылку'
+            : 'В этом фильтре пусто'}
+        />
+      ) : (
+        <div className="space-y-3">
+          {sorted.map(ev => (
+            <PlannerEventCard
+              key={ev.id}
+              event={ev}
+              friends={friends}
+              responses={responses.filter(r => r.eventId === ev.id)}
+              comments={comments.filter(c => c.eventId === ev.id)}
+              onEdit={() => setEditing(ev)}
+              onDelete={() => remove(ev)}
+              onDeleteComment={removeComment}
+              onToggleShare={() => toggleShare(ev)}
+              onRegenerate={() => regenerateToken(ev)}
+            />
+          ))}
+        </div>
+      )}
+
+      {editing && (
+        <PlannerEventModal
+          key={editing.id}
+          initial={editing}
+          friends={friends}
+          onSave={save}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function PlannerEventCard({ event: ev, friends, responses, comments, onEdit, onDelete, onDeleteComment, onToggleShare, onRegenerate }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const friendById = useMemo(
+    () => Object.fromEntries(friends.map(f => [f.id, f])), [friends]);
+  const participants = (ev.participantIds || [])
+    .map(id => friendById[id])
+    .filter(Boolean);
+  const responseByFriend = useMemo(
+    () => Object.fromEntries(responses.map(r => [r.friendId, r])), [responses]);
+
+  const answered = participants.filter(p => responseByFriend[p.id]).length;
+  const counts = PLANNER_STATUSES.map(s => ({
+    ...s,
+    n: participants.filter(p => responseByFriend[p.id]?.status === s.id).length,
+  })).filter(s => s.n > 0);
+
+  const shareOn = ev.shareEnabled !== false;
+  const url = plannerEventUrl(ev);
+  const deadlineLeft = plannerDaysUntil(ev.decisionDeadline);
+  const past = plannerIsPast(ev);
+
+  const copy = async () => {
+    const ok = await copyToClipboard(url);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } else {
+      prompt('Скопируйте ссылку вручную:', url);
+    }
+  };
+
+  const share = async () => {
+    try {
+      await navigator.share({ title: ev.title || 'Событие', text: ev.title || '', url });
+    } catch (_) {}
+  };
+
+  return (
+    <div className={`bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 ${past ? 'opacity-70' : ''}`}>
+      <div className="flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="font-medium text-[17px] leading-snug">{ev.title || 'Без названия'}</div>
+          <div className="text-sm text-[var(--text-muted)] mt-0.5">{plannerFmtRange(ev)}</div>
+          {(ev.place || ev.address) && (
+            <div className="text-sm text-[var(--text-muted)] mt-0.5 flex items-start gap-1.5">
+              <span className="mt-0.5 flex-shrink-0 text-[var(--text-subtle)]"><Icon name="mapPin" size={13} /></span>
+              <span className="break-words">{[ev.place, ev.address].filter(Boolean).join(' · ')}</span>
+            </div>
+          )}
+        </div>
+        <div className="flex gap-1 flex-shrink-0">
+          <button onClick={onEdit} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+            <Icon name="edit" size={15} />
+          </button>
+          <button onClick={onDelete} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500">
+            <Icon name="trash" size={15} />
+          </button>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1.5 flex-wrap mt-2.5">
+        {ev.decisionDeadline && (
+          <span className={`text-xs font-medium px-2 py-1 rounded-full ${
+            deadlineLeft === null ? 'bg-[var(--bg)] text-[var(--text-subtle)]' :
+            deadlineLeft < 0  ? 'bg-red-100 text-red-700' :
+            deadlineLeft === 0 ? 'bg-red-100 text-red-700' :
+            deadlineLeft <= 3 ? 'bg-amber-100 text-amber-700' :
+            'bg-[var(--bg)] text-[var(--text-muted)]'
+          }`}>
+            {deadlineLeft === null ? `Решение до ${ev.decisionDeadline}`
+              : deadlineLeft < 0 ? `Дедлайн прошёл ${plannerFmtDate(ev.decisionDeadline, false)}`
+              : deadlineLeft === 0 ? 'Дедлайн решения — сегодня'
+              : `Решение до ${plannerFmtDate(ev.decisionDeadline, false)} · ${deadlineLeft} ${plannerPlural(deadlineLeft, 'день', 'дня', 'дней')}`}
+          </span>
+        )}
+        <span className="text-xs font-medium px-2 py-1 rounded-full bg-[var(--bg)] text-[var(--text-muted)]">
+          Ответили {answered} из {participants.length}
+        </span>
+        {!shareOn && (
+          <span className="text-xs font-medium px-2 py-1 rounded-full bg-red-100 text-red-700">Ссылка выключена</span>
+        )}
+      </div>
+
+      {counts.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap mt-2">
+          {counts.map(c => (
+            <span
+              key={c.id}
+              className="text-xs font-medium px-2 py-1 rounded-full border"
+              style={{ color: c.color, borderColor: c.color }}
+            >{c.short}: {c.n}</span>
+          ))}
+        </div>
+      )}
+
+      {/* Ссылка для друзей */}
+      <div className="mt-3 pt-3 border-t border-[var(--border)]">
+        <div className="flex items-center gap-2">
+          <input
+            readOnly
+            value={url}
+            onFocus={e => e.target.select()}
+            className="flex-1 min-w-0 text-xs !py-2 !px-3 text-[var(--text-muted)]"
+            style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
+          />
+          <button
+            onClick={copy}
+            className="btn-secondary !py-2 !px-3 text-sm flex items-center gap-1.5 flex-shrink-0"
+            title="Скопировать ссылку"
+          >
+            <Icon name={copied ? 'check' : 'copy'} size={14} />
+            <span className="hidden sm:inline">{copied ? 'Скопировано' : 'Копировать'}</span>
+          </button>
+          {typeof navigator !== 'undefined' && navigator.share && (
+            <button onClick={share} className="btn-secondary !py-2 !px-3 flex-shrink-0" title="Поделиться">
+              <Icon name="share" size={14} />
+            </button>
+          )}
+        </div>
+        <div className={`text-[11px] mt-1.5 ${shareOn ? 'text-[var(--text-subtle)]' : 'text-red-500'}`}>
+          {shareOn
+            ? 'По этой ссылке видно только это событие: участники, их ответы и комментарии. Остальной сайт по ней недоступен.'
+            : 'Ссылка отключена — сейчас она не откроется ни у кого. Включите её, чтобы друзья снова смогли отвечать.'}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 mt-3 flex-wrap">
+        <button
+          onClick={() => setOpen(v => !v)}
+          className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1"
+        >
+          <span className={`transition-transform ${open ? 'rotate-180' : ''}`}><Icon name="chevronDown" size={14} /></span>
+          {open ? 'Свернуть' : `Ответы и комментарии${comments.length ? ` (${comments.length})` : ''}`}
+        </button>
+        <button onClick={onToggleShare} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)]">
+          {shareOn ? 'Отключить ссылку' : 'Включить ссылку'}
+        </button>
+        <button onClick={onRegenerate} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)]">
+          Новая ссылка
+        </button>
+      </div>
+
+      {open && (
+        <div className="mt-3 pt-3 border-t border-[var(--border)] space-y-4 slide-down">
+          {ev.description && (
+            <div>
+              <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-1">Описание</div>
+              <div className="text-sm whitespace-pre-wrap">{ev.description}</div>
+            </div>
+          )}
+
+          <div>
+            <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">Участники</div>
+            {participants.length === 0 ? (
+              <div className="text-sm text-[var(--text-subtle)]">Участники не выбраны</div>
+            ) : (
+              <div className="space-y-1.5">
+                {participants.map(p => {
+                  const r = responseByFriend[p.id];
+                  const st = r && PLANNER_STATUS_BY_ID[r.status];
+                  return (
+                    <div key={p.id} className="flex items-start gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium">{p.name}</div>
+                        {r?.note && <div className="text-xs text-[var(--text-muted)] italic mt-0.5 break-words">{r.note}</div>}
+                      </div>
+                      <span
+                        className="text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0 border"
+                        style={st
+                          ? { color: st.color, borderColor: st.color }
+                          : { color: 'var(--text-subtle)', borderColor: 'var(--border-strong)' }}
+                      >{st ? st.short : 'нет ответа'}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">Комментарии друзей</div>
+            {comments.length === 0 ? (
+              <div className="text-sm text-[var(--text-subtle)]">Пока никто ничего не написал</div>
+            ) : (
+              <div className="space-y-1.5">
+                {[...comments].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)).map(c => (
+                  <div key={c.id} className="flex items-start gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-baseline gap-2 flex-wrap">
+                        <span className="text-sm font-medium">{friendById[c.friendId]?.name || 'Бывший участник'}</span>
+                        <span className="text-[11px] text-[var(--text-subtle)]">
+                          {c.createdAt ? new Date(c.createdAt).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}
+                        </span>
+                      </div>
+                      <div className="text-sm mt-0.5 whitespace-pre-wrap break-words">{c.text}</div>
+                    </div>
+                    <button
+                      onClick={() => onDeleteComment(c.id)}
+                      className="text-[var(--text-subtle)] hover:text-red-500 flex-shrink-0 mt-0.5"
+                      title="Удалить комментарий"
+                    >
+                      <Icon name="x" size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlannerEventModal({ initial, friends, onSave, onClose }) {
+  const [f, setF] = useState({ ...initial, participantIds: [...(initial.participantIds || [])] });
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+
+  const toggleFriend = (id) => setF(x => ({
+    ...x,
+    participantIds: x.participantIds.includes(id)
+      ? x.participantIds.filter(p => p !== id)
+      : [...x.participantIds, id],
+  }));
+
+  const allSelected = friends.length > 0 && friends.every(fr => f.participantIds.includes(fr.id));
+  const toggleAll = () => set('participantIds', allSelected ? [] : friends.map(fr => fr.id));
+
+  const submit = () => {
+    if (!f.title.trim()) return alert('Введите название события');
+    // Дата окончания раньше начала — почти всегда опечатка, молча не исправляем.
+    if (f.endDate && f.startDate && f.endDate < f.startDate) {
+      return alert('Дата окончания раньше даты начала');
+    }
+    onSave({
+      ...f,
+      title: f.title.trim(),
+      shareToken: f.shareToken || makePlannerToken(),
+      shareEnabled: f.shareEnabled !== false,
+    });
+  };
+
+  const deadlineAfterStart = f.decisionDeadline && f.startDate && f.decisionDeadline > f.startDate;
+  const isNew = !initial.title;
+
+  return (
+    <Modal onClose={onClose} title={isNew ? 'Новое событие' : 'Событие'}>
+      <div className="space-y-4">
+        <div>
+          <label>Название</label>
+          <input value={f.title} onChange={e => set('title', e.target.value)} placeholder="Например, Выезд на Селигер" autoFocus />
+        </div>
+
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <label>Дата начала</label>
+            <input type="date" value={f.startDate || ''} onChange={e => set('startDate', e.target.value)} />
+          </div>
+          <div className="flex-1">
+            <label>Дата окончания</label>
+            <input type="date" value={f.endDate || ''} onChange={e => set('endDate', e.target.value)} />
+          </div>
+        </div>
+
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <label>Время начала</label>
+            <input type="time" value={f.startTime || ''} onChange={e => set('startTime', e.target.value)} />
+          </div>
+          <div className="flex-1">
+            <label>Время окончания</label>
+            <input type="time" value={f.endTime || ''} onChange={e => set('endTime', e.target.value)} />
+          </div>
+        </div>
+
+        <div>
+          <label>Дедлайн принятия решения</label>
+          <input type="date" value={f.decisionDeadline || ''} onChange={e => set('decisionDeadline', e.target.value)} />
+          <div className="text-[11px] text-[var(--text-subtle)] mt-1">
+            До этой даты друзья должны ответить, едут они или нет. Дата видна на странице события с обратным отсчётом.
+          </div>
+          {deadlineAfterStart && (
+            <div className="text-[11px] text-amber-600 mt-1">
+              Дедлайн позже начала события — проверьте, так ли задумано.
+            </div>
+          )}
+        </div>
+
+        <div>
+          <label>Место проведения</label>
+          <input value={f.place || ''} onChange={e => set('place', e.target.value)} placeholder="Например, база отдыха «Сосны»" />
+        </div>
+
+        <div>
+          <label>Адрес</label>
+          <input value={f.address || ''} onChange={e => set('address', e.target.value)} placeholder="Город, улица, дом" />
+        </div>
+
+        <div>
+          <label>Описание</label>
+          <textarea
+            value={f.description || ''}
+            onChange={e => set('description', e.target.value)}
+            rows={4}
+            placeholder="Что берём с собой, во сколько выезжаем, сколько стоит…"
+            style={{ resize: 'vertical' }}
+          />
+        </div>
+
+        <div>
+          <label>Как подписать организатора</label>
+          <input value={f.organizer || ''} onChange={e => set('organizer', e.target.value)} placeholder="Имя, которое увидят друзья (необязательно)" />
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="!mb-0">Участники {f.participantIds.length > 0 && (
+              <span className="text-[var(--text-subtle)] font-normal normal-case tracking-normal">— выбрано {f.participantIds.length}</span>
+            )}</label>
+            {friends.length > 0 && (
+              <button onClick={toggleAll} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] underline">
+                {allSelected ? 'снять всех' : 'выбрать всех'}
+              </button>
+            )}
+          </div>
+          {friends.length === 0 ? (
+            <div className="text-sm text-[var(--text-subtle)] border border-dashed border-[var(--border-strong)] rounded-xl p-3">
+              Список друзей пуст — добавьте их на вкладке «Друзья».
+            </div>
+          ) : (
+            <div className="space-y-1.5 max-h-64 overflow-y-auto">
+              {friends.map(fr => {
+                const on = f.participantIds.includes(fr.id);
+                return (
+                  <button
+                    key={fr.id}
+                    onClick={() => toggleFriend(fr.id)}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-all text-left ${
+                      on ? 'border-[var(--text)] bg-[var(--surface)]' : 'border-[var(--border)] bg-[var(--bg)]'
+                    }`}
+                  >
+                    <span className={`check-box ${on ? 'checked' : ''}`} style={{ width: 20, height: 20, borderRadius: 6 }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                    </span>
+                    <span className="flex-1 min-w-0">
+                      <span className="text-sm font-medium block truncate">{fr.name}</span>
+                      {fr.contact && <span className="text-xs text-[var(--text-subtle)] block truncate">{fr.contact}</span>}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <label className="flex items-center gap-2 cursor-pointer !mb-0 border border-[var(--border)] rounded-xl p-3">
+          <input type="checkbox" className="!w-auto" checked={f.shareEnabled !== false} onChange={e => set('shareEnabled', e.target.checked)} />
+          <span className="text-sm font-medium normal-case tracking-normal text-[var(--text)]">Ссылка для друзей активна</span>
+        </label>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ── Друзья ─────────────────────────────────────────────────────────────────
+function PlannerFriendsView({ data, setData }) {
+  const [editing, setEditing] = useState(null);
+  const friends = data.plannerFriends || [];
+  const events = data.plannerEvents || [];
+
+  const save = (fr) => {
+    setData(d => {
+      const list = d.plannerFriends || [];
+      const exists = list.some(x => x.id === fr.id);
+      return {
+        ...d,
+        plannerFriends: exists ? list.map(x => x.id === fr.id ? fr : x) : [...list, fr],
+      };
+    });
+    setEditing(null);
+  };
+
+  const remove = (fr) => {
+    const usedIn = events.filter(e => (e.participantIds || []).includes(fr.id)).length;
+    const warn = usedIn
+      ? `\n\n${fr.name} будет убран(а) из ${usedIn} ${plannerPlural(usedIn, 'события', 'событий', 'событий')} — вместе со своими ответами.`
+      : '';
+    if (!confirm(`Удалить ${fr.name} из списка друзей?${warn}`)) return;
+    setData(d => {
+      const deleted = { ...(d.deletedIds || {}) };
+      const stamp = (key, ids) => {
+        if (!ids.length) return;
+        const coll = { ...(deleted[key] || {}) };
+        ids.forEach(id => { coll[String(id)] = Date.now(); });
+        deleted[key] = coll;
+      };
+      stamp('plannerFriends', [fr.id]);
+      stamp('plannerResponses', (d.plannerResponses || []).filter(r => r.friendId === fr.id).map(r => r.id));
+      return {
+        ...d,
+        plannerFriends: (d.plannerFriends || []).filter(x => x.id !== fr.id),
+        plannerResponses: (d.plannerResponses || []).filter(r => r.friendId !== fr.id),
+        plannerEvents: (d.plannerEvents || []).map(e =>
+          (e.participantIds || []).includes(fr.id)
+            ? { ...e, participantIds: e.participantIds.filter(id => id !== fr.id) }
+            : e),
+        deletedIds: deleted,
+      };
+    });
+  };
+
+  const sorted = [...friends].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ru'));
+
+  return (
+    <div>
+      <button
+        onClick={() => setEditing({ id: crypto.randomUUID(), name: '', contact: '' })}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-4"
+      >
+        <Icon name="plus" size={18} />
+        Добавить друга
+      </button>
+
+      {sorted.length === 0 ? (
+        <EmptyState title="Список пуст" text="Добавьте друзей — потом отметите их участниками событий" />
+      ) : (
+        <div className="space-y-2">
+          {sorted.map(fr => {
+            const inEvents = events.filter(e => (e.participantIds || []).includes(fr.id)).length;
+            return (
+              <div key={fr.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-3.5 flex items-center gap-3">
+                <div className="w-9 h-9 rounded-full bg-[var(--bg)] border border-[var(--border)] flex items-center justify-center text-xs font-semibold text-[var(--text-muted)] flex-shrink-0">
+                  {(fr.name || '?').trim().split(/\s+/).slice(0, 2).map(p => p.charAt(0).toUpperCase()).join('')}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium truncate">{fr.name}</div>
+                  <div className="text-xs text-[var(--text-subtle)] truncate">
+                    {[fr.contact, inEvents ? `в ${inEvents} ${plannerPlural(inEvents, 'событии', 'событиях', 'событиях')}` : null]
+                      .filter(Boolean).join(' · ') || 'пока не в событиях'}
+                  </div>
+                </div>
+                <div className="flex gap-1 flex-shrink-0">
+                  <button onClick={() => setEditing(fr)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+                    <Icon name="edit" size={15} />
+                  </button>
+                  <button onClick={() => remove(fr)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500">
+                    <Icon name="trash" size={15} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {editing && <PlannerFriendModal key={editing.id} initial={editing} onSave={save} onClose={() => setEditing(null)} />}
+    </div>
+  );
+}
+
+function PlannerFriendModal({ initial, onSave, onClose }) {
+  const [name, setName] = useState(initial.name || '');
+  const [contact, setContact] = useState(initial.contact || '');
+
+  const submit = () => {
+    if (!name.trim()) return alert('Введите имя');
+    onSave({ ...initial, name: name.trim(), contact: contact.trim() });
+  };
+
+  return (
+    <Modal onClose={onClose} title={initial.name ? 'Друг' : 'Новый друг'}>
+      <div className="space-y-4">
+        <div>
+          <label>Имя</label>
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="Как он(а) будет подписан(а) на странице события"
+            autoFocus
+            onKeyDown={e => e.key === 'Enter' && submit()}
+          />
+        </div>
+        <div>
+          <label>Контакт (для себя)</label>
+          <input
+            value={contact}
+            onChange={e => setContact(e.target.value)}
+            placeholder="Телефон, телеграм — куда слать ссылку"
+            onKeyDown={e => e.key === 'Enter' && submit()}
+          />
+          <div className="text-[11px] text-[var(--text-subtle)] mt-1">
+            Контакт видите только вы: друзьям на странице события показывается одно имя.
+          </div>
+        </div>
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

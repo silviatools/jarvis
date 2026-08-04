@@ -19,9 +19,11 @@ Requirements: pip3 install requests
 
 import json
 import os
+import re
 import time
 import threading
 import io
+import uuid
 import zipfile
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
@@ -61,8 +63,20 @@ FREQ_DAYS = {
 # PATH_TAB_MAP in index (9).html.
 SPA_ROUTES = {
     "/mybody", "/budget", "/supplements", "/meals", "/weather",
-    "/house", "/cars", "/holidays", "/settings",
+    "/house", "/cars", "/holidays", "/settings", "/planner",
 }
+
+# ── Планировщик дел: гостевые ссылки на событие ────────────────────────────
+# Друг открывает /e/<token> — ОТДЕЛЬНУЮ страницу event.html, которая ходит
+# только в /api/event/<token>. Ни SPA, ни /api/data ей не нужны: по ссылке
+# видно одно событие (и только имена участников), а больше ничего с сайта.
+EVENT_PAGE_FILE   = DIR / "event.html"
+PLANNER_TOKEN_RE  = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+PLANNER_STATUSES  = {"yes", "probably", "maybe", "probably_not", "no"}
+MAX_EVENT_COMMENT_LEN   = 2000
+MAX_EVENT_NOTE_LEN      = 300
+MAX_EVENT_COMMENTS      = 500   # на одно событие — защита от залива мусором
+MAX_EVENT_GUEST_BODY    = 64 * 1024
 
 # Generic file uploads (e.g. training programs attached to «Режим»)
 ALLOWED_FILE_EXT = {
@@ -1168,6 +1182,114 @@ def _tick():
         print(f"[{now_str} MSK] backup reminder error: {e}")
 
 
+# ── Планировщик дел ────────────────────────────────────────────────────────
+
+def token_from_route(route: str, prefix: str, suffix: str = "") -> str | None:
+    """Извлекает токен события из пути вида <prefix><token><suffix>.
+    Возвращает None, если путь не подходит или токен не проходит валидацию —
+    так в поиск по данным никогда не попадает произвольная строка из URL."""
+    if not route.startswith(prefix):
+        return None
+    rest = route[len(prefix):]
+    if suffix:
+        if not rest.endswith(suffix):
+            return None
+        rest = rest[:-len(suffix)]
+    if not PLANNER_TOKEN_RE.match(rest):
+        return None
+    return rest
+
+
+def find_planner_event(app: dict, token: str) -> dict | None:
+    """Событие с активной гостевой ссылкой. Выключенная ссылка (shareEnabled
+    = false) — то же самое, что несуществующая: отзыв ссылки должен работать."""
+    for ev in (app.get("plannerEvents") or []):
+        if not isinstance(ev, dict):
+            continue
+        if str(ev.get("shareToken") or "") != token:
+            continue
+        return ev if ev.get("shareEnabled", True) else None
+    return None
+
+
+def planner_public_payload(app: dict, ev: dict) -> dict:
+    """Публичный срез ОДНОГО события: поля самого события, имена участников,
+    их ответы и комментарии. Ничего больше из базы сюда не попадает — ни
+    заметки о друзьях (контакты), ни другие события, ни прочие разделы."""
+    eid = ev.get("id")
+    friends = {}
+    for f in (app.get("plannerFriends") or []):
+        if isinstance(f, dict) and f.get("id"):
+            friends[f["id"]] = f
+    participants = [
+        {"id": fid, "name": (friends[fid].get("name") or "Без имени")}
+        for fid in (ev.get("participantIds") or [])
+        if fid in friends
+    ]
+    known = {p["id"] for p in participants}
+    responses = [
+        {
+            "friendId": r.get("friendId"),
+            "status": r.get("status"),
+            "note": r.get("note") or "",
+            "updatedAt": r.get("updatedAt") or 0,
+        }
+        for r in (app.get("plannerResponses") or [])
+        if isinstance(r, dict) and r.get("eventId") == eid and r.get("friendId") in known
+    ]
+    comments = sorted(
+        (
+            {
+                "id": c.get("id"),
+                "friendId": c.get("friendId"),
+                "text": c.get("text") or "",
+                "createdAt": c.get("createdAt") or 0,
+            }
+            for c in (app.get("plannerComments") or [])
+            if isinstance(c, dict) and c.get("eventId") == eid
+        ),
+        key=lambda c: c["createdAt"],
+    )
+    return {
+        "event": {
+            "id": eid,
+            "title": ev.get("title") or "Событие",
+            "description": ev.get("description") or "",
+            "place": ev.get("place") or "",
+            "address": ev.get("address") or "",
+            "startDate": ev.get("startDate") or "",
+            "endDate": ev.get("endDate") or "",
+            "startTime": ev.get("startTime") or "",
+            "endTime": ev.get("endTime") or "",
+            "decisionDeadline": ev.get("decisionDeadline") or "",
+            "organizer": ev.get("organizer") or "",
+        },
+        "participants": participants,
+        "responses": responses,
+        "comments": comments,
+        "serverNow": int(time.time() * 1000),
+    }
+
+
+def planner_guest_write(token: str, friend_id: str, apply):
+    """Общая обвязка гостевых записей (ответ / комментарий): найти событие по
+    токену, убедиться, что friend_id — участник ИМЕННО этого события, и под
+    общим локом применить `apply(app, event)`.
+    Возвращает (http_code, payload)."""
+    with APP_DATA_LOCK:
+        app = load_app_data() if APP_DATA_FILE.exists() else {}
+        ev = find_planner_event(app, token)
+        if ev is None:
+            return 404, {"error": "event not found"}
+        if friend_id not in (ev.get("participantIds") or []):
+            return 403, {"error": "not a participant"}
+        err = apply(app, ev)
+        if err:
+            return err
+        save_app_data(app)
+        return 200, planner_public_payload(app, ev)
+
+
 # ── HTTP handler ───────────────────────────────────────────────────────────
 
 class JarvisHandler(SimpleHTTPRequestHandler):
@@ -1209,6 +1331,19 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         route = self.path.split("?", 1)[0].rstrip("/") or "/"
         if route in ("/", "/index.html") or route in SPA_ROUTES:
             self._serve_html()
+        elif token_from_route(route, "/e/"):
+            # Гостевая страница события — отдельный файл, не SPA.
+            self._serve_event_page()
+        elif token_from_route(route, "/api/event/"):
+            token = token_from_route(route, "/api/event/")
+            with APP_DATA_LOCK:
+                app = load_app_data() if APP_DATA_FILE.exists() else {}
+                ev = find_planner_event(app, token)
+                payload = planner_public_payload(app, ev) if ev else None
+            if payload is None:
+                self._json(404, {"error": "event not found"})
+            else:
+                self._json(200, payload)
         elif self.path in ("/english", "/english.html"):
             p = Path(__file__).parent / "english.html"
             content = p.read_bytes()
@@ -1305,7 +1440,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
-        if self.path == "/api/config":
+        route = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if token_from_route(route, "/api/event/", "/rsvp"):
+            self._event_rsvp(token_from_route(route, "/api/event/", "/rsvp"))
+        elif token_from_route(route, "/api/event/", "/comment"):
+            self._event_comment(token_from_route(route, "/api/event/", "/comment"))
+        elif self.path == "/api/config":
             length = self._content_length()
             if length is None:
                 self._json(411, {"error": "Content-Length required"})
@@ -1454,6 +1594,107 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
+
+    # ── Планировщик: гостевые запросы по ссылке ────────────────────────────
+
+    def _guest_json_body(self):
+        """Тело гостевого POST-а. Возвращает dict или None (ответ уже отправлен).
+        Лимит длины жёсткий: страница события открыта всем, у кого есть ссылка."""
+        length = self._content_length()
+        if length is None:
+            self._json(411, {"error": "Content-Length required"})
+            return None
+        if length > MAX_EVENT_GUEST_BODY:
+            self._json(413, {"error": "payload too large"})
+            return None
+        try:
+            payload = json.loads(self.rfile.read(length))
+        except Exception:
+            self._json(400, {"error": "invalid json"})
+            return None
+        if not isinstance(payload, dict):
+            self._json(400, {"error": "invalid json"})
+            return None
+        return payload
+
+    def _event_rsvp(self, token: str):
+        payload = self._guest_json_body()
+        if payload is None:
+            return
+        friend_id = str(payload.get("friendId") or "")
+        status = str(payload.get("status") or "")
+        note = str(payload.get("note") or "")[:MAX_EVENT_NOTE_LEN].strip()
+        if status not in PLANNER_STATUSES:
+            self._json(400, {"error": "invalid status"})
+            return
+
+        def apply(app, ev):
+            # id ответа детерминированный (событие + участник): один ответ на
+            # человека, а слияние между устройствами разрулит его по updatedAt.
+            rid = f"{ev.get('id')}:{friend_id}"
+            now_ms = int(time.time() * 1000)
+            responses = [r for r in (app.get("plannerResponses") or []) if isinstance(r, dict)]
+            existing = next((r for r in responses if r.get("id") == rid), None)
+            entry = {
+                "id": rid,
+                "eventId": ev.get("id"),
+                "friendId": friend_id,
+                "status": status,
+                "note": note,
+                "createdAt": (existing or {}).get("createdAt") or now_ms,
+                "updatedAt": now_ms,
+            }
+            app["plannerResponses"] = [r for r in responses if r.get("id") != rid] + [entry]
+            return None
+
+        code, body = planner_guest_write(token, friend_id, apply)
+        self._json(code, body)
+
+    def _event_comment(self, token: str):
+        payload = self._guest_json_body()
+        if payload is None:
+            return
+        friend_id = str(payload.get("friendId") or "")
+        text = str(payload.get("text") or "").strip()[:MAX_EVENT_COMMENT_LEN]
+        if not text:
+            self._json(400, {"error": "empty comment"})
+            return
+
+        def apply(app, ev):
+            comments = [c for c in (app.get("plannerComments") or []) if isinstance(c, dict)]
+            if sum(1 for c in comments if c.get("eventId") == ev.get("id")) >= MAX_EVENT_COMMENTS:
+                return 429, {"error": "too many comments"}
+            now_ms = int(time.time() * 1000)
+            comments.append({
+                "id": str(uuid.uuid4()),
+                "eventId": ev.get("id"),
+                "friendId": friend_id,
+                "text": text,
+                "createdAt": now_ms,
+                "updatedAt": now_ms,
+            })
+            app["plannerComments"] = comments
+            return None
+
+        code, body = planner_guest_write(token, friend_id, apply)
+        self._json(code, body)
+
+    def _serve_event_page(self):
+        try:
+            content = EVENT_PAGE_FILE.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            # Ссылку рассылают в мессенджерах — она не должна попадать в поиск.
+            self.send_header("X-Robots-Tag", "noindex, nofollow")
+            self.send_header("Cache-Control", "no-store")
+            self._cors()
+            self.end_headers()
+            self.wfile.write(content)
+        except FileNotFoundError:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"event.html not found")
 
     def _serve_html(self):
         try:
