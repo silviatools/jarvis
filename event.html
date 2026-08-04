@@ -28,7 +28,13 @@
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 620px; margin: 0 auto; padding: 20px 16px 64px; }
+  /* Нижнее меню фиксировано, поэтому контент снизу отступает на его высоту
+     плюс безопасную зону iPhone — иначе последняя карточка уезжает под него. */
+  :root { --nav-h: 60px; --safe-b: env(safe-area-inset-bottom, 0px); }
+  .wrap {
+    max-width: 620px; margin: 0 auto;
+    padding: 16px 16px calc(var(--nav-h) + var(--safe-b) + 24px);
+  }
   .font-display { font-family: 'Fraunces', Georgia, serif; letter-spacing: -0.02em; }
   .card {
     background: var(--surface); border: 1px solid var(--border);
@@ -101,12 +107,7 @@
     background: var(--bg); border: 1px solid var(--border);
     font-size: 13px; font-weight: 600; color: var(--text-muted);
   }
-  .comment { padding: 12px 0; border-bottom: 1px solid var(--border); }
-  .comment:last-child { border-bottom: none; padding-bottom: 0; }
-  .comment-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
-  .comment-author { font-size: 14px; font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
   .person-name { overflow-wrap: anywhere; }
-  .comment-text { font-size: 15px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; }
   .empty { color: var(--text-subtle); font-size: 14px; padding: 6px 0; }
   /* ── Расходы ── */
   .sec-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
@@ -162,6 +163,91 @@
   .split-row input[type=text] { width: 104px; padding: 8px 10px; font-size: 14px; text-align: right; }
   .cb { width: 20px; height: 20px; flex: 0 0 20px; accent-color: var(--text); }
   @media (prefers-color-scheme: dark) { .warn { color: #fbbf24; } }
+
+  /* ── Нижнее меню ── */
+  .bottomnav {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    display: flex; align-items: stretch;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+    border-top: 1px solid var(--border);
+    padding-bottom: var(--safe-b);
+  }
+  .nav-btn {
+    flex: 1; background: none; border: 0; padding: 8px 4px 10px;
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    color: var(--text-subtle); font-size: 11px; font-weight: 500;
+    position: relative; min-width: 0;
+  }
+  .nav-btn .ic {
+    display: flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; border-radius: 10px; transition: background .15s ease, color .15s ease;
+  }
+  .nav-btn.on { color: var(--text); }
+  .nav-btn.on .ic { background: var(--text); color: var(--bg); }
+  .nav-btn .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .nav-badge {
+    position: absolute; top: 4px; left: 50%; margin-left: 4px;
+    min-width: 17px; height: 17px; padding: 0 5px; border-radius: 9px;
+    background: #dc2626; color: #fff; font-size: 10px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center; line-height: 1;
+  }
+  .nav-dot {
+    position: absolute; top: 7px; left: 50%; margin-left: 7px;
+    width: 8px; height: 8px; border-radius: 50%; background: #dc2626;
+  }
+
+  /* ── Компактная шапка на внутренних вкладках ── */
+  .topbar {
+    position: sticky; top: 0; z-index: 20; margin: -16px -16px 14px;
+    padding: 12px 16px; display: flex; align-items: baseline; gap: 8px;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar .t {
+    font-family: 'Fraunces', Georgia, serif; font-size: 17px; letter-spacing: -0.01em;
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* ── Чат ── */
+  .msg { display: flex; margin-bottom: 10px; }
+  .msg.mine { justify-content: flex-end; }
+  .bubble {
+    max-width: 78%; padding: 9px 13px; border-radius: 16px;
+    background: var(--surface); border: 1px solid var(--border);
+    font-size: 15px; line-height: 1.4; white-space: pre-wrap;
+    overflow-wrap: anywhere; border-bottom-left-radius: 5px;
+  }
+  .msg.mine .bubble {
+    background: var(--text); color: var(--bg); border-color: var(--text);
+    border-bottom-left-radius: 16px; border-bottom-right-radius: 5px;
+  }
+  .bubble .who { font-size: 12px; font-weight: 600; margin-bottom: 3px; color: var(--text-muted); }
+  .bubble .when { font-size: 11px; opacity: 0.55; margin-top: 3px; text-align: right; }
+  .composer {
+    position: sticky; bottom: 0; z-index: 15;
+    margin: 14px -16px calc(var(--nav-h) * -1 + 14px);
+    padding: 10px 16px calc(var(--nav-h) + 10px);
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+    display: flex; gap: 8px; align-items: flex-end;
+  }
+  .composer textarea { flex: 1; min-height: 44px; max-height: 140px; }
+  .composer .send {
+    flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%;
+    background: var(--text); color: var(--bg); border: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .composer .send:disabled { opacity: 0.35; }
+
+  /* ── Деньги: главная плашка ── */
+  .hero {
+    border-radius: 16px; padding: 16px; margin-bottom: 14px;
+    background: var(--bg); border: 1px solid var(--border); text-align: center;
+  }
+  .hero .big { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin: 2px 0 4px; }
+  .hero .cap { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-subtle); }
   .note { font-size: 13px; color: var(--text-muted); margin-top: 6px; font-style: italic; }
   .toast {
     position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
@@ -187,6 +273,7 @@
 <div class="wrap" id="root">
   <div class="center muted">Загрузка…</div>
 </div>
+<nav class="bottomnav" id="bottomnav"></nav>
 <div class="toast" id="toast"></div>
 
 <!-- Расчёт расходов — общий файл с приложением, чтобы суммы у организатора
@@ -217,7 +304,7 @@
   // noteDraft/commentDraft — незаконченный текст. Фоновое обновление раз в
   // 25 секунд перерисовывает страницу целиком, и без этих черновиков оно
   // стирало бы комментарий прямо во время набора.
-  var state = { data: null, me: null, busy: false, error: null,
+  var state = { data: null, me: null, busy: false, error: null, tab: 'home',
                 noteDraft: null, commentDraft: '', nameDraft: '', expenseForm: null };
 
   function isTyping() {
@@ -357,6 +444,68 @@
     return 'Участник';
   }
 
+  // ── Нижнее меню ─────────────────────────────────────────────────────────
+  var ICONS = {
+    home: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
+    chat: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+    money: '<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/>',
+  };
+
+  function icon(name) {
+    var span = el('span', 'ic');
+    // Только константы из ICONS — пользовательские данные сюда не попадают.
+    span.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+      'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + ICONS[name] + '</svg>';
+    return span;
+  }
+
+  var TABS = [
+    { id: 'home',  label: 'Главная', icon: 'home'  },
+    { id: 'chat',  label: 'Чат',     icon: 'chat'  },
+    { id: 'money', label: 'Деньги',  icon: 'money' },
+  ];
+
+  function renderNav() {
+    var nav = document.getElementById('bottomnav');
+    nav.textContent = '';
+    if (!state.data) { nav.style.display = 'none'; return; }
+    nav.style.display = 'flex';
+
+    var comments = (state.data.comments || []).length;
+    var unpaid = 0;
+    if (state.me) {
+      var mine = settlement().byParticipant[state.me];
+      if (mine) unpaid = mine.owes.filter(function (r) { return !r.paid; }).length;
+    }
+
+    TABS.forEach(function (t) {
+      var b = el('button', 'nav-btn' + (state.tab === t.id ? ' on' : ''));
+      b.appendChild(icon(t.icon));
+      b.appendChild(el('span', 'lbl', t.label));
+      if (t.id === 'chat' && comments) {
+        b.appendChild(el('span', 'nav-badge', comments > 99 ? '99+' : String(comments)));
+      }
+      if (t.id === 'money' && unpaid) b.appendChild(el('span', 'nav-dot'));
+      b.onclick = function () {
+        if (state.tab === t.id) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+        state.tab = t.id;
+        render();
+        window.scrollTo(0, 0);
+      };
+      nav.appendChild(b);
+    });
+  }
+
+  function topBar() {
+    var bar = el('div', 'topbar');
+    bar.appendChild(el('div', 't', state.data.event.title));
+    var when = el('div', 'subtle');
+    when.style.whiteSpace = 'nowrap';
+    when.textContent = state.data.event.startDate ? fmtDate(state.data.event.startDate, false) : '';
+    bar.appendChild(when);
+    return bar;
+  }
+
   // ── render ──────────────────────────────────────────────────────────────
   function render() {
     var root = document.getElementById('root');
@@ -370,24 +519,38 @@
       box.appendChild(el('div', 'muted',
         'Ссылка неверна или организатор её отключил. Попросите новую ссылку.'));
       root.appendChild(box);
+      renderNav();
       return;
     }
     if (!state.data) {
       root.appendChild(el('div', 'center muted', 'Загрузка…'));
+      renderNav();
       return;
     }
 
-    root.appendChild(renderEvent());
-    root.appendChild(state.me ? renderRsvp() : renderWhoAmI());
-    root.appendChild(renderPeople());
-    root.appendChild(renderExpenses());
-    root.appendChild(renderComments());
+    if (state.tab !== 'home') root.appendChild(topBar());
 
-    var foot = el('div', 'subtle');
-    foot.style.textAlign = 'center';
-    foot.style.marginTop = '18px';
-    foot.textContent = 'Страница события. Видна только тем, у кого есть ссылка.';
-    root.appendChild(foot);
+    // Без выбранного имени нельзя ни ответить, ни писать, ни вносить траты.
+    // На внутренних вкладках «Кто вы?» встречает сразу; на главной сначала
+    // само событие — сперва человек читает, куда его зовут.
+    if (!state.me && state.tab !== 'home') root.appendChild(renderWhoAmI());
+
+    if (state.tab === 'home') {
+      root.appendChild(renderEvent());
+      root.appendChild(state.me ? renderRsvp() : renderWhoAmI());
+      root.appendChild(renderPeople());
+      var foot = el('div', 'subtle');
+      foot.style.textAlign = 'center';
+      foot.style.marginTop = '18px';
+      foot.textContent = 'Страница события. Видна только тем, у кого есть ссылка.';
+      root.appendChild(foot);
+    } else if (state.tab === 'chat') {
+      root.appendChild(renderChat());
+    } else {
+      root.appendChild(renderExpenses());
+    }
+
+    renderNav();
   }
 
   function renderEvent() {
@@ -784,19 +947,29 @@
     }
 
     if (s.expenses.length) {
-      var tot = el('div', 'muted');
-      tot.textContent = 'Всего потрачено ' + Split.formatMoney(s.totalSpent);
       if (mine) {
-        tot.appendChild(document.createElement('br'));
-        tot.appendChild(document.createTextNode('Вы внесли ' + Split.formatMoney(mine.spent) +
-          ', ваша доля ' + Split.formatMoney(mine.share) + ' — '));
-        var bal = el('span', mine.balance >= 0 ? 'money-in' : 'money-out',
-          mine.balance === 0 ? 'вы в расчёте'
-            : mine.balance > 0 ? 'вам должны ' + Split.formatMoney(mine.balance)
-            : 'вы должны ' + Split.formatMoney(-mine.balance));
-        tot.appendChild(bal);
+        // Главное число вкладки — сколько ОСТАЛОСЬ перевести, а не «сырой»
+        // баланс: иначе плашка требовала бы денег с того, кто уже всё отметил.
+        var unpaidOut = mine.owes.reduce(function (a, r) { return a + (r.paid ? 0 : r.amount); }, 0);
+        var unpaidIn = mine.getsFrom.reduce(function (a, r) { return a + (r.paid ? 0 : r.amount); }, 0);
+        var hero = el('div', 'hero');
+        var cap, big, cls;
+        if (unpaidOut > 0) {
+          cap = 'Осталось перевести'; big = Split.formatMoney(unpaidOut); cls = 'money-out';
+        } else if (unpaidIn > 0) {
+          cap = 'Вам должны перевести'; big = Split.formatMoney(unpaidIn); cls = 'money-in';
+        } else {
+          cap = 'Итог'; big = 'Всё в расчёте'; cls = '';
+        }
+        hero.appendChild(el('div', 'cap', cap));
+        hero.appendChild(el('div', 'big ' + cls, big));
+        var sub = 'Вы внесли ' + Split.formatMoney(mine.spent) + ' · ваша доля ' + Split.formatMoney(mine.share);
+        if (unpaidOut > 0 && unpaidIn > 0) sub += ' · вам должны ' + Split.formatMoney(unpaidIn);
+        hero.appendChild(el('div', 'subtle', sub));
+        card.appendChild(hero);
       }
-      card.appendChild(tot);
+      card.appendChild(el('div', 'muted', 'Всего по событию ' + Split.formatMoney(s.totalSpent) +
+        ' · ' + s.expenses.length + ' ' + plural(s.expenses.length, 'трата', 'траты', 'трат')));
     }
 
     if (mine && mine.owes.length) {
@@ -1084,55 +1257,80 @@
     }).then(function () { state.busy = false; });
   }
 
-  function renderComments() {
-    var card = el('div', 'card');
-    card.appendChild(el('div', 'card-title', 'Обсуждение'));
+  function renderChat() {
+    var wrap = el('div');
+    var list = el('div');
 
-    if (!state.data.comments.length) {
-      card.appendChild(el('div', 'empty', 'Комментариев пока нет — напишите первым.'));
+    var comments = state.data.comments || [];
+    if (!comments.length) {
+      var empty = el('div', 'card');
+      empty.style.textAlign = 'center';
+      empty.appendChild(el('div', 'muted', 'Здесь пока тихо'));
+      empty.appendChild(el('div', 'subtle', state.me
+        ? 'Напишите первым — сообщение увидят все участники события.'
+        : 'Выберите себя выше, чтобы написать.')).style.marginTop = '4px';
+      list.appendChild(empty);
     }
-    state.data.comments.forEach(function (c) {
-      var box = el('div', 'comment');
-      var head = el('div', 'comment-head');
-      head.appendChild(el('span', 'comment-author', nameOf(c.friendId)));
-      head.appendChild(el('span', 'subtle', fmtWhen(c.createdAt)));
-      box.appendChild(head);
-      box.appendChild(el('div', 'comment-text', c.text));
-      card.appendChild(box);
+
+    var lastAuthor = null;
+    comments.forEach(function (c) {
+      var mine = c.friendId === state.me;
+      var row = el('div', 'msg' + (mine ? ' mine' : ''));
+      var b = el('div', 'bubble');
+      // Имя не повторяем в подряд идущих сообщениях одного человека.
+      if (!mine && c.friendId !== lastAuthor) b.appendChild(el('div', 'who', nameOf(c.friendId)));
+      b.appendChild(document.createTextNode(c.text));
+      b.appendChild(el('div', 'when', fmtWhen(c.createdAt)));
+      row.appendChild(b);
+      list.appendChild(row);
+      lastAuthor = c.friendId;
     });
+    wrap.appendChild(list);
 
-    var form = el('div');
-    form.style.marginTop = '14px';
-    if (!state.me) {
-      form.appendChild(el('div', 'subtle', 'Чтобы написать комментарий, выберите себя в списке выше.'));
-    } else {
-      var ta = el('textarea');
-      ta.rows = 3;
-      ta.placeholder = 'Написать комментарий…';
-      ta.value = state.commentDraft || '';
-      ta.oninput = function () { state.commentDraft = ta.value; };
-      form.appendChild(ta);
-      var send = el('button', 'btn-primary', 'Опубликовать');
-      send.style.marginTop = '8px';
-      send.onclick = function () {
-        var text = ta.value.trim();
-        if (!text || state.busy) return;
-        state.busy = true;
-        send.disabled = true;
-        api('/comment', { friendId: state.me, text: text }).then(function (json) {
-          state.data = json;
-          state.commentDraft = '';
-          render();
-          toast('Комментарий опубликован');
-        }).catch(function (e) {
-          toast('Не удалось отправить: ' + e.message);
-          send.disabled = false;
-        }).then(function () { state.busy = false; });
-      };
-      form.appendChild(send);
-    }
-    card.appendChild(form);
-    return card;
+    if (!state.me) return wrap;
+
+    var comp = el('div', 'composer');
+    var ta = el('textarea');
+    ta.rows = 1;
+    ta.placeholder = 'Сообщение…';
+    ta.value = state.commentDraft || '';
+    var autoGrow = function () {
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight, 140) + 'px';
+      send.disabled = !ta.value.trim();
+    };
+    ta.oninput = function () { state.commentDraft = ta.value; autoGrow(); };
+    var send = el('button', 'send');
+    send.innerHTML = '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 14-7-5 14-2.5-5.5z"/></svg>';
+    send.disabled = !(state.commentDraft || '').trim();
+    send.onclick = function () {
+      var text = ta.value.trim();
+      if (!text || state.busy) return;
+      state.busy = true;
+      send.disabled = true;
+      api('/comment', { friendId: state.me, text: text }).then(function (json) {
+        state.data = json;
+        state.commentDraft = '';
+        render();
+        scrollChatToEnd();
+      }).catch(function (e) {
+        toast('Не удалось отправить: ' + e.message);
+        send.disabled = false;
+      }).then(function () { state.busy = false; });
+    };
+    comp.appendChild(ta);
+    comp.appendChild(send);
+    wrap.appendChild(comp);
+    setTimeout(autoGrow, 0);
+    return wrap;
+  }
+
+  function scrollChatToEnd() {
+    // Лента растёт вниз: после отправки показываем свежее сообщение.
+    setTimeout(function () {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    }, 30);
   }
 
   // ── boot ────────────────────────────────────────────────────────────────

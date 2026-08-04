@@ -15389,11 +15389,19 @@ function PlannerExpenseModal({ initial, participants, expenses, onSave, onClose 
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
 
   // Реквизиты подставляем из прошлых трат этого плательщика — их редко меняют.
+  // При СМЕНЕ плательщика подстановку обязательно обновляем: иначе в трате
+  // одного человека оставалась карта другого, и все, кто ему переводит,
+  // отправили бы деньги не туда. Введённое руками не трогаем.
   const knownRequisites = useMemo(() => Split.requisitesOf(expenses), [expenses]);
+  const payToTouched = useRef(false);
+  const skipFirstPayerEffect = useRef(true);
   useEffect(() => {
-    if (!f.payTo && knownRequisites[f.payerId]) set('payTo', knownRequisites[f.payerId]);
+    if (skipFirstPayerEffect.current) { skipFirstPayerEffect.current = false; return; }
+    if (payToTouched.current) return;
+    set('payTo', knownRequisites[f.payerId] || '');
   }, [f.payerId]);
 
+  const payerName = (participants.find(p => p.id === f.payerId) || {}).name || '';
   const selectedIds = participants.filter(p => f.selected[p.id]).map(p => p.id);
   const totalCents = Split.toCents(f.amount);
   const sharesSum = selectedIds.reduce((acc, id) => acc + Split.toCents(f.shares[id] || 0), 0);
@@ -15461,8 +15469,13 @@ function PlannerExpenseModal({ initial, participants, expenses, onSave, onClose 
         </div>
 
         <div>
-          <label>Куда переводить деньги плательщику</label>
-          <input value={f.payTo} onChange={e => set('payTo', e.target.value)} placeholder="Карта, телефон или ссылка" maxLength={200} />
+          <label>Куда переводить деньги{payerName ? ` — ${payerName}` : ''}</label>
+          <input
+            value={f.payTo}
+            onChange={e => { payToTouched.current = true; set('payTo', e.target.value); }}
+            placeholder="Карта, телефон или ссылка"
+            maxLength={200}
+          />
         </div>
 
         <div>
