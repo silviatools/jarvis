@@ -108,6 +108,60 @@
   .person-name { overflow-wrap: anywhere; }
   .comment-text { font-size: 15px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; }
   .empty { color: var(--text-subtle); font-size: 14px; padding: 6px 0; }
+  /* ── Расходы ── */
+  .sec-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+  .btn-small {
+    background: var(--surface); border: 1px solid var(--border-strong); border-radius: 10px;
+    padding: 8px 12px; font-size: 13px; font-weight: 500; color: var(--text); white-space: nowrap;
+  }
+  .sub-head {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em;
+    color: var(--text-subtle); margin: 16px 0 8px;
+  }
+  .pay-row {
+    border: 1px solid var(--border); border-radius: 12px; padding: 12px;
+    margin-bottom: 8px; background: var(--bg);
+  }
+  .pay-row.done { opacity: 0.65; }
+  .pay-top { display: flex; align-items: baseline; gap: 10px; }
+  .pay-name { font-weight: 500; font-size: 15px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .pay-sum { font-size: 17px; font-weight: 600; white-space: nowrap; }
+  .pay-sum.done { text-decoration: line-through; }
+  .req {
+    display: flex; align-items: center; gap: 8px; margin-top: 8px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 9px; padding: 8px 10px;
+  }
+  .req-val { flex: 1; min-width: 0; font-size: 14px; overflow-wrap: anywhere;
+             font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .items { font-size: 13px; color: var(--text-muted); margin-top: 8px; line-height: 1.5; }
+  .items b { font-weight: 500; color: var(--text); }
+  .exp-row {
+    display: flex; align-items: flex-start; gap: 10px; padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .exp-row:last-child { border-bottom: none; }
+  .warn { font-size: 12px; color: #b45309; margin-top: 6px; }
+  .money-in  { color: #16a34a; font-weight: 600; }
+  .money-out { color: #dc2626; font-weight: 600; }
+  .field { margin-bottom: 10px; }
+  .field label { display: block; font-size: 11px; text-transform: uppercase;
+                 letter-spacing: 0.07em; color: var(--text-subtle); margin-bottom: 4px; }
+  .seg { display: flex; gap: 6px; }
+  .seg button {
+    flex: 1; padding: 9px; border-radius: 10px; font-size: 14px; font-weight: 500;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text-muted);
+  }
+  .seg button.on { background: var(--text); color: #fff; border-color: var(--text); }
+  .split-row {
+    display: flex; align-items: center; gap: 8px; padding: 7px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .split-row:last-child { border-bottom: none; }
+  .split-row .nm { flex: 1; min-width: 0; font-size: 14px; overflow-wrap: anywhere; }
+  .split-row input[type=text] { width: 104px; padding: 8px 10px; font-size: 14px; text-align: right; }
+  .cb { width: 20px; height: 20px; flex: 0 0 20px; accent-color: var(--text); }
+  @media (prefers-color-scheme: dark) { .warn { color: #fbbf24; } }
   .note { font-size: 13px; color: var(--text-muted); margin-top: 6px; font-style: italic; }
   .toast {
     position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
@@ -135,6 +189,9 @@
 </div>
 <div class="toast" id="toast"></div>
 
+<!-- Расчёт расходов — общий файл с приложением, чтобы суммы у организатора
+     и у участника считались одним и тем же кодом. -->
+<script src="/planner-split.js"></script>
 <script>
 (function () {
   'use strict';
@@ -161,7 +218,7 @@
   // 25 секунд перерисовывает страницу целиком, и без этих черновиков оно
   // стирало бы комментарий прямо во время набора.
   var state = { data: null, me: null, busy: false, error: null,
-                noteDraft: null, commentDraft: '', nameDraft: '' };
+                noteDraft: null, commentDraft: '', nameDraft: '', expenseForm: null };
 
   function isTyping() {
     var a = document.activeElement;
@@ -323,6 +380,7 @@
     root.appendChild(renderEvent());
     root.appendChild(state.me ? renderRsvp() : renderWhoAmI());
     root.appendChild(renderPeople());
+    root.appendChild(renderExpenses());
     root.appendChild(renderComments());
 
     var foot = el('div', 'subtle');
@@ -597,6 +655,433 @@
         : 'Пока никого нет.'));
     }
     return card;
+  }
+
+  // ── Расходы ─────────────────────────────────────────────────────────────
+  var Split = window.PlannerSplit;
+
+  function settlement() {
+    return Split.computeSettlement({
+      eventId: state.data.event.id,
+      participants: state.data.participants,
+      expenses: state.data.expenses || [],
+      payments: state.data.payments || [],
+    });
+  }
+
+  function copyToClipboard(text) {
+    var done = function (ok) { toast(ok ? 'Скопировано' : 'Не удалось скопировать'); };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+      return;
+    }
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      done(ok);
+    } catch (e) { done(false); }
+  }
+
+  /** Строка «за что»: свои траты идут минусом — так видно взаимозачёт. */
+  function itemsLine(items) {
+    var box = el('div', 'items');
+    items.forEach(function (it, i) {
+      if (i) box.appendChild(document.createTextNode(' · '));
+      var b = el('b', null, it.title);
+      box.appendChild(b);
+      box.appendChild(document.createTextNode(' ' + Split.formatCents(it.cents)));
+    });
+    return box;
+  }
+
+  function payRow(row, mine) {
+    var box = el('div', 'pay-row' + (row.paid ? ' done' : ''));
+    var top = el('div', 'pay-top');
+    top.appendChild(el('div', 'pay-name', mine === 'out' ? row.toName : row.fromName));
+    top.appendChild(el('div', 'pay-sum' + (row.paid ? ' done' : ''), Split.formatMoney(row.amount)));
+    box.appendChild(top);
+
+    if (mine === 'out') {
+      var req = el('div', 'req');
+      req.appendChild(el('div', 'req-val', row.payTo || 'реквизиты не указаны'));
+      if (row.payTo) {
+        var cp = el('button', 'btn-small', 'Копировать');
+        cp.onclick = function () { copyToClipboard(row.payTo); };
+        req.appendChild(cp);
+      }
+      box.appendChild(req);
+    }
+
+    if (row.items.length) box.appendChild(itemsLine(row.items));
+
+    if (row.amountChangedAfterPaid) {
+      box.appendChild(el('div', 'warn', 'Отметку ставили на ' + Split.formatMoney(row.markedAmount) +
+        ' — с тех пор сумма изменилась. Проверьте расчёт.'));
+    }
+
+    var btn = el('button', 'btn-small');
+    btn.style.marginTop = '10px';
+    btn.textContent = row.paid
+      ? (mine === 'out' ? '✓ Отмечено как переведено — отменить' : '✓ Отмечено — отменить')
+      : (mine === 'out' ? 'Отметить, что перевёл' : 'Отметить, что получил');
+    if (row.paid) {
+      btn.style.background = 'transparent';
+      btn.style.borderColor = 'var(--border)';
+      btn.style.color = 'var(--text-muted)';
+    }
+    btn.onclick = function () { markPayment(row, !row.paid); };
+    box.appendChild(btn);
+    if (row.paid && row.paidBy) {
+      box.appendChild(el('div', 'subtle', 'Отметил(а): ' + nameOf(row.paidBy) + (row.paidAt ? ', ' + fmtWhen(row.paidAt) : '')));
+    }
+    return box;
+  }
+
+  function markPayment(row, paid) {
+    if (state.busy) return;
+    state.busy = true;
+    api('/payment', {
+      friendId: state.me,
+      fromId: row.fromId,
+      toId: row.toId,
+      paid: paid,
+      amount: row.amount,
+    }).then(function (json) {
+      state.data = json;
+      render();
+      toast(paid ? 'Отмечено' : 'Отметка снята');
+    }).catch(function (e) {
+      toast('Не удалось: ' + e.message);
+      load(true);
+    }).then(function () { state.busy = false; });
+  }
+
+  function renderExpenses() {
+    var card = el('div', 'card');
+    var head = el('div', 'sec-head');
+    head.appendChild(el('div', 'card-title', 'Расходы')).style.marginBottom = '0';
+    if (state.me && !state.expenseForm) {
+      var add = el('button', 'btn-small', '+ Добавить трату');
+      add.onclick = function () { openExpenseForm(null); };
+      head.appendChild(add);
+    }
+    card.appendChild(head);
+
+    var s = settlement();
+    var mine = state.me ? s.byParticipant[state.me] : null;
+
+    if (!s.expenses.length && !state.expenseForm) {
+      card.appendChild(el('div', 'empty', state.me
+        ? 'Трат пока нет. Занесите свою — и сумма разделится между участниками.'
+        : 'Трат пока нет.'));
+      return card;
+    }
+
+    if (s.expenses.length) {
+      var tot = el('div', 'muted');
+      tot.textContent = 'Всего потрачено ' + Split.formatMoney(s.totalSpent);
+      if (mine) {
+        tot.appendChild(document.createElement('br'));
+        tot.appendChild(document.createTextNode('Вы внесли ' + Split.formatMoney(mine.spent) +
+          ', ваша доля ' + Split.formatMoney(mine.share) + ' — '));
+        var bal = el('span', mine.balance >= 0 ? 'money-in' : 'money-out',
+          mine.balance === 0 ? 'вы в расчёте'
+            : mine.balance > 0 ? 'вам должны ' + Split.formatMoney(mine.balance)
+            : 'вы должны ' + Split.formatMoney(-mine.balance));
+        tot.appendChild(bal);
+      }
+      card.appendChild(tot);
+    }
+
+    if (mine && mine.owes.length) {
+      card.appendChild(el('div', 'sub-head', 'Вы переводите'));
+      mine.owes.forEach(function (r) { card.appendChild(payRow(r, 'out')); });
+    }
+    if (mine && mine.getsFrom.length) {
+      card.appendChild(el('div', 'sub-head', 'Вам переводят'));
+      mine.getsFrom.forEach(function (r) { card.appendChild(payRow(r, 'in')); });
+    }
+    if (mine && !mine.owes.length && !mine.getsFrom.length && s.expenses.length) {
+      card.appendChild(el('div', 'empty', 'По расчётам вы никому ничего не должны.'));
+    }
+
+    if (state.expenseForm) card.appendChild(renderExpenseForm());
+
+    if (s.expenses.length) {
+      card.appendChild(el('div', 'sub-head', 'Все траты'));
+      s.expenses.forEach(function (e) {
+        var row = el('div', 'exp-row');
+        var mid = el('div');
+        mid.style.flex = '1';
+        mid.style.minWidth = '0';
+        var t = el('div');
+        t.style.fontSize = '15px';
+        t.style.overflowWrap = 'anywhere';
+        t.textContent = (e.title || 'Без описания');
+        mid.appendChild(t);
+        var who = el('div', 'subtle');
+        var count = e.splitMode === 'custom' ? (e.shares || []).length : (e.participantIds || []).length;
+        who.textContent = nameOf(e.payerId) + ' · ' +
+          (e.splitMode === 'custom' ? 'вручную на ' : 'поровну на ') + count + ' чел.';
+        mid.appendChild(who);
+        row.appendChild(mid);
+        var sum = el('div');
+        sum.style.fontWeight = '600';
+        sum.style.whiteSpace = 'nowrap';
+        sum.textContent = Split.formatMoney(Split.toCents(e.amount));
+        row.appendChild(sum);
+        if (state.me && e.payerId === state.me && !state.expenseForm) {
+          var ed = el('button', 'btn-ghost', 'изм.');
+          ed.onclick = function () { openExpenseForm(e); };
+          row.appendChild(ed);
+          var del = el('button', 'btn-ghost', 'удал.');
+          del.onclick = function () { deleteExpense(e); };
+          row.appendChild(del);
+        }
+        card.appendChild(row);
+      });
+    }
+    return card;
+  }
+
+  function openExpenseForm(exp) {
+    var s = settlement();
+    var selected = {};
+    var shares = {};
+    if (exp) {
+      if (exp.splitMode === 'custom') {
+        (exp.shares || []).forEach(function (sh) {
+          selected[sh.participantId] = true;
+          shares[sh.participantId] = String(sh.amount).replace('.', ',');
+        });
+      } else {
+        (exp.participantIds || []).forEach(function (id) { selected[id] = true; });
+      }
+    } else {
+      // По умолчанию делим на всех участников — самый частый случай.
+      state.data.participants.forEach(function (p) { selected[p.id] = true; });
+    }
+    state.expenseForm = {
+      id: exp ? exp.id : null,
+      amount: exp ? String(exp.amount).replace('.', ',') : '',
+      title: exp ? (exp.title || '') : '',
+      payTo: exp ? (exp.payTo || '') : (s.requisites[state.me] || ''),
+      splitMode: exp && exp.splitMode === 'custom' ? 'custom' : 'equal',
+      selected: selected,
+      shares: shares,
+    };
+    render();
+  }
+
+  function formSelectedIds() {
+    var f = state.expenseForm;
+    return state.data.participants
+      .map(function (p) { return p.id; })
+      .filter(function (id) { return f.selected[id]; });
+  }
+
+  function formRemainder() {
+    var f = state.expenseForm;
+    var total = Split.toCents(f.amount);
+    var sum = 0;
+    formSelectedIds().forEach(function (id) { sum += Split.toCents(f.shares[id] || 0); });
+    return { total: total, sum: sum, left: total - sum };
+  }
+
+  function refreshHint() {
+    var f = state.expenseForm;
+    var hint = document.getElementById('split-hint');
+    if (!hint || !f) return;
+    var ids = formSelectedIds();
+    if (f.splitMode === 'equal') {
+      var total = Split.toCents(f.amount);
+      if (!total || !ids.length) { hint.textContent = ''; hint.className = 'subtle'; return; }
+      var per = Split.splitEqually(total, ids);
+      var vals = ids.map(function (id) { return per[id]; });
+      var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+      hint.className = 'subtle';
+      hint.textContent = 'По ' + Split.formatCents(min) + (max !== min ? '–' + Split.formatCents(max) : '') +
+        ' ₽ с человека · ' + ids.length + ' чел.';
+    } else {
+      var r = formRemainder();
+      if (!r.total) { hint.textContent = ''; hint.className = 'subtle'; return; }
+      if (r.left === 0) {
+        hint.className = 'subtle';
+        hint.textContent = 'Распределено полностью.';
+      } else {
+        hint.className = 'warn';
+        hint.textContent = r.left > 0
+          ? 'Осталось распределить ' + Split.formatMoney(r.left)
+          : 'Распределено больше суммы на ' + Split.formatMoney(-r.left);
+      }
+    }
+  }
+
+  function renderExpenseForm() {
+    var f = state.expenseForm;
+    var box = el('div');
+    box.style.marginTop = '16px';
+    box.style.paddingTop = '16px';
+    box.style.borderTop = '1px solid var(--border)';
+    box.appendChild(el('div', 'sub-head', f.id ? 'Изменить трату' : 'Новая трата'))
+       .style.marginTop = '0';
+
+    var field = function (label, key, placeholder, mode) {
+      var w = el('div', 'field');
+      w.appendChild(el('label', null, label));
+      var inp = el('input');
+      inp.type = 'text';
+      if (mode) inp.inputMode = mode;
+      inp.placeholder = placeholder;
+      inp.value = f[key] || '';
+      inp.maxLength = 200;
+      // Правим черновик БЕЗ перерисовки — иначе курсор выпрыгивал бы из поля
+      // на каждом символе. Перерисовку вызывают только структурные действия.
+      inp.oninput = function () { f[key] = inp.value; refreshHint(); };
+      w.appendChild(inp);
+      return w;
+    };
+
+    box.appendChild(field('Сумма, ₽', 'amount', 'Например, 1500', 'decimal'));
+    box.appendChild(field('За что', 'title', 'Например, аренда корта'));
+    box.appendChild(field('Куда вам перевести', 'payTo', 'Карта, телефон или ссылка'));
+
+    var seg = el('div', 'field');
+    seg.appendChild(el('label', null, 'Как делим'));
+    var segRow = el('div', 'seg');
+    [['equal', 'Поровну'], ['custom', 'Вручную']].forEach(function (m) {
+      var b = el('button', f.splitMode === m[0] ? 'on' : '', m[1]);
+      b.onclick = function () { f.splitMode = m[0]; render(); };
+      segRow.appendChild(b);
+    });
+    seg.appendChild(segRow);
+    box.appendChild(seg);
+
+    var list = el('div', 'field');
+    var lh = el('div');
+    lh.style.display = 'flex';
+    lh.style.justifyContent = 'space-between';
+    lh.style.alignItems = 'baseline';
+    lh.appendChild(el('label', null, 'Между кем делим')).style.marginBottom = '0';
+    var all = el('button', 'btn-ghost',
+      formSelectedIds().length === state.data.participants.length ? 'снять всех' : 'выбрать всех');
+    all.onclick = function () {
+      var on = formSelectedIds().length !== state.data.participants.length;
+      state.data.participants.forEach(function (p) {
+        if (on) f.selected[p.id] = true; else delete f.selected[p.id];
+      });
+      render();
+    };
+    lh.appendChild(all);
+    list.appendChild(lh);
+
+    state.data.participants.forEach(function (p) {
+      var row = el('div', 'split-row');
+      var cb = el('input');
+      cb.type = 'checkbox';
+      cb.className = 'cb';
+      cb.checked = !!f.selected[p.id];
+      cb.onchange = function () {
+        if (cb.checked) f.selected[p.id] = true;
+        else { delete f.selected[p.id]; delete f.shares[p.id]; }
+        render();
+      };
+      row.appendChild(cb);
+      row.appendChild(el('div', 'nm', p.name + (p.id === state.me ? ' (вы)' : '')));
+      if (f.splitMode === 'custom' && f.selected[p.id]) {
+        var amt = el('input');
+        amt.type = 'text';
+        amt.inputMode = 'decimal';
+        amt.placeholder = '0';
+        amt.value = f.shares[p.id] || '';
+        amt.oninput = function () { f.shares[p.id] = amt.value; refreshHint(); };
+        row.appendChild(amt);
+      }
+      list.appendChild(row);
+    });
+    box.appendChild(list);
+
+    var hint = el('div', 'subtle');
+    hint.id = 'split-hint';
+    hint.style.marginBottom = '10px';
+    box.appendChild(hint);
+
+    var actions = el('div');
+    actions.style.display = 'flex';
+    actions.style.gap = '8px';
+    var cancel = el('button', 'btn-small', 'Отмена');
+    cancel.style.flex = '1';
+    cancel.style.padding = '13px';
+    cancel.onclick = function () { state.expenseForm = null; render(); };
+    var save = el('button', 'btn-primary', 'Сохранить');
+    save.style.flex = '2';
+    save.onclick = saveExpense;
+    actions.appendChild(cancel);
+    actions.appendChild(save);
+    box.appendChild(actions);
+
+    setTimeout(refreshHint, 0);
+    return box;
+  }
+
+  function saveExpense() {
+    var f = state.expenseForm;
+    if (!f || state.busy) return;
+    var total = Split.toCents(f.amount);
+    if (total <= 0) { toast('Укажите сумму больше нуля'); return; }
+    var ids = formSelectedIds();
+    if (!ids.length) { toast('Выберите, между кем делить'); return; }
+
+    var body = {
+      friendId: state.me,
+      expenseId: f.id || undefined,
+      amount: Split.fromCents(total),
+      title: f.title,
+      payTo: f.payTo,
+      splitMode: f.splitMode,
+      participantIds: ids,
+    };
+    if (f.splitMode === 'custom') {
+      var r = formRemainder();
+      if (r.left !== 0) {
+        toast(r.left > 0
+          ? 'Не распределено ' + Split.formatMoney(r.left)
+          : 'Распределено больше суммы на ' + Split.formatMoney(-r.left));
+        return;
+      }
+      body.shares = ids.map(function (id) {
+        return { participantId: id, amount: Split.fromCents(Split.toCents(f.shares[id] || 0)) };
+      });
+    }
+
+    state.busy = true;
+    api('/expense', body).then(function (json) {
+      state.data = json;
+      state.expenseForm = null;
+      render();
+      toast('Трата сохранена');
+    }).catch(function (e) {
+      toast('Не удалось сохранить: ' + e.message);
+    }).then(function () { state.busy = false; });
+  }
+
+  function deleteExpense(exp) {
+    if (state.busy) return;
+    if (!confirm('Удалить трату «' + (exp.title || 'без описания') + '»?')) return;
+    state.busy = true;
+    api('/expense-delete', { friendId: state.me, expenseId: exp.id }).then(function (json) {
+      state.data = json;
+      render();
+      toast('Трата удалена');
+    }).catch(function (e) {
+      toast('Не удалось удалить: ' + e.message);
+    }).then(function () { state.busy = false; });
   }
 
   function renderComments() {

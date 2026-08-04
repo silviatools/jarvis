@@ -26,6 +26,7 @@ import io
 import uuid
 import zipfile
 from datetime import datetime, date, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
@@ -79,6 +80,10 @@ MAX_EVENT_COMMENTS      = 500   # на одно событие — защита 
 MAX_EVENT_GUEST_BODY    = 64 * 1024
 MAX_EVENT_GUEST_NAME    = 60
 MAX_EVENT_GUESTS        = 300   # сколько человек могут вписать себя сами
+MAX_EVENT_EXPENSES      = 500   # трат на одно событие
+MAX_EVENT_EXPENSE_TEXT  = 200   # «за что» и реквизиты
+MAX_EVENT_MONEY_CENTS   = 100_000_000_000  # 1 млрд ₽ — потолок вменяемой суммы
+EXPENSE_SPLIT_MODES     = {"equal", "custom"}
 
 # Generic file uploads (e.g. training programs attached to «Режим»)
 ALLOWED_FILE_EXT = {
@@ -1336,6 +1341,43 @@ def planner_public_payload(app: dict, ev: dict) -> dict:
         ),
         key=lambda c: c["createdAt"],
     )
+    expenses = sorted(
+        (
+            {
+                "id": e.get("id"),
+                "payerId": e.get("payerId"),
+                "amount": e.get("amount"),
+                "title": e.get("title") or "",
+                "payTo": e.get("payTo") or "",
+                "splitMode": "custom" if e.get("splitMode") == "custom" else "equal",
+                "participantIds": [x for x in (e.get("participantIds") or []) if x],
+                "shares": [
+                    {"participantId": sh.get("participantId"), "amount": sh.get("amount")}
+                    for sh in (e.get("shares") or []) if isinstance(sh, dict)
+                ],
+                "eventId": eid,
+                "createdAt": e.get("createdAt") or 0,
+                "updatedAt": e.get("updatedAt") or 0,
+            }
+            for e in (app.get("plannerExpenses") or [])
+            if isinstance(e, dict) and e.get("eventId") == eid
+        ),
+        key=lambda e: e["createdAt"],
+    )
+    payments = [
+        {
+            "id": p.get("id"),
+            "eventId": eid,
+            "fromId": p.get("fromId"),
+            "toId": p.get("toId"),
+            "paid": bool(p.get("paid")),
+            "amount": p.get("amount") or 0,
+            "paidAt": p.get("paidAt") or 0,
+            "paidBy": p.get("paidBy") or "",
+        }
+        for p in (app.get("plannerPayments") or [])
+        if isinstance(p, dict) and p.get("eventId") == eid
+    ]
     return {
         "event": {
             "id": eid,
@@ -1354,6 +1396,8 @@ def planner_public_payload(app: dict, ev: dict) -> dict:
         "participants": participants,
         "responses": responses,
         "comments": comments,
+        "expenses": expenses,
+        "payments": payments,
         "serverNow": int(time.time() * 1000),
     }
 
@@ -1368,6 +1412,21 @@ def event_participant_ids(app: dict, ev: dict) -> set:
 
 def normalize_guest_name(raw) -> str:
     return " ".join(str(raw or "").split())[:MAX_EVENT_GUEST_NAME].strip()
+
+
+def money_to_cents(value):
+    """Сумма в копейках или None, если это не деньги. Через Decimal, а не
+    float: 1234.565 * 100 в двоичной дробной арифметике даёт 123456.49999…,
+    и трата молча теряла бы копейку. Разбор совпадает с toCents() из
+    planner-split.js — обе стороны считают одно и то же."""
+    try:
+        raw = str(value).replace(" ", "").replace(" ", "").replace(",", ".").strip()
+        if not raw:
+            return None
+        cents = int((Decimal(raw) * 100).to_integral_value(rounding=ROUND_HALF_UP))
+    except (InvalidOperation, ValueError, TypeError, ArithmeticError):
+        return None
+    return cents
 
 
 def planner_guest_write(token: str, friend_id: str, apply):
@@ -1546,6 +1605,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._event_comment(token_from_route(route, "/api/event/", "/comment"))
         elif token_from_route(route, "/api/event/", "/join"):
             self._event_join(token_from_route(route, "/api/event/", "/join"))
+        elif token_from_route(route, "/api/event/", "/expense"):
+            self._event_expense(token_from_route(route, "/api/event/", "/expense"))
+        elif token_from_route(route, "/api/event/", "/expense-delete"):
+            self._event_expense_delete(token_from_route(route, "/api/event/", "/expense-delete"))
+        elif token_from_route(route, "/api/event/", "/payment"):
+            self._event_payment(token_from_route(route, "/api/event/", "/payment"))
         elif self.path == "/api/config":
             length = self._content_length()
             if length is None:
@@ -1853,6 +1918,153 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             app["plannerGuests"] = guests
             save_app_data(app)
             self._json(200, {"guestId": guest["id"], **planner_public_payload(app, ev)})
+
+    def _event_expense(self, token: str):
+        """Участник заносит свою трату: сумма, за что, куда переводить и
+        между кем делить (поровну или вручную). Редактировать и удалять
+        трату может только тот, кто её внёс."""
+        payload = self._guest_json_body()
+        if payload is None:
+            return
+        friend_id = str(payload.get("friendId") or "")
+        cents = money_to_cents(payload.get("amount"))
+        if cents is None or cents <= 0 or cents > MAX_EVENT_MONEY_CENTS:
+            self._json(400, {"error": "invalid amount"})
+            return
+        title = " ".join(str(payload.get("title") or "").split())[:MAX_EVENT_EXPENSE_TEXT]
+        pay_to = " ".join(str(payload.get("payTo") or "").split())[:MAX_EVENT_EXPENSE_TEXT]
+        split_mode = str(payload.get("splitMode") or "equal")
+        if split_mode not in EXPENSE_SPLIT_MODES:
+            self._json(400, {"error": "invalid split mode"})
+            return
+        expense_id = str(payload.get("expenseId") or "") or None
+
+        def apply(app, ev):
+            allowed = event_participant_ids(app, ev)
+            ids = [x for x in (payload.get("participantIds") or []) if x in allowed]
+            shares = []
+            if split_mode == "custom":
+                total = 0
+                for sh in (payload.get("shares") or []):
+                    if not isinstance(sh, dict):
+                        continue
+                    pid = sh.get("participantId")
+                    c = money_to_cents(sh.get("amount"))
+                    if pid not in allowed or c is None or c <= 0:
+                        continue
+                    total += c
+                    shares.append({"participantId": pid, "amount": round(c / 100, 2)})
+                if not shares:
+                    return 400, {"error": "no shares"}
+                # Сумма долей обязана сойтись с общей: иначе часть денег
+                # повисает в воздухе и таблица «кто кому должен» врёт.
+                if total != cents:
+                    return 400, {"error": "shares do not sum to amount"}
+                ids = [sh["participantId"] for sh in shares]
+            elif not ids:
+                return 400, {"error": "no participants"}
+
+            all_expenses = [e for e in (app.get("plannerExpenses") or []) if isinstance(e, dict)]
+            now_ms = int(time.time() * 1000)
+            existing = None
+            if expense_id:
+                existing = next((e for e in all_expenses
+                                 if e.get("id") == expense_id and e.get("eventId") == ev.get("id")), None)
+                if existing is None:
+                    return 404, {"error": "expense not found"}
+                if existing.get("payerId") != friend_id:
+                    return 403, {"error": "not your expense"}
+            elif sum(1 for e in all_expenses if e.get("eventId") == ev.get("id")) >= MAX_EVENT_EXPENSES:
+                return 429, {"error": "too many expenses"}
+
+            entry = {
+                "id": (existing or {}).get("id") or str(uuid.uuid4()),
+                "eventId": ev.get("id"),
+                "payerId": friend_id,
+                "amount": round(cents / 100, 2),
+                "title": title,
+                "payTo": pay_to,
+                "splitMode": split_mode,
+                "participantIds": ids,
+                "shares": shares,
+                "createdAt": (existing or {}).get("createdAt") or now_ms,
+                "updatedAt": now_ms,
+            }
+            app["plannerExpenses"] = [e for e in all_expenses if e.get("id") != entry["id"]] + [entry]
+            return None
+
+        code, body = planner_guest_write(token, friend_id, apply)
+        self._json(code, body)
+
+    def _event_expense_delete(self, token: str):
+        payload = self._guest_json_body()
+        if payload is None:
+            return
+        friend_id = str(payload.get("friendId") or "")
+        expense_id = str(payload.get("expenseId") or "")
+
+        def apply(app, ev):
+            all_expenses = [e for e in (app.get("plannerExpenses") or []) if isinstance(e, dict)]
+            target = next((e for e in all_expenses
+                           if e.get("id") == expense_id and e.get("eventId") == ev.get("id")), None)
+            if target is None:
+                return 404, {"error": "expense not found"}
+            if target.get("payerId") != friend_id:
+                return 403, {"error": "not your expense"}
+            app["plannerExpenses"] = [e for e in all_expenses if e.get("id") != expense_id]
+            # Надгробие: иначе синхронизация с устройства, где трата ещё
+            # лежит в localStorage, воскресит её при ближайшем пуше.
+            deleted = dict(app.get("deletedIds") or {})
+            coll = dict(deleted.get("plannerExpenses") or {})
+            coll[expense_id] = int(time.time() * 1000)
+            deleted["plannerExpenses"] = coll
+            app["deletedIds"] = deleted
+            return None
+
+        code, body = planner_guest_write(token, friend_id, apply)
+        self._json(code, body)
+
+    def _event_payment(self, token: str):
+        """Отметка «перевёл». Ставит её любая из двух сторон перевода —
+        и тот, кто платит, и тот, кто получает."""
+        payload = self._guest_json_body()
+        if payload is None:
+            return
+        friend_id = str(payload.get("friendId") or "")
+        from_id = str(payload.get("fromId") or "")
+        to_id = str(payload.get("toId") or "")
+        paid = bool(payload.get("paid"))
+        amount = payload.get("amount")
+        amount_cents = int(amount) if isinstance(amount, int) and 0 <= amount <= MAX_EVENT_MONEY_CENTS else 0
+        if not from_id or not to_id or from_id == to_id:
+            self._json(400, {"error": "invalid pair"})
+            return
+        if friend_id not in (from_id, to_id):
+            self._json(403, {"error": "not your payment"})
+            return
+
+        def apply(app, ev):
+            pid = f"{ev.get('id')}:{from_id}>{to_id}"
+            now_ms = int(time.time() * 1000)
+            payments = [p for p in (app.get("plannerPayments") or []) if isinstance(p, dict)]
+            existing = next((p for p in payments if p.get("id") == pid), None)
+            entry = {
+                "id": pid,
+                "eventId": ev.get("id"),
+                "fromId": from_id,
+                "toId": to_id,
+                "paid": paid,
+                "amount": amount_cents if paid else 0,
+                "paidAt": now_ms if paid else 0,
+                "paidBy": friend_id if paid else "",
+                "createdAt": (existing or {}).get("createdAt") or now_ms,
+                "updatedAt": now_ms,
+            }
+            app["plannerPayments"] = [p for p in payments if p.get("id") != pid] + [entry]
+            return None
+
+        code, body = planner_guest_write(token, friend_id, apply)
+        self._json(code, body)
 
     def _serve_event_page(self):
         try:
