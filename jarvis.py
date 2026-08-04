@@ -1168,6 +1168,70 @@ def _tick():
         print(f"[{now_str} MSK] backup reminder error: {e}")
 
 
+# ── Alice (Yandex Dialogs) voice skill ──────────────────────────────────────
+# Webhook for a Yandex Dialogs skill: on "доброе утро" (or any invocation of
+# the skill) it reads back today's morning-relevant tasks. Point the skill's
+# webhook URL at POST /api/alice — see https://dialogs.yandex.ru/developer
+
+WEEKDAYS_RU_FULL = ["понедельник", "вторник", "среда", "четверг",
+                     "пятница", "суббота", "воскресенье"]
+
+
+def build_morning_brief(app: dict) -> str:
+    today = today_msk()
+    today_iso = today.isoformat()
+    today_js = today.isoweekday() % 7  # 0=Sun..6=Sat, matches JS getDay()
+
+    chores = [c for c in (app.get("chores") or [])
+              if not c.get("archived") and is_due_today(c)]
+    boss = [t for t in (app.get("bossTasks") or [])
+            if not t.get("archived")
+            and t.get("period") in ("morning", "allday")
+            and today_js in (t.get("days") or [])]
+
+    kanban_due = []
+    for col in (app.get("kanban") or {}).get("columns") or []:
+        title = (col.get("title") or "").lower()
+        if "готов" in title or "заверш" in title or "done" in title:
+            continue
+        for t in col.get("tasks") or []:
+            if t.get("dueDate") == today_iso:
+                kanban_due.append(t.get("title") or "Задача")
+
+    parts = [f"Доброе утро! Сегодня {human_date(today_iso)}, {WEEKDAYS_RU_FULL[today.weekday()]}."]
+
+    if chores:
+        parts.append("По дому: " + ", ".join(c.get("name") or "дело" for c in chores) + ".")
+    if boss:
+        parts.append("По работе: " + ", ".join(t.get("name") or "задача" for t in boss) + ".")
+    if kanban_due:
+        parts.append("Задачи на сегодня: " + ", ".join(kanban_due) + ".")
+
+    if not (chores or boss or kanban_due):
+        parts.append("На сегодня никаких дел не запланировано.")
+
+    parts.append("Хорошего дня!")
+    return " ".join(parts)
+
+
+def handle_alice_request(payload: dict) -> dict:
+    session = payload.get("session") or {}
+    request_data = payload.get("request") or {}
+    command = (request_data.get("command") or "").strip().lower()
+    is_new_session = bool(session.get("new"))
+
+    if is_new_session or "утр" in command or "дела" in command or "задач" in command:
+        text = build_morning_brief(load_app_data())
+    else:
+        text = "Скажите «доброе утро», чтобы услышать свои дела на сегодня."
+
+    return {
+        "version": payload.get("version", "1.0"),
+        "session": session,
+        "response": {"text": text, "tts": text, "end_session": True},
+    }
+
+
 # ── HTTP handler ───────────────────────────────────────────────────────────
 
 class JarvisHandler(SimpleHTTPRequestHandler):
@@ -1430,6 +1494,23 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(200, {"ok": True})
             except Exception as e:
                 self._json(400, {"error": str(e)})
+        elif self.path == "/api/alice":
+            length = self._content_length()
+            body = self.rfile.read(length) if length else b""
+            try:
+                payload = json.loads(body) if body else {}
+            except Exception:
+                payload = {}
+            try:
+                result = handle_alice_request(payload)
+            except Exception as e:
+                print(f"  alice webhook error: {e}")
+                result = {
+                    "version": payload.get("version", "1.0"),
+                    "session": payload.get("session") or {},
+                    "response": {"text": "Извините, не получилось загрузить дела.", "end_session": True},
+                }
+            self._json(200, result)
         elif self.path == "/api/backup/send-now":
             token = get_token()
             if not token:
