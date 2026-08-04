@@ -68,6 +68,9 @@
   .who-btn {
     background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
     padding: 13px 12px; font-size: 15px; font-weight: 500; color: var(--text); text-align: left;
+    /* Имя гость вписывает сам: без переноса длинная строка без пробелов
+       растянула бы страницу и уехала за экран. */
+    min-width: 0; overflow-wrap: anywhere;
   }
   .who-btn:hover { border-color: var(--border-strong); }
   .status-btn {
@@ -100,8 +103,9 @@
   }
   .comment { padding: 12px 0; border-bottom: 1px solid var(--border); }
   .comment:last-child { border-bottom: none; padding-bottom: 0; }
-  .comment-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
-  .comment-author { font-size: 14px; font-weight: 500; }
+  .comment-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+  .comment-author { font-size: 14px; font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+  .person-name { overflow-wrap: anywhere; }
   .comment-text { font-size: 15px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; }
   .empty { color: var(--text-subtle); font-size: 14px; padding: 6px 0; }
   .note { font-size: 13px; color: var(--text-muted); margin-top: 6px; font-style: italic; }
@@ -156,7 +160,8 @@
   // noteDraft/commentDraft — незаконченный текст. Фоновое обновление раз в
   // 25 секунд перерисовывает страницу целиком, и без этих черновиков оно
   // стирало бы комментарий прямо во время набора.
-  var state = { data: null, me: null, busy: false, error: null, noteDraft: null, commentDraft: '' };
+  var state = { data: null, me: null, busy: false, error: null,
+                noteDraft: null, commentDraft: '', nameDraft: '' };
 
   function isTyping() {
     var a = document.activeElement;
@@ -380,28 +385,76 @@
     return row;
   }
 
+  function pickMe(id) {
+    state.me = id;
+    state.noteDraft = null;   // черновик уточнения принадлежал прошлому выбору
+    try { localStorage.setItem(ME_KEY, id); } catch (e) {}
+    render();
+  }
+
   function renderWhoAmI() {
+    var open = state.data.event.mode === 'open';
     var card = el('div', 'card');
     card.appendChild(el('div', 'card-title', 'Кто вы?'));
-    card.appendChild(el('div', 'muted', 'Выберите себя в списке — тогда можно будет ответить и оставить комментарий.'));
-    var grid = el('div', 'who-grid');
-    grid.style.marginTop = '12px';
-    state.data.participants.forEach(function (p) {
-      var b = el('button', 'who-btn', p.name);
-      b.onclick = function () {
-        state.me = p.id;
-        state.noteDraft = null;   // черновик уточнения принадлежал прошлому выбору
-        try { localStorage.setItem(ME_KEY, p.id); } catch (e) {}
-        render();
+    card.appendChild(el('div', 'muted', open
+      ? 'Впишите своё имя — под ним вы ответите и сможете оставить комментарий.'
+      : 'Выберите себя в списке — тогда можно будет ответить и оставить комментарий.'));
+
+    // Открытое событие: поле имени идёт первым — это основной путь.
+    if (open) {
+      var form = el('div');
+      form.style.marginTop = '12px';
+      var input = el('input');
+      input.type = 'text';
+      input.placeholder = 'Ваше имя';
+      input.maxLength = 60;
+      input.value = state.nameDraft || '';
+      input.oninput = function () { state.nameDraft = input.value; };
+      var go = el('button', 'btn-primary', 'Продолжить');
+      go.style.marginTop = '8px';
+      var submit = function () {
+        var name = input.value.trim();
+        if (!name || state.busy) return;
+        state.busy = true;
+        go.disabled = true;
+        api('/join', { name: name }).then(function (json) {
+          state.data = json;
+          state.nameDraft = '';
+          pickMe(json.guestId);
+        }).catch(function (e) {
+          toast('Не удалось войти: ' + e.message);
+          go.disabled = false;
+        }).then(function () { state.busy = false; });
       };
-      grid.appendChild(b);
-    });
-    card.appendChild(grid);
-    if (!state.data.participants.length) {
+      go.onclick = submit;
+      input.onkeydown = function (e) { if (e.key === 'Enter') submit(); };
+      form.appendChild(input);
+      form.appendChild(go);
+      card.appendChild(form);
+      card.appendChild(el('div', 'subtle', 'Имя сохранится на этом устройстве — при следующем заходе вводить его снова не придётся.'))
+          .style.marginTop = '8px';
+    }
+
+    if (state.data.participants.length) {
+      if (open) {
+        var sep = el('div', 'card-title', 'Или выберите себя');
+        sep.style.marginTop = '18px';
+        card.appendChild(sep);
+      }
+      var grid = el('div', 'who-grid');
+      grid.style.marginTop = open ? '0' : '12px';
+      state.data.participants.forEach(function (p) {
+        var b = el('button', 'who-btn', p.name);
+        b.onclick = function () { pickMe(p.id); };
+        grid.appendChild(b);
+      });
+      card.appendChild(grid);
+      if (!open) {
+        card.appendChild(el('div', 'subtle', 'Нет вашего имени? Напишите организатору — он добавит вас в список.'))
+            .style.marginTop = '10px';
+      }
+    } else if (!open) {
       card.appendChild(el('div', 'empty', 'Организатор ещё не добавил участников.'));
-    } else {
-      card.appendChild(el('div', 'subtle', 'Нет вашего имени? Напишите организатору — он добавит вас в список.'))
-          .style.marginTop = '10px';
     }
     return card;
   }
@@ -504,7 +557,11 @@
 
     var summary = el('div', 'muted');
     summary.style.marginBottom = '12px';
-    summary.textContent = 'Ответили ' + answered + ' из ' + state.data.participants.length;
+    // В открытом событии список складывается сам, поэтому «N из M» звучит
+    // странно: показываем, сколько человек записалось и сколько ответило.
+    summary.textContent = state.data.event.mode === 'open'
+      ? 'Записались ' + state.data.participants.length + ', ответили ' + answered
+      : 'Ответили ' + answered + ' из ' + state.data.participants.length;
     card.appendChild(summary);
 
     state.data.participants.forEach(function (p) {
@@ -514,7 +571,7 @@
       var mid = el('div');
       mid.style.flex = '1';
       mid.style.minWidth = '0';
-      mid.appendChild(el('div', null, p.name + (p.id === state.me ? ' (вы)' : '')));
+      mid.appendChild(el('div', 'person-name', p.name + (p.id === state.me ? ' (вы)' : '')));
       var r = byStatus[p.id];
       if (r && r.note) mid.appendChild(el('div', 'note', r.note));
       row.appendChild(mid);
@@ -535,7 +592,9 @@
     });
 
     if (!state.data.participants.length) {
-      card.appendChild(el('div', 'empty', 'Пока никого нет.'));
+      card.appendChild(el('div', 'empty', state.data.event.mode === 'open'
+        ? 'Пока никто не записался — будьте первым.'
+        : 'Пока никого нет.'));
     }
     return card;
   }

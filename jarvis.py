@@ -77,6 +77,8 @@ MAX_EVENT_COMMENT_LEN   = 2000
 MAX_EVENT_NOTE_LEN      = 300
 MAX_EVENT_COMMENTS      = 500   # на одно событие — защита от залива мусором
 MAX_EVENT_GUEST_BODY    = 64 * 1024
+MAX_EVENT_GUEST_NAME    = 60
+MAX_EVENT_GUESTS        = 300   # сколько человек могут вписать себя сами
 
 # Generic file uploads (e.g. training programs attached to «Режим»)
 ALLOWED_FILE_EXT = {
@@ -1274,6 +1276,23 @@ def find_planner_event(app: dict, token: str) -> dict | None:
     return None
 
 
+def event_mode(ev: dict) -> str:
+    """'open' — гость сам вписывает своё имя (событие не только для друзей),
+    'list' — отвечать можно только от имени заранее выбранного участника."""
+    return "open" if ev.get("participantMode") == "open" else "list"
+
+
+def event_guests(app: dict, ev: dict) -> list:
+    """Те, кто вписал себя сам на этом событии. В режиме списка — никого."""
+    if event_mode(ev) != "open":
+        return []
+    eid = ev.get("id")
+    return [
+        g for g in (app.get("plannerGuests") or [])
+        if isinstance(g, dict) and g.get("id") and g.get("eventId") == eid
+    ]
+
+
 def planner_public_payload(app: dict, ev: dict) -> dict:
     """Публичный срез ОДНОГО события: поля самого события, имена участников,
     их ответы и комментарии. Ничего больше из базы сюда не попадает — ни
@@ -1284,9 +1303,14 @@ def planner_public_payload(app: dict, ev: dict) -> dict:
         if isinstance(f, dict) and f.get("id"):
             friends[f["id"]] = f
     participants = [
-        {"id": fid, "name": (friends[fid].get("name") or "Без имени")}
+        {"id": fid, "name": (friends[fid].get("name") or "Без имени"), "self": False}
         for fid in (ev.get("participantIds") or [])
         if fid in friends
+    ]
+    # Вписавшие себя идут после приглашённых, в порядке присоединения.
+    participants += [
+        {"id": g["id"], "name": g.get("name") or "Гость", "self": True}
+        for g in sorted(event_guests(app, ev), key=lambda g: g.get("createdAt") or 0)
     ]
     known = {p["id"] for p in participants}
     responses = [
@@ -1325,12 +1349,25 @@ def planner_public_payload(app: dict, ev: dict) -> dict:
             "endTime": ev.get("endTime") or "",
             "decisionDeadline": ev.get("decisionDeadline") or "",
             "organizer": ev.get("organizer") or "",
+            "mode": event_mode(ev),
         },
         "participants": participants,
         "responses": responses,
         "comments": comments,
         "serverNow": int(time.time() * 1000),
     }
+
+
+def event_participant_ids(app: dict, ev: dict) -> set:
+    """Кто вправе отвечать на этом событии: приглашённые организатором плюс
+    (для открытого события) все, кто вписал сюда своё имя."""
+    ids = {fid for fid in (ev.get("participantIds") or []) if fid}
+    ids |= {g["id"] for g in event_guests(app, ev)}
+    return ids
+
+
+def normalize_guest_name(raw) -> str:
+    return " ".join(str(raw or "").split())[:MAX_EVENT_GUEST_NAME].strip()
 
 
 def planner_guest_write(token: str, friend_id: str, apply):
@@ -1343,7 +1380,7 @@ def planner_guest_write(token: str, friend_id: str, apply):
         ev = find_planner_event(app, token)
         if ev is None:
             return 404, {"error": "event not found"}
-        if friend_id not in (ev.get("participantIds") or []):
+        if friend_id not in event_participant_ids(app, ev):
             return 403, {"error": "not a participant"}
         err = apply(app, ev)
         if err:
@@ -1507,6 +1544,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._event_rsvp(token_from_route(route, "/api/event/", "/rsvp"))
         elif token_from_route(route, "/api/event/", "/comment"):
             self._event_comment(token_from_route(route, "/api/event/", "/comment"))
+        elif token_from_route(route, "/api/event/", "/join"):
+            self._event_join(token_from_route(route, "/api/event/", "/join"))
         elif self.path == "/api/config":
             length = self._content_length()
             if length is None:
@@ -1757,6 +1796,63 @@ class JarvisHandler(SimpleHTTPRequestHandler):
 
         code, body = planner_guest_write(token, friend_id, apply)
         self._json(code, body)
+
+    def _event_join(self, token: str):
+        """Открытое событие: гость вписывает своё имя и получает id, под
+        которым дальше отвечает и комментирует. Одно и то же имя не плодит
+        людей — повторный вход с того же имени возвращает прежний id, так что
+        человек со стёртым браузером снова попадает в свой же ответ."""
+        payload = self._guest_json_body()
+        if payload is None:
+            return
+        name = normalize_guest_name(payload.get("name"))
+        if not name:
+            self._json(400, {"error": "empty name"})
+            return
+
+        with APP_DATA_LOCK:
+            app = load_app_data() if APP_DATA_FILE.exists() else {}
+            ev = find_planner_event(app, token)
+            if ev is None:
+                self._json(404, {"error": "event not found"})
+                return
+            if event_mode(ev) != "open":
+                self._json(403, {"error": "closed guest list"})
+                return
+
+            eid = ev.get("id")
+            lowered = name.casefold()
+
+            # Уже есть такой участник — приглашённый другом или вписавшийся ранее?
+            friends_by_id = {f["id"]: f for f in (app.get("plannerFriends") or [])
+                             if isinstance(f, dict) and f.get("id")}
+            for fid in (ev.get("participantIds") or []):
+                f = friends_by_id.get(fid)
+                if f and (f.get("name") or "").casefold() == lowered:
+                    self._json(200, {"guestId": fid, **planner_public_payload(app, ev)})
+                    return
+            for g in event_guests(app, ev):
+                if (g.get("name") or "").casefold() == lowered:
+                    self._json(200, {"guestId": g["id"], **planner_public_payload(app, ev)})
+                    return
+
+            if len(event_guests(app, ev)) >= MAX_EVENT_GUESTS:
+                self._json(429, {"error": "too many guests"})
+                return
+
+            now_ms = int(time.time() * 1000)
+            guest = {
+                "id": str(uuid.uuid4()),
+                "eventId": eid,
+                "name": name,
+                "createdAt": now_ms,
+                "updatedAt": now_ms,
+            }
+            guests = [g for g in (app.get("plannerGuests") or []) if isinstance(g, dict)]
+            guests.append(guest)
+            app["plannerGuests"] = guests
+            save_app_data(app)
+            self._json(200, {"guestId": guest["id"], **planner_public_payload(app, ev)})
 
     def _serve_event_page(self):
         try:
