@@ -21,6 +21,9 @@
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+<!-- Расчёт расходов мероприятия — общий файл с гостевой страницей события,
+     чтобы суммы считались одним и тем же кодом на обеих сторонах. -->
+<script src="/planner-split.js"></script>
 <style>
   :root {
     --bg: #fafafa;
@@ -405,6 +408,8 @@ const DEFAULT_DATA = () => ({
   plannerResponses: [],
   plannerComments: [],
   plannerGuests: [],
+  plannerExpenses: [],
+  plannerPayments: [],
   deletedIds: {},
   // План обучения English: произвольная заметка, LWW по updatedAt между устройствами
   engStudyPlan: { text: '', updatedAt: 0 },
@@ -14223,6 +14228,24 @@ const PLANNER_MODES = [
 ];
 const plannerEventMode = (ev) => (ev && ev.participantMode === 'open' ? 'open' : 'list');
 
+// Участники события: приглашённые организатором из списка друзей плюс (в
+// открытом событии) все, кто вписал себя сам. Порядок тот же, что отдаёт
+// сервер гостевой странице, — чтобы списки везде выглядели одинаково.
+const plannerParticipantsOf = (ev, friends, guests) => {
+  const byId = Object.fromEntries((friends || []).map(f => [f.id, f]));
+  const invited = (ev?.participantIds || [])
+    .map(id => byId[id])
+    .filter(Boolean)
+    .map(f => ({ id: f.id, name: f.name, self: false }));
+  if (plannerEventMode(ev) !== 'open') return invited;
+  const joined = (guests || [])
+    .filter(g => g.eventId === ev.id)
+    .slice()
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+    .map(g => ({ id: g.id, name: g.name || 'Гость', self: true }));
+  return [...invited, ...joined];
+};
+
 const PLANNER_MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
                         'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
 
@@ -14389,6 +14412,9 @@ function PlannerEventsView({ data, setData, goToFriends }) {
   const responses = data.plannerResponses || [];
   const comments = data.plannerComments || [];
   const guests = data.plannerGuests || [];
+  const expenses = data.plannerExpenses || [];
+  const payments = data.plannerPayments || [];
+  const [editingExpense, setEditingExpense] = useState(null);
 
   const save = (ev) => {
     setData(d => {
@@ -14416,12 +14442,16 @@ function PlannerEventsView({ data, setData, goToFriends }) {
       stamp('plannerResponses', (d.plannerResponses || []).filter(r => r.eventId === ev.id).map(r => r.id));
       stamp('plannerComments', (d.plannerComments || []).filter(c => c.eventId === ev.id).map(c => c.id));
       stamp('plannerGuests', (d.plannerGuests || []).filter(g => g.eventId === ev.id).map(g => g.id));
+      stamp('plannerExpenses', (d.plannerExpenses || []).filter(e => e.eventId === ev.id).map(e => e.id));
+      stamp('plannerPayments', (d.plannerPayments || []).filter(p => p.eventId === ev.id).map(p => p.id));
       return {
         ...d,
         plannerEvents: (d.plannerEvents || []).filter(e => e.id !== ev.id),
         plannerResponses: (d.plannerResponses || []).filter(r => r.eventId !== ev.id),
         plannerComments: (d.plannerComments || []).filter(c => c.eventId !== ev.id),
         plannerGuests: (d.plannerGuests || []).filter(g => g.eventId !== ev.id),
+        plannerExpenses: (d.plannerExpenses || []).filter(e => e.eventId !== ev.id),
+        plannerPayments: (d.plannerPayments || []).filter(p => p.eventId !== ev.id),
         deletedIds: deleted,
       };
     });
@@ -14457,6 +14487,55 @@ function PlannerEventsView({ data, setData, goToFriends }) {
         plannerResponses: (d.plannerResponses || []).filter(r => r.friendId !== guest.id),
         plannerComments: (d.plannerComments || []).filter(c => !(c.friendId === guest.id && c.eventId === ev.id)),
         deletedIds: deleted,
+      };
+    });
+  };
+
+  // Траты и отметки переводов организатор пишет в те же коллекции, что и
+  // гости через свои эндпоинты: id-массивы со штампом updatedAt, поэтому
+  // слияние между устройствами разруливает их «новее — побеждает».
+  const saveExpense = (exp) => {
+    setData(d => {
+      const list = d.plannerExpenses || [];
+      const exists = list.some(e => e.id === exp.id);
+      return {
+        ...d,
+        plannerExpenses: exists ? list.map(e => e.id === exp.id ? exp : e) : [...list, exp],
+      };
+    });
+    setEditingExpense(null);
+  };
+
+  const removeExpense = (exp) => {
+    if (!confirm(`Удалить трату «${exp.title || 'без описания'}» на ${window.PlannerSplit.formatMoney(window.PlannerSplit.toCents(exp.amount))}?`)) return;
+    setData(d => ({
+      ...d,
+      plannerExpenses: (d.plannerExpenses || []).filter(e => e.id !== exp.id),
+      deletedIds: withDeletedId(d, 'plannerExpenses', exp.id),
+    }));
+  };
+
+  const togglePayment = (ev, row) => {
+    const id = window.PlannerSplit.paymentId(ev.id, row.fromId, row.toId);
+    const paid = !row.paid;
+    setData(d => {
+      const list = d.plannerPayments || [];
+      const prev = list.find(p => p.id === id);
+      const entry = {
+        ...(prev || {}),
+        id,
+        eventId: ev.id,
+        fromId: row.fromId,
+        toId: row.toId,
+        paid,
+        amount: paid ? row.amount : 0,
+        paidAt: paid ? Date.now() : 0,
+        paidBy: paid ? 'organizer' : '',
+        createdAt: prev?.createdAt || Date.now(),
+      };
+      return {
+        ...d,
+        plannerPayments: prev ? list.map(p => p.id === id ? entry : p) : [...list, entry],
       };
     });
   };
@@ -14552,6 +14631,12 @@ function PlannerEventsView({ data, setData, goToFriends }) {
               onDelete={() => remove(ev)}
               onDeleteComment={removeComment}
               onDeleteGuest={(g) => removeGuest(ev, g)}
+              expenses={expenses.filter(e => e.eventId === ev.id)}
+              payments={payments.filter(p => p.eventId === ev.id)}
+              onAddExpense={() => setEditingExpense({ eventId: ev.id })}
+              onEditExpense={(e) => setEditingExpense(e)}
+              onDeleteExpense={removeExpense}
+              onTogglePayment={(row) => togglePayment(ev, row)}
               onToggleShare={() => toggleShare(ev)}
               onRegenerate={() => regenerateToken(ev)}
             />
@@ -14568,29 +14653,34 @@ function PlannerEventsView({ data, setData, goToFriends }) {
           onClose={() => setEditing(null)}
         />
       )}
+
+      {editingExpense && (() => {
+        const ev = events.find(e => e.id === editingExpense.eventId);
+        if (!ev) return null;
+        return (
+          <PlannerExpenseModal
+            key={editingExpense.id || 'new'}
+            initial={editingExpense}
+            participants={plannerParticipantsOf(ev, friends, guests)}
+            expenses={expenses.filter(e => e.eventId === ev.id)}
+            onSave={saveExpense}
+            onClose={() => setEditingExpense(null)}
+          />
+        );
+      })()}
     </div>
   );
 }
 
-function PlannerEventCard({ event: ev, friends, guests, responses, comments, onEdit, onDelete, onDeleteComment, onDeleteGuest, onToggleShare, onRegenerate }) {
+function PlannerEventCard({ event: ev, friends, guests, responses, comments, expenses, payments,
+                            onEdit, onDelete, onDeleteComment, onDeleteGuest, onToggleShare, onRegenerate,
+                            onAddExpense, onEditExpense, onDeleteExpense, onTogglePayment }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const friendById = useMemo(
-    () => Object.fromEntries(friends.map(f => [f.id, f])), [friends]);
   const mode = plannerEventMode(ev);
-  // Приглашённые организатором + (в открытом событии) вписавшие себя сами.
-  const participants = useMemo(() => {
-    const invited = (ev.participantIds || [])
-      .map(id => friendById[id])
-      .filter(Boolean)
-      .map(fr => ({ id: fr.id, name: fr.name, self: false }));
-    const joined = mode === 'open'
-      ? [...guests].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
-          .map(g => ({ id: g.id, name: g.name || 'Гость', self: true }))
-      : [];
-    return [...invited, ...joined];
-  }, [ev.participantIds, friendById, guests, mode]);
+  const participants = useMemo(
+    () => plannerParticipantsOf(ev, friends, guests), [ev, friends, guests]);
   const nameById = useMemo(
     () => Object.fromEntries(participants.map(p => [p.id, p.name])), [participants]);
   const responseByFriend = useMemo(
@@ -14785,6 +14875,17 @@ function PlannerEventCard({ event: ev, friends, guests, responses, comments, onE
               </div>
             )}
           </div>
+
+          <PlannerExpensesSection
+            event={ev}
+            participants={participants}
+            expenses={expenses}
+            payments={payments}
+            onAddExpense={onAddExpense}
+            onEditExpense={onEditExpense}
+            onDeleteExpense={onDeleteExpense}
+            onTogglePayment={onTogglePayment}
+          />
 
           <div>
             <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">Комментарии друзей</div>
@@ -15134,6 +15235,307 @@ function PlannerFriendModal({ initial, onSave, onClose }) {
             Контакт видите только вы: друзьям на странице события показывается одно имя.
           </div>
         </div>
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ── Расходы мероприятия (сторона организатора) ─────────────────────────────
+// Считает тот же planner-split.js, что и гостевая страница события, поэтому
+// суммы у организатора и у участника не могут разойтись.
+
+const plannerMoney = (cents) => window.PlannerSplit.formatMoney(cents);
+
+function PlannerExpensesSection({ event: ev, participants, expenses, payments,
+                                  onAddExpense, onEditExpense, onDeleteExpense, onTogglePayment }) {
+  const Split = window.PlannerSplit;
+  const s = useMemo(() => Split.computeSettlement({
+    eventId: ev.id, participants, expenses, payments,
+  }), [ev.id, participants, expenses, payments]);
+
+  // Все переводы события: строка есть у должника в owes — берём их разом.
+  const transfers = useMemo(() => {
+    const out = [];
+    Object.keys(s.byParticipant).forEach(id => {
+      s.byParticipant[id].owes.forEach(r => out.push(r));
+    });
+    return out.sort((a, b) => b.amount - a.amount);
+  }, [s]);
+
+  const settled = transfers.filter(t => t.paid).length;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)]">Расходы</div>
+        <button onClick={onAddExpense} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] underline">
+          добавить трату
+        </button>
+      </div>
+
+      {expenses.length === 0 ? (
+        <div className="text-sm text-[var(--text-subtle)]">
+          Трат нет. Участники заносят их сами на странице события — или добавьте за кого-то из них.
+        </div>
+      ) : (
+        <>
+          <div className="text-sm text-[var(--text-muted)] mb-2">
+            Всего {plannerMoney(s.totalSpent)}
+            {transfers.length > 0 && <> · переводов {transfers.length}, отмечено {settled}</>}
+          </div>
+
+          <div className="space-y-1.5 mb-3">
+            {expenses.map(e => {
+              const payer = s.byParticipant[e.payerId];
+              const count = e.splitMode === 'custom' ? (e.shares || []).length : (e.participantIds || []).length;
+              return (
+                <div key={e.id} className="flex items-start gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium break-words">{e.title || 'Без описания'}</div>
+                    <div className="text-xs text-[var(--text-subtle)] break-all">
+                      {(payer?.name) || 'Бывший участник'} · {e.splitMode === 'custom' ? 'вручную' : 'поровну'} на {count} чел.
+                      {e.payTo ? ` · ${e.payTo}` : ''}
+                    </div>
+                  </div>
+                  <div className="text-sm font-semibold whitespace-nowrap">{plannerMoney(Split.toCents(e.amount))}</div>
+                  <button onClick={() => onEditExpense(e)} className="text-[var(--text-subtle)] hover:text-[var(--text)] flex-shrink-0 mt-0.5" title="Изменить">
+                    <Icon name="edit" size={13} />
+                  </button>
+                  <button onClick={() => onDeleteExpense(e)} className="text-[var(--text-subtle)] hover:text-red-500 flex-shrink-0 mt-0.5" title="Удалить трату">
+                    <Icon name="x" size={14} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          {transfers.length > 0 && (
+            <>
+              <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">Кто кому переводит</div>
+              <div className="space-y-1.5">
+                {transfers.map(t => (
+                  <div key={`${t.fromId}>${t.toId}`}
+                       className={`bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 ${t.paid ? 'opacity-60' : ''}`}>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 min-w-0 text-sm break-words">
+                        <span className="font-medium">{t.fromName}</span>
+                        <span className="text-[var(--text-subtle)]"> → </span>
+                        <span className="font-medium">{t.toName}</span>
+                      </div>
+                      <div className={`text-sm font-semibold whitespace-nowrap ${t.paid ? 'line-through text-[var(--text-subtle)]' : ''}`}>
+                        {plannerMoney(t.amount)}
+                      </div>
+                      <button
+                        onClick={() => onTogglePayment(t)}
+                        className={`text-xs px-2 py-1 rounded-lg border flex-shrink-0 ${
+                          t.paid
+                            ? 'border-green-500 text-green-600'
+                            : 'border-[var(--border-strong)] text-[var(--text-muted)]'
+                        }`}
+                      >{t.paid ? 'оплачено' : 'отметить'}</button>
+                    </div>
+                    {t.payTo && <div className="text-xs text-[var(--text-subtle)] mt-1 break-all">Куда: {t.payTo}</div>}
+                    {t.items.length > 0 && (
+                      <div className="text-xs text-[var(--text-muted)] mt-1 break-words">
+                        {t.items.map((it, i) => (
+                          <span key={`${it.expenseId}-${i}`}>
+                            {i > 0 && ' · '}
+                            {it.title} {Split.formatCents(it.cents)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {t.amountChangedAfterPaid && (
+                      <div className="text-xs text-amber-600 mt-1">
+                        Отметку ставили на {plannerMoney(t.markedAmount)} — сумма с тех пор изменилась.
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {transfers.length === 0 && (
+            <div className="text-sm text-[var(--text-subtle)]">Все в расчёте — переводить никому не нужно.</div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function PlannerExpenseModal({ initial, participants, expenses, onSave, onClose }) {
+  const Split = window.PlannerSplit;
+  const isNew = !initial.id;
+  const [f, setF] = useState(() => ({
+    id: initial.id || null,
+    payerId: initial.payerId || (participants[0]?.id || ''),
+    amount: initial.amount != null ? String(initial.amount).replace('.', ',') : '',
+    title: initial.title || '',
+    payTo: initial.payTo || '',
+    splitMode: initial.splitMode === 'custom' ? 'custom' : 'equal',
+    selected: initial.id
+      ? Object.fromEntries((initial.splitMode === 'custom'
+          ? (initial.shares || []).map(sh => sh.participantId)
+          : (initial.participantIds || [])).map(id => [id, true]))
+      : Object.fromEntries(participants.map(p => [p.id, true])),
+    shares: Object.fromEntries((initial.shares || []).map(sh => [sh.participantId, String(sh.amount).replace('.', ',')])),
+  }));
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+
+  // Реквизиты подставляем из прошлых трат этого плательщика — их редко меняют.
+  const knownRequisites = useMemo(() => Split.requisitesOf(expenses), [expenses]);
+  useEffect(() => {
+    if (!f.payTo && knownRequisites[f.payerId]) set('payTo', knownRequisites[f.payerId]);
+  }, [f.payerId]);
+
+  const selectedIds = participants.filter(p => f.selected[p.id]).map(p => p.id);
+  const totalCents = Split.toCents(f.amount);
+  const sharesSum = selectedIds.reduce((acc, id) => acc + Split.toCents(f.shares[id] || 0), 0);
+  const left = totalCents - sharesSum;
+  const equalPreview = totalCents && selectedIds.length ? Split.splitEqually(totalCents, selectedIds) : null;
+
+  const toggle = (id) => setF(x => {
+    const selected = { ...x.selected };
+    const shares = { ...x.shares };
+    if (selected[id]) { delete selected[id]; delete shares[id]; } else selected[id] = true;
+    return { ...x, selected, shares };
+  });
+  const allOn = participants.length > 0 && selectedIds.length === participants.length;
+  const toggleAll = () => setF(x => ({
+    ...x,
+    selected: allOn ? {} : Object.fromEntries(participants.map(p => [p.id, true])),
+    shares: allOn ? {} : x.shares,
+  }));
+
+  const submit = () => {
+    if (!f.payerId) return alert('Выберите, кто заплатил');
+    if (totalCents <= 0) return alert('Укажите сумму больше нуля');
+    if (!selectedIds.length) return alert('Выберите, между кем делить');
+    if (f.splitMode === 'custom' && left !== 0) {
+      return alert(left > 0
+        ? `Не распределено ${plannerMoney(left)}`
+        : `Распределено больше суммы на ${plannerMoney(-left)}`);
+    }
+    onSave({
+      id: f.id || crypto.randomUUID(),
+      eventId: initial.eventId,
+      payerId: f.payerId,
+      amount: Split.fromCents(totalCents),
+      title: f.title.trim(),
+      payTo: f.payTo.trim(),
+      splitMode: f.splitMode,
+      participantIds: selectedIds,
+      shares: f.splitMode === 'custom'
+        ? selectedIds.map(id => ({ participantId: id, amount: Split.fromCents(Split.toCents(f.shares[id] || 0)) }))
+        : [],
+      createdAt: initial.createdAt || Date.now(),
+    });
+  };
+
+  return (
+    <Modal onClose={onClose} title={isNew ? 'Новая трата' : 'Трата'}>
+      <div className="space-y-4">
+        <div>
+          <label>Кто заплатил</label>
+          <select value={f.payerId} onChange={e => set('payerId', e.target.value)}>
+            {participants.length === 0 && <option value="">Нет участников</option>}
+            {participants.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </div>
+
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <label>Сумма, ₽</label>
+            <input inputMode="decimal" value={f.amount} onChange={e => set('amount', e.target.value)} placeholder="1500" autoFocus />
+          </div>
+          <div className="flex-[2]">
+            <label>За что</label>
+            <input value={f.title} onChange={e => set('title', e.target.value)} placeholder="Аренда корта" maxLength={200} />
+          </div>
+        </div>
+
+        <div>
+          <label>Куда переводить деньги плательщику</label>
+          <input value={f.payTo} onChange={e => set('payTo', e.target.value)} placeholder="Карта, телефон или ссылка" maxLength={200} />
+        </div>
+
+        <div>
+          <label>Как делим</label>
+          <div className="flex gap-2 mt-1">
+            {[['equal', 'Поровну'], ['custom', 'Вручную']].map(([id, label]) => (
+              <button
+                key={id}
+                onClick={() => set('splitMode', id)}
+                className={`flex-1 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                  f.splitMode === id
+                    ? 'bg-[var(--text)] text-white'
+                    : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'
+                }`}
+              >{label}</button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="!mb-0">Между кем делим</label>
+            {participants.length > 0 && (
+              <button onClick={toggleAll} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] underline">
+                {allOn ? 'снять всех' : 'выбрать всех'}
+              </button>
+            )}
+          </div>
+          {participants.length === 0 ? (
+            <div className="text-sm text-[var(--text-subtle)] border border-dashed border-[var(--border-strong)] rounded-xl p-3">
+              В событии пока нет участников.
+            </div>
+          ) : (
+            <div className="space-y-1.5 max-h-56 overflow-y-auto">
+              {participants.map(p => {
+                const on = !!f.selected[p.id];
+                return (
+                  <div key={p.id} className={`flex items-center gap-3 px-3 py-2 rounded-xl border ${
+                    on ? 'border-[var(--text)] bg-[var(--surface)]' : 'border-[var(--border)] bg-[var(--bg)]'
+                  }`}>
+                    <input type="checkbox" className="!w-auto flex-shrink-0 accent-[var(--text)]" checked={on} onChange={() => toggle(p.id)} />
+                    <span className="flex-1 min-w-0 text-sm break-all">{p.name}</span>
+                    {f.splitMode === 'custom' && on ? (
+                      <input
+                        inputMode="decimal"
+                        value={f.shares[p.id] || ''}
+                        onChange={e => setF(x => ({ ...x, shares: { ...x.shares, [p.id]: e.target.value } }))}
+                        placeholder="0"
+                        className="!w-24 !py-1.5 !px-2 text-sm text-right"
+                      />
+                    ) : (
+                      on && equalPreview && (
+                        <span className="text-xs text-[var(--text-subtle)] whitespace-nowrap">
+                          {Split.formatCents(equalPreview[p.id])} ₽
+                        </span>
+                      )
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {f.splitMode === 'custom' && totalCents > 0 && (
+            <div className={`text-[11px] mt-1.5 ${left === 0 ? 'text-[var(--text-subtle)]' : 'text-amber-600'}`}>
+              {left === 0
+                ? 'Распределено полностью.'
+                : left > 0
+                  ? `Осталось распределить ${plannerMoney(left)}`
+                  : `Распределено больше суммы на ${plannerMoney(-left)}`}
+            </div>
+          )}
+        </div>
+
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
           <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
