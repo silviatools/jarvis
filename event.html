@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="theme-color" content="#4F8EF7" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<title>Событие</title>
+<link rel="icon" href="/favicon.ico" type="image/x-icon" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --border: #e8e8e8;
+    --border-strong: #d4d4d4;
+    --text: #0a0a0a;
+    --text-muted: #6b6b6b;
+    --text-subtle: #9a9a9a;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 620px; margin: 0 auto; padding: 20px 16px 64px; }
+  .font-display { font-family: 'Fraunces', Georgia, serif; letter-spacing: -0.02em; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 18px; padding: 18px; margin-bottom: 14px;
+  }
+  .card-title {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-muted); font-weight: 500; margin-bottom: 12px;
+  }
+  h1 { font-family: 'Fraunces', Georgia, serif; font-size: 26px; line-height: 1.2; margin: 0 0 10px; letter-spacing: -0.02em; }
+  .muted { color: var(--text-muted); font-size: 14px; }
+  .subtle { color: var(--text-subtle); font-size: 12px; }
+  .row { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 10px; }
+  .row:last-child { margin-bottom: 0; }
+  .row .ico { flex: 0 0 20px; color: var(--text-subtle); margin-top: 2px; }
+  .row .val { flex: 1; min-width: 0; font-size: 15px; word-wrap: break-word; overflow-wrap: anywhere; }
+  .row .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-subtle); margin-bottom: 2px; }
+  .pill {
+    display: inline-block; padding: 5px 11px; border-radius: 999px;
+    font-size: 12px; font-weight: 500; line-height: 1.3;
+  }
+  .pill-warn { background: #fef3c7; color: #92400e; }
+  .pill-danger { background: #fee2e2; color: #991b1b; }
+  .pill-ok { background: #ecfdf5; color: #065f46; }
+  .pill-neutral { background: var(--bg); color: var(--text-muted); }
+  button { font-family: inherit; cursor: pointer; }
+  .btn-primary {
+    background: var(--text); color: #fff; border: none; border-radius: 10px;
+    padding: 13px 18px; font-size: 15px; font-weight: 500; width: 100%;
+  }
+  .btn-primary:disabled { opacity: 0.4; cursor: default; }
+  .btn-ghost {
+    background: none; border: none; color: var(--text-muted);
+    font-size: 13px; padding: 4px 0; text-decoration: underline;
+  }
+  .who-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .who-btn {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+    padding: 13px 12px; font-size: 15px; font-weight: 500; color: var(--text); text-align: left;
+  }
+  .who-btn:hover { border-color: var(--border-strong); }
+  .status-btn {
+    display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+    background: var(--bg); border: 1.5px solid var(--border); border-radius: 12px;
+    padding: 12px 14px; font-size: 15px; color: var(--text); margin-bottom: 8px;
+    transition: border-color .15s ease, background .15s ease;
+  }
+  .status-btn:last-of-type { margin-bottom: 0; }
+  .status-btn .dot { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 12px; }
+  .status-btn.active { border-color: var(--text); background: var(--surface); font-weight: 500; }
+  .status-btn .mark { margin-left: auto; font-size: 13px; color: var(--text-subtle); }
+  textarea, input[type=text] {
+    font-family: inherit; font-size: 15px; width: 100%; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 11px 13px; outline: none; resize: vertical;
+  }
+  textarea:focus, input[type=text]:focus { border-color: var(--text); }
+  .person {
+    display: flex; align-items: center; gap: 10px; padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .person:last-child { border-bottom: none; padding-bottom: 0; }
+  .person:first-child { padding-top: 0; }
+  .avatar {
+    width: 34px; height: 34px; border-radius: 50%; flex: 0 0 34px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg); border: 1px solid var(--border);
+    font-size: 13px; font-weight: 600; color: var(--text-muted);
+  }
+  .comment { padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .comment:last-child { border-bottom: none; padding-bottom: 0; }
+  .comment-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .comment-author { font-size: 14px; font-weight: 500; }
+  .comment-text { font-size: 15px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; }
+  .empty { color: var(--text-subtle); font-size: 14px; padding: 6px 0; }
+  .note { font-size: 13px; color: var(--text-muted); margin-top: 6px; font-style: italic; }
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    background: var(--text); color: #fff; padding: 11px 18px; border-radius: 999px;
+    font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s ease; z-index: 50;
+  }
+  .toast.show { opacity: 1; }
+  .center { text-align: center; padding: 56px 20px; }
+  a { color: inherit; }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e0e0f; --surface: #17181a; --border: #2a2b2e; --border-strong: #3a3b3f;
+      --text: #f4f4f5; --text-muted: #a1a1aa; --text-subtle: #71717a;
+    }
+    .pill-warn { background: #422006; color: #fde68a; }
+    .pill-danger { background: #450a0a; color: #fecaca; }
+    .pill-ok { background: #052e21; color: #a7f3d0; }
+    .toast { background: #f4f4f5; color: #0a0a0a; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap" id="root">
+  <div class="center muted">Загрузка…</div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  // Гостевая страница одного события. Ходит ТОЛЬКО в /api/event/<token>*
+  // — ни к общим данным сайта, ни к SPA доступа отсюда нет.
+  var TOKEN = (location.pathname.split('/').filter(Boolean)[1] || '');
+  var ME_KEY = 'jarvis_event_me_' + TOKEN;
+
+  var STATUSES = [
+    { id: 'yes',          label: 'Точно еду',            color: '#16a34a' },
+    { id: 'probably',     label: 'Скорее всего еду',     color: '#0891b2' },
+    { id: 'maybe',        label: 'Пока не знаю',         color: '#ca8a04' },
+    { id: 'probably_not', label: 'Скорее всего не смогу',color: '#ea580c' },
+    { id: 'no',           label: 'Не смогу',             color: '#dc2626' }
+  ];
+  var STATUS_BY_ID = {};
+  STATUSES.forEach(function (s) { STATUS_BY_ID[s.id] = s; });
+
+  var MONTHS = ['января','февраля','марта','апреля','мая','июня',
+                'июля','августа','сентября','октября','ноября','декабря'];
+
+  // noteDraft/commentDraft — незаконченный текст. Фоновое обновление раз в
+  // 25 секунд перерисовывает страницу целиком, и без этих черновиков оно
+  // стирало бы комментарий прямо во время набора.
+  var state = { data: null, me: null, busy: false, error: null, noteDraft: null, commentDraft: '' };
+
+  function isTyping() {
+    var a = document.activeElement;
+    return !!a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT');
+  }
+
+  // ── helpers ─────────────────────────────────────────────────────────────
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;   // только textContent: никакого innerHTML для чужих данных
+    return n;
+  }
+
+  function parseDate(iso) {
+    if (!iso) return null;
+    var p = String(iso).split('-').map(Number);
+    if (p.length < 3 || !p[0] || !p[1] || !p[2]) return null;
+    var d = new Date(p[0], p[1] - 1, p[2]);
+    d.setHours(0, 0, 0, 0);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function fmtDate(iso, withYear) {
+    var d = parseDate(iso);
+    if (!d) return '';
+    var s = d.getDate() + ' ' + MONTHS[d.getMonth()];
+    if (withYear !== false) s += ' ' + d.getFullYear();
+    return s;
+  }
+
+  function fmtRange(ev) {
+    if (!ev.startDate) return 'Дата пока не назначена';
+    var a = parseDate(ev.startDate), b = parseDate(ev.endDate);
+    var s;
+    if (!b || +b === +a) {
+      s = fmtDate(ev.startDate);
+    } else if (a && b.getFullYear() === a.getFullYear()) {
+      s = (a.getMonth() === b.getMonth())
+        ? a.getDate() + '–' + fmtDate(ev.endDate)
+        : fmtDate(ev.startDate, false) + ' – ' + fmtDate(ev.endDate);
+    } else {
+      s = fmtDate(ev.startDate) + ' – ' + fmtDate(ev.endDate);
+    }
+    if (ev.startTime) s += ', ' + ev.startTime + (ev.endTime ? '–' + ev.endTime : '');
+    return s;
+  }
+
+  function daysUntil(iso) {
+    var d = parseDate(iso);
+    if (!d) return null;
+    var today = new Date(); today.setHours(0, 0, 0, 0);
+    return Math.round((d - today) / 86400000);
+  }
+
+  function plural(n, one, few, many) {
+    var a = Math.abs(n) % 100, b = a % 10;
+    if (a > 10 && a < 20) return many;
+    if (b > 1 && b < 5) return few;
+    if (b === 1) return one;
+    return many;
+  }
+
+  function fmtWhen(ms) {
+    if (!ms) return '';
+    var d = new Date(ms);
+    var today = new Date(); today.setHours(0, 0, 0, 0);
+    var day = new Date(d); day.setHours(0, 0, 0, 0);
+    var hhmm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    var diff = Math.round((today - day) / 86400000);
+    if (diff === 0) return 'сегодня, ' + hhmm;
+    if (diff === 1) return 'вчера, ' + hhmm;
+    return d.getDate() + ' ' + MONTHS[d.getMonth()] + ', ' + hhmm;
+  }
+
+  function initials(name) {
+    var parts = String(name || '').trim().split(/\s+/).slice(0, 2);
+    return parts.map(function (p) { return p.charAt(0).toUpperCase(); }).join('') || '?';
+  }
+
+  var toastTimer = null;
+  function toast(msg) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2200);
+  }
+
+  // ── data ────────────────────────────────────────────────────────────────
+  function api(path, body) {
+    var opts = { cache: 'no-store' };
+    if (body) {
+      opts.method = 'POST';
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = JSON.stringify(body);
+    }
+    return fetch('/api/event/' + encodeURIComponent(TOKEN) + path, opts).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) throw new Error(j && j.error ? j.error : 'HTTP ' + r.status);
+        return j;
+      });
+    });
+  }
+
+  function load(silent) {
+    return api('').then(function (json) {
+      state.data = json;
+      state.error = null;
+      // Участника могли убрать из события — тогда выбор «кто я» сбрасывается.
+      if (state.me && !json.participants.some(function (p) { return p.id === state.me; })) {
+        state.me = null;
+        try { localStorage.removeItem(ME_KEY); } catch (e) {}
+      }
+      // Фоновое обновление не выдёргивает курсор из поля, пока в нём печатают.
+      if (!(silent && isTyping())) render();
+    }).catch(function (e) {
+      if (!silent || !state.data) {
+        state.error = String(e.message || e);
+        render();
+      }
+    });
+  }
+
+  function myResponse() {
+    if (!state.me || !state.data) return null;
+    for (var i = 0; i < state.data.responses.length; i++) {
+      if (state.data.responses[i].friendId === state.me) return state.data.responses[i];
+    }
+    return null;
+  }
+
+  function nameOf(friendId) {
+    var ps = (state.data && state.data.participants) || [];
+    for (var i = 0; i < ps.length; i++) if (ps[i].id === friendId) return ps[i].name;
+    return 'Участник';
+  }
+
+  // ── render ──────────────────────────────────────────────────────────────
+  function render() {
+    var root = document.getElementById('root');
+    root.textContent = '';
+
+    if (state.error && !state.data) {
+      var box = el('div', 'center');
+      box.appendChild(el('div', 'font-display', 'Событие недоступно'));
+      box.lastChild.style.fontSize = '22px';
+      box.lastChild.style.marginBottom = '8px';
+      box.appendChild(el('div', 'muted',
+        'Ссылка неверна или организатор её отключил. Попросите новую ссылку.'));
+      root.appendChild(box);
+      return;
+    }
+    if (!state.data) {
+      root.appendChild(el('div', 'center muted', 'Загрузка…'));
+      return;
+    }
+
+    root.appendChild(renderEvent());
+    root.appendChild(state.me ? renderRsvp() : renderWhoAmI());
+    root.appendChild(renderPeople());
+    root.appendChild(renderComments());
+
+    var foot = el('div', 'subtle');
+    foot.style.textAlign = 'center';
+    foot.style.marginTop = '18px';
+    foot.textContent = 'Страница события. Видна только тем, у кого есть ссылка.';
+    root.appendChild(foot);
+  }
+
+  function renderEvent() {
+    var ev = state.data.event;
+    var card = el('div', 'card');
+
+    card.appendChild(el('h1', null, ev.title));
+
+    var pills = el('div');
+    pills.style.marginBottom = '14px';
+
+    var left = daysUntil(ev.decisionDeadline);
+    if (ev.decisionDeadline) {
+      var p = el('span', 'pill');
+      if (left === null) { p.className += ' pill-neutral'; p.textContent = 'Дедлайн: ' + ev.decisionDeadline; }
+      else if (left < 0)  { p.className += ' pill-danger';  p.textContent = 'Дедлайн ответа прошёл — ' + fmtDate(ev.decisionDeadline); }
+      else if (left === 0){ p.className += ' pill-danger';  p.textContent = 'Ответить нужно сегодня'; }
+      else if (left <= 3) { p.className += ' pill-warn';    p.textContent = 'Ответить до ' + fmtDate(ev.decisionDeadline) + ' — ' + left + ' ' + plural(left, 'день', 'дня', 'дней'); }
+      else                { p.className += ' pill-ok';      p.textContent = 'Ответить до ' + fmtDate(ev.decisionDeadline) + ' — ' + left + ' ' + plural(left, 'день', 'дня', 'дней'); }
+      pills.appendChild(p);
+      card.appendChild(pills);
+    }
+
+    card.appendChild(infoRow('📅', 'Когда', fmtRange(ev)));
+    if (ev.place)   card.appendChild(infoRow('📍', 'Место', ev.place));
+    if (ev.address) {
+      var r = infoRow('🗺️', 'Адрес', ev.address);
+      var link = el('a', 'subtle', 'Открыть на карте →');
+      link.href = 'https://yandex.ru/maps/?text=' + encodeURIComponent(ev.address);
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.style.display = 'inline-block';
+      link.style.marginTop = '4px';
+      r.querySelector('.val').appendChild(link);
+      card.appendChild(r);
+    }
+    if (ev.organizer) card.appendChild(infoRow('👤', 'Организатор', ev.organizer));
+    if (ev.description) {
+      var d = infoRow('📝', 'Описание', ev.description);
+      d.querySelector('.val').style.whiteSpace = 'pre-wrap';
+      card.appendChild(d);
+    }
+    return card;
+  }
+
+  function infoRow(icon, label, value) {
+    var row = el('div', 'row');
+    row.appendChild(el('div', 'ico', icon));
+    var right = el('div', 'val');
+    right.appendChild(el('div', 'lbl', label));
+    right.appendChild(el('div', null, value));
+    row.appendChild(right);
+    return row;
+  }
+
+  function renderWhoAmI() {
+    var card = el('div', 'card');
+    card.appendChild(el('div', 'card-title', 'Кто вы?'));
+    card.appendChild(el('div', 'muted', 'Выберите себя в списке — тогда можно будет ответить и оставить комментарий.'));
+    var grid = el('div', 'who-grid');
+    grid.style.marginTop = '12px';
+    state.data.participants.forEach(function (p) {
+      var b = el('button', 'who-btn', p.name);
+      b.onclick = function () {
+        state.me = p.id;
+        state.noteDraft = null;   // черновик уточнения принадлежал прошлому выбору
+        try { localStorage.setItem(ME_KEY, p.id); } catch (e) {}
+        render();
+      };
+      grid.appendChild(b);
+    });
+    card.appendChild(grid);
+    if (!state.data.participants.length) {
+      card.appendChild(el('div', 'empty', 'Организатор ещё не добавил участников.'));
+    } else {
+      card.appendChild(el('div', 'subtle', 'Нет вашего имени? Напишите организатору — он добавит вас в список.'))
+          .style.marginTop = '10px';
+    }
+    return card;
+  }
+
+  function renderRsvp() {
+    var card = el('div', 'card');
+
+    var head = el('div');
+    head.style.display = 'flex';
+    head.style.justifyContent = 'space-between';
+    head.style.alignItems = 'center';
+    head.style.marginBottom = '12px';
+    head.appendChild(el('div', 'card-title', 'Вы: ' + nameOf(state.me))).style.marginBottom = '0';
+    var change = el('button', 'btn-ghost', 'это не я');
+    change.onclick = function () {
+      state.me = null;
+      state.noteDraft = null;
+      try { localStorage.removeItem(ME_KEY); } catch (e) {}
+      render();
+    };
+    head.appendChild(change);
+    card.appendChild(head);
+
+    var mine = myResponse();
+    STATUSES.forEach(function (s) {
+      var b = el('button', 'status-btn' + (mine && mine.status === s.id ? ' active' : ''));
+      var dot = el('span', 'dot');
+      dot.style.background = s.color;
+      b.appendChild(dot);
+      b.appendChild(el('span', null, s.label));
+      if (mine && mine.status === s.id) b.appendChild(el('span', 'mark', 'ваш ответ'));
+      b.onclick = function () { sendRsvp(s.id); };
+      card.appendChild(b);
+    });
+
+    var noteWrap = el('div');
+    noteWrap.style.marginTop = '12px';
+    var note = el('textarea');
+    note.rows = 2;
+    note.placeholder = 'Уточнение к ответу — например, «приеду только на второй день»';
+    note.value = state.noteDraft !== null ? state.noteDraft : ((mine && mine.note) || '');
+    note.id = 'rsvp-note';
+    note.oninput = function () { state.noteDraft = note.value; };
+    noteWrap.appendChild(note);
+    var saveNote = el('button', 'btn-primary', 'Сохранить ответ');
+    saveNote.style.marginTop = '8px';
+    saveNote.disabled = !mine;
+    saveNote.onclick = function () { if (mine) sendRsvp(mine.status, note.value); };
+    noteWrap.appendChild(saveNote);
+    if (!mine) {
+      noteWrap.appendChild(el('div', 'subtle', 'Сначала выберите один из вариантов выше.'))
+              .style.marginTop = '6px';
+    }
+    card.appendChild(noteWrap);
+
+    var left = daysUntil(state.data.event.decisionDeadline);
+    if (left !== null && left < 0) {
+      card.appendChild(el('div', 'note', 'Дедлайн уже прошёл, но ответ всё ещё можно изменить — организатор его увидит.'));
+    }
+    return card;
+  }
+
+  function sendRsvp(status, note) {
+    if (state.busy) return;
+    state.busy = true;
+    var body = { friendId: state.me, status: status };
+    if (note !== undefined) body.note = note;
+    else {
+      var cur = myResponse();
+      var field = document.getElementById('rsvp-note');
+      body.note = field ? field.value : (cur ? cur.note : '');
+    }
+    api('/rsvp', body).then(function (json) {
+      state.data = json;
+      state.noteDraft = null;   // дальше поле снова ведёт сервер
+      render();
+      toast('Ответ сохранён');
+    }).catch(function (e) {
+      toast(e.message === 'not a participant'
+        ? 'Вас больше нет в списке участников'
+        : 'Не удалось сохранить: ' + e.message);
+      load(true);
+    }).then(function () { state.busy = false; });
+  }
+
+  function renderPeople() {
+    var card = el('div', 'card');
+    card.appendChild(el('div', 'card-title', 'Участники'));
+
+    var byStatus = {};
+    state.data.responses.forEach(function (r) { byStatus[r.friendId] = r; });
+
+    var counts = {};
+    STATUSES.forEach(function (s) { counts[s.id] = 0; });
+    var answered = 0;
+    state.data.participants.forEach(function (p) {
+      var r = byStatus[p.id];
+      if (r && counts[r.status] !== undefined) { counts[r.status]++; answered++; }
+    });
+
+    var summary = el('div', 'muted');
+    summary.style.marginBottom = '12px';
+    summary.textContent = 'Ответили ' + answered + ' из ' + state.data.participants.length;
+    card.appendChild(summary);
+
+    state.data.participants.forEach(function (p) {
+      var row = el('div', 'person');
+      row.appendChild(el('div', 'avatar', initials(p.name)));
+
+      var mid = el('div');
+      mid.style.flex = '1';
+      mid.style.minWidth = '0';
+      mid.appendChild(el('div', null, p.name + (p.id === state.me ? ' (вы)' : '')));
+      var r = byStatus[p.id];
+      if (r && r.note) mid.appendChild(el('div', 'note', r.note));
+      row.appendChild(mid);
+
+      var tag = el('span', 'pill');
+      if (r && STATUS_BY_ID[r.status]) {
+        tag.textContent = STATUS_BY_ID[r.status].label;
+        tag.style.background = 'transparent';
+        tag.style.border = '1px solid ' + STATUS_BY_ID[r.status].color;
+        tag.style.color = STATUS_BY_ID[r.status].color;
+      } else {
+        tag.className += ' pill-neutral';
+        tag.textContent = 'нет ответа';
+      }
+      tag.style.flexShrink = '0';
+      row.appendChild(tag);
+      card.appendChild(row);
+    });
+
+    if (!state.data.participants.length) {
+      card.appendChild(el('div', 'empty', 'Пока никого нет.'));
+    }
+    return card;
+  }
+
+  function renderComments() {
+    var card = el('div', 'card');
+    card.appendChild(el('div', 'card-title', 'Обсуждение'));
+
+    if (!state.data.comments.length) {
+      card.appendChild(el('div', 'empty', 'Комментариев пока нет — напишите первым.'));
+    }
+    state.data.comments.forEach(function (c) {
+      var box = el('div', 'comment');
+      var head = el('div', 'comment-head');
+      head.appendChild(el('span', 'comment-author', nameOf(c.friendId)));
+      head.appendChild(el('span', 'subtle', fmtWhen(c.createdAt)));
+      box.appendChild(head);
+      box.appendChild(el('div', 'comment-text', c.text));
+      card.appendChild(box);
+    });
+
+    var form = el('div');
+    form.style.marginTop = '14px';
+    if (!state.me) {
+      form.appendChild(el('div', 'subtle', 'Чтобы написать комментарий, выберите себя в списке выше.'));
+    } else {
+      var ta = el('textarea');
+      ta.rows = 3;
+      ta.placeholder = 'Написать комментарий…';
+      ta.value = state.commentDraft || '';
+      ta.oninput = function () { state.commentDraft = ta.value; };
+      form.appendChild(ta);
+      var send = el('button', 'btn-primary', 'Опубликовать');
+      send.style.marginTop = '8px';
+      send.onclick = function () {
+        var text = ta.value.trim();
+        if (!text || state.busy) return;
+        state.busy = true;
+        send.disabled = true;
+        api('/comment', { friendId: state.me, text: text }).then(function (json) {
+          state.data = json;
+          state.commentDraft = '';
+          render();
+          toast('Комментарий опубликован');
+        }).catch(function (e) {
+          toast('Не удалось отправить: ' + e.message);
+          send.disabled = false;
+        }).then(function () { state.busy = false; });
+      };
+      form.appendChild(send);
+    }
+    card.appendChild(form);
+    return card;
+  }
+
+  // ── boot ────────────────────────────────────────────────────────────────
+  try { state.me = localStorage.getItem(ME_KEY) || null; } catch (e) {}
+
+  if (!TOKEN) {
+    state.error = 'no token';
+    render();
+    return;
+  }
+
+  load();
+
+  // Подтягиваем чужие ответы и комментарии, пока страница открыта.
+  setInterval(function () {
+    if (document.visibilityState === 'visible' && !state.busy) load(true);
+  }, 25000);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && !state.busy) load(true);
+  });
+})();
+</script>
+</body>
+</html>
