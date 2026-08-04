@@ -34,6 +34,14 @@
   .wrap {
     max-width: 620px; margin: 0 auto;
     padding: 16px 16px calc(var(--nav-h) + var(--safe-b) + 24px);
+    /* Почти весь текст на странице пишут участники: имена, описания трат,
+       реквизиты, сообщения. Свойство наследуется, поэтому одно правило тут
+       страхует от «длинного слова без пробелов» во ВСЕХ местах разом —
+       латать по одному классу значило бы пропустить следующее.
+       Именно break-word, а не anywhere: anywhere вмешивается в расчёт
+       минимальной ширины и рвёт посреди обычного слова («Смирн-ова») даже
+       там, где хватило бы переноса по пробелу. */
+    overflow-wrap: break-word;
   }
   .font-display { font-family: 'Fraunces', Georgia, serif; letter-spacing: -0.02em; }
   .card {
@@ -98,6 +106,9 @@
   .person {
     display: flex; align-items: center; gap: 10px; padding: 10px 0;
     border-bottom: 1px solid var(--border);
+    /* На узком экране плашка статуса уходит на свою строку — иначе она
+       сдавливала имя до переноса посреди слова. */
+    flex-wrap: wrap;
   }
   .person:last-child { border-bottom: none; padding-bottom: 0; }
   .person:first-child { padding-top: 0; }
@@ -107,7 +118,12 @@
     background: var(--bg); border: 1px solid var(--border);
     font-size: 13px; font-weight: 600; color: var(--text-muted);
   }
-  .person-name { overflow-wrap: anywhere; }
+  .person-name { min-width: 0; }
+  /* Столбцу имени нужен внятный минимум: с min-width:0 flex сжимал его до
+     нуля, и flex-wrap никогда не срабатывал — плашка оставалась в строке и
+     рвала имя. Теперь на узком экране она честно уходит вниз. */
+  .person-mid { flex: 1 1 60%; min-width: 7.5rem; }
+  .person > .pill { flex-shrink: 0; margin-left: auto; }
   .empty { color: var(--text-subtle); font-size: 14px; padding: 6px 0; }
   /* ── Расходы ── */
   .sec-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
@@ -789,9 +805,7 @@
       var row = el('div', 'person');
       row.appendChild(el('div', 'avatar', initials(p.name)));
 
-      var mid = el('div');
-      mid.style.flex = '1';
-      mid.style.minWidth = '0';
+      var mid = el('div', 'person-mid');
       mid.appendChild(el('div', 'person-name', p.name + (p.id === state.me ? ' (вы)' : '')));
       var r = byStatus[p.id];
       if (r && r.note) mid.appendChild(el('div', 'note', r.note));
@@ -807,7 +821,6 @@
         tag.className += ' pill-neutral';
         tag.textContent = 'нет ответа';
       }
-      tag.style.flexShrink = '0';
       row.appendChild(tag);
       card.appendChild(row);
     });
