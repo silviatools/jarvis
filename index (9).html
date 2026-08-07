@@ -6662,6 +6662,48 @@ async function engCallAI(ai,prompt){
   throw new Error('Unknown provider');
 }
 
+function engAIConfigured(ai){
+  if(!ai) return false;
+  if(ai.provider==='anthropic') return !!ai.anthropicKey;
+  if(ai.provider==='openai') return !!ai.openaiKey;
+  if(ai.provider==='ollama') return !!ai.ollamaUrl;
+  return false;
+}
+
+const ENG_SENT_CACHE_KEY='eng_ai_sentence_cache_v1';
+
+// Generating an example sentence per word is a slow AI round-trip, so we never
+// generate on-demand while a card is on screen. The moment a study session starts
+// we fire this in the background (never awaited) for whichever words in the batch
+// aren't cached yet. Results are cached permanently by word text in localStorage,
+// so a given word is only ever generated once across all future sessions.
+async function engPrefetchSentences(ai,words,cache,onChunk){
+  if(!engAIConfigured(ai)) return;
+  const seen=new Set();const need=[];
+  for(const w of words){
+    const k=String(w.en||'').trim().toLowerCase();
+    if(w.en&&!cache[k]&&!seen.has(k)){need.push(w);seen.add(k);}
+  }
+  if(!need.length) return;
+  const CHUNK=15;
+  for(let i=0;i<need.length;i+=CHUNK){
+    const chunk=need.slice(i,i+CHUNK);
+    try{
+      const wordList=chunk.map(w=>`- "${w.en}" (${w.ru})`).join('\n');
+      const prompt=`You are an English teacher. For each word below, write ONE natural, memorable example sentence (B1-B2 level) that clearly demonstrates the word's meaning in context.\n\nRules:\n- The target word (or its natural inflected form) must appear exactly once in the sentence\n- Keep each sentence under 16 words\n- Do not add explanations, just the sentence\n- Return ONLY a valid JSON array, no markdown, no backticks\n\nWords:\n${wordList}\n\nReturn format (strict JSON array):\n[{"word":"word1","sentence":"Example sentence with word1."}]`;
+      const raw=await engCallAI(ai,prompt);
+      const m=raw.match(/\[[\s\S]*\]/);if(!m) continue;
+      const items=JSON.parse(m[0]);
+      const entries={};
+      for(const item of items){
+        const wo=chunk.find(w=>w.en.toLowerCase()===String(item.word||'').toLowerCase());
+        if(wo&&item.sentence) entries[wo.en.trim().toLowerCase()]=item.sentence;
+      }
+      if(Object.keys(entries).length) onChunk(entries);
+    }catch(e){ console.warn('Sentence prefetch chunk failed:',e.message); }
+  }
+}
+
 function EngCfgModal({cfg,onSave,onClose}){
   const [f,setF]=useState({...cfg});
   return(
@@ -6833,13 +6875,23 @@ function EngSyncBtn({cfg,toMark,toUnmark,rawData,tcRef,atRef}){
   );
 }
 
-function FlashcardsTab({rawData,cfg}){
+function FlashcardsTab({rawData,cfg,ai}){
   const [phase,setPhase]=useState('setup');
   const [settings,setSettings]=useState({direction:'en-ru',count:20,order:'random',filter:'all',dateRange:'all',sentence:true,synonyms:true,tts:false,hide:true,repeat:true,auto:false});
   const [sess,setSess]=useState(null);
   const sessRef=useRef(null);
   useEffect(()=>{sessRef.current=sess;},[sess]);
   const tcRef=useRef(null);const atRef=useRef(null);
+
+  // Example-sentence cache: permanent (by word), shared across sessions, so
+  // generation is a one-time cost per word and is never awaited during study.
+  const [sentCache,setSentCache]=useState(()=>{try{return JSON.parse(localStorage.getItem(ENG_SENT_CACHE_KEY)||'{}');}catch{return{};}});
+  const mergeSentCache=(entries)=>setSentCache(prev=>{
+    const next={...prev,...entries};
+    try{localStorage.setItem(ENG_SENT_CACHE_KEY,JSON.stringify(next));}catch(e){}
+    return next;
+  });
+  const getSent=(en)=>sentCache[String(en||'').trim().toLowerCase()]||null;
 
   useEffect(()=>{
     if(!cfg.clientId) return;
@@ -6894,8 +6946,10 @@ function FlashcardsTab({rawData,cfg}){
     else if(settings.order==='oldest') pool.sort((a,b)=>(engParseDate(a.date,iy)?.getTime()||0)-(engParseDate(b.date,iy)?.getTime()||0));
     const pd=()=>settings.direction==='mixed'?(Math.random()<.5?'en-ru':'ru-en'):settings.direction;
     const cnt=settings.count>0&&settings.count<pool.length?settings.count:pool.length;
-    setSess({queue:pool.slice(0,cnt).map(w=>({...w,_dir:pd()})),again:[],done:[],cur:0,flipped:false,markHard:new Set(),unmarkHard:new Set(),stats:{again:0,hard:0,good:0,easy:0},iy});
+    const batch=pool.slice(0,cnt).map(w=>({...w,_dir:pd()}));
+    setSess({queue:batch,again:[],done:[],cur:0,flipped:false,markHard:new Set(),unmarkHard:new Set(),stats:{again:0,hard:0,good:0,easy:0},iy});
     setPhase('study');
+    if(settings.sentence) engPrefetchSentences(ai,batch,sentCache,mergeSentCache); // background, never awaited
   };
 
   const toggleHard=()=>setSess(s=>{
@@ -6990,6 +7044,8 @@ function FlashcardsTab({rawData,cfg}){
   let sentF=w.sentence;
   if(settings.hide&&dir==='en-ru'&&sentF) sentF=sentF.replace(new RegExp('\\b'+engEscRe(w.en.split(' ')[0])+'\\w*','ig'),'___');
   if(settings.tts&&!sess.flipped){const u=new SpeechSynthesisUtterance(dir==='en-ru'?w.en:'');u.lang='en-US';u.rate=.9;window.speechSynthesis?.cancel();window.speechSynthesis?.speak(u);}
+  const cachedSent=getSent(w.en);
+  const pendingSent=settings.sentence&&engAIConfigured(ai)?sess.queue.concat(sess.again).filter(x=>!getSent(x.en)).length:0;
 
   return(
     <div className="max-w-2xl mx-auto space-y-4 pb-8">
@@ -6998,6 +7054,7 @@ function FlashcardsTab({rawData,cfg}){
         {[['карт',`${sess.done.length+1}/${total}`,''],[' again',sess.stats.again,'text-red-500'],['hard',sess.stats.hard,'text-amber-500'],['good',sess.stats.good+sess.stats.easy,'text-green-500'],['очередь',sess.again.length,'']].map(([l,v,c],i)=>(
           <div key={i} className={`bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1 ${c}`}>{l} <span className="font-semibold">{v}</span></div>
         ))}
+        {pendingSent>0&&<div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1 text-amber-500" title="Примеры ещё генерируются в фоне">примеры <span className="font-semibold">⏳ {pendingSent}</span></div>}
       </div>
       <div style={ENG_CARD_S.wrap} onClick={()=>setSess(s=>s?{...s,flipped:!s.flipped}:s)}>
         <div key={w.rowIndex + '_' + w._dir} style={ENG_CARD_S.card(sess.flipped)}>
@@ -7016,7 +7073,14 @@ function FlashcardsTab({rawData,cfg}){
               {isHard==='marking'?'★ +hard':isHard==='hard'?'★ hard':'☆ hard'}
             </button>
             <div className="font-display text-4xl sm:text-5xl font-bold leading-tight mb-3">{back}</div>
-            {settings.sentence&&w.sentence&&<div className="text-sm text-[var(--text-muted)] italic max-w-sm leading-relaxed" dangerouslySetInnerHTML={{__html:engHighlight(w.sentence,w.en)}}/>}
+            {settings.sentence&&(cachedSent
+              ? <div className="text-sm text-[var(--text-muted)] italic max-w-sm leading-relaxed" dangerouslySetInnerHTML={{__html:engHighlight(cachedSent,w.en)}}/>
+              : engAIConfigured(ai)
+                ? <div className="text-sm text-[var(--text-subtle)] italic max-w-sm leading-relaxed opacity-60">⏳ пример генерируется…</div>
+                : w.sentence
+                  ? <div className="text-sm text-[var(--text-muted)] italic max-w-sm leading-relaxed" dangerouslySetInnerHTML={{__html:engHighlight(w.sentence,w.en)}}/>
+                  : null
+            )}
             {settings.synonyms&&w.syn&&<div className="text-xs text-[var(--text-subtle)] mt-2">syn: {w.syn}</div>}
             <div className="absolute bottom-3 text-[10px] text-[var(--text-subtle)]">оцените ниже · 1–4</div>
           </div>
@@ -7262,6 +7326,154 @@ function TypingTab({rawData,ai}){
   );
 }
 
+const ENG_MYSENT_DEFAULT_PROMPT = `Ты — дружелюбный преподаватель английского. Ученику дано слово "{word}" (перевод: "{translation}"). Он написал своё предложение с этим словом:
+
+"{sentence}"
+
+Кратко (3-5 предложений) на русском языке:
+1. Оцени, правильно ли использовано слово по смыслу и грамматически. Если есть ошибки — укажи их и дай исправленный вариант.
+2. Если предложение хорошее — похвали и, если уместно, предложи более естественный или продвинутый вариант.
+Пиши тепло и по делу, без markdown и заголовков.`;
+
+// Написать своё предложение со словом + произнести его вслух. Похоже на TypingTab,
+// но вместо перевода ученик сам составляет пример, а ИИ даёт комментарий по
+// настраиваемому промпту (хранится в БД вместе с остальными eng-настройками).
+function MySentenceTab({rawData,ai,prompt,onSavePrompt}){
+  const [filter,setFilter]=useState('random');
+  const [count,setCount]=useState(15);
+  const [phase,setPhase]=useState('setup');
+  const [promptDraft,setPromptDraft]=useState(prompt);
+  useEffect(()=>{setPromptDraft(prompt);},[prompt]);
+  const [queue,setQueue]=useState([]);
+  const [cur,setCur]=useState(0);
+  const [stats,setStats]=useState({done:0});
+  const [sentence,setSentence]=useState('');
+  const [feedback,setFeedback]=useState(null); // {loading,text}
+  const [said,setSaid]=useState(false);
+  const taRef=useRef(null);
+  useEffect(()=>{if(phase==='study'&&taRef.current)taRef.current.focus();},[cur,phase]);
+
+  const start=()=>{
+    if(!rawData){alert('Загрузите данные');return;}
+    let pool=rawData.slice();
+    if(filter==='hard') pool=pool.filter(w=>w.hard);
+    else if(filter==='oldest') pool.sort((a,b)=>(engParseDate(a.date)?.getTime()||0)-(engParseDate(b.date)?.getTime()||0));
+    else if(filter==='newest') pool.sort((a,b)=>(engParseDate(b.date)?.getTime()||0)-(engParseDate(a.date)?.getTime()||0));
+    else pool.sort(()=>Math.random()-.5);
+    const n=count>0?Math.min(count,pool.length):pool.length;
+    if(!n){alert('Нет слов');return;}
+    setQueue(pool.slice(0,n));setCur(0);setStats({done:0});setSentence('');setFeedback(null);setSaid(false);setPhase('study');
+  };
+
+  const check=async()=>{
+    const val=sentence.trim();
+    if(!val) return;
+    const w=queue[cur];
+    setFeedback({loading:true,text:''});
+    try{
+      const p=(prompt||ENG_MYSENT_DEFAULT_PROMPT).replaceAll('{word}',w.en).replaceAll('{translation}',w.ru).replaceAll('{sentence}',val);
+      const c=await engCallAI(ai,p);
+      setFeedback({loading:false,text:c});
+    }catch(e){
+      setFeedback({loading:false,text:'(AI недоступен: '+e.message+')'});
+    }
+    setStats(s=>({...s,done:s.done+1}));
+  };
+
+  const playWord=()=>{
+    const w=queue[cur];if(!w||!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance(w.en);u.lang='en-US';u.rate=.9;
+    window.speechSynthesis.speak(u);
+  };
+
+  const next=()=>{setSentence('');setFeedback(null);setSaid(false);if(cur+1>=queue.length){setPhase('finish');return;}setCur(c=>c+1);};
+
+  if(!rawData) return <div className="text-center py-20 text-[var(--text-subtle)]"><p>Загрузите данные из Google Sheets</p></div>;
+
+  if(phase==='setup') return(
+    <div className="max-w-lg mx-auto space-y-5 pb-8">
+      <div><label>Фильтр</label>
+        <div className="flex flex-col gap-1.5 mt-1">
+          {[['random','🔀 Случайный'],['oldest','📅 Старые сначала'],['newest','🆕 Новые сначала'],['hard','★ Только сложные']].map(([f,l])=>(
+            <button key={f} onClick={()=>setFilter(f)} className={`text-left px-3 py-2 rounded-lg text-sm border transition-all ${filter===f?'bg-[var(--text)] text-white border-[var(--text)]':'border-[var(--border)] text-[var(--text-muted)]'}`}>{l}</button>
+          ))}
+        </div>
+      </div>
+      <div><label>Количество слов (0 = все)</label><input type="number" min="0" max="500" value={count||''} onChange={e=>setCount(parseInt(e.target.value)||0)}/></div>
+      <div>
+        <label>Промпт для проверки ИИ</label>
+        <textarea value={promptDraft} onChange={e=>setPromptDraft(e.target.value)} rows={9} style={{resize:'vertical',fontFamily:'inherit'}} className="w-full text-sm"/>
+        <p className="text-xs text-[var(--text-subtle)] mt-1">Плейсхолдеры: <code>{'{word}'}</code>, <code>{'{translation}'}</code>, <code>{'{sentence}'}</code></p>
+        <div className="flex gap-2 mt-2">
+          <button onClick={()=>onSavePrompt(promptDraft)} disabled={promptDraft===prompt} className="btn-secondary text-xs py-1.5 px-3">Сохранить промпт</button>
+          <button onClick={()=>setPromptDraft(ENG_MYSENT_DEFAULT_PROMPT)} className="btn-secondary text-xs py-1.5 px-3">↺ Сбросить</button>
+        </div>
+      </div>
+      <button onClick={start} className="btn-primary w-full py-3.5">▶ Начать</button>
+    </div>
+  );
+
+  if(phase==='finish'){
+    return(
+      <div className="text-center py-8 max-w-lg mx-auto pb-12">
+        <div className="font-display text-6xl mb-1">✓</div>
+        <h2 className="font-display text-2xl mb-2">Свои предложения готовы</h2>
+        <p className="text-[var(--text-muted)] mb-8">Написано и проверено: {stats.done}</p>
+        <button onClick={()=>setPhase('setup')} className="btn-primary px-8 py-3">↻ Повторить</button>
+      </div>
+    );
+  }
+
+  const w=queue[cur];const total=queue.length;const pct=Math.round(cur/total*100);
+  return(
+    <div className="max-w-2xl mx-auto space-y-4 pb-8">
+      <div className="h-1.5 bg-[var(--surface)] rounded-full overflow-hidden"><div className="h-full bg-[var(--text)] transition-all" style={{width:pct+'%'}}/></div>
+      <div className="flex gap-2 text-xs flex-wrap">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1">карт <b>{cur+1}/{total}</b></div>
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1 text-green-500">готово <b>{stats.done}</b></div>
+      </div>
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-8 text-center">
+        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-3">своё предложение со словом</div>
+        <div className="font-display text-4xl sm:text-5xl font-bold mb-2">{w.en}</div>
+        <div className="text-sm text-[var(--text-muted)]">{w.ru}</div>
+        {w.syn&&<div className="text-xs text-[var(--text-subtle)] mt-1">syn: {w.syn}</div>}
+      </div>
+
+      <div>
+        <label>Ваше предложение</label>
+        <textarea ref={taRef} value={sentence} onChange={e=>setSentence(e.target.value)} rows={3} placeholder="Напишите предложение с этим словом..." className="w-full" disabled={!!feedback}/>
+      </div>
+
+      {!feedback?(
+        <div className="flex gap-2">
+          <button onClick={check} disabled={!sentence.trim()} className="btn-primary px-5">Проверить</button>
+          <button onClick={next} className="btn-secondary px-4">Пропустить →</button>
+        </div>
+      ):(
+        <>
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4">
+            {feedback.loading
+              ? <div className="text-sm text-[var(--text-muted)]">⏳ AI проверяет предложение...</div>
+              : <div className="text-sm text-[var(--text-muted)] whitespace-pre-wrap">{feedback.text}</div>}
+          </div>
+          <div className="bg-amber-500/10 border border-amber-400/30 rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="text-sm">🔊 <b>Произнесите слово вслух:</b> "{w.en}"</div>
+              <button onClick={playWord} className="btn-secondary text-xs py-1.5 px-3">▶ Проговорить</button>
+            </div>
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" checked={said} onChange={e=>setSaid(e.target.checked)} className="w-4 h-4"/>
+              Я произнёс(ла) слово вслух
+            </label>
+          </div>
+          <button onClick={next} disabled={!said} className="btn-primary w-full py-3">Следующее слово →</button>
+        </>
+      )}
+    </div>
+  );
+}
+
 // Legacy-чтение настроек English из localStorage (так они хранились раньше —
 // на каждом устройстве отдельно, и Safari стирал их через ~7 дней простоя).
 const engLegacyCfg = () => ({
@@ -7287,6 +7499,7 @@ function EnglishView({ data, setData }){
   const cfg = data.engConfig || engLegacyCfg();
   const ai = data.engAI || engLegacyAI();
   const studyPlan = data.engStudyPlan || { text: '', updatedAt: 0 };
+  const mySentPrompt = typeof data.engMySentPrompt === 'string' ? data.engMySentPrompt : ENG_MYSENT_DEFAULT_PROMPT;
   const [rawData,setRawData]=useState(()=>{try{return JSON.parse(localStorage.getItem('eng_raw_data')||'null');}catch{return null;}});
   const [loading,setLoading]=useState(false);
   const initStatus=()=>{try{const d=localStorage.getItem('eng_raw_data');return d?{type:'ok',text:`${JSON.parse(d).length} слов`}:{type:'',text:'Загрузите из Google Sheets'};}catch{return{type:'',text:'Загрузите из Google Sheets'};}};
@@ -7299,6 +7512,7 @@ function EnglishView({ data, setData }){
   const saveCfg=(c)=>setData(d=>({...d, engConfig:{...c, updatedAt: Date.now()}}));
   const saveAI=(a)=>setData(d=>({...d, engAI:{...a, updatedAt: Date.now()}}));
   const saveStudyPlan=(p)=>setData(d=>({...d, engStudyPlan:{ text: p.text || '', updatedAt: p.updatedAt || Date.now() }}));
+  const saveMySentPrompt=(p)=>setData(d=>({...d, engMySentPrompt: p}));
 
   // Разовая миграция: ключи, введённые до этого фикса, лежат только в
   // localStorage этого браузера — переносим их в БД, чтобы больше не терялись.
@@ -7349,13 +7563,14 @@ function EnglishView({ data, setData }){
           </div>
         </div>
         <div className="flex gap-2 py-3 border-b border-[var(--border)]">
-          {[['cards','🃏 Карточки'],['fill','✍ Вставить слово'],['typing','⌨ Печать']].map(([id,l])=>(
+          {[['cards','🃏 Карточки'],['fill','✍ Вставить слово'],['mysentence','📝 Своё предложение'],['typing','⌨ Печать']].map(([id,l])=>(
             <button key={id} onClick={()=>setEngTab(id)} className={`px-3 py-2 rounded-xl text-sm font-medium transition-all ${engTab===id?'bg-[var(--text)] text-white':'text-[var(--text-muted)] hover:text-[var(--text)]'}`}>{l}</button>
           ))}
         </div>
         <div className="pt-6">
-          {engTab==='cards'&&<FlashcardsTab rawData={rawData} cfg={cfg}/>}
+          {engTab==='cards'&&<FlashcardsTab rawData={rawData} cfg={cfg} ai={ai}/>}
           {engTab==='fill'&&<FillTab rawData={rawData} ai={ai}/>}
+          {engTab==='mysentence'&&<MySentenceTab rawData={rawData} ai={ai} prompt={mySentPrompt} onSavePrompt={saveMySentPrompt}/>}
           {engTab==='typing'&&<TypingTab rawData={rawData} ai={ai}/>}
         </div>
       </div>
