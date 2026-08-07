@@ -410,6 +410,9 @@ const DEFAULT_DATA = () => ({
   plannerGuests: [],
   plannerExpenses: [],
   plannerPayments: [],
+  // «Мои планы» — личные записи календаря планировщика: их не видно гостям
+  // по ссылке, они не имеют участников и живут только у владельца.
+  plannerPlans: [],
   deletedIds: {},
   // План обучения English: произвольная заметка, LWW по updatedAt между устройствами
   engStudyPlan: { text: '', updatedAt: 0 },
@@ -940,6 +943,8 @@ const Icon = ({ name, size = 22 }) => {
     edit: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>,
     archive: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/></svg>,
     chevronDown: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>,
+    chevronLeft: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>,
+    chevronRight: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>,
     x: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>,
     restore: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>,
     cloud: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>,
@@ -14358,17 +14363,143 @@ const newPlannerEvent = () => ({
   // вписывает своё имя (событие не только для друзей).
   participantMode: 'list',
   organizer: '',
+  // Ручной статус: событие попадает в календарь «Мои планы» только после
+  // того, как админ отметит его подтверждённым. Ответы друзей на это не
+  // влияют — решение принимает организатор.
+  confirmed: false,
   shareToken: makePlannerToken(),
   shareEnabled: true,
   createdAt: Date.now(),
+  updatedAt: Date.now(),
 });
 
+const plannerEventConfirmed = (ev) => !!(ev && ev.confirmed);
+
+// ── Мои планы: календарь месяца ────────────────────────────────────────────
+
+const newPlannerPlan = (startDate = '') => ({
+  id: crypto.randomUUID(),
+  title: '',
+  description: '',
+  startDate,
+  endDate: startDate,
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+});
+
+const PLANNER_DOW_SHORT = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+const PLANNER_MONTHS_NOM = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+                            'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+
+// Цвета календаря: событие, личный план и праздник различаются на глаз,
+// а не только подписью — праздник намеренно не выглядит как событие.
+const PLANNER_CAL_COLORS = {
+  event:   { bar: '#059669', bg: '#d1fae5', text: '#065f46', label: 'Подтверждённое событие' },
+  plan:    { bar: '#4f46e5', bg: '#e0e7ff', text: '#3730a3', label: 'Мой план' },
+  holiday: { bar: '#d97706', bg: '#fef3c7', text: '#92400e', label: 'Праздник' },
+};
+
+const plannerIso = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+const plannerToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
+
+// Понедельник — первый день недели: getDay() отдаёт 0 для воскресенья.
+const plannerWeeksOfMonth = (year, month) => {
+  const shift = (new Date(year, month, 1).getDay() + 6) % 7;
+  const total = shift + new Date(year, month + 1, 0).getDate();
+  const weeks = [];
+  for (let w = 0; w < Math.ceil(total / 7); w++) {
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(year, month, 1 - shift + w * 7 + i);
+      d.setHours(0, 0, 0, 0);
+      days.push(d);
+    }
+    weeks.push(days);
+  }
+  return weeks;
+};
+
+// Праздник хранится как «MM-DD» и повторяется каждый год. 29 февраля в
+// невисокосном году показываем 28-го — иначе праздник просто исчезал бы.
+const plannerHolidayIsoInYear = (mmdd, year) => {
+  const [mm, dd] = String(mmdd || '').split('-').map(Number);
+  if (!mm || !dd || mm < 1 || mm > 12) return '';
+  const last = new Date(year, mm, 0).getDate();
+  const day = Math.min(dd, last);
+  return `${year}-${String(mm).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+};
+
+/** Всё, что показывается в календаре, одним списком: подтверждённые события
+ *  планировщика, личные планы и праздники того года, который сейчас открыт. */
+const plannerCalendarItems = (data, year) => {
+  const items = [];
+  (data.plannerEvents || []).forEach(ev => {
+    if (!plannerEventConfirmed(ev) || !ev.startDate) return;
+    const end = ev.endDate && ev.endDate >= ev.startDate ? ev.endDate : ev.startDate;
+    items.push({
+      key: `event:${ev.id}`, kind: 'event', ref: ev,
+      title: ev.title || 'Без названия', start: ev.startDate, end,
+    });
+  });
+  (data.plannerPlans || []).forEach(p => {
+    if (!p.startDate) return;
+    const end = p.endDate && p.endDate >= p.startDate ? p.endDate : p.startDate;
+    items.push({
+      key: `plan:${p.id}`, kind: 'plan', ref: p,
+      title: p.title || 'Без названия', start: p.startDate, end,
+    });
+  });
+  (data.holidays || []).filter(h => !h.archived && h.date).forEach(h => {
+    // Праздник виден и в декабре, и в январе соседнего года — календарь
+    // умеет листать месяцы, поэтому берём три года вокруг открытого.
+    [year - 1, year, year + 1].forEach(y => {
+      const iso = plannerHolidayIsoInYear(h.date, y);
+      if (!iso) return;
+      items.push({
+        key: `holiday:${h.id}:${y}`, kind: 'holiday', ref: h,
+        title: h.name || 'Праздник', start: iso, end: iso,
+      });
+    });
+  });
+  return items;
+};
+
+/** Полосы недели: элемент, попавший в неделю, занимает подряд идущие
+ *  колонки — так событие на несколько дней визуально тянется по календарю.
+ *  Пересекающиеся полосы раскладываются по «дорожкам», чтобы не наезжать. */
+const plannerWeekSegments = (items, week) => {
+  const from = plannerIso(week[0]), to = plannerIso(week[6]);
+  const inWeek = items
+    .filter(it => it.start <= to && it.end >= from)
+    .sort((a, b) => a.start.localeCompare(b.start)   // раньше начались — выше
+      || b.end.localeCompare(a.end)                   // длиннее — выше
+      || a.title.localeCompare(b.title));
+  const lanes = []; // lanes[i] = индекс последней занятой колонки в дорожке
+  return inWeek.map(it => {
+    const col = Math.max(0, week.findIndex(d => plannerIso(d) >= it.start));
+    let endCol = 6;
+    for (let i = 6; i >= 0; i--) { if (plannerIso(week[i]) <= it.end) { endCol = i; break; } }
+    const span = Math.max(1, endCol - col + 1);
+    let lane = lanes.findIndex(last => last < col);
+    if (lane === -1) { lane = lanes.length; lanes.push(-1); }
+    lanes[lane] = col + span - 1;
+    return {
+      ...it, col, span, lane,
+      startsHere: it.start >= from,
+      endsHere: it.end <= to,
+    };
+  });
+};
+
 function PlannerView({ data, setData }) {
-  const [sub, setSub] = useState('events');
+  const [sub, setSub] = useState('plans');
 
   const TABS = [
-    { id: 'events',  label: 'События', icon: 'calendar' },
-    { id: 'friends', label: 'Друзья',  icon: 'users'    },
+    { id: 'plans',   label: 'Мои планы', icon: 'calendar' },
+    { id: 'events',  label: 'События',   icon: 'star'     },
+    { id: 'friends', label: 'Друзья',    icon: 'users'    },
   ];
 
   return (
@@ -14378,7 +14509,7 @@ function PlannerView({ data, setData }) {
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">С друзьями</div>
       </div>
 
-      <div className="flex gap-1.5 mb-5">
+      <div className="flex gap-1.5 mb-5 flex-wrap">
         {TABS.map(t => (
           <button
             key={t.id}
@@ -14395,10 +14526,362 @@ function PlannerView({ data, setData }) {
         ))}
       </div>
 
-      {sub === 'events'
-        ? <PlannerEventsView data={data} setData={setData} goToFriends={() => setSub('friends')} />
-        : <PlannerFriendsView data={data} setData={setData} />}
+      {sub === 'plans'  && <PlannerPlansView data={data} setData={setData} goToEvents={() => setSub('events')} />}
+      {sub === 'events' && <PlannerEventsView data={data} setData={setData} goToFriends={() => setSub('friends')} />}
+      {sub === 'friends' && <PlannerFriendsView data={data} setData={setData} />}
     </div>
+  );
+}
+
+// ── Мои планы ──────────────────────────────────────────────────────────────
+// Календарь месяца: подтверждённые события планировщика, личные планы и
+// праздники в одном месте. Событие на несколько дней рисуется полосой,
+// растянутой по своим числам, а не точкой в каждой клетке.
+const PLANNER_HOLIDAY_EMOJI = { birthday: '🎂', anniversary: '💑', other: '🎉' };
+
+function PlannerPlansView({ data, setData, goToEvents }) {
+  const today = plannerToday();
+  const [cursor, setCursor] = useState(() => new Date(today.getFullYear(), today.getMonth(), 1));
+  const [selected, setSelected] = useState(() => plannerIso(today));
+  const [editing, setEditing] = useState(null);
+
+  const year = cursor.getFullYear();
+  const month = cursor.getMonth();
+  const todayIso = plannerIso(today);
+
+  const items = useMemo(
+    () => plannerCalendarItems(data, year),
+    [data.plannerEvents, data.plannerPlans, data.holidays, year]);
+  const weeks = useMemo(() => plannerWeeksOfMonth(year, month), [year, month]);
+
+  const savePlan = (plan) => {
+    const entry = { ...plan, title: plan.title.trim(), updatedAt: Date.now() };
+    setData(d => {
+      const list = d.plannerPlans || [];
+      const exists = list.some(p => p.id === entry.id);
+      return {
+        ...d,
+        plannerPlans: exists ? list.map(p => p.id === entry.id ? entry : p) : [...list, entry],
+      };
+    });
+    setEditing(null);
+  };
+
+  const removePlan = (plan) => {
+    if (!confirm(`Удалить план «${plan.title || 'без названия'}»?`)) return;
+    setData(d => ({
+      ...d,
+      plannerPlans: (d.plannerPlans || []).filter(p => p.id !== plan.id),
+      deletedIds: withDeletedId(d, 'plannerPlans', plan.id),
+    }));
+  };
+
+  const shiftMonth = (delta) => {
+    const next = new Date(year, month + delta, 1);
+    setCursor(next);
+    // Выделение оставляем на месте, если оно и так видно в новом месяце.
+    const sel = plannerParseDate(selected);
+    if (!sel || sel.getFullYear() !== next.getFullYear() || sel.getMonth() !== next.getMonth()) {
+      setSelected(plannerIso(new Date(next.getFullYear(), next.getMonth(), 1)));
+    }
+  };
+
+  const goToday = () => {
+    setCursor(new Date(today.getFullYear(), today.getMonth(), 1));
+    setSelected(todayIso);
+  };
+
+  const dayItems = items
+    .filter(it => it.start <= selected && it.end >= selected)
+    .sort((a, b) => {
+      const order = { holiday: 0, event: 1, plan: 2 };
+      return order[a.kind] - order[b.kind] || a.title.localeCompare(b.title);
+    });
+
+  const confirmedCount = (data.plannerEvents || []).filter(plannerEventConfirmed).length;
+  const hasEvents = (data.plannerEvents || []).length > 0;
+
+  return (
+    <div>
+      <button
+        onClick={() => setEditing(newPlannerPlan(selected))}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-4"
+      >
+        <Icon name="plus" size={18} />
+        Добавить планы
+      </button>
+
+      {hasEvents && confirmedCount === 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4 text-sm text-amber-900">
+          В календарь попадают только события со статусом «Подтверждено».
+          Отметьте нужные на вкладке «События».{' '}
+          <button onClick={goToEvents} className="underline font-medium">Перейти</button>
+        </div>
+      )}
+
+      {/* Календарь месяца */}
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-3 sm:p-4">
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <button
+            onClick={() => shiftMonth(-1)}
+            className="p-2 rounded-xl border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)]"
+            title="Предыдущий месяц"
+          >
+            <Icon name="chevronLeft" size={16} />
+          </button>
+          <div className="text-center min-w-0">
+            <div className="font-display text-lg leading-tight truncate">{PLANNER_MONTHS_NOM[month]}</div>
+            <div className="text-xs text-[var(--text-subtle)]">{year}</div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={goToday}
+              className="px-3 py-2 rounded-xl border border-[var(--border)] text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text)]"
+            >Сегодня</button>
+            <button
+              onClick={() => shiftMonth(1)}
+              className="p-2 rounded-xl border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)]"
+              title="Следующий месяц"
+            >
+              <Icon name="chevronRight" size={16} />
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-7 gap-1 mb-1">
+          {PLANNER_DOW_SHORT.map((w, i) => (
+            <div
+              key={w}
+              className={`text-center text-[11px] font-medium uppercase tracking-wide ${
+                i > 4 ? 'text-[var(--text-subtle)]' : 'text-[var(--text-muted)]'}`}
+            >{w}</div>
+          ))}
+        </div>
+
+        {weeks.map((week, wi) => {
+          const segs = plannerWeekSegments(items, week);
+          const lanes = segs.reduce((m, s) => Math.max(m, s.lane + 1), 0);
+          return (
+            <div key={wi} className="mb-1.5">
+              <div className="grid grid-cols-7 gap-1">
+                {week.map(d => {
+                  const iso = plannerIso(d);
+                  const outside = d.getMonth() !== month;
+                  const isToday = iso === todayIso;
+                  const isSelected = iso === selected;
+                  const hasHoliday = segs.some(s => s.kind === 'holiday' && s.start === iso);
+                  return (
+                    <button
+                      key={iso}
+                      onClick={() => setSelected(iso)}
+                      className={`h-9 rounded-lg text-sm font-medium transition-all border ${
+                        isSelected
+                          ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                          : isToday
+                            ? 'border-[var(--text)] text-[var(--text)]'
+                            : 'border-transparent hover:bg-black/5'
+                      } ${!isSelected && outside ? 'text-[var(--text-subtle)] opacity-60' : ''} ${
+                        !isSelected && !outside && hasHoliday ? 'text-amber-600' : ''}`}
+                    >{d.getDate()}</button>
+                  );
+                })}
+              </div>
+
+              {lanes > 0 && (
+                <div
+                  className="grid grid-cols-7 gap-x-1 mt-1"
+                  style={{ gridAutoRows: '18px', rowGap: '3px' }}
+                >
+                  {segs.map(s => {
+                    const c = PLANNER_CAL_COLORS[s.kind];
+                    return (
+                      <button
+                        key={s.key}
+                        onClick={() => setSelected(s.start > plannerIso(week[0]) ? s.start : plannerIso(week[0]))}
+                        title={s.title}
+                        className="min-w-0 flex items-center px-1.5 text-[10px] leading-none font-medium truncate text-left"
+                        style={{
+                          gridColumn: `${s.col + 1} / span ${s.span}`,
+                          gridRow: s.lane + 1,
+                          background: c.bg,
+                          color: c.text,
+                          borderLeft: s.startsHere ? `3px solid ${c.bar}` : 'none',
+                          borderTopLeftRadius: s.startsHere ? 6 : 0,
+                          borderBottomLeftRadius: s.startsHere ? 6 : 0,
+                          borderTopRightRadius: s.endsHere ? 6 : 0,
+                          borderBottomRightRadius: s.endsHere ? 6 : 0,
+                        }}
+                      >
+                        <span className="truncate">
+                          {s.kind === 'holiday' ? `${PLANNER_HOLIDAY_EMOJI[s.ref.type] || '🎉'} ` : ''}
+                          {s.startsHere ? s.title : `→ ${s.title}`}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        <div className="flex items-center gap-3 flex-wrap pt-2 mt-1 border-t border-[var(--border)] text-[11px] text-[var(--text-muted)]">
+          {['event', 'plan', 'holiday'].map(k => (
+            <span key={k} className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded" style={{ background: PLANNER_CAL_COLORS[k].bar }} />
+              {PLANNER_CAL_COLORS[k].label}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Что назначено на выбранную дату */}
+      <div className="mt-4">
+        <div className="flex items-baseline justify-between gap-3 mb-2">
+          <div className="font-display text-lg">
+            {plannerFmtDate(selected)}
+            {selected === todayIso && <span className="text-[var(--text-subtle)] text-sm font-body"> · сегодня</span>}
+          </div>
+          <button
+            onClick={() => setEditing(newPlannerPlan(selected))}
+            className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] underline flex-shrink-0"
+          >добавить план</button>
+        </div>
+
+        {dayItems.length === 0 ? (
+          <div className="bg-[var(--surface)] border border-dashed border-[var(--border-strong)] rounded-2xl p-5 text-center text-sm text-[var(--text-subtle)]">
+            На эту дату ничего не назначено
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {dayItems.map(it => {
+              const c = PLANNER_CAL_COLORS[it.kind];
+              const multi = it.start !== it.end;
+              return (
+                <div
+                  key={it.key}
+                  className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-3.5 flex items-start gap-3"
+                  style={{ borderLeft: `4px solid ${c.bar}` }}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium text-[15px] break-words">
+                        {it.kind === 'holiday' ? `${PLANNER_HOLIDAY_EMOJI[it.ref.type] || '🎉'} ` : ''}{it.title}
+                      </span>
+                      <span
+                        className="text-[10px] font-medium px-2 py-0.5 rounded-full"
+                        style={{ background: c.bg, color: c.text }}
+                      >{c.label}</span>
+                    </div>
+
+                    {it.kind === 'event' && (
+                      <div className="text-sm text-[var(--text-muted)] mt-0.5">{plannerFmtRange(it.ref)}</div>
+                    )}
+                    {it.kind === 'plan' && multi && (
+                      <div className="text-sm text-[var(--text-muted)] mt-0.5">
+                        {plannerFmtDate(it.start)} – {plannerFmtDate(it.end)}
+                      </div>
+                    )}
+                    {it.kind === 'event' && (it.ref.place || it.ref.address) && (
+                      <div className="text-sm text-[var(--text-muted)] mt-0.5 flex items-start gap-1.5">
+                        <span className="mt-0.5 flex-shrink-0 text-[var(--text-subtle)]"><Icon name="mapPin" size={13} /></span>
+                        <span className="break-words">{[it.ref.place, it.ref.address].filter(Boolean).join(' · ')}</span>
+                      </div>
+                    )}
+                    {it.ref.description && (
+                      <div className="text-sm text-[var(--text-muted)] mt-1.5 whitespace-pre-wrap break-words">
+                        {it.ref.description}
+                      </div>
+                    )}
+                  </div>
+
+                  {it.kind === 'plan' && (
+                    <div className="flex gap-1 flex-shrink-0">
+                      <button onClick={() => setEditing(it.ref)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+                        <Icon name="edit" size={15} />
+                      </button>
+                      <button onClick={() => removePlan(it.ref)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500">
+                        <Icon name="trash" size={15} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {editing && (
+        <PlannerPlanModal
+          key={editing.id}
+          initial={editing}
+          onSave={savePlan}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function PlannerPlanModal({ initial, onSave, onClose }) {
+  const [f, setF] = useState({ ...initial });
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+
+  const submit = () => {
+    if (!f.title.trim()) return alert('Введите название плана');
+    if (!f.startDate) return alert('Выберите дату начала');
+    if (f.endDate && f.endDate < f.startDate) return alert('Дата окончания раньше даты начала');
+    onSave({ ...f, endDate: f.endDate || f.startDate });
+  };
+
+  return (
+    <Modal onClose={onClose} title={initial.title ? 'План' : 'Новый план'}>
+      <div className="space-y-4">
+        <div>
+          <label>Название</label>
+          <input value={f.title} onChange={e => set('title', e.target.value)} placeholder="Например, Отпуск" autoFocus />
+        </div>
+
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <label>Дата начала</label>
+            <input
+              type="date"
+              value={f.startDate || ''}
+              onChange={e => {
+                const v = e.target.value;
+                // Пустая или «уехавшая назад» дата окончания — подтягиваем к началу.
+                setF(x => ({ ...x, startDate: v, endDate: !x.endDate || x.endDate < v ? v : x.endDate }));
+              }}
+            />
+          </div>
+          <div className="flex-1">
+            <label>Дата окончания</label>
+            <input type="date" value={f.endDate || ''} onChange={e => set('endDate', e.target.value)} />
+          </div>
+        </div>
+        <div className="text-[11px] text-[var(--text-subtle)] -mt-2">
+          План на несколько дней растянется в календаре на весь диапазон.
+        </div>
+
+        <div>
+          <label>Описание</label>
+          <textarea
+            value={f.description || ''}
+            onChange={e => set('description', e.target.value)}
+            rows={4}
+            placeholder="Детали плана — что нужно сделать, что взять с собой…"
+            style={{ resize: 'vertical' }}
+          />
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -14417,15 +14900,26 @@ function PlannerEventsView({ data, setData, goToFriends }) {
   const [editingExpense, setEditingExpense] = useState(null);
 
   const save = (ev) => {
+    const entry = { ...ev, updatedAt: Date.now() };
     setData(d => {
       const list = d.plannerEvents || [];
-      const exists = list.some(e => e.id === ev.id);
+      const exists = list.some(e => e.id === entry.id);
       return {
         ...d,
-        plannerEvents: exists ? list.map(e => e.id === ev.id ? ev : e) : [...list, ev],
+        plannerEvents: exists ? list.map(e => e.id === entry.id ? entry : e) : [...list, entry],
       };
     });
     setEditing(null);
+  };
+
+  // Подтверждение — ручное решение организатора для всего события целиком.
+  // Только подтверждённые попадают в календарь вкладки «Мои планы».
+  const toggleConfirmed = (ev) => {
+    setData(d => ({
+      ...d,
+      plannerEvents: (d.plannerEvents || []).map(e =>
+        e.id === ev.id ? { ...e, confirmed: !plannerEventConfirmed(e), updatedAt: Date.now() } : e),
+    }));
   };
 
   const remove = (ev) => {
@@ -14558,13 +15052,17 @@ function PlannerEventsView({ data, setData, goToFriends }) {
   };
 
   const FILTERS = [
-    { id: 'active', label: 'Актуальные' },
-    { id: 'past',   label: 'Прошедшие'  },
-    { id: 'all',    label: 'Все'        },
+    { id: 'active',    label: 'Актуальные'    },
+    { id: 'confirmed', label: 'Подтверждённые' },
+    { id: 'past',      label: 'Прошедшие'     },
+    { id: 'all',       label: 'Все'           },
   ];
 
   const filtered = events.filter(e =>
-    filter === 'all' ? true : filter === 'past' ? plannerIsPast(e) : !plannerIsPast(e));
+    filter === 'all' ? true
+      : filter === 'past' ? plannerIsPast(e)
+      : filter === 'confirmed' ? plannerEventConfirmed(e)
+      : !plannerIsPast(e));
 
   // Ближайшее — сверху; события без даты — в конце, прошедшие — от свежих к старым.
   const sorted = [...filtered].sort((a, b) => {
@@ -14639,6 +15137,7 @@ function PlannerEventsView({ data, setData, goToFriends }) {
               onTogglePayment={(row) => togglePayment(ev, row)}
               onToggleShare={() => toggleShare(ev)}
               onRegenerate={() => regenerateToken(ev)}
+              onToggleConfirmed={() => toggleConfirmed(ev)}
             />
           ))}
         </div>
@@ -14674,7 +15173,7 @@ function PlannerEventsView({ data, setData, goToFriends }) {
 
 function PlannerEventCard({ event: ev, friends, guests, responses, comments, expenses, payments,
                             onEdit, onDelete, onDeleteComment, onDeleteGuest, onToggleShare, onRegenerate,
-                            onAddExpense, onEditExpense, onDeleteExpense, onTogglePayment }) {
+                            onAddExpense, onEditExpense, onDeleteExpense, onTogglePayment, onToggleConfirmed }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -14693,6 +15192,7 @@ function PlannerEventCard({ event: ev, friends, guests, responses, comments, exp
   })).filter(s => s.n > 0);
 
   const shareOn = ev.shareEnabled !== false;
+  const confirmed = plannerEventConfirmed(ev);
   const url = plannerEventUrl(ev);
   const deadlineLeft = plannerDaysUntil(ev.decisionDeadline);
   const past = plannerIsPast(ev);
@@ -14736,7 +15236,22 @@ function PlannerEventCard({ event: ev, friends, guests, responses, comments, exp
         </div>
       </div>
 
-      <div className="flex items-center gap-1.5 flex-wrap mt-2.5">
+      {/* Статус события — ручной, ставит организатор. Подтверждённое событие
+          показывается в календаре на вкладке «Мои планы». */}
+      <button
+        onClick={onToggleConfirmed}
+        className={`mt-2.5 flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-full border transition-all ${
+          confirmed
+            ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+            : 'bg-[var(--bg)] border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-strong)]'
+        }`}
+        title={confirmed ? 'Снять подтверждение — событие исчезнет из календаря' : 'Подтвердить — событие появится в календаре «Мои планы»'}
+      >
+        <Icon name={confirmed ? 'check' : 'calendar'} size={13} />
+        {confirmed ? 'Подтверждено' : 'Не подтверждено'}
+      </button>
+
+      <div className="flex items-center gap-1.5 flex-wrap mt-2">
         {ev.decisionDeadline && (
           <span className={`text-xs font-medium px-2 py-1 rounded-full ${
             deadlineLeft === null ? 'bg-[var(--bg)] text-[var(--text-subtle)]' :
@@ -15095,6 +15610,17 @@ function PlannerEventModal({ initial, friends, onSave, onClose }) {
           <input type="checkbox" className="!w-auto" checked={f.shareEnabled !== false} onChange={e => set('shareEnabled', e.target.checked)} />
           <span className="text-sm font-medium normal-case tracking-normal text-[var(--text)]">Ссылка для друзей активна</span>
         </label>
+
+        <div className="border border-[var(--border)] rounded-xl p-3">
+          <label className="flex items-center gap-2 cursor-pointer !mb-0">
+            <input type="checkbox" className="!w-auto" checked={!!f.confirmed} onChange={e => set('confirmed', e.target.checked)} />
+            <span className="text-sm font-medium normal-case tracking-normal text-[var(--text)]">Подтверждено</span>
+          </label>
+          <div className="text-[11px] text-[var(--text-subtle)] mt-1.5">
+            Статус ставите вы сами, ответы друзей на него не влияют. Подтверждённое
+            событие появляется в календаре на вкладке «Мои планы».
+          </div>
+        </div>
 
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
