@@ -373,6 +373,7 @@
   <nav class="nav-tabs">
     <button class="nav-tab active" data-page="cards">🃏 Flashcards</button>
     <button class="nav-tab" data-page="fill">✍ Fill-in-the-blank</button>
+    <button class="nav-tab" data-page="mysentence">📝 My Sentence</button>
     <button class="nav-tab" data-page="typing">⌨ Typing mode</button>
   </nav>
 
@@ -523,6 +524,54 @@
             Choose a filter and word count, then click Generate.<br>
             <span style="font-size:12px;opacity:.6">AI will create gap-fill sentences for each word.</span>
           </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- PAGE: MY SENTENCE -->
+  <div class="page" id="page-mysentence">
+    <div class="layout">
+
+      <!-- LEFT: settings -->
+      <aside class="panel">
+        <h2>Settings</h2>
+
+        <div class="field">
+          <label>Word filter</label>
+          <div id="segMySentFilter" style="display:flex;flex-direction:column;gap:4px">
+            <button data-f="random" class="mysent-filter active" style="justify-content:flex-start;border-radius:9px;border:1px solid var(--accent);background:var(--accent);color:#1a1a1f">🔀 Random order</button>
+            <button data-f="oldest" class="mysent-filter" style="justify-content:flex-start;border-radius:9px;border:1px solid var(--border)">📅 Oldest first</button>
+            <button data-f="newest" class="mysent-filter" style="justify-content:flex-start;border-radius:9px;border:1px solid var(--border)">🆕 Newest first</button>
+            <button data-f="hard" class="mysent-filter" style="justify-content:flex-start;border-radius:9px;border:1px solid var(--border)">★ Hard words only</button>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Word count (0 = all)</label>
+          <input type="number" id="inpMySentCount" min="0" max="500" value="15" />
+        </div>
+
+        <div class="field">
+          <label>AI review prompt</label>
+          <textarea id="txtMySentPrompt" rows="9" style="width:100%;background:var(--bg-2);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:9px;font-family:inherit;font-size:12.5px;line-height:1.5;resize:vertical"></textarea>
+          <div class="hint">Placeholders: <code>{word}</code>, <code>{translation}</code>, <code>{sentence}</code></div>
+          <button id="btnMySentResetPrompt" class="ghost" style="margin-top:8px;width:100%;justify-content:center">↺ Reset to default</button>
+        </div>
+
+        <div class="field" style="margin-top:6px">
+          <button id="btnMySentStart" class="primary" style="width:100%;justify-content:center;padding:13px">▶ Start</button>
+        </div>
+
+        <div id="mySentMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim);margin-top:10px;text-align:center"></div>
+      </aside>
+
+      <!-- RIGHT: card -->
+      <div id="mySentMain">
+        <div class="gen-status">
+          Choose a filter and click Start.<br>
+          <span style="font-size:12px;opacity:.6">Write your own sentence with the shown word, get AI feedback, then say the word out loud.</span>
         </div>
       </div>
 
@@ -922,6 +971,7 @@ $('btnStart').onclick = () => {
   };
   setStatus('ok', `Session: ${pool.length} cards`);
   renderCard();
+  prefetchSentences(S.session.queue); // background, non-blocking — never awaited during study
 };
 
 function inferYearFromData(){
@@ -1022,10 +1072,11 @@ function renderCard(){
     }
     sentenceHtml = `<div class="sentence">${escapeHtml(s)}</div>`;
   }
-  let backSentenceHtml = '';
-  if(S.settings.sentence && w.sentence){
-    backSentenceHtml = `<div class="sentence">${highlight(w.sentence, w.en)}</div>`;
-  }
+  const backSentenceHtml = getBackSentenceHtml(w);
+
+  const pendingSent = (S.settings.sentence && isAIConfigured())
+    ? sess.queue.concat(sess.again).filter(x => !getCachedSentence(x.en)).length
+    : 0;
 
   let synHtml = '';
   if(S.settings.synonyms && w.syn){
@@ -1060,6 +1111,7 @@ function renderCard(){
       <div class="stat" style="color:var(--accent)">hard<b>${sess.stats.hard}</b></div>
       <div class="stat green">good<b>${sess.stats.good + sess.stats.easy}</b></div>
       <div class="stat">queue<b>${sess.again.length}</b></div>
+      ${pendingSent > 0 ? `<div class="stat" style="color:var(--accent)" title="Example sentences still generating in the background">examples<b>⏳ ${pendingSent}</b></div>` : ''}
     </div>
 
     <div class="card-wrap">
@@ -1075,8 +1127,7 @@ function renderCard(){
           <div class="label">${backLabel}</div>
           <button class="hard-toggle ${hardBtnClass}" data-hard-toggle title="Toggle hard (H)">${hardBtnLabel}</button>
           <div class="word">${escapeHtml(back)}</div>
-          ${dir==='en-ru' ? '' : sentenceHtml}
-          ${dir==='ru-en' && S.settings.sentence && w.sentence ? backSentenceHtml : ''}
+          ${backSentenceHtml}
           ${synHtml}
           <div class="flip-hint">rate below · 1-4</div>
         </div>
@@ -1317,6 +1368,10 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
       const count = S.rawData.length;
       $('typingMeta').textContent = `${count} words available`;
     }
+    if(tab.dataset.page === 'mysentence' && S.rawData) {
+      const count = S.rawData.length;
+      $('mySentMeta').textContent = `${count} words available`;
+    }
   };
 });
 
@@ -1424,6 +1479,100 @@ async function callAI(prompt){
     return d.response || '';
   }
   throw new Error('Unknown AI provider');
+}
+
+function isAIConfigured(){
+  if(AI.provider === 'anthropic') return !!AI.anthropicKey;
+  if(AI.provider === 'openai') return !!AI.openaiKey;
+  if(AI.provider === 'ollama') return !!AI.ollamaUrl;
+  return false;
+}
+
+/* ============== EXAMPLE SENTENCE CACHE (for Flashcards back face) ==============
+   Generation is slow (AI round-trip), so we never generate on-demand while a card
+   is on screen. Instead, the moment a study session starts we kick off a background
+   batch job for every word that doesn't have a cached sentence yet. Results are
+   cached permanently (by word, in localStorage), so a word only ever needs to be
+   generated once across all future sessions. */
+const SENT_CACHE_KEY = 'eng_ai_sentence_cache_v1';
+let SENT_CACHE = JSON.parse(localStorage.getItem(SENT_CACHE_KEY) || '{}');
+
+function sentKey(en){ return String(en||'').trim().toLowerCase(); }
+function getCachedSentence(en){ return SENT_CACHE[sentKey(en)] || null; }
+function saveSentCache(){ localStorage.setItem(SENT_CACHE_KEY, JSON.stringify(SENT_CACHE)); }
+
+async function prefetchSentences(words){
+  if(!isAIConfigured() || !S.settings.sentence) return;
+  const seen = new Set();
+  const need = [];
+  for(const w of words){
+    const k = sentKey(w.en);
+    if(w.en && !SENT_CACHE[k] && !seen.has(k)){ need.push(w); seen.add(k); }
+  }
+  if(!need.length) return;
+  const CHUNK = 15;
+  for(let i=0;i<need.length;i+=CHUNK){
+    await generateSentenceChunk(need.slice(i, i+CHUNK));
+  }
+}
+
+async function generateSentenceChunk(chunk){
+  const wordList = chunk.map(w => `- "${w.en}" (${w.ru})`).join('\n');
+  const prompt = `You are an English teacher. For each word below, write ONE natural, memorable example sentence (B1-B2 level) that clearly demonstrates the word's meaning in context.
+
+Rules:
+- The target word (or its natural inflected form) must appear exactly once in the sentence
+- Keep each sentence under 16 words
+- Do not add explanations, just the sentence
+- Return ONLY a valid JSON array, no markdown, no backticks
+
+Words:
+${wordList}
+
+Return format (strict JSON array):
+[
+  {"word": "word1", "sentence": "Example sentence with word1."}
+]`;
+  try {
+    const raw = await callAI(prompt);
+    const jsonMatch = raw.match(/\[[\s\S]*\]/);
+    if(!jsonMatch) return;
+    const items = JSON.parse(jsonMatch[0]);
+    let changed = false;
+    for(const item of items){
+      const wordObj = chunk.find(w => w.en.toLowerCase() === String(item.word||'').toLowerCase());
+      if(wordObj && item.sentence){
+        SENT_CACHE[sentKey(wordObj.en)] = item.sentence;
+        changed = true;
+      }
+    }
+    if(changed){ saveSentCache(); refreshSentenceUI(); }
+  } catch(e){
+    console.warn('Sentence prefetch chunk failed:', e.message);
+  }
+}
+
+// Live-patch a "generating..." placeholder if the word it belongs to is still on screen,
+// without a full re-render (which would restart the flip animation).
+function refreshSentenceUI(){
+  const sess = S.session;
+  if(!sess) return;
+  const w = sess.queue[sess.cur];
+  if(!w) return;
+  const cached = getCachedSentence(w.en);
+  const pending = document.getElementById('sentPending');
+  if(cached && pending){
+    pending.outerHTML = `<div class="sentence">${highlight(cached, w.en)}</div>`;
+  }
+}
+
+function getBackSentenceHtml(w){
+  if(!S.settings.sentence) return '';
+  const cached = getCachedSentence(w.en);
+  if(cached) return `<div class="sentence">${highlight(cached, w.en)}</div>`;
+  if(isAIConfigured()) return `<div class="sentence" id="sentPending" style="opacity:.55">⏳ example sentence is being generated…</div>`;
+  if(w.sentence) return `<div class="sentence">${highlight(w.sentence, w.en)}</div>`;
+  return '';
 }
 
 /* ============== FILL-IN-THE-BLANK ============== */
@@ -1658,6 +1807,185 @@ function levenshtein(a, b){
 
 // init fill if data already loaded
 if(S.rawData) setTimeout(fillInit, 100);
+
+/* ============== MY SENTENCE (write your own example + say it out loud) ============== */
+const MYSENT_DEFAULT_PROMPT = `You are a friendly, encouraging English teacher. The student was given the word "{word}" (translation: "{translation}") and wrote their own example sentence with it:
+
+"{sentence}"
+
+Review it and reply in Russian, briefly (3-5 sentences):
+1. Is the word used correctly (meaning + grammar)? If there are mistakes, point them out and give a corrected version.
+2. If the sentence is good, say so and optionally suggest a more natural/advanced alternative.
+Be warm and concise, no markdown, no headers.`;
+
+const MYSENT = {
+  filter: 'random', count: 15,
+  prompt: localStorage.getItem('eng_mysentence_prompt') || MYSENT_DEFAULT_PROMPT,
+  queue: [], cur: 0,
+  stats: { done: 0 }
+};
+
+document.querySelectorAll('.mysent-filter').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('.mysent-filter').forEach(x => {
+      x.classList.remove('active');
+      x.style.background = ''; x.style.color = ''; x.style.borderColor = 'var(--border)';
+    });
+    b.classList.add('active');
+    b.style.background = 'var(--accent)'; b.style.color = '#1a1a1f'; b.style.borderColor = 'var(--accent)';
+    MYSENT.filter = b.dataset.f;
+  };
+});
+
+$('inpMySentCount').oninput = e => { MYSENT.count = parseInt(e.target.value) || 0; };
+
+$('txtMySentPrompt').value = MYSENT.prompt;
+$('txtMySentPrompt').oninput = e => {
+  MYSENT.prompt = e.target.value;
+  localStorage.setItem('eng_mysentence_prompt', MYSENT.prompt);
+};
+$('btnMySentResetPrompt').onclick = () => {
+  MYSENT.prompt = MYSENT_DEFAULT_PROMPT;
+  $('txtMySentPrompt').value = MYSENT_DEFAULT_PROMPT;
+  localStorage.setItem('eng_mysentence_prompt', MYSENT_DEFAULT_PROMPT);
+};
+
+$('btnMySentStart').onclick = () => {
+  if(!S.rawData){ alert('Load data from spreadsheet first'); return; }
+  let pool = S.rawData.slice();
+  if(MYSENT.filter === 'hard') pool = pool.filter(w => w.hard);
+  else if(MYSENT.filter === 'oldest') pool.sort((a,b) => (parseDate(a.date)?.getTime()||0)-(parseDate(b.date)?.getTime()||0));
+  else if(MYSENT.filter === 'newest') pool.sort((a,b) => (parseDate(b.date)?.getTime()||0)-(parseDate(a.date)?.getTime()||0));
+  else pool.sort(() => Math.random()-.5);
+
+  const count = MYSENT.count > 0 ? Math.min(MYSENT.count, pool.length) : pool.length;
+  MYSENT.queue = pool.slice(0, count);
+  MYSENT.cur = 0;
+  MYSENT.stats = { done: 0 };
+  if(!MYSENT.queue.length){ alert('No words match this filter'); return; }
+  mySentRenderCard();
+};
+
+function mySentRenderCard(){
+  const main = $('mySentMain');
+  const q = MYSENT.queue;
+  if(MYSENT.cur >= q.length){ mySentRenderFinish(); return; }
+
+  const w = q[MYSENT.cur];
+  const total = q.length, idx = MYSENT.cur + 1;
+  const pct = Math.round((MYSENT.cur / total) * 100);
+  const s = MYSENT.stats;
+
+  main.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:14px">
+
+      <div class="progress-bar"><div style="width:${pct}%"></div></div>
+
+      <div class="stats-row">
+        <div class="stat">card<b>${idx}/${total}</b></div>
+        <div class="stat green">done<b>${s.done}</b></div>
+      </div>
+
+      <div class="panel" style="text-align:center;padding:34px 32px">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.15em;margin-bottom:16px">write your own sentence with</div>
+        <div style="font-family:'Fraunces',serif;font-size:clamp(28px,4vw,48px);font-weight:700;line-height:1.1;margin-bottom:8px">${escapeHtml(w.en)}</div>
+        <div style="font-size:14px;color:var(--text-dim)">${escapeHtml(w.ru)}</div>
+        ${w.syn ? `<div style="font-size:12px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;margin-top:6px">syn: ${escapeHtml(w.syn)}</div>` : ''}
+      </div>
+
+      <div class="field" style="margin:0">
+        <label>Your sentence</label>
+        <textarea id="mySentInput" rows="3" placeholder="Type a sentence using the word above..."
+          style="width:100%;background:var(--bg-2);border:1px solid var(--border);color:var(--text);padding:12px 14px;border-radius:10px;font-family:inherit;font-size:15px;line-height:1.5;resize:vertical"></textarea>
+      </div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button id="mySentCheck" class="primary" style="padding:12px 22px">Check</button>
+        <button id="mySentSkip" style="padding:12px 16px">Skip →</button>
+      </div>
+
+      <div id="mySentFeedback" style="display:none"></div>
+
+      <div id="mySentSayBox" style="display:none;padding:16px 18px;background:rgba(240,193,75,.08);border:1px solid rgba(240,193,75,.3);border-radius:12px">
+        <div style="display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap">
+          <div style="font-size:13.5px">🔊 <b>Say the word out loud:</b> "${escapeHtml(w.en)}"</div>
+          <button id="mySentPlay" style="padding:8px 14px;font-size:12.5px">▶ Play pronunciation</button>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="mySentSaidCb" style="width:16px;height:16px;cursor:pointer" />
+          I said the word out loud
+        </label>
+      </div>
+
+      <div id="mySentNext" style="display:none">
+        <button id="btnMySentNext" class="primary" style="width:100%;padding:13px;justify-content:center" disabled>Next word →</button>
+      </div>
+
+    </div>
+  `;
+
+  const ta = $('mySentInput');
+  ta.focus();
+  ta.onkeydown = e => { if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)) mySentCheck(); };
+  $('mySentCheck').onclick = mySentCheck;
+  $('mySentSkip').onclick = () => { MYSENT.cur++; mySentRenderCard(); };
+}
+
+async function mySentCheck(){
+  const ta = $('mySentInput');
+  const fb = $('mySentFeedback');
+  if(!ta) return;
+  const val = ta.value.trim();
+  if(!val){ ta.focus(); return; }
+
+  const w = MYSENT.queue[MYSENT.cur];
+
+  $('mySentCheck').disabled = true;
+  $('mySentSkip').disabled = true;
+  ta.disabled = true;
+
+  fb.style.display = 'block';
+  fb.innerHTML = `<div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 20px"><div style="font-size:13px;color:var(--text-dim)">⏳ AI is reviewing your sentence...</div></div>`;
+
+  let comment = '';
+  try {
+    const prompt = MYSENT.prompt
+      .replaceAll('{word}', w.en)
+      .replaceAll('{translation}', w.ru)
+      .replaceAll('{sentence}', val);
+    comment = await callAI(prompt);
+  } catch(e) {
+    comment = '(AI unavailable: ' + e.message + ')';
+  }
+
+  fb.innerHTML = `<div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 20px;font-size:13.5px;line-height:1.6;white-space:pre-wrap">${escapeHtml(comment)}</div>`;
+
+  MYSENT.stats.done++;
+
+  const sayBox = $('mySentSayBox');
+  sayBox.style.display = 'block';
+  $('mySentPlay').onclick = () => speak(w.en);
+
+  const saidCb = $('mySentSaidCb');
+  const nextBlock = $('mySentNext');
+  const nextBtn = $('btnMySentNext');
+  nextBlock.style.display = 'block';
+  saidCb.onchange = () => { nextBtn.disabled = !saidCb.checked; };
+  nextBtn.onclick = () => { MYSENT.cur++; mySentRenderCard(); };
+}
+
+function mySentRenderFinish(){
+  const s = MYSENT.stats;
+  $('mySentMain').innerHTML = `
+    <div class="finish">
+      <div class="big">✓</div>
+      <h3>Custom sentences complete</h3>
+      <p>You wrote and reviewed ${s.done} sentence(s) — well done.</p>
+      <button class="primary" onclick="$('btnMySentStart').click()">↻ Repeat</button>
+    </div>
+  `;
+}
+
 /* ============== TYPING MODE ============== */
 const TYPING = {
   filter: 'random', count: 20, aiMode: 'always',
