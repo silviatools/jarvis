@@ -1134,18 +1134,28 @@ const PATH_TAB_MAP = {
   '/weather': 'weather',
   '/house': 'house',
   '/cars': 'cars',
-  '/holidays': 'holidays',
+  // Праздники переехали вкладкой внутрь планировщика, но старый адрес живой:
+  // он открывает раздел сразу на этой вкладке (см. PLANNER_SUB_BY_PATH).
+  '/holidays': 'planner',
   '/planner': 'planner',
   '/settings': 'settings',
 };
+// Порядок важен: '/planner' идёт последним, поэтому обратная карта ведёт
+// планировщик на '/planner', а не на '/holidays'.
 const TAB_PATH_MAP = Object.fromEntries(Object.entries(PATH_TAB_MAP).map(([p, t]) => [t, p]));
 
-const getTabFromPath = () => {
+const PLANNER_SUB_BY_PATH = { '/holidays': 'holidays' };
+const PLANNER_PATH_BY_SUB = { holidays: '/holidays' };
+
+const currentPathname = () => {
   try {
-    const path = window.location.pathname.replace(/\/+$/, '') || '/';
-    return PATH_TAB_MAP[path] || 'home';
-  } catch { return 'home'; }
+    return window.location.pathname.replace(/\/+$/, '') || '/';
+  } catch { return '/'; }
 };
+
+const getTabFromPath = () => PATH_TAB_MAP[currentPathname()] || 'home';
+
+const getPlannerSubFromPath = () => PLANNER_SUB_BY_PATH[currentPathname()] || 'plans';
 
 function App() {
   const [data, setRawData] = useState(loadData());
@@ -1158,6 +1168,7 @@ function App() {
     });
   }, []);
   const [tab, setTab] = useState(getTabFromPath); // home | supplements | meals | weather | house | settings
+  const [plannerTab, setPlannerTab] = useState(getPlannerSubFromPath); // plans | holidays | events | friends
   const [settingsTab, setSettingsTab] = useState('general');
   const [houseTab, setHouseTab] = useState('boss');
   const [mealTab, setMealTab] = useState('plan');
@@ -1296,8 +1307,9 @@ function App() {
   // driven changes must NOT push again or Back would be undone immediately.
   const navFromPopstate = React.useRef(false);
   useEffect(() => {
-    const path = TAB_PATH_MAP[tab] || '/';
-    const currentPath = window.location.pathname.replace(/\/+$/, '') || '/';
+    const path = (tab === 'planner' && PLANNER_PATH_BY_SUB[plannerTab])
+      || TAB_PATH_MAP[tab] || '/';
+    const currentPath = currentPathname();
     if (currentPath !== path) {
       if (navFromPopstate.current) {
         window.history.replaceState(null, '', path);
@@ -1306,10 +1318,14 @@ function App() {
       }
     }
     navFromPopstate.current = false;
-  }, [tab]);
+  }, [tab, plannerTab]);
 
   useEffect(() => {
-    const onPopState = () => { navFromPopstate.current = true; setTab(getTabFromPath()); };
+    const onPopState = () => {
+      navFromPopstate.current = true;
+      setTab(getTabFromPath());
+      setPlannerTab(getPlannerSubFromPath());
+    };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
@@ -1406,8 +1422,9 @@ function App() {
           {tab === 'weather' && <WeatherView settings={data.settings} />}
           {tab === 'body' && <BodyView data={data} setData={setData} />}
           {tab === 'cars' && <CarsView data={data} setData={setData} />}
-          {tab === 'holidays' && <HolidaysView data={data} setData={setData} />}
-          {tab === 'planner' && <PlannerView data={data} setData={setData} />}
+          {tab === 'planner' && (
+            <PlannerView data={data} setData={setData} sub={plannerTab} setSub={setPlannerTab} />
+          )}
           {tab === 'settings' && (
             <SettingsView
               data={data}
@@ -1439,7 +1456,7 @@ function Header({ tab, setTab }) {
   const moreItems = [
     { id: 'body',     icon: 'user',     label: 'Моё тело'      },
     { id: 'cars',     icon: 'car',      label: 'Автомобили'    },
-    { id: 'holidays', icon: 'gift',     label: 'Праздники'     },
+    // «Праздники» отдельным разделом больше нет — это вкладка планировщика.
     { id: 'planner',  icon: 'calendar', label: 'Планировщик'   },
     { id: 'budget',   icon: 'wallet',   label: 'Бюджет'        },
     { id: 'english',  icon: 'book',     label: 'English'       },
@@ -1526,7 +1543,7 @@ function BottomNav({ tab, setTab }) {
   const moreItems = [
     { id: 'body',     icon: 'user',     label: 'Моё тело'      },
     { id: 'cars',     icon: 'car',      label: 'Автомобили'    },
-    { id: 'holidays', icon: 'gift',     label: 'Праздники'     },
+    // «Праздники» отдельным разделом больше нет — это вкладка планировщика.
     { id: 'planner',  icon: 'calendar', label: 'Планировщик'   },
     { id: 'budget',   icon: 'wallet',   label: 'Бюджет'        },
     { id: 'english',  icon: 'book',     label: 'English'       },
@@ -9674,7 +9691,9 @@ const getAge = (dateStr, birthYear) => {
   return birthdayThisYear <= today ? age : age - 1;
 };
 
-function HolidaysView({ data, setData }) {
+// embedded — раздел показан вкладкой внутри «Планировщика дел»: свой
+// крупный заголовок там не нужен, его роль играет заголовок планировщика.
+function HolidaysView({ data, setData, embedded }) {
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState('all');
   const [sortBy, setSortBy] = useState('days');
@@ -9731,11 +9750,13 @@ function HolidaysView({ data, setData }) {
   );
 
   return (
-    <div className="fade-in">
-      <div className="mb-6 flex items-baseline justify-between gap-4">
-        <div className="font-display text-2xl">Праздники</div>
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">События</div>
-      </div>
+    <div className={embedded ? '' : 'fade-in'}>
+      {!embedded && (
+        <div className="mb-6 flex items-baseline justify-between gap-4">
+          <div className="font-display text-2xl">Праздники</div>
+          <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">События</div>
+        </div>
+      )}
 
       <button onClick={newHoliday} className="btn-primary w-full flex items-center justify-center gap-2 mb-4">
         <Icon name="plus" size={18} />
@@ -14493,20 +14514,21 @@ const plannerWeekSegments = (items, week) => {
   });
 };
 
-function PlannerView({ data, setData }) {
-  const [sub, setSub] = useState('plans');
-
+// sub/setSub живут в App: вкладка «Праздники» — это ещё и адрес /holidays,
+// поэтому активная вкладка должна попадать в URL наравне с разделом.
+function PlannerView({ data, setData, sub, setSub }) {
   const TABS = [
-    { id: 'plans',   label: 'Мои планы', icon: 'calendar' },
-    { id: 'events',  label: 'События',   icon: 'star'     },
-    { id: 'friends', label: 'Друзья',    icon: 'users'    },
+    { id: 'plans',    label: 'Мои планы', icon: 'calendar' },
+    { id: 'holidays', label: 'Праздники', icon: 'gift'     },
+    { id: 'events',   label: 'События',   icon: 'star'     },
+    { id: 'friends',  label: 'Друзья',    icon: 'users'    },
   ];
 
   return (
     <div className="fade-in">
       <div className="mb-5 flex items-baseline justify-between gap-4">
         <div className="font-display text-2xl">Планировщик дел</div>
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">С друзьями</div>
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">Календарь</div>
       </div>
 
       <div className="flex gap-1.5 mb-5 flex-wrap">
@@ -14526,9 +14548,10 @@ function PlannerView({ data, setData }) {
         ))}
       </div>
 
-      {sub === 'plans'  && <PlannerPlansView data={data} setData={setData} goToEvents={() => setSub('events')} />}
-      {sub === 'events' && <PlannerEventsView data={data} setData={setData} goToFriends={() => setSub('friends')} />}
-      {sub === 'friends' && <PlannerFriendsView data={data} setData={setData} />}
+      {sub === 'plans'    && <PlannerPlansView data={data} setData={setData} goToEvents={() => setSub('events')} />}
+      {sub === 'holidays' && <HolidaysView data={data} setData={setData} embedded />}
+      {sub === 'events'   && <PlannerEventsView data={data} setData={setData} goToFriends={() => setSub('friends')} />}
+      {sub === 'friends'  && <PlannerFriendsView data={data} setData={setData} />}
     </div>
   );
 }
@@ -14555,7 +14578,8 @@ function PlannerPlansView({ data, setData, goToEvents }) {
   const weeks = useMemo(() => plannerWeeksOfMonth(year, month), [year, month]);
 
   const savePlan = (plan) => {
-    const entry = { ...plan, title: plan.title.trim(), updatedAt: Date.now() };
+    // updatedAt проставит setData (stampUpdatedAt) — руками не нужно.
+    const entry = { ...plan, title: plan.title.trim() };
     setData(d => {
       const list = d.plannerPlans || [];
       const exists = list.some(p => p.id === entry.id);
@@ -14900,13 +14924,12 @@ function PlannerEventsView({ data, setData, goToFriends }) {
   const [editingExpense, setEditingExpense] = useState(null);
 
   const save = (ev) => {
-    const entry = { ...ev, updatedAt: Date.now() };
     setData(d => {
       const list = d.plannerEvents || [];
-      const exists = list.some(e => e.id === entry.id);
+      const exists = list.some(e => e.id === ev.id);
       return {
         ...d,
-        plannerEvents: exists ? list.map(e => e.id === entry.id ? entry : e) : [...list, entry],
+        plannerEvents: exists ? list.map(e => e.id === ev.id ? ev : e) : [...list, ev],
       };
     });
     setEditing(null);
@@ -14918,7 +14941,7 @@ function PlannerEventsView({ data, setData, goToFriends }) {
     setData(d => ({
       ...d,
       plannerEvents: (d.plannerEvents || []).map(e =>
-        e.id === ev.id ? { ...e, confirmed: !plannerEventConfirmed(e), updatedAt: Date.now() } : e),
+        e.id === ev.id ? { ...e, confirmed: !plannerEventConfirmed(e) } : e),
     }));
   };
 
