@@ -6603,7 +6603,7 @@ class EngErrorBoundary extends React.Component {
     if(this.state.err) return(
       <div className="max-w-2xl mx-auto px-4 pt-10">
         <div className="bg-red-50 border border-red-200 rounded-2xl p-6">
-          <div className="font-semibold text-red-700 mb-2">Ошибка в разделе English</div>
+          <div className="font-semibold text-red-700 mb-2">Error in the English section</div>
           <pre className="text-xs text-red-600 whitespace-pre-wrap break-all">{this.state.err.toString()}{'\n'}{this.state.err.stack}</pre>
         </div>
       </div>
@@ -6643,13 +6643,13 @@ function engHighlight(sentence,word){
 }
 async function engCallAI(ai,prompt){
   if(ai.provider==='anthropic'){
-    if(!ai.anthropicKey) throw new Error('Нет Anthropic API ключа');
+    if(!ai.anthropicKey) throw new Error('No Anthropic API key');
     const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':ai.anthropicKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:ai.anthropicModel,max_tokens:1500,messages:[{role:'user',content:prompt}]})});
     if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'HTTP '+r.status);}
     return(await r.json()).content?.[0]?.text||'';
   }
   if(ai.provider==='openai'){
-    if(!ai.openaiKey) throw new Error('Нет OpenAI API ключа');
+    if(!ai.openaiKey) throw new Error('No OpenAI API key');
     const r=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+ai.openaiKey},body:JSON.stringify({model:ai.openaiModel,max_tokens:1500,messages:[{role:'user',content:prompt}]})});
     if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'HTTP '+r.status);}
     return(await r.json()).choices?.[0]?.message?.content||'';
@@ -6709,11 +6709,11 @@ function EngCfgModal({cfg,onSave,onClose}){
   return(
     <Modal onClose={onClose} title="Google Sheets">
       <div className="space-y-4">
-        <div><label>API Key (чтение)</label><input type="password" value={f.apiKey} onChange={e=>setF(x=>({...x,apiKey:e.target.value}))} placeholder="AIzaSy..."/></div>
-        <div><label>OAuth Client ID (запись, необязательно)</label><input value={f.clientId} onChange={e=>setF(x=>({...x,clientId:e.target.value}))} placeholder="...apps.googleusercontent.com"/></div>
-        <div><label>Spreadsheet ID</label><input value={f.sheetId} onChange={e=>setF(x=>({...x,sheetId:e.target.value}))}/><p className="text-xs text-[var(--text-subtle)] mt-1">ID в URL: spreadsheets/d/<b>ID</b>/edit</p></div>
-        <div><label>Название листа</label><input value={f.sheetName} onChange={e=>setF(x=>({...x,sheetName:e.target.value}))}/></div>
-        <div className="flex gap-3 pt-2"><button onClick={onClose} className="btn-secondary flex-1">Отмена</button><button onClick={()=>onSave(f)} className="btn-primary flex-1">Сохранить</button></div>
+        <div><label>API Key (read)</label><input type="password" value={f.apiKey} onChange={e=>setF(x=>({...x,apiKey:e.target.value}))} placeholder="AIzaSy..."/></div>
+        <div><label>OAuth Client ID (write, optional)</label><input value={f.clientId} onChange={e=>setF(x=>({...x,clientId:e.target.value}))} placeholder="...apps.googleusercontent.com"/></div>
+        <div><label>Spreadsheet ID</label><input value={f.sheetId} onChange={e=>setF(x=>({...x,sheetId:e.target.value}))}/><p className="text-xs text-[var(--text-subtle)] mt-1">ID found in the URL: spreadsheets/d/<b>ID</b>/edit</p></div>
+        <div><label>Sheet name</label><input value={f.sheetName} onChange={e=>setF(x=>({...x,sheetName:e.target.value}))}/></div>
+        <div className="flex gap-3 pt-2"><button onClick={onClose} className="btn-secondary flex-1">Cancel</button><button onClick={()=>onSave(f)} className="btn-primary flex-1">Save</button></div>
       </div>
     </Modal>
   );
@@ -6735,30 +6735,30 @@ function EngAIModal({ai,onSave,onClose}){
         </div>
         {f.provider==='anthropic'&&<>
           <div><label>API Key</label><input type="password" value={f.anthropicKey} onChange={e=>setF(x=>({...x,anthropicKey:e.target.value}))} placeholder="sk-ant-..."/></div>
-          <div><label>Модель</label><select value={f.anthropicModel} onChange={e=>setF(x=>({...x,anthropicModel:e.target.value}))}>
-            <option value="claude-opus-4-5">claude-opus-4-5 (мощный)</option>
-            <option value="claude-sonnet-4-6">claude-sonnet-4-6 (рекомендуется)</option>
-            <option value="claude-haiku-4-5-20251001">claude-haiku-4-5 (быстрый)</option>
+          <div><label>Model</label><select value={f.anthropicModel} onChange={e=>setF(x=>({...x,anthropicModel:e.target.value}))}>
+            <option value="claude-opus-4-5">claude-opus-4-5 (most powerful)</option>
+            <option value="claude-sonnet-4-6">claude-sonnet-4-6 (recommended)</option>
+            <option value="claude-haiku-4-5-20251001">claude-haiku-4-5 (fast)</option>
           </select></div>
         </>}
         {f.provider==='openai'&&<>
           <div><label>API Key</label><input type="password" value={f.openaiKey} onChange={e=>setF(x=>({...x,openaiKey:e.target.value}))} placeholder="sk-..."/></div>
-          <div><label>Модель</label><select value={f.openaiModel} onChange={e=>setF(x=>({...x,openaiModel:e.target.value}))}>
+          <div><label>Model</label><select value={f.openaiModel} onChange={e=>setF(x=>({...x,openaiModel:e.target.value}))}>
             <option value="gpt-4.1">gpt-4.1</option><option value="gpt-4o">gpt-4o</option><option value="gpt-4o-mini">gpt-4o-mini</option>
           </select></div>
         </>}
         {f.provider==='ollama'&&<>
           <div><label>Ollama URL</label><input value={f.ollamaUrl} onChange={e=>setF(x=>({...x,ollamaUrl:e.target.value}))}/></div>
-          <div><label>Модель</label><input value={f.ollamaModel} onChange={e=>setF(x=>({...x,ollamaModel:e.target.value}))} placeholder="llama3"/></div>
+          <div><label>Model</label><input value={f.ollamaModel} onChange={e=>setF(x=>({...x,ollamaModel:e.target.value}))} placeholder="llama3"/></div>
         </>}
-        <div className="flex gap-3 pt-2"><button onClick={onClose} className="btn-secondary flex-1">Отмена</button><button onClick={()=>onSave(f)} className="btn-primary flex-1">Сохранить</button></div>
+        <div className="flex gap-3 pt-2"><button onClick={onClose} className="btn-secondary flex-1">Cancel</button><button onClick={()=>onSave(f)} className="btn-primary flex-1">Save</button></div>
       </div>
     </Modal>
   );
 }
 
-// План обучения: заметка в БД. При sync с другого устройства — LWW по updatedAt;
-// если правили одновременно, показываем баннер и даём подтянуть чужую версию.
+// Study plan: a note in the DB. On sync from another device — LWW by updatedAt;
+// if both edited concurrently, show a banner and let the user pull the other version.
 function EngStudyPlanModal({ plan, onSave, onClose }) {
   const remoteText = (plan && typeof plan.text === 'string') ? plan.text : '';
   const remoteTs = (plan && typeof plan.updatedAt === 'number') ? plan.updatedAt : 0;
@@ -6795,43 +6795,43 @@ function EngStudyPlanModal({ plan, onSave, onClose }) {
 
   const handleSave = () => {
     if (conflict && remoteTs > baseTs) {
-      if (!confirm('На другом устройстве план уже изменили. Сохранить вашу версию поверх?')) return;
+      if (!confirm('The plan was already changed on another device. Save your version over it?')) return;
     }
     onSave({ text, updatedAt: Date.now() });
   };
 
   const savedLabel = remoteTs
-    ? new Date(remoteTs).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+    ? new Date(remoteTs).toLocaleString('en-US', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
     : null;
 
   return (
-    <Modal onClose={onClose} title="План обучения" wide>
+    <Modal onClose={onClose} title="Study Plan" wide>
       <div className="space-y-4">
         {conflict && (
           <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-sm text-amber-900 flex flex-col sm:flex-row sm:items-center gap-2 justify-between">
-            <span>План обновили на другом устройстве, пока вы редактировали.</span>
+            <span>The plan was updated on another device while you were editing.</span>
             <button type="button" onClick={acceptRemote} className="btn-secondary text-xs py-1.5 px-3 whitespace-nowrap">
-              Загрузить их версию
+              Load their version
             </button>
           </div>
         )}
         <div>
-          <label>Заметка</label>
+          <label>Note</label>
           <textarea
             value={text}
             onChange={e => setText(e.target.value)}
             rows={14}
-            placeholder="Произвольный план: темы, расписание, цели…"
+            placeholder="Freeform plan: topics, schedule, goals…"
             style={{ resize: 'vertical', minHeight: '220px', fontFamily: 'inherit' }}
             className="w-full"
           />
           {savedLabel && (
-            <p className="text-xs text-[var(--text-subtle)] mt-1.5">Последнее сохранение: {savedLabel}</p>
+            <p className="text-xs text-[var(--text-subtle)] mt-1.5">Last saved: {savedLabel}</p>
           )}
         </div>
         <div className="flex gap-3 pt-1">
-          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
-          <button onClick={handleSave} className="btn-primary flex-1">Сохранить</button>
+          <button onClick={onClose} className="btn-secondary flex-1">Cancel</button>
+          <button onClick={handleSave} className="btn-primary flex-1">Save</button>
         </div>
       </div>
     </Modal>
@@ -6848,27 +6848,27 @@ const ENG_CARD_S={
 function EngSyncBtn({cfg,toMark,toUnmark,rawData,tcRef,atRef}){
   const [st,setSt]=useState('idle');const [msg,setMsg]=useState('');
   const sync=async()=>{
-    if(!cfg.clientId){alert('OAuth Client ID не настроен в ⚙ настройках');return;}
-    setSt('loading');setMsg('Авторизация...');
+    if(!cfg.clientId){alert('OAuth Client ID is not set in ⚙ Settings');return;}
+    setSt('loading');setMsg('Authorizing...');
     const doSync=async()=>{
       try{
-        setMsg('Запись...');
+        setMsg('Writing...');
         const data=[...toMark.map(i=>({range:`${cfg.sheetName}!I${i}`,values:[[true]]})),...toUnmark.map(i=>({range:`${cfg.sheetName}!I${i}`,values:[[false]]}))];
         const r=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values:batchUpdate`,{method:'POST',headers:{'Authorization':'Bearer '+atRef.current,'Content-Type':'application/json'},body:JSON.stringify({valueInputOption:'USER_ENTERED',data})});
         if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'HTTP '+r.status);}
-        setSt('done');setMsg(`✓ ${toMark.length?'+'+toMark.length+' помечено':''}${toUnmark.length?' −'+toUnmark.length+' снято':''}`);
+        setSt('done');setMsg(`✓ ${toMark.length?'+'+toMark.length+' marked':''}${toUnmark.length?' −'+toUnmark.length+' unmarked':''}`);
       }catch(e){setSt('err');setMsg('✗ '+e.message);}
     };
     if(atRef.current){await doSync();return;}
-    if(!tcRef.current){alert('OAuth не готов');setSt('idle');return;}
+    if(!tcRef.current){alert('OAuth not ready');setSt('idle');return;}
     tcRef.current.requestAccessToken({prompt:'consent'});
     let tries=0;
-    const wait=setInterval(async()=>{if(atRef.current){clearInterval(wait);await doSync();}else if(++tries>30){clearInterval(wait);setSt('err');setMsg('Таймаут');}},500);
+    const wait=setInterval(async()=>{if(atRef.current){clearInterval(wait);await doSync();}else if(++tries>30){clearInterval(wait);setSt('err');setMsg('Timeout');}},500);
   };
   return(
     <div>
       <button onClick={sync} disabled={st==='loading'||st==='done'} className="btn-primary w-full py-3">
-        {st==='loading'?'⏳ '+msg:st==='done'?msg:'↻ Синхронизировать с таблицей'}
+        {st==='loading'?'⏳ '+msg:st==='done'?msg:'↻ Sync to spreadsheet'}
       </button>
       {st==='err'&&<p className="text-xs text-red-500 mt-1">{msg}</p>}
     </div>
@@ -6940,7 +6940,7 @@ function FlashcardsTab({rawData,cfg,ai}){
       const ref=times.length?Math.max(...times):Date.now();
       pool=pool.filter(w=>{const d=engParseDate(w.date,iy);return d&&d.getTime()>=ref-(days-1)*86400000;});
     }
-    if(!pool.length){alert('Нет слов по выбранным фильтрам');return;}
+    if(!pool.length){alert('No words match the selected filters');return;}
     if(settings.order==='random') pool.sort(()=>Math.random()-.5);
     else if(settings.order==='newest') pool.sort((a,b)=>(engParseDate(b.date,iy)?.getTime()||0)-(engParseDate(a.date,iy)?.getTime()||0));
     else if(settings.order==='oldest') pool.sort((a,b)=>(engParseDate(a.date,iy)?.getTime()||0)-(engParseDate(b.date,iy)?.getTime()||0));
@@ -6976,30 +6976,30 @@ function FlashcardsTab({rawData,cfg,ai}){
 
   if(!rawData?.length) return(
     <div className="text-center py-20 text-[var(--text-subtle)]">
-      <div className="font-display text-5xl mb-4">A↻</div><p>Загрузите слова из Google Sheets</p>
+      <div className="font-display text-5xl mb-4">A↻</div><p>Load words from Google Sheets</p>
     </div>
   );
 
   // --- SETUP ---
   if(phase==='setup') return(
     <div className="max-w-lg mx-auto space-y-5 pb-8">
-      <div><label>Направление</label>
+      <div><label>Direction</label>
         <div className="flex gap-2 mt-1">
           {[['en-ru','EN → RU'],['ru-en','RU → EN'],['mixed','Mixed']].map(([v,l])=>(
             <button key={v} onClick={()=>setSettings(s=>({...s,direction:v}))} className={`flex-1 py-2.5 rounded-lg text-sm font-medium border transition-all ${settings.direction===v?'bg-[var(--text)] text-white border-[var(--text)]':'border-[var(--border)] text-[var(--text-muted)]'}`}>{l}</button>
           ))}
         </div>
       </div>
-      <div><label>Количество карточек</label><input type="number" min="0" max="500" value={settings.count||''} onChange={e=>setSettings(s=>({...s,count:parseInt(e.target.value)||0}))} placeholder="0 = все"/><p className="text-xs text-[var(--text-subtle)] mt-1">0 = все подходящие</p></div>
-      <div><label>Порядок</label><select value={settings.order} onChange={e=>setSettings(s=>({...s,order:e.target.value}))}><option value="random">Случайный</option><option value="newest">Новые сначала</option><option value="oldest">Старые сначала</option></select></div>
-      <div><label>Фильтр</label><select value={settings.filter} onChange={e=>setSettings(s=>({...s,filter:e.target.value}))}><option value="all">Все слова</option><option value="hard">Только сложные ★</option><option value="not-hard">Без сложных</option><option value="not-shown">Не изученные</option></select></div>
-      <div><label>Период</label><select value={settings.dateRange} onChange={e=>setSettings(s=>({...s,dateRange:e.target.value}))}><option value="all">Все время</option><option value="7">Последние 7 дней</option><option value="14">Последние 14 дней</option><option value="30">Последние 30 дней</option></select></div>
+      <div><label>Number of cards</label><input type="number" min="0" max="500" value={settings.count||''} onChange={e=>setSettings(s=>({...s,count:parseInt(e.target.value)||0}))} placeholder="0 = all"/><p className="text-xs text-[var(--text-subtle)] mt-1">0 = all matching</p></div>
+      <div><label>Order</label><select value={settings.order} onChange={e=>setSettings(s=>({...s,order:e.target.value}))}><option value="random">Random</option><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></div>
+      <div><label>Filter</label><select value={settings.filter} onChange={e=>setSettings(s=>({...s,filter:e.target.value}))}><option value="all">All words</option><option value="hard">Hard only ★</option><option value="not-hard">Non-hard only</option><option value="not-shown">Not studied yet</option></select></div>
+      <div><label>Period</label><select value={settings.dateRange} onChange={e=>setSettings(s=>({...s,dateRange:e.target.value}))}><option value="all">All time</option><option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option></select></div>
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 space-y-3">
-        {[['sentence','Показывать пример'],['synonyms','Показывать синонимы'],['hide','Скрыть слово в примере'],['repeat','Повторять ошибки'],['auto','Авто-переворот (5 сек)'],['tts','TTS произношение']].map(([k,l])=>(
+        {[['sentence','Show example sentence'],['synonyms','Show synonyms'],['hide','Hide word in example'],['repeat','Repeat mistakes'],['auto','Auto-flip (5 sec)'],['tts','TTS pronunciation']].map(([k,l])=>(
           <div key={k} className="flex items-center justify-between"><span className="text-sm">{l}</span><Toggle checked={!!settings[k]} onChange={v=>setSettings(s=>({...s,[k]:v}))}/></div>
         ))}
       </div>
-      <button onClick={startSession} className="btn-primary w-full py-3.5 flex items-center justify-center gap-2">▶ Начать сессию ({rawData.length} слов)</button>
+      <button onClick={startSession} className="btn-primary w-full py-3.5 flex items-center justify-center gap-2">▶ Start session ({rawData.length} words)</button>
     </div>
   );
 
@@ -7012,8 +7012,8 @@ function FlashcardsTab({rawData,cfg,ai}){
     return(
       <div className="text-center py-8 max-w-lg mx-auto pb-12">
         <div className="font-display text-7xl font-bold mb-1">{pct}%</div>
-        <h2 className="font-display text-2xl mb-1">Сессия завершена</h2>
-        <p className="text-[var(--text-muted)] mb-6">{correct} из {total} с первого раза</p>
+        <h2 className="font-display text-2xl mb-1">Session complete</h2>
+        <p className="text-[var(--text-muted)] mb-6">{correct} out of {total} on the first try</p>
         <div className="flex justify-center gap-3 mb-8 flex-wrap">
           {[['again',s.again,'text-red-500'],['hard',s.hard,'text-amber-500'],['good',s.good,'text-green-500'],['easy',s.easy,'text-green-600']].map(([l,v,c])=>(
             <div key={l} className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3 min-w-[64px]">
@@ -7024,12 +7024,12 @@ function FlashcardsTab({rawData,cfg,ai}){
         </div>
         {(toMark.length>0||toUnmark.length>0)&&(
           <div className="mb-6 text-left space-y-3">
-            {toMark.length>0&&<div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4"><div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-2">+ Отметить как сложные ({toMark.length})</div><div className="text-sm">{toMark.map(wFor).join(', ')}</div></div>}
-            {toUnmark.length>0&&<div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4"><div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-2">− Снять отметку ({toUnmark.length})</div><div className="text-sm">{toUnmark.map(wFor).join(', ')}</div></div>}
+            {toMark.length>0&&<div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4"><div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-2">+ Mark as hard ({toMark.length})</div><div className="text-sm">{toMark.map(wFor).join(', ')}</div></div>}
+            {toUnmark.length>0&&<div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4"><div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-2">− Remove hard mark ({toUnmark.length})</div><div className="text-sm">{toUnmark.map(wFor).join(', ')}</div></div>}
             <EngSyncBtn cfg={cfg} toMark={toMark} toUnmark={toUnmark} rawData={rawData} tcRef={tcRef} atRef={atRef}/>
           </div>
         )}
-        <button onClick={()=>{setSess(null);setPhase('setup');}} className="btn-primary px-8 py-3">↻ Новая сессия</button>
+        <button onClick={()=>{setSess(null);setPhase('setup');}} className="btn-primary px-8 py-3">↻ New session</button>
       </div>
     );
   }
@@ -7051,10 +7051,10 @@ function FlashcardsTab({rawData,cfg,ai}){
     <div className="max-w-2xl mx-auto space-y-4 pb-8">
       <div className="h-1.5 bg-[var(--surface)] rounded-full overflow-hidden"><div className="h-full bg-[var(--text)] rounded-full transition-all" style={{width:prog+'%'}}/></div>
       <div className="flex gap-2 text-xs flex-wrap">
-        {[['карт',`${sess.done.length+1}/${total}`,''],[' again',sess.stats.again,'text-red-500'],['hard',sess.stats.hard,'text-amber-500'],['good',sess.stats.good+sess.stats.easy,'text-green-500'],['очередь',sess.again.length,'']].map(([l,v,c],i)=>(
+        {[['card',`${sess.done.length+1}/${total}`,''],[' again',sess.stats.again,'text-red-500'],['hard',sess.stats.hard,'text-amber-500'],['good',sess.stats.good+sess.stats.easy,'text-green-500'],['queue',sess.again.length,'']].map(([l,v,c],i)=>(
           <div key={i} className={`bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1 ${c}`}>{l} <span className="font-semibold">{v}</span></div>
         ))}
-        {pendingSent>0&&<div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1 text-amber-500" title="Примеры ещё генерируются в фоне">примеры <span className="font-semibold">⏳ {pendingSent}</span></div>}
+        {pendingSent>0&&<div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1 text-amber-500" title="Examples are still generating in the background">examples <span className="font-semibold">⏳ {pendingSent}</span></div>}
       </div>
       <div style={ENG_CARD_S.wrap} onClick={()=>setSess(s=>s?{...s,flipped:!s.flipped}:s)}>
         <div key={w.rowIndex + '_' + w._dir} style={ENG_CARD_S.card(sess.flipped)}>
@@ -7065,7 +7065,7 @@ function FlashcardsTab({rawData,cfg,ai}){
             </button>
             <div className="font-display text-4xl sm:text-5xl font-bold leading-tight mb-3">{front}</div>
             {settings.sentence&&sentF&&<div className="text-sm text-[var(--text-muted)] italic max-w-sm leading-relaxed">{sentF}</div>}
-            <div className="absolute bottom-3 text-[10px] text-[var(--text-subtle)]">↻ нажмите или Space</div>
+            <div className="absolute bottom-3 text-[10px] text-[var(--text-subtle)]">↻ click or press Space</div>
           </div>
           <div style={{...ENG_CARD_S.face,...ENG_CARD_S.back}}>
             <div className="absolute top-3 left-4 text-[10px] uppercase tracking-widest text-[var(--text-subtle)]">{dir==='en-ru'?'RUSSIAN':'ENGLISH'}</div>
@@ -7076,19 +7076,19 @@ function FlashcardsTab({rawData,cfg,ai}){
             {settings.sentence&&(cachedSent
               ? <div className="text-sm text-[var(--text-muted)] italic max-w-sm leading-relaxed" dangerouslySetInnerHTML={{__html:engHighlight(cachedSent,w.en)}}/>
               : engAIConfigured(ai)
-                ? <div className="text-sm text-[var(--text-subtle)] italic max-w-sm leading-relaxed opacity-60">⏳ пример генерируется…</div>
+                ? <div className="text-sm text-[var(--text-subtle)] italic max-w-sm leading-relaxed opacity-60">⏳ example is being generated…</div>
                 : w.sentence
                   ? <div className="text-sm text-[var(--text-muted)] italic max-w-sm leading-relaxed" dangerouslySetInnerHTML={{__html:engHighlight(w.sentence,w.en)}}/>
                   : null
             )}
             {settings.synonyms&&w.syn&&<div className="text-xs text-[var(--text-subtle)] mt-2">syn: {w.syn}</div>}
-            <div className="absolute bottom-3 text-[10px] text-[var(--text-subtle)]">оцените ниже · 1–4</div>
+            <div className="absolute bottom-3 text-[10px] text-[var(--text-subtle)]">rate below · 1–4</div>
           </div>
         </div>
       </div>
       {sess.flipped?(
         <div className="grid grid-cols-4 gap-2">
-          {[['again','Снова','1','border-red-300 text-red-500 hover:bg-red-500/5'],['hard','Сложно','2','border-amber-300 text-amber-500 hover:bg-amber-500/5'],['good','Хорошо','3','border-green-300 text-green-500 hover:bg-green-500/5'],['easy','Легко','4','bg-green-500 text-white border-green-500']].map(([t,l,k,cls])=>(
+          {[['again','Again','1','border-red-300 text-red-500 hover:bg-red-500/5'],['hard','Hard','2','border-amber-300 text-amber-500 hover:bg-amber-500/5'],['good','Good','3','border-green-300 text-green-500 hover:bg-green-500/5'],['easy','Easy','4','bg-green-500 text-white border-green-500']].map(([t,l,k,cls])=>(
             <button key={t} onClick={()=>doAnswer(t)} className={`py-3 rounded-xl text-sm font-semibold border transition-all flex flex-col items-center gap-0.5 ${cls}`}>
               {l}<span className="text-[10px] opacity-60 font-normal">{k}</span>
             </button>
@@ -7096,11 +7096,11 @@ function FlashcardsTab({rawData,cfg,ai}){
         </div>
       ):(
         <div className="flex gap-2 justify-between">
-          <button onClick={()=>setSess(s=>s&&s.cur>0?{...s,cur:s.cur-1,flipped:false}:s)} disabled={sess.cur===0} className="btn-secondary text-sm px-4">← Назад</button>
+          <button onClick={()=>setSess(s=>s&&s.cur>0?{...s,cur:s.cur-1,flipped:false}:s)} disabled={sess.cur===0} className="btn-secondary text-sm px-4">← Back</button>
           <div className="flex gap-2">
-            <button onClick={()=>setSess(s=>s?{...s,flipped:true}:s)} className="btn-primary text-sm px-4">Показать (Space)</button>
-            <button onClick={()=>setSess(s=>s?{...s,cur:s.cur+1}:s)} className="btn-secondary text-sm px-3">Пропустить →</button>
-            <button onClick={()=>setPhase('finish')} className="btn-secondary text-sm px-3 text-red-500">Завершить</button>
+            <button onClick={()=>setSess(s=>s?{...s,flipped:true}:s)} className="btn-primary text-sm px-4">Show (Space)</button>
+            <button onClick={()=>setSess(s=>s?{...s,cur:s.cur+1}:s)} className="btn-secondary text-sm px-3">Skip →</button>
+            <button onClick={()=>setPhase('finish')} className="btn-secondary text-sm px-3 text-red-500">Finish</button>
           </div>
         </div>
       )}
@@ -7128,16 +7128,16 @@ function FillTab({rawData,ai}){
   };
 
   const generate=async()=>{
-    if(!rawData){alert('Загрузите данные');return;}
-    const pool=getPool();if(!pool.length){alert('Нет слов');return;}
+    if(!rawData){alert('Load data first');return;}
+    const pool=getPool();if(!pool.length){alert('No words');return;}
     const n=count>0?Math.min(count,pool.length):pool.length;
-    if(n>50&&!confirm(`Сгенерировать ${n} предложений?`)) return;
+    if(n>50&&!confirm(`Generate ${n} sentences?`)) return;
     const batch=pool.slice(0,n);setWords(batch);setGenPhase('loading');setSentences([]);setAnswers({});
     const prompt=`English teacher. For each word create ONE natural B2-C1 sentence. Return ONLY valid JSON array, no markdown.\nWords:\n${batch.map(w=>`- "${w.en}" (${w.ru})`).join('\n')}\nFormat: [{"word":"word1","sentence":"..."},...]`;
     try{
       const raw=await engCallAI(ai,prompt);
-      const match=raw.match(/\[[\s\S]*\]/);if(!match) throw new Error('Неверный формат');
-      const items=JSON.parse(match[0]);if(!Array.isArray(items)||!items.length) throw new Error('Пустой ответ');
+      const match=raw.match(/\[[\s\S]*\]/);if(!match) throw new Error('Invalid format');
+      const items=JSON.parse(match[0]);if(!Array.isArray(items)||!items.length) throw new Error('Empty response');
       const result=items.map((item,idx)=>{
         const wo=batch.find(w=>w.en.toLowerCase()===(item.word||'').toLowerCase())||batch[idx]||batch[0];
         const sentence=item.sentence||'';
@@ -7145,7 +7145,7 @@ function FillTab({rawData,ai}){
         return{word:wo,sentence,exactForm:m?m[1]:wo.en};
       });
       setSentences(result);setGenPhase('done');
-    }catch(e){alert('Ошибка AI: '+e.message);setGenPhase('idle');}
+    }catch(e){alert('AI error: '+e.message);setGenPhase('idle');}
   };
 
   const check=(i)=>{
@@ -7165,22 +7165,22 @@ function FillTab({rawData,ai}){
   return(
     <div className="space-y-5 pb-8">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-        <div><label>Фильтр слов</label>
+        <div><label>Word filter</label>
           <div className="flex flex-col gap-1.5 mt-1">
-            {[['random','🔀 Случайный'],['oldest','📅 Старые сначала'],['newest','🆕 Новые сначала'],['hard','★ Только сложные']].map(([f,l])=>(
+            {[['random','🔀 Random'],['oldest','📅 Oldest first'],['newest','🆕 Newest first'],['hard','★ Hard only']].map(([f,l])=>(
               <button key={f} onClick={()=>setFilter(f)} className={`text-left px-3 py-2 rounded-lg text-sm border transition-all ${filter===f?'bg-[var(--text)] text-white border-[var(--text)]':'border-[var(--border)] text-[var(--text-muted)]'}`}>{l}</button>
             ))}
           </div>
         </div>
         <div className="space-y-4">
-          <div><label>Количество (0 = все)</label><input type="number" min="0" max="500" value={count||''} onChange={e=>setCount(parseInt(e.target.value)||0)} placeholder="0"/><p className="text-xs text-[var(--text-subtle)] mt-1">{avail} слов доступно</p></div>
-          <div className="flex items-center justify-between"><span className="text-sm">Скрыть список слов</span><Toggle checked={hideWords} onChange={setHideWords}/></div>
-          <button onClick={generate} disabled={genPhase==='loading'||!rawData} className="btn-primary w-full py-3">{genPhase==='loading'?'⏳ Генерирую...':'✨ Сгенерировать'}</button>
+          <div><label>Count (0 = all)</label><input type="number" min="0" max="500" value={count||''} onChange={e=>setCount(parseInt(e.target.value)||0)} placeholder="0"/><p className="text-xs text-[var(--text-subtle)] mt-1">{avail} words available</p></div>
+          <div className="flex items-center justify-between"><span className="text-sm">Hide word list</span><Toggle checked={hideWords} onChange={setHideWords}/></div>
+          <button onClick={generate} disabled={genPhase==='loading'||!rawData} className="btn-primary w-full py-3">{genPhase==='loading'?'⏳ Generating...':'✨ Generate'}</button>
         </div>
       </div>
       {words.length>0&&(
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4">
-          <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-3">Слова в сессии</div>
+          <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-3">Words in this batch</div>
           <div className="flex flex-wrap gap-2">
             {words.map((w,i)=><span key={i} className={`px-2.5 py-1 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-sm ${hideWords?'blur-sm select-none':''}`}>{w.en}</span>)}
           </div>
@@ -7191,12 +7191,12 @@ function FillTab({rawData,ai}){
         const blank=item.sentence.replace(new RegExp('\\b'+engEscRe(item.word.en.split(' ')[0])+'\\w*','i'),'___');
         return(
           <div key={i} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-3">
-            <div className="text-xs text-[var(--text-subtle)]">№{i+1} · <span className="cursor-pointer blur-sm hover:blur-none transition-all select-none" onClick={e=>e.currentTarget.classList.remove('blur-sm')}>{item.word.en} — {item.word.ru}</span></div>
+            <div className="text-xs text-[var(--text-subtle)]">#{i+1} · <span className="cursor-pointer blur-sm hover:blur-none transition-all select-none" onClick={e=>e.currentTarget.classList.remove('blur-sm')}>{item.word.en} — {item.word.ru}</span></div>
             <div className="font-display text-lg italic">{ans.checked?item.sentence:blank}</div>
             <div className="flex items-center gap-2 flex-wrap">
-              <input className={`w-44 ${ans.checked?(ans.ok?'border-green-400':'border-red-400'):''}`} value={ans.val||''} onChange={e=>setAnswers(a=>({...a,[i]:{...a[i],val:e.target.value}}))} onKeyDown={e=>e.key==='Enter'&&check(i)} placeholder="введите слово..." disabled={ans.checked}/>
-              {!ans.checked&&<><button onClick={()=>check(i)} className="btn-primary py-2 px-3 text-sm">Проверить</button><button onClick={()=>reveal(i)} className="btn-secondary py-2 px-3 text-sm">Подсказка</button></>}
-              {ans.checked&&<span className={`text-sm font-medium ${ans.ok?'text-green-500':'text-red-500'}`}>{ans.ok?'✓ Верно!':ans.revealed?`Слово: ${item.exactForm||item.word.en}`:`✗ Ответ: ${item.exactForm||item.word.en}`}</span>}
+              <input className={`w-44 ${ans.checked?(ans.ok?'border-green-400':'border-red-400'):''}`} value={ans.val||''} onChange={e=>setAnswers(a=>({...a,[i]:{...a[i],val:e.target.value}}))} onKeyDown={e=>e.key==='Enter'&&check(i)} placeholder="type the word..." disabled={ans.checked}/>
+              {!ans.checked&&<><button onClick={()=>check(i)} className="btn-primary py-2 px-3 text-sm">Check</button><button onClick={()=>reveal(i)} className="btn-secondary py-2 px-3 text-sm">Hint</button></>}
+              {ans.checked&&<span className={`text-sm font-medium ${ans.ok?'text-green-500':'text-red-500'}`}>{ans.ok?'✓ Correct!':ans.revealed?`Word: ${item.exactForm||item.word.en}`:`✗ Answer: ${item.exactForm||item.word.en}`}</span>}
             </div>
           </div>
         );
@@ -7224,14 +7224,14 @@ function TypingTab({rawData,ai}){
   },[phase,result,answer]);
 
   const start=()=>{
-    if(!rawData){alert('Загрузите данные');return;}
+    if(!rawData){alert('Load data first');return;}
     let pool=rawData.slice();
     if(filter==='hard') pool=pool.filter(w=>w.hard);
     else if(filter==='oldest') pool.sort((a,b)=>(engParseDate(a.date)?.getTime()||0)-(engParseDate(b.date)?.getTime()||0));
     else if(filter==='newest') pool.sort((a,b)=>(engParseDate(b.date)?.getTime()||0)-(engParseDate(a.date)?.getTime()||0));
     else pool.sort(()=>Math.random()-.5);
     const n=count>0?Math.min(count,pool.length):pool.length;
-    if(!n){alert('Нет слов');return;}
+    if(!n){alert('No words');return;}
     setQueue(pool.slice(0,n));setCur(0);setStats({correct:0,close:0,wrong:0});setAnswer('');setResult(null);setPhase('study');
   };
 
@@ -7245,32 +7245,32 @@ function TypingTab({rawData,ai}){
     if(needAI){
       const prompt=`English teacher feedback. Student shown "${w.ru}", typed "${answer}", correct is "${w.en}".${w.sentence?`\nExample: "${w.sentence}"`:''}${w.syn?`\nSynonyms: ${w.syn}`:''}\nShort comment (2-3 sentences, English, friendly, no markdown).`;
       try{const c=await engCallAI(ai,prompt);setResult(r=>r?{...r,comment:c,loading:false}:r);}
-      catch(e){setResult(r=>r?{...r,comment:'(AI недоступен)',loading:false}:r);}
+      catch(e){setResult(r=>r?{...r,comment:'(AI unavailable)',loading:false}:r);}
     }
   };
 
   const next=()=>{setAnswer('');setResult(null);if(cur+1>=queue.length){setPhase('finish');return;}setCur(c=>c+1);};
 
-  if(!rawData) return <div className="text-center py-20 text-[var(--text-subtle)]"><p>Загрузите данные из Google Sheets</p></div>;
+  if(!rawData) return <div className="text-center py-20 text-[var(--text-subtle)]"><p>Load data from Google Sheets</p></div>;
 
   if(phase==='setup') return(
     <div className="max-w-lg mx-auto space-y-5 pb-8">
-      <div><label>Фильтр</label>
+      <div><label>Filter</label>
         <div className="flex flex-col gap-1.5 mt-1">
-          {[['random','🔀 Случайный'],['oldest','📅 Старые сначала'],['newest','🆕 Новые сначала'],['hard','★ Только сложные']].map(([f,l])=>(
+          {[['random','🔀 Random'],['oldest','📅 Oldest first'],['newest','🆕 Newest first'],['hard','★ Hard only']].map(([f,l])=>(
             <button key={f} onClick={()=>setFilter(f)} className={`text-left px-3 py-2 rounded-lg text-sm border transition-all ${filter===f?'bg-[var(--text)] text-white border-[var(--text)]':'border-[var(--border)] text-[var(--text-muted)]'}`}>{l}</button>
           ))}
         </div>
       </div>
-      <div><label>Количество слов (0 = все)</label><input type="number" min="0" max="500" value={count||''} onChange={e=>setCount(parseInt(e.target.value)||0)}/></div>
-      <div><label>AI комментарии</label>
+      <div><label>Word count (0 = all)</label><input type="number" min="0" max="500" value={count||''} onChange={e=>setCount(parseInt(e.target.value)||0)}/></div>
+      <div><label>AI comments</label>
         <div className="flex gap-2 mt-1">
-          {[['always','Всегда'],['wrong','Только ошибки'],['never','Выкл']].map(([v,l])=>(
+          {[['always','Always'],['wrong','Errors only'],['never','Off']].map(([v,l])=>(
             <button key={v} onClick={()=>setAiMode(v)} className={`flex-1 py-2.5 rounded-lg text-sm font-medium border transition-all ${aiMode===v?'bg-[var(--text)] text-white border-[var(--text)]':'border-[var(--border)] text-[var(--text-muted)]'}`}>{l}</button>
           ))}
         </div>
       </div>
-      <button onClick={start} className="btn-primary w-full py-3.5">▶ Начать</button>
+      <button onClick={start} className="btn-primary w-full py-3.5">▶ Start</button>
     </div>
   );
 
@@ -7279,13 +7279,13 @@ function TypingTab({rawData,ai}){
     return(
       <div className="text-center py-8 max-w-lg mx-auto pb-12">
         <div className="font-display text-7xl font-bold mb-1">{pct}%</div>
-        <h2 className="font-display text-2xl mb-6">Typing mode завершён</h2>
+        <h2 className="font-display text-2xl mb-6">Typing mode complete</h2>
         <div className="flex justify-center gap-3 mb-8 flex-wrap">
           {[['correct',stats.correct,'text-green-500'],['close',stats.close,'text-amber-500'],['errors',stats.wrong,'text-red-500']].map(([l,v,c])=>(
             <div key={l} className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3"><div className={`font-display text-2xl font-bold ${c}`}>{v}</div><div className="text-xs text-[var(--text-subtle)] mt-1">{l}</div></div>
           ))}
         </div>
-        <button onClick={()=>setPhase('setup')} className="btn-primary px-8 py-3">↻ Повторить</button>
+        <button onClick={()=>setPhase('setup')} className="btn-primary px-8 py-3">↻ Repeat</button>
       </div>
     );
   }
@@ -7295,7 +7295,7 @@ function TypingTab({rawData,ai}){
     <div className="max-w-2xl mx-auto space-y-4 pb-8">
       <div className="h-1.5 bg-[var(--surface)] rounded-full overflow-hidden"><div className="h-full bg-[var(--text)] transition-all" style={{width:pct+'%'}}/></div>
       <div className="flex gap-2 text-xs flex-wrap">
-        {[['карт',`${cur+1}/${total}`,''],['верно',stats.correct,'text-green-500'],['близко',stats.close,'text-amber-500'],['ошибок',stats.wrong,'text-red-500']].map(([l,v,c],i)=>(
+        {[['card',`${cur+1}/${total}`,''],['correct',stats.correct,'text-green-500'],['close',stats.close,'text-amber-500'],['errors',stats.wrong,'text-red-500']].map(([l,v,c],i)=>(
           <div key={i} className={`bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1 ${c}`}>{l} <b>{v}</b></div>
         ))}
       </div>
@@ -7306,38 +7306,39 @@ function TypingTab({rawData,ai}){
       </div>
       {!result?(
         <div className="flex gap-2">
-          <input ref={inputRef} value={answer} onChange={e=>setAnswer(e.target.value)} placeholder="введите по-английски..." className="flex-1 text-lg" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"/>
-          <button onClick={check} disabled={!answer.trim()} className="btn-primary px-5">Проверить</button>
+          <input ref={inputRef} value={answer} onChange={e=>setAnswer(e.target.value)} placeholder="type in English..." className="flex-1 text-lg" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"/>
+          <button onClick={check} disabled={!answer.trim()} className="btn-primary px-5">Check</button>
           <button onClick={next} className="btn-secondary px-4">→</button>
         </div>
       ):(
         <div className="space-y-3">
           <div className={`bg-[var(--surface)] border rounded-xl p-4 ${result.type==='correct'?'border-green-400':result.type==='close'?'border-amber-400':'border-red-400'}`}>
             <div className={`font-semibold mb-2 ${result.type==='correct'?'text-green-500':result.type==='close'?'text-amber-500':'text-red-500'}`}>
-              {result.type==='correct'?'✓ Верно!':result.type==='close'?`~ Почти! Правильно: ${w.en}`:`✗ Ошибка. Правильно: ${w.en}`}
+              {result.type==='correct'?'✓ Correct!':result.type==='close'?`~ Close! Correct: ${w.en}`:`✗ Wrong. Correct: ${w.en}`}
             </div>
-            {result.loading&&<div className="text-sm text-[var(--text-muted)]">⏳ AI анализирует...</div>}
+            {result.loading&&<div className="text-sm text-[var(--text-muted)]">⏳ AI is analyzing...</div>}
             {result.comment&&<div className="text-sm text-[var(--text-muted)]">{result.comment}</div>}
           </div>
-          <button onClick={next} className="btn-primary w-full py-3">Следующее слово →</button>
+          <button onClick={next} className="btn-primary w-full py-3">Next word →</button>
         </div>
       )}
     </div>
   );
 }
 
-const ENG_MYSENT_DEFAULT_PROMPT = `Ты — дружелюбный преподаватель английского. Ученику дано слово "{word}" (перевод: "{translation}"). Он написал своё предложение с этим словом:
+const ENG_MYSENT_DEFAULT_PROMPT = `You are a friendly English teacher. The student was given the word "{word}" (translation: "{translation}"). They wrote their own example sentence with it:
 
 "{sentence}"
 
-Кратко (3-5 предложений) на русском языке:
-1. Оцени, правильно ли использовано слово по смыслу и грамматически. Если есть ошибки — укажи их и дай исправленный вариант.
-2. Если предложение хорошее — похвали и, если уместно, предложи более естественный или продвинутый вариант.
-Пиши тепло и по делу, без markdown и заголовков.`;
+Briefly (3-5 sentences), in English:
+1. Assess whether the word is used correctly in meaning and grammar. If there are mistakes, point them out and give a corrected version.
+2. If the sentence is good, say so and, if useful, suggest a more natural or advanced alternative.
+Be warm and to the point, no markdown, no headings.`;
 
-// Написать своё предложение со словом + произнести его вслух. Похоже на TypingTab,
-// но вместо перевода ученик сам составляет пример, а ИИ даёт комментарий по
-// настраиваемому промпту (хранится в БД вместе с остальными eng-настройками).
+// Write your own sentence with the word + say it out loud. Similar to TypingTab,
+// but instead of translating, the student composes their own example, and the AI
+// gives feedback via a customizable prompt (stored in the DB with the other
+// English settings).
 function MySentenceTab({rawData,ai,prompt,onSavePrompt}){
   const [filter,setFilter]=useState('random');
   const [count,setCount]=useState(15);
@@ -7354,14 +7355,14 @@ function MySentenceTab({rawData,ai,prompt,onSavePrompt}){
   useEffect(()=>{if(phase==='study'&&taRef.current)taRef.current.focus();},[cur,phase]);
 
   const start=()=>{
-    if(!rawData){alert('Загрузите данные');return;}
+    if(!rawData){alert('Load data first');return;}
     let pool=rawData.slice();
     if(filter==='hard') pool=pool.filter(w=>w.hard);
     else if(filter==='oldest') pool.sort((a,b)=>(engParseDate(a.date)?.getTime()||0)-(engParseDate(b.date)?.getTime()||0));
     else if(filter==='newest') pool.sort((a,b)=>(engParseDate(b.date)?.getTime()||0)-(engParseDate(a.date)?.getTime()||0));
     else pool.sort(()=>Math.random()-.5);
     const n=count>0?Math.min(count,pool.length):pool.length;
-    if(!n){alert('Нет слов');return;}
+    if(!n){alert('No words');return;}
     setQueue(pool.slice(0,n));setCur(0);setStats({done:0});setSentence('');setFeedback(null);setSaid(false);setPhase('study');
   };
 
@@ -7375,7 +7376,7 @@ function MySentenceTab({rawData,ai,prompt,onSavePrompt}){
       const c=await engCallAI(ai,p);
       setFeedback({loading:false,text:c});
     }catch(e){
-      setFeedback({loading:false,text:'(AI недоступен: '+e.message+')'});
+      setFeedback({loading:false,text:'(AI unavailable: '+e.message+')'});
     }
     setStats(s=>({...s,done:s.done+1}));
   };
@@ -7389,28 +7390,28 @@ function MySentenceTab({rawData,ai,prompt,onSavePrompt}){
 
   const next=()=>{setSentence('');setFeedback(null);setSaid(false);if(cur+1>=queue.length){setPhase('finish');return;}setCur(c=>c+1);};
 
-  if(!rawData) return <div className="text-center py-20 text-[var(--text-subtle)]"><p>Загрузите данные из Google Sheets</p></div>;
+  if(!rawData) return <div className="text-center py-20 text-[var(--text-subtle)]"><p>Load data from Google Sheets</p></div>;
 
   if(phase==='setup') return(
     <div className="max-w-lg mx-auto space-y-5 pb-8">
-      <div><label>Фильтр</label>
+      <div><label>Filter</label>
         <div className="flex flex-col gap-1.5 mt-1">
-          {[['random','🔀 Случайный'],['oldest','📅 Старые сначала'],['newest','🆕 Новые сначала'],['hard','★ Только сложные']].map(([f,l])=>(
+          {[['random','🔀 Random'],['oldest','📅 Oldest first'],['newest','🆕 Newest first'],['hard','★ Hard only']].map(([f,l])=>(
             <button key={f} onClick={()=>setFilter(f)} className={`text-left px-3 py-2 rounded-lg text-sm border transition-all ${filter===f?'bg-[var(--text)] text-white border-[var(--text)]':'border-[var(--border)] text-[var(--text-muted)]'}`}>{l}</button>
           ))}
         </div>
       </div>
-      <div><label>Количество слов (0 = все)</label><input type="number" min="0" max="500" value={count||''} onChange={e=>setCount(parseInt(e.target.value)||0)}/></div>
+      <div><label>Word count (0 = all)</label><input type="number" min="0" max="500" value={count||''} onChange={e=>setCount(parseInt(e.target.value)||0)}/></div>
       <div>
-        <label>Промпт для проверки ИИ</label>
+        <label>AI review prompt</label>
         <textarea value={promptDraft} onChange={e=>setPromptDraft(e.target.value)} rows={9} style={{resize:'vertical',fontFamily:'inherit'}} className="w-full text-sm"/>
-        <p className="text-xs text-[var(--text-subtle)] mt-1">Плейсхолдеры: <code>{'{word}'}</code>, <code>{'{translation}'}</code>, <code>{'{sentence}'}</code></p>
+        <p className="text-xs text-[var(--text-subtle)] mt-1">Placeholders: <code>{'{word}'}</code>, <code>{'{translation}'}</code>, <code>{'{sentence}'}</code></p>
         <div className="flex gap-2 mt-2">
-          <button onClick={()=>onSavePrompt(promptDraft)} disabled={promptDraft===prompt} className="btn-secondary text-xs py-1.5 px-3">Сохранить промпт</button>
-          <button onClick={()=>setPromptDraft(ENG_MYSENT_DEFAULT_PROMPT)} className="btn-secondary text-xs py-1.5 px-3">↺ Сбросить</button>
+          <button onClick={()=>onSavePrompt(promptDraft)} disabled={promptDraft===prompt} className="btn-secondary text-xs py-1.5 px-3">Save prompt</button>
+          <button onClick={()=>setPromptDraft(ENG_MYSENT_DEFAULT_PROMPT)} className="btn-secondary text-xs py-1.5 px-3">↺ Reset</button>
         </div>
       </div>
-      <button onClick={start} className="btn-primary w-full py-3.5">▶ Начать</button>
+      <button onClick={start} className="btn-primary w-full py-3.5">▶ Start</button>
     </div>
   );
 
@@ -7418,9 +7419,9 @@ function MySentenceTab({rawData,ai,prompt,onSavePrompt}){
     return(
       <div className="text-center py-8 max-w-lg mx-auto pb-12">
         <div className="font-display text-6xl mb-1">✓</div>
-        <h2 className="font-display text-2xl mb-2">Свои предложения готовы</h2>
-        <p className="text-[var(--text-muted)] mb-8">Написано и проверено: {stats.done}</p>
-        <button onClick={()=>setPhase('setup')} className="btn-primary px-8 py-3">↻ Повторить</button>
+        <h2 className="font-display text-2xl mb-2">Custom sentences complete</h2>
+        <p className="text-[var(--text-muted)] mb-8">Written and reviewed: {stats.done}</p>
+        <button onClick={()=>setPhase('setup')} className="btn-primary px-8 py-3">↻ Repeat</button>
       </div>
     );
   }
@@ -7430,44 +7431,44 @@ function MySentenceTab({rawData,ai,prompt,onSavePrompt}){
     <div className="max-w-2xl mx-auto space-y-4 pb-8">
       <div className="h-1.5 bg-[var(--surface)] rounded-full overflow-hidden"><div className="h-full bg-[var(--text)] transition-all" style={{width:pct+'%'}}/></div>
       <div className="flex gap-2 text-xs flex-wrap">
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1">карт <b>{cur+1}/{total}</b></div>
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1 text-green-500">готово <b>{stats.done}</b></div>
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1">card <b>{cur+1}/{total}</b></div>
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1 text-green-500">done <b>{stats.done}</b></div>
       </div>
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-8 text-center">
-        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-3">своё предложение со словом</div>
+        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-3">write your own sentence with</div>
         <div className="font-display text-4xl sm:text-5xl font-bold mb-2">{w.en}</div>
         <div className="text-sm text-[var(--text-muted)]">{w.ru}</div>
         {w.syn&&<div className="text-xs text-[var(--text-subtle)] mt-1">syn: {w.syn}</div>}
       </div>
 
       <div>
-        <label>Ваше предложение</label>
-        <textarea ref={taRef} value={sentence} onChange={e=>setSentence(e.target.value)} rows={3} placeholder="Напишите предложение с этим словом..." className="w-full" disabled={!!feedback}/>
+        <label>Your sentence</label>
+        <textarea ref={taRef} value={sentence} onChange={e=>setSentence(e.target.value)} rows={3} placeholder="Write a sentence using this word..." className="w-full" disabled={!!feedback}/>
       </div>
 
       {!feedback?(
         <div className="flex gap-2">
-          <button onClick={check} disabled={!sentence.trim()} className="btn-primary px-5">Проверить</button>
-          <button onClick={next} className="btn-secondary px-4">Пропустить →</button>
+          <button onClick={check} disabled={!sentence.trim()} className="btn-primary px-5">Check</button>
+          <button onClick={next} className="btn-secondary px-4">Skip →</button>
         </div>
       ):(
         <>
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4">
             {feedback.loading
-              ? <div className="text-sm text-[var(--text-muted)]">⏳ AI проверяет предложение...</div>
+              ? <div className="text-sm text-[var(--text-muted)]">⏳ AI is reviewing your sentence...</div>
               : <div className="text-sm text-[var(--text-muted)] whitespace-pre-wrap">{feedback.text}</div>}
           </div>
           <div className="bg-amber-500/10 border border-amber-400/30 rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="text-sm">🔊 <b>Произнесите слово вслух:</b> "{w.en}"</div>
-              <button onClick={playWord} className="btn-secondary text-xs py-1.5 px-3">▶ Проговорить</button>
+              <div className="text-sm">🔊 <b>Say the word out loud:</b> "{w.en}"</div>
+              <button onClick={playWord} className="btn-secondary text-xs py-1.5 px-3">▶ Play pronunciation</button>
             </div>
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input type="checkbox" checked={said} onChange={e=>setSaid(e.target.checked)} className="w-4 h-4"/>
-              Я произнёс(ла) слово вслух
+              I said the word out loud
             </label>
           </div>
-          <button onClick={next} disabled={!said} className="btn-primary w-full py-3">Следующее слово →</button>
+          <button onClick={next} disabled={!said} className="btn-primary w-full py-3">Next word →</button>
         </>
       )}
     </div>
@@ -7502,7 +7503,7 @@ function EnglishView({ data, setData }){
   const mySentPrompt = typeof data.engMySentPrompt === 'string' ? data.engMySentPrompt : ENG_MYSENT_DEFAULT_PROMPT;
   const [rawData,setRawData]=useState(()=>{try{return JSON.parse(localStorage.getItem('eng_raw_data')||'null');}catch{return null;}});
   const [loading,setLoading]=useState(false);
-  const initStatus=()=>{try{const d=localStorage.getItem('eng_raw_data');return d?{type:'ok',text:`${JSON.parse(d).length} слов`}:{type:'',text:'Загрузите из Google Sheets'};}catch{return{type:'',text:'Загрузите из Google Sheets'};}};
+  const initStatus=()=>{try{const d=localStorage.getItem('eng_raw_data');return d?{type:'ok',text:`${JSON.parse(d).length} words`}:{type:'',text:'Load from Google Sheets'};}catch{return{type:'',text:'Load from Google Sheets'};}};
   const [status,setStatus]=useState(initStatus);
   const [engTab,setEngTab]=useState('cards');
   const [showCfg,setShowCfg]=useState(false);
@@ -7514,8 +7515,8 @@ function EnglishView({ data, setData }){
   const saveStudyPlan=(p)=>setData(d=>({...d, engStudyPlan:{ text: p.text || '', updatedAt: p.updatedAt || Date.now() }}));
   const saveMySentPrompt=(p)=>setData(d=>({...d, engMySentPrompt: p}));
 
-  // Разовая миграция: ключи, введённые до этого фикса, лежат только в
-  // localStorage этого браузера — переносим их в БД, чтобы больше не терялись.
+  // One-time migration: keys entered before this fix only live in this
+  // browser's localStorage — move them into the DB so they stop getting lost.
   useEffect(()=>{
     if(!data.engConfig){
       const legacy = engLegacyCfg();
@@ -7529,16 +7530,16 @@ function EnglishView({ data, setData }){
 
   const loadSheets=async()=>{
     if(!cfg.apiKey){setShowCfg(true);return;}
-    setLoading(true);setStatus({type:'loading',text:'Загрузка...'});
+    setLoading(true);setStatus({type:'loading',text:'Loading...'});
     try{
       const r=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent(cfg.sheetName)}?key=${cfg.apiKey}&dateTimeRenderOption=FORMATTED_STRING&valueRenderOption=UNFORMATTED_VALUE`);
       if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'HTTP '+r.status);}
       const data=await r.json();
-      if((data.values||[]).length<2) throw new Error('Нет данных в таблице');
+      if((data.values||[]).length<2) throw new Error('No data in the sheet');
       const parsed=engParseRows(data.values);
       localStorage.setItem('eng_raw_data',JSON.stringify(parsed));localStorage.setItem('eng_raw_at',new Date().toISOString());
-      setRawData(parsed);setStatus({type:'ok',text:`Загружено ${parsed.length} слов`});
-    }catch(e){setStatus({type:'err',text:'Ошибка: '+e.message});}
+      setRawData(parsed);setStatus({type:'ok',text:`Loaded ${parsed.length} words`});
+    }catch(e){setStatus({type:'err',text:'Error: '+e.message});}
     finally{setLoading(false);}
   };
 
@@ -7556,14 +7557,14 @@ function EnglishView({ data, setData }){
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            <button onClick={()=>setShowPlan(true)} className="btn-secondary text-sm py-2 px-3">План обучения</button>
+            <button onClick={()=>setShowPlan(true)} className="btn-secondary text-sm py-2 px-3">Study Plan</button>
             <button onClick={()=>setShowAI(true)} className="btn-secondary text-sm py-2 px-3">🤖 {ai.provider==='anthropic'?'Anthropic':ai.provider==='openai'?'OpenAI':'Ollama'}</button>
             <button onClick={()=>setShowCfg(true)} className="btn-secondary text-sm py-2 px-3"><Icon name="settings" size={15}/></button>
-            <button onClick={loadSheets} disabled={loading} className="btn-primary text-sm py-2 px-4">{loading?'⏳':'↻'} Загрузить</button>
+            <button onClick={loadSheets} disabled={loading} className="btn-primary text-sm py-2 px-4">{loading?'⏳':'↻'} Load</button>
           </div>
         </div>
         <div className="flex gap-2 py-3 border-b border-[var(--border)]">
-          {[['cards','🃏 Карточки'],['fill','✍ Вставить слово'],['mysentence','📝 Своё предложение'],['typing','⌨ Печать']].map(([id,l])=>(
+          {[['cards','🃏 Flashcards'],['fill','✍ Fill in the blank'],['mysentence','📝 My Sentence'],['typing','⌨ Typing']].map(([id,l])=>(
             <button key={id} onClick={()=>setEngTab(id)} className={`px-3 py-2 rounded-xl text-sm font-medium transition-all ${engTab===id?'bg-[var(--text)] text-white':'text-[var(--text-muted)] hover:text-[var(--text)]'}`}>{l}</button>
           ))}
         </div>
