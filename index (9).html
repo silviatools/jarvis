@@ -413,6 +413,11 @@ const DEFAULT_DATA = () => ({
   // «Мои планы» — личные записи календаря планировщика: их не видно гостям
   // по ссылке, они не имеют участников и живут только у владельца.
   plannerPlans: [],
+  // Кемпинг: справочник вещей/сумок/категорий и поездки с чек-листом сборов.
+  // Все три коллекции — id-массивы, LWW по updatedAt между устройствами.
+  campingCategories: [],
+  campingItems: [],
+  campingTrips: [],
   deletedIds: {},
   // План обучения English: произвольная заметка, LWW по updatedAt между устройствами
   engStudyPlan: { text: '', updatedAt: 0 },
@@ -980,6 +985,7 @@ const Icon = ({ name, size = 22 }) => {
     link: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>,
     copy: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>,
     share: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg>,
+    backpack: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20V10a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M8 21v-5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v5"/><path d="M8 10h8"/></svg>,
   };
   return icons[name] || null;
 };
@@ -14737,6 +14743,7 @@ function PlannerView({ data, setData, sub, setSub }) {
     { id: 'holidays', label: 'Праздники', icon: 'gift'     },
     { id: 'events',   label: 'События',   icon: 'star'     },
     { id: 'friends',  label: 'Друзья',    icon: 'users'    },
+    { id: 'camping',  label: 'Кемпинг',   icon: 'backpack' },
   ];
 
   return (
@@ -14767,6 +14774,7 @@ function PlannerView({ data, setData, sub, setSub }) {
       {sub === 'holidays' && <HolidaysView data={data} setData={setData} embedded />}
       {sub === 'events'   && <PlannerEventsView data={data} setData={setData} goToFriends={() => setSub('friends')} />}
       {sub === 'friends'  && <PlannerFriendsView data={data} setData={setData} />}
+      {sub === 'camping'  && <PlannerCampingView data={data} setData={setData} />}
     </div>
   );
 }
@@ -16319,6 +16327,1103 @@ function PlannerExpenseModal({ initial, participants, expenses, onSave, onClose 
         </div>
       </div>
     </Modal>
+  );
+}
+
+// ── Кемпинг ────────────────────────────────────────────────────────────────
+// Справочник вещей/сумок + чек-лист сборов в поездку. Данные живут в
+// campingCategories / campingItems / campingTrips (id-массивы, LWW sync).
+
+const campingEmptyPacking = () => ({ bags: [], items: [] });
+
+const campingNormPacking = (p) => {
+  const src = p && typeof p === 'object' ? p : {};
+  return {
+    bags: Array.isArray(src.bags) ? src.bags.map(b => ({
+      itemId: b.itemId,
+      packed: !!b.packed,
+    })).filter(b => b.itemId) : [],
+    items: Array.isArray(src.items) ? src.items.map(it => ({
+      itemId: it.itemId,
+      bagId: it.bagId || null,
+      packed: !!it.packed,
+    })).filter(it => it.itemId) : [],
+  };
+};
+
+function PlannerCampingView({ data, setData }) {
+  const [inner, setInner] = useState('catalog'); // catalog | checklist
+  const tabs = [
+    { id: 'catalog',   label: 'Справочник' },
+    { id: 'checklist', label: 'Чек лист'   },
+  ];
+  return (
+    <div>
+      <div className="flex gap-1.5 mb-4">
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setInner(t.id)}
+            className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all ${
+              inner === t.id
+                ? 'bg-[var(--bg)] border border-[var(--border-strong)] text-[var(--text)]'
+                : 'text-[var(--text-muted)] hover:text-[var(--text)]'
+            }`}
+          >{t.label}</button>
+        ))}
+      </div>
+      {inner === 'catalog'   && <CampingCatalogView data={data} setData={setData} />}
+      {inner === 'checklist' && <CampingChecklistView data={data} setData={setData} />}
+    </div>
+  );
+}
+
+// ── Справочник ─────────────────────────────────────────────────────────────
+function CampingCatalogView({ data, setData }) {
+  const [editing, setEditing] = useState(null); // null | item | 'new'
+  const items = data.campingItems || [];
+  const categories = data.campingCategories || [];
+  const catById = useMemo(
+    () => Object.fromEntries(categories.map(c => [c.id, c])),
+    [categories]);
+
+  const ensureCategory = (name) => {
+    const trimmed = (name || '').trim();
+    if (!trimmed) return null;
+    const existing = (getAppDataSnapshot()?.campingCategories || categories)
+      .find(c => (c.name || '').toLowerCase() === trimmed.toLowerCase());
+    if (existing) return existing;
+    const cat = { id: crypto.randomUUID(), name: trimmed, createdAt: Date.now() };
+    setData(d => {
+      const list = d.campingCategories || [];
+      if (list.some(c => (c.name || '').toLowerCase() === trimmed.toLowerCase())) return d;
+      return { ...d, campingCategories: [...list, cat] };
+    });
+    return cat;
+  };
+
+  const saveItem = (item, categoryName) => {
+    const cat = ensureCategory(categoryName);
+    if (!cat) return alert('Укажите категорию');
+    const entry = {
+      ...item,
+      name: item.name.trim(),
+      categoryId: cat.id,
+      isBag: !!item.isBag,
+    };
+    if (!entry.name) return alert('Введите название');
+    setData(d => {
+      const list = d.campingItems || [];
+      const exists = list.some(x => x.id === entry.id);
+      return {
+        ...d,
+        campingItems: exists ? list.map(x => x.id === entry.id ? entry : x) : [...list, entry],
+      };
+    });
+    setEditing(null);
+  };
+
+  const removeItem = (it) => {
+    if (!confirm(`Удалить «${it.name}» из справочника?`)) return;
+    setData(d => ({
+      ...d,
+      campingItems: (d.campingItems || []).filter(x => x.id !== it.id),
+      deletedIds: withDeletedId(d, 'campingItems', it.id),
+    }));
+  };
+
+  const grouped = useMemo(() => {
+    const bags = items.filter(i => i.isBag);
+    const goods = items.filter(i => !i.isBag);
+    const byCat = {};
+    goods.forEach(it => {
+      const key = it.categoryId || '_none';
+      if (!byCat[key]) byCat[key] = [];
+      byCat[key].push(it);
+    });
+    Object.keys(byCat).forEach(k => byCat[k].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ru')));
+    bags.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ru'));
+    const catOrder = [...categories]
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ru'))
+      .map(c => c.id)
+      .filter(id => byCat[id]);
+    if (byCat._none) catOrder.push('_none');
+    // категории вещей, которых уже нет в справочнике категорий
+    Object.keys(byCat).forEach(id => {
+      if (id !== '_none' && !catOrder.includes(id)) catOrder.push(id);
+    });
+    return { bags, byCat, catOrder };
+  }, [items, categories]);
+
+  if (editing) {
+    return (
+      <CampingItemForm
+        initial={editing === 'new'
+          ? { id: crypto.randomUUID(), name: '', categoryId: '', isBag: false }
+          : editing}
+        categories={categories}
+        ensureCategory={ensureCategory}
+        onSave={saveItem}
+        onCancel={() => setEditing(null)}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <button
+        onClick={() => setEditing('new')}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-4"
+      >
+        <Icon name="plus" size={18} /> Добавить
+      </button>
+
+      {items.length === 0 ? (
+        <EmptyState title="Справочник пуст" text="Добавьте вещи и сумки — потом соберёте их в поездку" />
+      ) : (
+        <div className="space-y-5">
+          {grouped.bags.length > 0 && (
+            <div>
+              <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2 flex items-center gap-2">
+                <Icon name="backpack" size={14} /> Сумки
+              </div>
+              <div className="space-y-2">
+                {grouped.bags.map(it => (
+                  <CampingCatalogRow
+                    key={it.id}
+                    item={it}
+                    categoryName={catById[it.categoryId]?.name}
+                    onEdit={() => setEditing(it)}
+                    onRemove={() => removeItem(it)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+          {grouped.catOrder.map(cid => (
+            <div key={cid}>
+              <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">
+                {cid === '_none' ? 'Без категории' : (catById[cid]?.name || 'Категория')}
+              </div>
+              <div className="space-y-2">
+                {grouped.byCat[cid].map(it => (
+                  <CampingCatalogRow
+                    key={it.id}
+                    item={it}
+                    categoryName={catById[it.categoryId]?.name}
+                    onEdit={() => setEditing(it)}
+                    onRemove={() => removeItem(it)}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CampingCatalogRow({ item, categoryName, onEdit, onRemove }) {
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-3.5 flex items-center gap-3">
+      <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${
+        item.isBag ? 'bg-[var(--text)] text-white' : 'bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]'
+      }`}>
+        <Icon name={item.isBag ? 'backpack' : 'archive'} size={16} />
+      </div>
+      <button onClick={onEdit} className="flex-1 min-w-0 text-left">
+        <div className="font-medium truncate">{item.name}</div>
+        <div className="text-xs text-[var(--text-subtle)] truncate">
+          {item.isBag ? 'Сумка' : 'Вещь'}
+          {categoryName ? ` · ${categoryName}` : ''}
+        </div>
+      </button>
+      <div className="flex gap-1 flex-shrink-0">
+        <button onClick={onEdit} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+          <Icon name="edit" size={15} />
+        </button>
+        <button onClick={onRemove} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500">
+          <Icon name="trash" size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CampingItemForm({ initial, categories, ensureCategory, onSave, onCancel }) {
+  const [name, setName] = useState(initial.name || '');
+  const [isBag, setIsBag] = useState(!!initial.isBag);
+  const initialCatName = (categories.find(c => c.id === initial.categoryId) || {}).name || '';
+  const [catInput, setCatInput] = useState(initialCatName);
+  const [catOpen, setCatOpen] = useState(false);
+  const dirtyRef = useRef(false);
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setCatOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  const markDirty = () => { dirtyRef.current = true; };
+
+  const filtered = useMemo(() => {
+    const q = catInput.trim().toLowerCase();
+    const list = [...categories].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ru'));
+    if (!q) return list;
+    return list.filter(c => (c.name || '').toLowerCase().includes(q));
+  }, [categories, catInput]);
+
+  const exactMatch = categories.some(c => (c.name || '').toLowerCase() === catInput.trim().toLowerCase());
+
+  const commitCategory = (raw) => {
+    const trimmed = (raw || catInput).trim();
+    if (!trimmed) return;
+    setCatInput(trimmed);
+    const cat = ensureCategory(trimmed);
+    if (cat) setCatInput(cat.name);
+    setCatOpen(false);
+  };
+
+  const requestClose = () => {
+    if (dirtyRef.current || name.trim() !== (initial.name || '') || isBag !== !!initial.isBag
+        || catInput.trim() !== initialCatName) {
+      if (!confirm('Закрыть без сохранения? Изменения будут потеряны.')) return;
+    }
+    onCancel();
+  };
+
+  const submit = () => {
+    if (!name.trim()) return alert('Введите название');
+    if (!catInput.trim()) return alert('Укажите категорию');
+    commitCategory(catInput);
+    onSave({ ...initial, name: name.trim(), isBag }, catInput.trim());
+  };
+
+  return (
+    <div className="fade-in space-y-5">
+      <div className="flex items-center gap-3">
+        <button onClick={requestClose} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]" aria-label="Закрыть">
+          <Icon name="x" size={20} />
+        </button>
+        <h2 className="font-display text-2xl">{initial.name ? 'Вещь' : 'Новая вещь'}</h2>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div>
+          <label>Название</label>
+          <input
+            value={name}
+            onChange={e => { markDirty(); setName(e.target.value); }}
+            placeholder="Например, Спальник"
+            autoFocus
+          />
+        </div>
+
+        <div ref={wrapRef} className="relative">
+          <label>Категория</label>
+          <input
+            value={catInput}
+            onChange={e => { markDirty(); setCatInput(e.target.value); setCatOpen(true); }}
+            onFocus={() => setCatOpen(true)}
+            onBlur={() => {
+              // даём клику по списку сработать раньше blur-закрытия
+              setTimeout(() => {
+                if (catInput.trim() && !exactMatch) commitCategory(catInput);
+              }, 120);
+            }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commitCategory(catInput);
+              }
+            }}
+            placeholder="Введите или выберите"
+            autoComplete="off"
+          />
+          {catOpen && (filtered.length > 0 || (catInput.trim() && !exactMatch)) && (
+            <div className="absolute z-20 left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-[var(--surface)] border border-[var(--border)] rounded-xl shadow-lg">
+              {filtered.map(c => (
+                <button
+                  key={c.id}
+                  type="button"
+                  className="w-full text-left px-3 py-2.5 text-sm hover:bg-[var(--bg)]"
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => { markDirty(); setCatInput(c.name); setCatOpen(false); }}
+                >{c.name}</button>
+              ))}
+              {catInput.trim() && !exactMatch && (
+                <button
+                  type="button"
+                  className="w-full text-left px-3 py-2.5 text-sm border-t border-[var(--border)] text-[var(--text)] font-medium hover:bg-[var(--bg)]"
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => commitCategory(catInput)}
+                >Создать «{catInput.trim()}»</button>
+              )}
+            </div>
+          )}
+          <div className="text-[11px] text-[var(--text-subtle)] mt-1">
+            Новая категория сохраняется сразу и появится в списке.
+          </div>
+        </div>
+
+        <label className="flex items-center gap-3 cursor-pointer !normal-case !tracking-normal !text-sm !text-[var(--text)] !font-normal !mb-0">
+          <input
+            type="checkbox"
+            className="!w-auto accent-[var(--text)]"
+            checked={isBag}
+            onChange={e => { markDirty(); setIsBag(e.target.checked); }}
+          />
+          Это сумка
+        </label>
+        {isBag && (
+          <div className="text-xs text-[var(--text-muted)] -mt-2">
+            В сумку можно будет класть другие вещи при сборах в поездку.
+          </div>
+        )}
+      </div>
+
+      <div className="flex gap-3">
+        <button onClick={requestClose} className="btn-secondary flex-1">Отмена</button>
+        <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Чек лист / поездки ─────────────────────────────────────────────────────
+function CampingChecklistView({ data, setData }) {
+  const [editingTrip, setEditingTrip] = useState(null); // null | 'new' | trip
+  const [openTripId, setOpenTripId] = useState(null);
+  const trips = [...(data.campingTrips || [])].sort((a, b) => (b.startDate || '').localeCompare(a.startDate || ''));
+
+  const saveTrip = (trip) => {
+    const entry = {
+      ...trip,
+      name: trip.name.trim(),
+      location: (trip.location || '').trim(),
+      description: (trip.description || '').trim(),
+      packing: campingNormPacking(trip.packing),
+    };
+    if (!entry.name) return alert('Введите наименование');
+    setData(d => {
+      const list = d.campingTrips || [];
+      const exists = list.some(x => x.id === entry.id);
+      return {
+        ...d,
+        campingTrips: exists ? list.map(x => x.id === entry.id ? entry : x) : [...list, entry],
+      };
+    });
+    setEditingTrip(null);
+    setOpenTripId(entry.id);
+  };
+
+  const removeTrip = (trip) => {
+    if (!confirm(`Удалить поездку «${trip.name}»?`)) return;
+    setData(d => ({
+      ...d,
+      campingTrips: (d.campingTrips || []).filter(x => x.id !== trip.id),
+      deletedIds: withDeletedId(d, 'campingTrips', trip.id),
+    }));
+    if (openTripId === trip.id) setOpenTripId(null);
+  };
+
+  const updateTrip = (tripId, patch) => {
+    setData(d => ({
+      ...d,
+      campingTrips: (d.campingTrips || []).map(t => t.id === tripId ? { ...t, ...patch } : t),
+    }));
+  };
+
+  if (editingTrip) {
+    return (
+      <CampingTripForm
+        initial={editingTrip === 'new'
+          ? { id: crypto.randomUUID(), name: '', startDate: '', endDate: '', location: '', description: '', packing: campingEmptyPacking(), createdAt: Date.now() }
+          : editingTrip}
+        onSave={saveTrip}
+        onCancel={() => setEditingTrip(null)}
+      />
+    );
+  }
+
+  const openTrip = openTripId ? trips.find(t => t.id === openTripId) : null;
+  if (openTrip) {
+    return (
+      <CampingTripDetail
+        trip={openTrip}
+        data={data}
+        onBack={() => setOpenTripId(null)}
+        onEdit={() => setEditingTrip(openTrip)}
+        onDelete={() => removeTrip(openTrip)}
+        onUpdate={(patch) => updateTrip(openTrip.id, patch)}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <button
+        onClick={() => setEditingTrip('new')}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-4"
+      >
+        <Icon name="plus" size={18} /> Создать поездку
+      </button>
+
+      {trips.length === 0 ? (
+        <EmptyState title="Нет поездок" text="Создайте поездку и соберите вещи по сумкам" />
+      ) : (
+        <div className="space-y-2">
+          {trips.map(t => {
+            const packing = campingNormPacking(t.packing);
+            const total = packing.bags.length + packing.items.length;
+            const done = packing.bags.filter(b => b.packed).length + packing.items.filter(i => i.packed).length;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setOpenTripId(t.id)}
+                className="w-full text-left bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-3.5 hover:border-[var(--border-strong)] transition-colors"
+              >
+                <div className="font-medium">{t.name}</div>
+                <div className="text-xs text-[var(--text-subtle)] mt-1">
+                  {[campingFmtTripDates(t), t.location].filter(Boolean).join(' · ') || 'без дат'}
+                  {total > 0 ? ` · собрано ${done}/${total}` : ''}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const campingFmtTripDates = (t) => {
+  if (!t.startDate && !t.endDate) return '';
+  const a = t.startDate ? plannerFmtDate(t.startDate) : '';
+  const b = t.endDate ? plannerFmtDate(t.endDate) : '';
+  if (a && b && a !== b) return `${a} – ${b}`;
+  return a || b;
+};
+
+function CampingTripForm({ initial, onSave, onCancel }) {
+  const [f, setF] = useState({
+    name: initial.name || '',
+    startDate: initial.startDate || '',
+    endDate: initial.endDate || '',
+    location: initial.location || '',
+    description: initial.description || '',
+  });
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const dirty = useRef(false);
+
+  const requestClose = () => {
+    if (dirty.current && !confirm('Закрыть без сохранения? Изменения будут потеряны.')) return;
+    onCancel();
+  };
+
+  const submit = () => {
+    if (!f.name.trim()) return alert('Введите наименование');
+    onSave({
+      ...initial,
+      name: f.name.trim(),
+      startDate: f.startDate,
+      endDate: f.endDate,
+      location: f.location.trim(),
+      description: f.description.trim(),
+      packing: campingNormPacking(initial.packing),
+      createdAt: initial.createdAt || Date.now(),
+    });
+  };
+
+  return (
+    <div className="fade-in space-y-5">
+      <div className="flex items-center gap-3">
+        <button onClick={requestClose} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]" aria-label="Закрыть">
+          <Icon name="x" size={20} />
+        </button>
+        <h2 className="font-display text-2xl">{initial.name ? 'Поездка' : 'Новая поездка'}</h2>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div>
+          <label>Наименование</label>
+          <input value={f.name} onChange={e => { dirty.current = true; set('name', e.target.value); }} placeholder="Алтай, май" autoFocus />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label>Начало</label>
+            <input type="date" value={f.startDate} onChange={e => { dirty.current = true; set('startDate', e.target.value); }} />
+          </div>
+          <div>
+            <label>Конец</label>
+            <input type="date" value={f.endDate} onChange={e => { dirty.current = true; set('endDate', e.target.value); }} />
+          </div>
+        </div>
+        <div>
+          <label>Местоположение</label>
+          <input value={f.location} onChange={e => { dirty.current = true; set('location', e.target.value); }} placeholder="Озеро, кемпинг…" />
+        </div>
+        <div>
+          <label>Описание</label>
+          <textarea
+            value={f.description}
+            onChange={e => { dirty.current = true; set('description', e.target.value); }}
+            rows={3}
+            placeholder="Заметки о поездке"
+            className="w-full"
+          />
+        </div>
+      </div>
+
+      <div className="flex gap-3">
+        <button onClick={requestClose} className="btn-secondary flex-1">Отмена</button>
+        <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+      </div>
+    </div>
+  );
+}
+
+function CampingTripDetail({ trip, data, onBack, onEdit, onDelete, onUpdate }) {
+  const [packingOpen, setPackingOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState({}); // bagItemId -> bool (true = collapsed)
+  const itemsById = useMemo(
+    () => Object.fromEntries((data.campingItems || []).map(i => [i.id, i])),
+    [data.campingItems]);
+  const packing = campingNormPacking(trip.packing);
+
+  const toggleItemPacked = (itemId) => {
+    const next = {
+      ...packing,
+      items: packing.items.map(it => it.itemId === itemId ? { ...it, packed: !it.packed } : it),
+    };
+    onUpdate({ packing: next });
+  };
+  const toggleBagPacked = (bagItemId) => {
+    const next = {
+      ...packing,
+      bags: packing.bags.map(b => b.itemId === bagItemId ? { ...b, packed: !b.packed } : b),
+    };
+    onUpdate({ packing: next });
+  };
+
+  const savePacking = (nextPacking) => {
+    // сохраняем отметки packed с прошлого расклада, если вещь/сумка остались
+    const prevItemPacked = Object.fromEntries(packing.items.map(i => [i.itemId, i.packed]));
+    const prevBagPacked = Object.fromEntries(packing.bags.map(b => [b.itemId, b.packed]));
+    const merged = {
+      bags: nextPacking.bags.map(b => ({
+        itemId: b.itemId,
+        packed: !!prevBagPacked[b.itemId],
+      })),
+      items: nextPacking.items.map(it => ({
+        itemId: it.itemId,
+        bagId: it.bagId || null,
+        packed: !!prevItemPacked[it.itemId],
+      })),
+    };
+    onUpdate({ packing: merged });
+    setPackingOpen(false);
+  };
+
+  if (packingOpen) {
+    return (
+      <CampingPackingEditor
+        catalogItems={data.campingItems || []}
+        categories={data.campingCategories || []}
+        initial={packing}
+        onSave={savePacking}
+        onClose={() => setPackingOpen(false)}
+      />
+    );
+  }
+
+  const loose = packing.items.filter(it => !it.bagId);
+  const inBag = (bagId) => packing.items.filter(it => it.bagId === bagId);
+  const total = packing.bags.length + packing.items.length;
+  const done = packing.bags.filter(b => b.packed).length + packing.items.filter(i => i.packed).length;
+
+  return (
+    <div className="fade-in space-y-4">
+      <div className="flex items-center gap-3">
+        <button onClick={onBack} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]">
+          <Icon name="chevronLeft" size={20} />
+        </button>
+        <div className="flex-1 min-w-0">
+          <div className="font-display text-2xl truncate">{trip.name}</div>
+          <div className="text-xs text-[var(--text-subtle)] truncate">
+            {[campingFmtTripDates(trip), trip.location].filter(Boolean).join(' · ')}
+          </div>
+        </div>
+        <button onClick={onEdit} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={16} /></button>
+        <button onClick={onDelete} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={16} /></button>
+      </div>
+
+      {trip.description && (
+        <div className="text-sm text-[var(--text-muted)] whitespace-pre-wrap bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+          {trip.description}
+        </div>
+      )}
+
+      <button
+        onClick={() => setPackingOpen(true)}
+        className="btn-primary w-full flex items-center justify-center gap-2"
+      >
+        <Icon name="plus" size={18} /> Добавить сумки и вещи
+      </button>
+
+      {total === 0 ? (
+        <EmptyState title="Пока пусто" text="Добавьте сумки и вещи из справочника" />
+      ) : (
+        <div className="space-y-3">
+          <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wider">
+            Собрано {done} из {total}
+          </div>
+
+          {packing.bags.map(b => {
+            const bag = itemsById[b.itemId];
+            const kids = inBag(b.itemId);
+            const isCollapsed = !!collapsed[b.itemId];
+            const kidsDone = kids.filter(k => k.packed).length;
+            return (
+              <div key={b.itemId} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+                <div className="flex items-center gap-3 p-3.5">
+                  <button
+                    onClick={() => toggleBagPacked(b.itemId)}
+                    className={`check-box ${b.packed ? 'checked' : ''}`}
+                    style={{ width: 24, height: 24 }}
+                    aria-label="Сумка собрана"
+                  >
+                    <Icon name="check" size={14} />
+                  </button>
+                  <button
+                    onClick={() => setCollapsed(c => ({ ...c, [b.itemId]: !c[b.itemId] }))}
+                    className="flex-1 min-w-0 text-left flex items-center gap-2"
+                  >
+                    <Icon name="backpack" size={16} />
+                    <span className={`font-medium truncate ${b.packed ? 'line-through text-[var(--text-subtle)]' : ''}`}>
+                      {bag?.name || 'Удалённая сумка'}
+                    </span>
+                    <span className="text-xs text-[var(--text-subtle)] flex-shrink-0">{kidsDone}/{kids.length}</span>
+                    <span className={`text-[var(--text-subtle)] transition-transform ${isCollapsed ? '' : 'rotate-180'}`}>
+                      <Icon name="chevronDown" size={16} />
+                    </span>
+                  </button>
+                </div>
+                {!isCollapsed && (
+                  <div className="border-t border-[var(--border)] px-3.5 py-2 space-y-1">
+                    {kids.length === 0 ? (
+                      <div className="text-xs text-[var(--text-subtle)] py-2">Пусто</div>
+                    ) : kids.map(it => {
+                      const item = itemsById[it.itemId];
+                      return (
+                        <button
+                          key={it.itemId}
+                          onClick={() => toggleItemPacked(it.itemId)}
+                          className="w-full flex items-center gap-3 py-2 text-left"
+                        >
+                          <span className={`check-box ${it.packed ? 'checked' : ''}`} style={{ width: 22, height: 22 }}>
+                            <Icon name="check" size={12} />
+                          </span>
+                          <span className={`text-sm flex-1 truncate ${it.packed ? 'line-through text-[var(--text-subtle)]' : ''}`}>
+                            {item?.name || 'Удалённая вещь'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {loose.length > 0 && (
+            <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-3.5 space-y-1">
+              <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">Без сумки</div>
+              {loose.map(it => {
+                const item = itemsById[it.itemId];
+                return (
+                  <button
+                    key={it.itemId}
+                    onClick={() => toggleItemPacked(it.itemId)}
+                    className="w-full flex items-center gap-3 py-2 text-left"
+                  >
+                    <span className={`check-box ${it.packed ? 'checked' : ''}`} style={{ width: 22, height: 22 }}>
+                      <Icon name="check" size={12} />
+                    </span>
+                    <span className={`text-sm flex-1 truncate ${it.packed ? 'line-through text-[var(--text-subtle)]' : ''}`}>
+                      {item?.name || 'Удалённая вещь'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Редактор раскладки: вещи слева (по категориям), сумки справа.
+// Desktop — drag&drop; touch — tap вещь → tap сумку / «Без сумки».
+// Грязное состояние блокирует закрытие крестиком без подтверждения.
+function CampingPackingEditor({ catalogItems, categories, initial, onSave, onClose }) {
+  const [bags, setBags] = useState(() => (initial.bags || []).map(b => b.itemId));
+  const [assign, setAssign] = useState(() => {
+    const m = {};
+    (initial.items || []).forEach(it => { m[it.itemId] = it.bagId || null; });
+    return m; // itemId -> bagId | null (в поездке) | undefined (не взята)
+  });
+  const [dirty, setDirty] = useState(false);
+  const [selected, setSelected] = useState(null); // itemId for tap-assign
+  const [dragItem, setDragItem] = useState(null);
+  const [dragOver, setDragOver] = useState(null); // bagId | '__loose__' | '__bags__'
+  const dirtyRef = useRef(false);
+
+  const catById = useMemo(
+    () => Object.fromEntries((categories || []).map(c => [c.id, c])),
+    [categories]);
+  const bagCatalog = useMemo(
+    () => (catalogItems || []).filter(i => i.isBag).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ru')),
+    [catalogItems]);
+  const goodsCatalog = useMemo(
+    () => (catalogItems || []).filter(i => !i.isBag).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ru')),
+    [catalogItems]);
+
+  const markDirty = () => { dirtyRef.current = true; setDirty(true); };
+
+  useEffect(() => {
+    const onBeforeUnload = (e) => {
+      if (!dirtyRef.current) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') requestClose();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, []);
+
+  const requestClose = () => {
+    if (dirtyRef.current) {
+      if (!confirm('Закрыть без сохранения? Выбранные вещи и раскладка по сумкам будут потеряны.')) return;
+    }
+    dirtyRef.current = false;
+    onClose();
+  };
+
+  const toggleBag = (bagId) => {
+    markDirty();
+    setBags(prev => {
+      if (prev.includes(bagId)) {
+        // убираем сумку — вещи из неё становятся «не взяты»
+        setAssign(a => {
+          const next = { ...a };
+          Object.keys(next).forEach(id => {
+            if (next[id] === bagId) delete next[id];
+          });
+          return next;
+        });
+        return prev.filter(id => id !== bagId);
+      }
+      return [...prev, bagId];
+    });
+  };
+
+  const setItemAssign = (itemId, bagIdOrNull) => {
+    markDirty();
+    setAssign(a => ({ ...a, [itemId]: bagIdOrNull }));
+    setSelected(null);
+  };
+
+  const unselectItem = (itemId) => {
+    markDirty();
+    setAssign(a => {
+      const next = { ...a };
+      delete next[itemId];
+      return next;
+    });
+    setSelected(null);
+  };
+
+  const onItemTap = (itemId) => {
+    // Если уже выбрана — снять; иначе выбрать для назначения
+    if (selected === itemId) { setSelected(null); return; }
+    setSelected(itemId);
+  };
+
+  const dropOn = (target) => {
+    if (!dragItem) return;
+    if (dragItem.kind === 'bag') {
+      if (target === '__bags__' || target === 'take-bag') {
+        if (!bags.includes(dragItem.id)) {
+          markDirty();
+          setBags(b => [...b, dragItem.id]);
+        }
+      }
+    } else if (dragItem.kind === 'item') {
+      if (target === '__loose__') setItemAssign(dragItem.id, null);
+      else if (target && target !== '__bags__') {
+        // target = bagId — сумка должна быть в поездке
+        if (!bags.includes(target)) {
+          markDirty();
+          setBags(b => [...b, target]);
+        }
+        setItemAssign(dragItem.id, target);
+      }
+    }
+    setDragItem(null);
+    setDragOver(null);
+  };
+
+  const submit = () => {
+    const takenItems = Object.keys(assign).filter(id => assign[id] !== undefined);
+    if (bags.length === 0 && takenItems.length === 0) {
+      return alert('Выберите хотя бы одну вещь или сумку');
+    }
+    dirtyRef.current = false;
+    onSave({
+      bags: bags.map(itemId => ({ itemId, packed: false })),
+      items: takenItems.map(itemId => ({
+        itemId,
+        bagId: assign[itemId],
+        packed: false,
+      })),
+    });
+  };
+
+  const goodsByCat = useMemo(() => {
+    const map = {};
+    goodsCatalog.forEach(it => {
+      const k = it.categoryId || '_none';
+      if (!map[k]) map[k] = [];
+      map[k].push(it);
+    });
+    const order = [...(categories || [])]
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ru'))
+      .map(c => c.id)
+      .filter(id => map[id]);
+    if (map._none) order.push('_none');
+    Object.keys(map).forEach(id => { if (id !== '_none' && !order.includes(id)) order.push(id); });
+    return { map, order };
+  }, [goodsCatalog, categories]);
+
+  const takenCount = Object.keys(assign).length;
+
+  return (
+    <div className="fade-in space-y-4">
+      <div className="flex items-center gap-3">
+        <button onClick={requestClose} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]" aria-label="Закрыть">
+          <Icon name="x" size={20} />
+        </button>
+        <div className="flex-1 min-w-0">
+          <h2 className="font-display text-2xl">Сумки и вещи</h2>
+          <div className="text-xs text-[var(--text-subtle)]">
+            Перетащите вещь в сумку или нажмите вещь → сумку. {dirty ? 'Есть несохранённые изменения.' : ''}
+          </div>
+        </div>
+      </div>
+
+      {selected && (
+        <div className="bg-[var(--text)] text-white rounded-xl px-3 py-2 text-sm flex items-center justify-between gap-2">
+          <span className="truncate">Выбрано: {(catalogItems.find(i => i.id === selected) || {}).name}</span>
+          <div className="flex gap-2 flex-shrink-0">
+            <button
+              onClick={() => setItemAssign(selected, null)}
+              className="px-2 py-1 rounded-lg bg-white/15 text-xs"
+            >Без сумки</button>
+            <button onClick={() => setSelected(null)} className="px-2 py-1 rounded-lg bg-white/15 text-xs">Отмена</button>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Вещи */}
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 min-h-[200px]">
+          <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-3">Вещи по категориям</div>
+          {goodsCatalog.length === 0 ? (
+            <div className="text-sm text-[var(--text-subtle)]">В справочнике нет вещей. Добавьте их во вкладке «Справочник».</div>
+          ) : (
+            <div className="space-y-4">
+              {goodsByCat.order.map(cid => (
+                <div key={cid}>
+                  <div className="text-xs font-medium text-[var(--text-muted)] mb-1.5">
+                    {cid === '_none' ? 'Без категории' : (catById[cid]?.name || 'Категория')}
+                  </div>
+                  <div className="space-y-1.5">
+                    {goodsByCat.map[cid].map(it => {
+                      const taken = Object.prototype.hasOwnProperty.call(assign, it.id);
+                      const bagId = assign[it.id];
+                      const bagName = bagId ? (bagCatalog.find(b => b.id === bagId) || {}).name : null;
+                      return (
+                        <div
+                          key={it.id}
+                          draggable
+                          onDragStart={() => setDragItem({ kind: 'item', id: it.id })}
+                          onDragEnd={() => { setDragItem(null); setDragOver(null); }}
+                          onClick={() => onItemTap(it.id)}
+                          className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border cursor-grab active:cursor-grabbing select-none transition-all ${
+                            selected === it.id
+                              ? 'border-[var(--text)] bg-[var(--bg)] ring-2 ring-[var(--text)]/10'
+                              : taken
+                                ? 'border-[var(--border-strong)] bg-[var(--bg)]'
+                                : 'border-[var(--border)] hover:border-[var(--border-strong)]'
+                          }`}
+                        >
+                          <Icon name="archive" size={14} />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium truncate">{it.name}</div>
+                            {taken && (
+                              <div className="text-[11px] text-[var(--text-subtle)] truncate">
+                                {bagName ? `→ ${bagName}` : 'без сумки'}
+                              </div>
+                            )}
+                          </div>
+                          {taken && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); unselectItem(it.id); }}
+                              className="p-1 rounded-lg text-[var(--text-subtle)] hover:text-red-500"
+                              title="Убрать из поездки"
+                            >
+                              <Icon name="x" size={14} />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Сумки + зона «без сумки» */}
+        <div className="space-y-3">
+          <div
+            className={`bg-[var(--surface)] border rounded-2xl p-4 min-h-[120px] transition-all ${
+              dragOver === '__bags__' ? 'border-[var(--text)] ring-2 ring-[var(--text)]/10' : 'border-[var(--border)]'
+            }`}
+            onDragOver={e => { e.preventDefault(); setDragOver('__bags__'); }}
+            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(null); }}
+            onDrop={e => { e.preventDefault(); dropOn('__bags__'); }}
+          >
+            <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-3 flex items-center gap-2">
+              <Icon name="backpack" size={14} /> Сумки
+            </div>
+            {bagCatalog.length === 0 ? (
+              <div className="text-sm text-[var(--text-subtle)]">Нет сумок в справочнике. Отметьте вещь галочкой «Это сумка».</div>
+            ) : (
+              <div className="space-y-2">
+                {bagCatalog.map(bag => {
+                  const onTrip = bags.includes(bag.id);
+                  const kids = Object.entries(assign).filter(([, bid]) => bid === bag.id);
+                  return (
+                    <div
+                      key={bag.id}
+                      onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragOver(bag.id); }}
+                      onDrop={e => { e.preventDefault(); e.stopPropagation(); dropOn(bag.id); }}
+                      onClick={() => {
+                        if (selected) {
+                          if (!onTrip) toggleBag(bag.id);
+                          setItemAssign(selected, bag.id);
+                        } else {
+                          toggleBag(bag.id);
+                        }
+                      }}
+                      className={`rounded-xl border p-3 transition-all cursor-pointer ${
+                        dragOver === bag.id
+                          ? 'border-[var(--text)] bg-[var(--bg)] ring-2 ring-[var(--text)]/10'
+                          : onTrip
+                            ? 'border-[var(--border-strong)] bg-[var(--bg)]'
+                            : 'border-dashed border-[var(--border)]'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          className="!w-auto accent-[var(--text)]"
+                          checked={onTrip}
+                          onChange={() => toggleBag(bag.id)}
+                          onClick={e => e.stopPropagation()}
+                        />
+                        <span className="font-medium text-sm flex-1 truncate">{bag.name}</span>
+                        {onTrip && <span className="text-xs text-[var(--text-subtle)]">{kids.length}</span>}
+                      </div>
+                      {onTrip && kids.length > 0 && (
+                        <div className="mt-2 space-y-1 pl-6">
+                          {kids.map(([itemId]) => {
+                            const it = goodsCatalog.find(g => g.id === itemId);
+                            return (
+                              <div key={itemId} className="text-xs text-[var(--text-muted)] flex items-center justify-between gap-2">
+                                <span className="truncate">{it?.name || itemId}</span>
+                                <button
+                                  onClick={e => { e.stopPropagation(); unselectItem(itemId); }}
+                                  className="text-[var(--text-subtle)] hover:text-red-500"
+                                ><Icon name="x" size={12} /></button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {selected && (
+                        <div className="text-[11px] text-[var(--text-subtle)] mt-1.5">
+                          Нажмите, чтобы положить сюда
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div
+            className={`bg-[var(--surface)] border rounded-2xl p-4 transition-all ${
+              dragOver === '__loose__' ? 'border-[var(--text)] ring-2 ring-[var(--text)]/10' : 'border-dashed border-[var(--border)]'
+            }`}
+            onDragOver={e => { e.preventDefault(); setDragOver('__loose__'); }}
+            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(null); }}
+            onDrop={e => { e.preventDefault(); dropOn('__loose__'); }}
+            onClick={() => { if (selected) setItemAssign(selected, null); }}
+          >
+            <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">Без сумки</div>
+            <div className="text-xs text-[var(--text-muted)] mb-2">
+              Палатка и крупное — перетащите сюда или нажмите, когда вещь выбрана.
+            </div>
+            <div className="space-y-1">
+              {Object.entries(assign).filter(([, bid]) => bid === null).map(([itemId]) => {
+                const it = goodsCatalog.find(g => g.id === itemId);
+                return (
+                  <div key={itemId} className="flex items-center justify-between gap-2 text-sm py-1">
+                    <span className="truncate">{it?.name || itemId}</span>
+                    <button onClick={e => { e.stopPropagation(); unselectItem(itemId); }} className="text-[var(--text-subtle)] hover:text-red-500">
+                      <Icon name="x" size={14} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex gap-3 sticky bottom-2 bg-[var(--bg)]/90 backdrop-blur py-2">
+        <button onClick={requestClose} className="btn-secondary flex-1">Отмена</button>
+        <button onClick={submit} className="btn-primary flex-1">
+          Сохранить{takenCount || bags.length ? ` (${bags.length} сум., ${takenCount} в.)` : ''}
+        </button>
+      </div>
+    </div>
   );
 }
 
