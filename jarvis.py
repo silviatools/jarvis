@@ -727,12 +727,17 @@ def get_checklist_entry(app: dict, date_iso: str) -> dict | None:
     return None
 
 
+def active_checklist_fields(app: dict) -> list:
+    """Checklist fields, excluding archived ones (bot never asks about those)."""
+    return [f for f in (app.get("dailyChecklistFields") or []) if not f.get("archived")]
+
+
 def save_checklist_answer(date_iso: str, field_idx: int, opt_idx: int) -> tuple[str, str] | None:
     """Save one checklist answer. Returns (field_label, option_text) or None."""
     import uuid as _uuid
     with APP_DATA_LOCK:
         app = load_app_data()
-        fields = app.get("dailyChecklistFields") or []
+        fields = active_checklist_fields(app)
         if field_idx < 0 or field_idx >= len(fields):
             return None
         field = fields[field_idx]
@@ -759,7 +764,7 @@ def save_checklist_answer(date_iso: str, field_idx: int, opt_idx: int) -> tuple[
 
 
 def next_unanswered_field_idx(app: dict, date_iso: str) -> int | None:
-    fields = app.get("dailyChecklistFields") or []
+    fields = active_checklist_fields(app)
     entry = get_checklist_entry(app, date_iso)
     answered = set((entry or {}).get("answers", {}).keys())
     for i, f in enumerate(fields):
@@ -778,7 +783,7 @@ def checklist_keyboard(date_iso: str, field_idx: int, field: dict) -> dict:
 
 def send_checklist_question(token: str, chat_id: int, date_iso: str, field_idx: int | None = None):
     app = load_app_data()
-    fields = app.get("dailyChecklistFields") or []
+    fields = active_checklist_fields(app)
     if not fields:
         return
     if field_idx is None:
@@ -1126,7 +1131,7 @@ def _tick():
     # ── Daily checklist reminder ───────────────────────────────────────────
     try:
         checklist_reminder = app_data_raw.get("dailyChecklistReminder") or {}
-        checklist_fields = app_data_raw.get("dailyChecklistFields") or []
+        checklist_fields = active_checklist_fields(app_data_raw)
         cfg_time = str(checklist_reminder.get("time", "")).strip()
 
         # Diagnostic: log a near-miss (configured time within ±2 min of now
