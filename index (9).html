@@ -17402,6 +17402,16 @@ function CampingPackingEditor({ catalogItems, categories, initial, onSave, onClo
     setSelected(null);
   };
 
+  // Мобильный лист выбора сумки: сумка ставится в поездку по необходимости
+  // и вещь тут же назначается в неё — без прокрутки к колонке сумок.
+  const assignSelectedToBag = (bagId) => {
+    if (!bags.includes(bagId)) {
+      markDirty();
+      setBags(b => [...b, bagId]);
+    }
+    setItemAssign(selected, bagId);
+  };
+
   const unselectItem = (itemId) => {
     markDirty();
     setAssign(a => {
@@ -17485,13 +17495,15 @@ function CampingPackingEditor({ catalogItems, categories, initial, onSave, onClo
         <div className="flex-1 min-w-0">
           <h2 className="font-display text-2xl">Сумки и вещи</h2>
           <div className="text-xs text-[var(--text-subtle)]">
-            Перетащите вещь в сумку или нажмите вещь → сумку. {dirty ? 'Есть несохранённые изменения.' : ''}
+            <span className="hidden lg:inline">Перетащите вещь в сумку или нажмите вещь → сумку.</span>
+            <span className="lg:hidden">Нажмите вещь и выберите сумку в открывшемся окне.</span>
+            {' '}{dirty ? 'Есть несохранённые изменения.' : ''}
           </div>
         </div>
       </div>
 
       {selected && (
-        <div className="bg-[var(--text)] text-white rounded-xl px-3 py-2 text-sm flex items-center justify-between gap-2">
+        <div className="hidden lg:flex bg-[var(--text)] text-white rounded-xl px-3 py-2 text-sm items-center justify-between gap-2">
           <span className="truncate">Выбрано: {(catalogItems.find(i => i.id === selected) || {}).name}</span>
           <div className="flex gap-2 flex-shrink-0">
             <button
@@ -17680,6 +17692,59 @@ function CampingPackingEditor({ catalogItems, categories, initial, onSave, onClo
           Сохранить{takenCount || bags.length ? ` (${bags.length} сум., ${takenCount} в.)` : ''}
         </button>
       </div>
+
+      {/* Мобильный лист выбора сумки: замена drag&drop на телефоне — тап по
+          вещи сразу открывает список сумок снизу, без прокрутки ко второй
+          колонке. На десктопе не показывается, там работают drag&drop и
+          верхняя плашка «Выбрано». */}
+      {selected && ReactDOM.createPortal(
+        <div className="lg:hidden">
+          <div className="fixed inset-0 z-40 bg-black/40 fade-in" onClick={() => setSelected(null)} />
+          <div className="fixed inset-x-0 bottom-0 z-50 bg-[var(--surface)] border-t border-[var(--border)] rounded-t-2xl shadow-2xl max-h-[75vh] flex flex-col">
+            <div className="flex items-center justify-between gap-2 px-4 py-3.5 border-b border-[var(--border)] flex-shrink-0">
+              <div className="min-w-0">
+                <div className="text-[11px] uppercase tracking-wider text-[var(--text-subtle)]">Куда положить</div>
+                <div className="text-[15px] font-medium truncate">{(catalogItems.find(i => i.id === selected) || {}).name}</div>
+              </div>
+              <button onClick={() => setSelected(null)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)] flex-shrink-0" aria-label="Закрыть">
+                <Icon name="x" size={18} />
+              </button>
+            </div>
+            <div className="p-3 space-y-1.5 overflow-y-auto" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 12px)' }}>
+              <button
+                onClick={() => setItemAssign(selected, null)}
+                className={`w-full text-left px-3.5 py-3 rounded-xl border text-[15px] flex items-center gap-2.5 ${
+                  assign[selected] === null ? 'border-[var(--text)] bg-[var(--bg)]' : 'border-[var(--border)]'
+                }`}
+              >
+                <Icon name="archive" size={16} /> Без сумки
+              </button>
+              {bagCatalog.length === 0 ? (
+                <div className="text-xs text-[var(--text-subtle)] px-1 py-2">Нет сумок в справочнике.</div>
+              ) : bagCatalog.map(bag => (
+                <button
+                  key={bag.id}
+                  onClick={() => assignSelectedToBag(bag.id)}
+                  className={`w-full text-left px-3.5 py-3 rounded-xl border text-[15px] flex items-center gap-2.5 ${
+                    assign[selected] === bag.id ? 'border-[var(--text)] bg-[var(--bg)]' : 'border-[var(--border)]'
+                  }`}
+                >
+                  <Icon name="backpack" size={16} /> {bag.name}
+                </button>
+              ))}
+              {Object.prototype.hasOwnProperty.call(assign, selected) && (
+                <button
+                  onClick={() => unselectItem(selected)}
+                  className="w-full text-left px-3.5 py-3 rounded-xl border border-dashed border-[var(--border)] text-[15px] text-red-500 flex items-center gap-2.5"
+                >
+                  <Icon name="x" size={16} /> Убрать из поездки
+                </button>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
