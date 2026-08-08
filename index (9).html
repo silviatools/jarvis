@@ -986,6 +986,7 @@ const Icon = ({ name, size = 22 }) => {
     copy: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>,
     share: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg>,
     backpack: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20V10a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M8 21v-5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v5"/><path d="M8 10h8"/></svg>,
+    search: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>,
   };
   return icons[name] || null;
 };
@@ -16409,6 +16410,9 @@ function PlannerExpenseModal({ initial, participants, expenses, onSave, onClose 
 
 const campingEmptyPacking = () => ({ bags: [], items: [] });
 
+const campingTripUrl = (trip) =>
+  trip.shareToken ? `${window.location.origin}/trip/${trip.shareToken}` : '';
+
 const campingNormPacking = (p) => {
   const src = p && typeof p === 'object' ? p : {};
   return {
@@ -16425,10 +16429,10 @@ const campingNormPacking = (p) => {
 };
 
 function PlannerCampingView({ data, setData }) {
-  const [inner, setInner] = useState('catalog'); // catalog | checklist
+  const [inner, setInner] = useState('checklist'); // catalog | checklist
   const tabs = [
-    { id: 'catalog',   label: 'Справочник' },
     { id: 'checklist', label: 'Чек лист'   },
+    { id: 'catalog',   label: 'Справочник' },
   ];
   return (
     <div>
@@ -16454,6 +16458,7 @@ function PlannerCampingView({ data, setData }) {
 // ── Справочник ─────────────────────────────────────────────────────────────
 function CampingCatalogView({ data, setData }) {
   const [editing, setEditing] = useState(null); // null | item | 'new'
+  const [query, setQuery] = useState('');
   const items = data.campingItems || [];
   const categories = data.campingCategories || [];
   const catById = useMemo(
@@ -16505,9 +16510,42 @@ function CampingCatalogView({ data, setData }) {
     }));
   };
 
+  const renameCategory = (cat, nextName) => {
+    const trimmed = (nextName || '').trim();
+    if (!trimmed || trimmed === cat.name) return;
+    const dup = categories.some(c => c.id !== cat.id && (c.name || '').toLowerCase() === trimmed.toLowerCase());
+    if (dup) return alert('Категория с таким названием уже есть');
+    setData(d => ({
+      ...d,
+      campingCategories: (d.campingCategories || []).map(c => c.id === cat.id ? { ...c, name: trimmed } : c),
+    }));
+  };
+
+  const removeCategory = (cat) => {
+    const count = items.filter(i => i.categoryId === cat.id).length;
+    const msg = count > 0
+      ? `Удалить категорию «${cat.name}»? ${count} ${plannerPlural(count, 'вещь', 'вещи', 'вещей')} останутся без категории.`
+      : `Удалить категорию «${cat.name}»?`;
+    if (!confirm(msg)) return;
+    setData(d => ({
+      ...d,
+      campingCategories: (d.campingCategories || []).filter(c => c.id !== cat.id),
+      campingItems: (d.campingItems || []).map(i => i.categoryId === cat.id ? { ...i, categoryId: '' } : i),
+      deletedIds: withDeletedId(d, 'campingCategories', cat.id),
+    }));
+  };
+
+  const filteredItems = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter(it =>
+      (it.name || '').toLowerCase().includes(q) ||
+      (catById[it.categoryId]?.name || '').toLowerCase().includes(q));
+  }, [items, query, catById]);
+
   const grouped = useMemo(() => {
-    const bags = items.filter(i => i.isBag);
-    const goods = items.filter(i => !i.isBag);
+    const bags = filteredItems.filter(i => i.isBag);
+    const goods = filteredItems.filter(i => !i.isBag);
     const byCat = {};
     goods.forEach(it => {
       const key = it.categoryId || '_none';
@@ -16526,7 +16564,7 @@ function CampingCatalogView({ data, setData }) {
       if (id !== '_none' && !catOrder.includes(id)) catOrder.push(id);
     });
     return { bags, byCat, catOrder };
-  }, [items, categories]);
+  }, [filteredItems, categories]);
 
   if (editing) {
     return (
@@ -16551,8 +16589,24 @@ function CampingCatalogView({ data, setData }) {
         <Icon name="plus" size={18} /> Добавить
       </button>
 
+      {items.length > 0 && (
+        <div className="relative mb-4">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-subtle)]">
+            <Icon name="search" size={16} />
+          </span>
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Поиск по справочнику"
+            className="w-full !pl-9"
+          />
+        </div>
+      )}
+
       {items.length === 0 ? (
         <EmptyState title="Справочник пуст" text="Добавьте вещи и сумки — потом соберёте их в поездку" />
+      ) : grouped.bags.length === 0 && grouped.catOrder.length === 0 ? (
+        <EmptyState title="Ничего не найдено" text="Попробуйте изменить запрос" />
       ) : (
         <div className="space-y-5">
           {grouped.bags.length > 0 && (
@@ -16575,9 +16629,15 @@ function CampingCatalogView({ data, setData }) {
           )}
           {grouped.catOrder.map(cid => (
             <div key={cid}>
-              <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">
-                {cid === '_none' ? 'Без категории' : (catById[cid]?.name || 'Категория')}
-              </div>
+              {cid === '_none' ? (
+                <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-2">Без категории</div>
+              ) : (
+                <CampingCategoryHeader
+                  category={catById[cid] || { id: cid, name: 'Категория' }}
+                  onRename={name => renameCategory(catById[cid] || { id: cid }, name)}
+                  onRemove={() => removeCategory(catById[cid] || { id: cid, name: 'Категория' })}
+                />
+              )}
               <div className="space-y-2">
                 {grouped.byCat[cid].map(it => (
                   <CampingCatalogRow
@@ -16593,6 +16653,51 @@ function CampingCatalogView({ data, setData }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function CampingCategoryHeader({ category, onRename, onRemove }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(category.name || '');
+
+  const commit = () => {
+    onRename(name);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-2 mb-2">
+        <input
+          value={name}
+          onChange={e => setName(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { e.preventDefault(); commit(); }
+            if (e.key === 'Escape') { setName(category.name || ''); setEditing(false); }
+          }}
+          autoFocus
+          className="!py-1.5 !text-sm flex-1"
+        />
+        <button onClick={commit} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Сохранить">
+          <Icon name="check" size={15} />
+        </button>
+        <button onClick={() => { setName(category.name || ''); setEditing(false); }} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Отмена">
+          <Icon name="x" size={15} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 mb-2 group">
+      <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] flex-1">{category.name}</div>
+      <button onClick={() => { setName(category.name || ''); setEditing(true); }} className="p-1 rounded-lg hover:bg-black/5 text-[var(--text-subtle)]" title="Переименовать категорию">
+        <Icon name="edit" size={13} />
+      </button>
+      <button onClick={onRemove} className="p-1 rounded-lg hover:bg-red-50 text-[var(--text-subtle)] hover:text-red-500" title="Удалить категорию">
+        <Icon name="trash" size={13} />
+      </button>
     </div>
   );
 }
@@ -16815,7 +16920,7 @@ function CampingChecklistView({ data, setData }) {
     return (
       <CampingTripForm
         initial={editingTrip === 'new'
-          ? { id: crypto.randomUUID(), name: '', startDate: '', endDate: '', location: '', description: '', packing: campingEmptyPacking(), createdAt: Date.now() }
+          ? { id: crypto.randomUUID(), name: '', startDate: '', endDate: '', location: '', description: '', packing: campingEmptyPacking(), shareToken: makePlannerToken(), shareEnabled: true, createdAt: Date.now() }
           : editingTrip}
         onSave={saveTrip}
         onCancel={() => setEditingTrip(null)}
@@ -16963,10 +17068,43 @@ function CampingTripForm({ initial, onSave, onCancel }) {
 function CampingTripDetail({ trip, data, onBack, onEdit, onDelete, onUpdate }) {
   const [packingOpen, setPackingOpen] = useState(false);
   const [collapsed, setCollapsed] = useState({}); // bagItemId -> bool (true = collapsed)
+  const [shareOpen, setShareOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const itemsById = useMemo(
     () => Object.fromEntries((data.campingItems || []).map(i => [i.id, i])),
     [data.campingItems]);
   const packing = campingNormPacking(trip.packing);
+
+  const shareOn = trip.shareEnabled !== false;
+  const shareUrl = campingTripUrl(trip);
+
+  const openShare = () => {
+    if (!trip.shareToken) onUpdate({ shareToken: makePlannerToken(), shareEnabled: true });
+    setShareOpen(true);
+  };
+
+  const copyLink = async () => {
+    const ok = await copyToClipboard(shareUrl);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } else {
+      prompt('Скопируйте ссылку вручную:', shareUrl);
+    }
+  };
+
+  const shareLink = async () => {
+    try {
+      await navigator.share({ title: trip.name || 'Список для поездки', text: trip.name || '', url: shareUrl });
+    } catch (_) {}
+  };
+
+  const toggleShare = () => onUpdate({ shareEnabled: !shareOn });
+
+  const regenerateToken = () => {
+    if (!confirm('Сделать новую ссылку?\n\nСтарая перестанет работать — тем, кому вы её уже отправили, придётся прислать новую.')) return;
+    onUpdate({ shareToken: makePlannerToken(), shareEnabled: true });
+  };
 
   const toggleItemPacked = (itemId) => {
     const next = {
@@ -17031,9 +17169,55 @@ function CampingTripDetail({ trip, data, onBack, onEdit, onDelete, onUpdate }) {
             {[campingFmtTripDates(trip), trip.location].filter(Boolean).join(' · ')}
           </div>
         </div>
+        <button
+          onClick={() => shareOpen ? setShareOpen(false) : openShare()}
+          className={`p-2 rounded-lg hover:bg-black/5 ${shareOpen ? 'text-[var(--text)]' : 'text-[var(--text-muted)]'}`}
+          title="Поделиться списком"
+        ><Icon name="share" size={16} /></button>
         <button onClick={onEdit} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={16} /></button>
         <button onClick={onDelete} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={16} /></button>
       </div>
+
+      {shareOpen && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+          <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-3">Ссылка для друзей</div>
+          <div className="flex items-center gap-2">
+            <input
+              readOnly
+              value={shareUrl}
+              onFocus={e => e.target.select()}
+              className="flex-1 min-w-0 text-xs !py-2 !px-3 text-[var(--text-muted)]"
+              style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
+            />
+            <button
+              onClick={copyLink}
+              className="btn-secondary !py-2 !px-3 text-sm flex items-center gap-1.5 flex-shrink-0"
+              title="Скопировать ссылку"
+            >
+              <Icon name={copied ? 'check' : 'copy'} size={14} />
+              <span className="hidden sm:inline">{copied ? 'Скопировано' : 'Копировать'}</span>
+            </button>
+            {typeof navigator !== 'undefined' && navigator.share && (
+              <button onClick={shareLink} className="btn-secondary !py-2 !px-3 flex-shrink-0" title="Поделиться">
+                <Icon name="share" size={14} />
+              </button>
+            )}
+          </div>
+          <div className={`text-[11px] mt-2 ${shareOn ? 'text-[var(--text-subtle)]' : 'text-red-500'}`}>
+            {shareOn
+              ? 'По ссылке видно только список сумок и вещей этой поездки — для просмотра, без права редактировать.'
+              : 'Ссылка отключена — сейчас она не откроется ни у кого. Включите её, чтобы снова поделиться списком.'}
+          </div>
+          <div className="flex items-center gap-3 mt-3">
+            <button onClick={toggleShare} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)]">
+              {shareOn ? 'Отключить ссылку' : 'Включить ссылку'}
+            </button>
+            <button onClick={regenerateToken} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)]">
+              Новая ссылка
+            </button>
+          </div>
+        </div>
+      )}
 
       {trip.description && (
         <div className="text-sm text-[var(--text-muted)] whitespace-pre-wrap bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
