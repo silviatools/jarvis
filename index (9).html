@@ -3985,13 +3985,16 @@ function ChecklistFieldChart({ field, log, today, formatDate }) {
 }
 
 function DailyChecklistFieldsConfig({ data, setData }) {
-  const fields = data.dailyChecklistFields || [];
+  const allFields = data.dailyChecklistFields || [];
+  const fields = allFields.filter(f => !f.archived);
+  const archivedFields = allFields.filter(f => f.archived);
 
   const [newLabel, setNewLabel] = useState('');
   const [newOptions, setNewOptions] = useState('Да, Нет');
   const [editingId, setEditingId] = useState(null);
   const [editLabel, setEditLabel] = useState('');
   const [editOptionsList, setEditOptionsList] = useState([]);
+  const [showArchive, setShowArchive] = useState(false);
   const editSnapshotRef = React.useRef(null);
 
   const parseLabels = (str) => str.split(/[,;]/).map(s => s.trim()).filter(Boolean);
@@ -4024,7 +4027,7 @@ function DailyChecklistFieldsConfig({ data, setData }) {
     if (!label || labels.length === 0) return;
     setData(d => ({
       ...d,
-      dailyChecklistFields: [...(d.dailyChecklistFields || []), { id: crypto.randomUUID(), label, options: labelsToOptions(labels), updatedAt: Date.now() }],
+      dailyChecklistFields: [...(d.dailyChecklistFields || []), { id: crypto.randomUUID(), label, options: labelsToOptions(labels), archived: false, updatedAt: Date.now() }],
     }));
     setNewLabel('');
     setNewOptions('Да, Нет');
@@ -4070,8 +4073,34 @@ function DailyChecklistFieldsConfig({ data, setData }) {
     setEditOptionsList(list => list.filter((_, i) => i !== idx));
   };
 
+  // В архив — пункт прячется из ежедневной отметки и графиков, но сами
+  // отметки в dailyChecklistLog не трогаем: историю можно вернуть, восстановив поле.
+  const archiveField = (id) => {
+    setData(d => ({
+      ...d,
+      dailyChecklistFields: (d.dailyChecklistFields || []).map(f =>
+        f.id === id ? { ...f, archived: true, updatedAt: Date.now() } : f
+      ),
+    }));
+    if (editingId === id) {
+      editSnapshotRef.current = null;
+      setEditingId(null);
+    }
+  };
+
+  const restoreField = (id) => {
+    setData(d => ({
+      ...d,
+      dailyChecklistFields: (d.dailyChecklistFields || []).map(f =>
+        f.id === id ? { ...f, archived: false, updatedAt: Date.now() } : f
+      ),
+    }));
+  };
+
+  // Окончательное удаление — только для уже заархивированных пунктов,
+  // стирает и сами отметки из истории. Предупреждаем явно.
   const removeField = (id) => {
-    if (!confirm('Удалить поле?')) return;
+    if (!confirm('Удалить пункт навсегда вместе с историей отметок? Это нельзя отменить.')) return;
     setData(d => ({
       ...d,
       dailyChecklistFields: (d.dailyChecklistFields || []).filter(f => f.id !== id),
@@ -4088,16 +4117,19 @@ function DailyChecklistFieldsConfig({ data, setData }) {
     }
   };
 
-  const moveField = (idx, dir) => {
+  const moveField = (activeIdx, dir) => {
     setData(d => {
-      const arr = [...(d.dailyChecklistFields || [])];
-      const to = idx + dir;
-      if (to < 0 || to >= arr.length) return d;
+      const all = [...(d.dailyChecklistFields || [])];
+      const activeIds = all.filter(f => !f.archived).map(f => f.id);
+      const toIdx = activeIdx + dir;
+      if (toIdx < 0 || toIdx >= activeIds.length) return d;
+      const posA = all.findIndex(f => f.id === activeIds[activeIdx]);
+      const posB = all.findIndex(f => f.id === activeIds[toIdx]);
       // Штамп на обоих переставленных: слияние упорядочивает по стороне с
       // самой свежей правкой — без штампа новый порядок откатился бы сервером.
       const now = Date.now();
-      [arr[idx], arr[to]] = [{ ...arr[to], updatedAt: now }, { ...arr[idx], updatedAt: now }];
-      return { ...d, dailyChecklistFields: arr };
+      [all[posA], all[posB]] = [{ ...all[posB], updatedAt: now }, { ...all[posA], updatedAt: now }];
+      return { ...d, dailyChecklistFields: all };
     });
   };
 
@@ -4155,7 +4187,7 @@ function DailyChecklistFieldsConfig({ data, setData }) {
                     <button onClick={() => moveField(i, -1)} disabled={i === 0} className="p-1 text-[var(--text-subtle)] disabled:opacity-25">↑</button>
                     <button onClick={() => moveField(i, 1)} disabled={i === fields.length - 1} className="p-1 text-[var(--text-subtle)] disabled:opacity-25">↓</button>
                     <button onClick={() => startEdit(f)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={14} /></button>
-                    <button onClick={() => removeField(f.id)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
+                    <button onClick={() => archiveField(f.id)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="В архив"><Icon name="archive" size={14} /></button>
                   </div>
                 </div>
               )}
@@ -4172,13 +4204,53 @@ function DailyChecklistFieldsConfig({ data, setData }) {
           <Icon name="plus" size={14} /> Добавить
         </button>
       </div>
+
+      {archivedFields.length > 0 && (
+        <div className="mt-4">
+          <button
+            onClick={() => setShowArchive(!showArchive)}
+            className="flex items-center gap-2 text-[var(--text-muted)] hover:text-[var(--text)] text-sm"
+          >
+            <Icon name="archive" size={16} />
+            Архив ({archivedFields.length})
+            <span className={`transition-transform ${showArchive ? 'rotate-180' : ''}`}>
+              <Icon name="chevronDown" size={16} />
+            </span>
+          </button>
+          {showArchive && (
+            <div className="space-y-3 mt-3 fade-in">
+              {archivedFields.map(f => (
+                <div key={f.id} className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-4 opacity-60">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-sm">{f.label}</div>
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {getFieldOptions(f).map(opt => (
+                          <span key={opt.label} className="text-xs px-2 py-1 rounded-lg border font-medium"
+                            style={{ borderColor: opt.color + '66', color: opt.color, background: opt.color + '18' }}>
+                            {opt.label}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex gap-1 shrink-0">
+                      <button onClick={() => restoreField(f.id)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Восстановить"><Icon name="restore" size={14} /></button>
+                      <button onClick={() => removeField(f.id)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500" title="Удалить навсегда"><Icon name="trash" size={14} /></button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 function DailyChecklistStats({ data, setData }) {
   const today = getTodayKey();
-  const fields = data.dailyChecklistFields || [];
+  const fields = (data.dailyChecklistFields || []).filter(f => !f.archived);
   const log = [...(data.dailyChecklistLog || [])].sort((a, b) => b.date.localeCompare(a.date));
   const [selDate, setSelDate] = useState(today);
   const [showHistory, setShowHistory] = useState(false);
@@ -9222,7 +9294,7 @@ function BodyFieldsSettings({ data, setData }) {
     setChecklistReminder({ days: cur.includes(dayId) ? cur.filter(x => x !== dayId) : [...cur, dayId].sort() });
   };
 
-  const checklistFields = data.dailyChecklistFields || [];
+  const checklistFields = (data.dailyChecklistFields || []).filter(f => !f.archived);
   const hasToken = !!(data.settings && data.settings.telegramToken);
 
   const DayPicker = ({ days, onToggle }) => (
