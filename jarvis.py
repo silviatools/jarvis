@@ -72,6 +72,11 @@ SPA_ROUTES = {
 # только в /api/event/<token>. Ни SPA, ни /api/data ей не нужны: по ссылке
 # видно одно событие (и только имена участников), а больше ничего с сайта.
 EVENT_PAGE_FILE   = DIR / "event.html"
+# ── Кемпинг: гостевая ссылка на чек-лист поездки ────────────────────────────
+# Друг открывает /trip/<token> — тоже отдельную статичную страницу, читающую
+# только /api/camping-trip/<token>: список вещей и сумок одной поездки,
+# без доступа к остальному справочнику или другим поездкам.
+TRIP_PAGE_FILE    = DIR / "camping-trip.html"
 PLANNER_TOKEN_RE  = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 PLANNER_STATUSES  = {"yes", "probably", "maybe", "probably_not", "no"}
 MAX_EVENT_COMMENT_LEN   = 2000
@@ -1453,6 +1458,71 @@ def planner_guest_write(token: str, friend_id: str, apply):
         return 200, planner_public_payload(app, ev)
 
 
+def find_camping_trip(app: dict, token: str) -> dict | None:
+    """Поездка с активной гостевой ссылкой. Та же логика отзыва ссылки, что
+    и у событий: shareEnabled = false работает как «поездка не найдена»."""
+    for t in (app.get("campingTrips") or []):
+        if not isinstance(t, dict):
+            continue
+        if str(t.get("shareToken") or "") != token:
+            continue
+        return t if t.get("shareEnabled", True) else None
+    return None
+
+
+def camping_trip_public_payload(app: dict, trip: dict) -> dict:
+    """Публичный срез ОДНОЙ поездки: сама поездка и её список сборов —
+    сумки и вещи с именами и категориями, без доступа к остальному
+    справочнику вещей или другим поездкам."""
+    items_by_id = {}
+    for it in (app.get("campingItems") or []):
+        if isinstance(it, dict) and it.get("id"):
+            items_by_id[it["id"]] = it
+    cats_by_id = {}
+    for c in (app.get("campingCategories") or []):
+        if isinstance(c, dict) and c.get("id"):
+            cats_by_id[c["id"]] = c
+
+    packing = trip.get("packing") or {}
+    bags = []
+    for b in (packing.get("bags") or []):
+        if not isinstance(b, dict) or not b.get("itemId"):
+            continue
+        it = items_by_id.get(b["itemId"])
+        bags.append({
+            "itemId": b["itemId"],
+            "name": (it or {}).get("name") or "Удалённая сумка",
+            "packed": bool(b.get("packed")),
+        })
+    goods = []
+    for ref in (packing.get("items") or []):
+        if not isinstance(ref, dict) or not ref.get("itemId"):
+            continue
+        it = items_by_id.get(ref["itemId"])
+        cat = cats_by_id.get((it or {}).get("categoryId"))
+        goods.append({
+            "itemId": ref["itemId"],
+            "name": (it or {}).get("name") or "Удалённая вещь",
+            "categoryName": (cat or {}).get("name") or "",
+            "bagId": ref.get("bagId") or None,
+            "packed": bool(ref.get("packed")),
+        })
+
+    return {
+        "trip": {
+            "id": trip.get("id"),
+            "name": trip.get("name") or "Поездка",
+            "startDate": trip.get("startDate") or "",
+            "endDate": trip.get("endDate") or "",
+            "location": trip.get("location") or "",
+            "description": trip.get("description") or "",
+        },
+        "bags": bags,
+        "items": goods,
+        "serverNow": int(time.time() * 1000),
+    }
+
+
 # ── HTTP handler ───────────────────────────────────────────────────────────
 
 class JarvisHandler(SimpleHTTPRequestHandler):
@@ -1505,6 +1575,19 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 payload = planner_public_payload(app, ev) if ev else None
             if payload is None:
                 self._json(404, {"error": "event not found"})
+            else:
+                self._json(200, payload)
+        elif token_from_route(route, "/trip/"):
+            # Гостевая страница чек-листа поездки — тоже отдельный файл.
+            self._serve_trip_page()
+        elif token_from_route(route, "/api/camping-trip/"):
+            token = token_from_route(route, "/api/camping-trip/")
+            with APP_DATA_LOCK:
+                app = load_app_data() if APP_DATA_FILE.exists() else {}
+                trip = find_camping_trip(app, token)
+                payload = camping_trip_public_payload(app, trip) if trip else None
+            if payload is None:
+                self._json(404, {"error": "trip not found"})
             else:
                 self._json(200, payload)
         elif self.path in ("/english", "/english.html"):
@@ -2087,6 +2170,22 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"event.html not found")
+
+    def _serve_trip_page(self):
+        try:
+            content = TRIP_PAGE_FILE.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("X-Robots-Tag", "noindex, nofollow")
+            self.send_header("Cache-Control", "no-store")
+            self._cors()
+            self.end_headers()
+            self.wfile.write(content)
+        except FileNotFoundError:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"camping-trip.html not found")
 
     def _serve_html(self):
         try:
