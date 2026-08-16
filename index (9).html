@@ -410,6 +410,9 @@ const DEFAULT_DATA = () => ({
   plannerGuests: [],
   plannerExpenses: [],
   plannerPayments: [],
+  // Список покупок события: свободные название и количество, кто взял —
+  // тоже гостевая коллекция, отмечать можно и по ссылке прямо в магазине.
+  plannerShoppingItems: [],
   // «Мои планы» — личные записи календаря планировщика: их не видно гостям
   // по ссылке, они не имеют участников и живут только у владельца.
   plannerPlans: [],
@@ -15218,6 +15221,7 @@ function PlannerEventsView({ data, setData, goToFriends }) {
   const guests = data.plannerGuests || [];
   const expenses = data.plannerExpenses || [];
   const payments = data.plannerPayments || [];
+  const shoppingItems = data.plannerShoppingItems || [];
   const [editingExpense, setEditingExpense] = useState(null);
 
   const save = (ev) => {
@@ -15258,6 +15262,7 @@ function PlannerEventsView({ data, setData, goToFriends }) {
       stamp('plannerGuests', (d.plannerGuests || []).filter(g => g.eventId === ev.id).map(g => g.id));
       stamp('plannerExpenses', (d.plannerExpenses || []).filter(e => e.eventId === ev.id).map(e => e.id));
       stamp('plannerPayments', (d.plannerPayments || []).filter(p => p.eventId === ev.id).map(p => p.id));
+      stamp('plannerShoppingItems', (d.plannerShoppingItems || []).filter(s => s.eventId === ev.id).map(s => s.id));
       return {
         ...d,
         plannerEvents: (d.plannerEvents || []).filter(e => e.id !== ev.id),
@@ -15266,6 +15271,7 @@ function PlannerEventsView({ data, setData, goToFriends }) {
         plannerGuests: (d.plannerGuests || []).filter(g => g.eventId !== ev.id),
         plannerExpenses: (d.plannerExpenses || []).filter(e => e.eventId !== ev.id),
         plannerPayments: (d.plannerPayments || []).filter(p => p.eventId !== ev.id),
+        plannerShoppingItems: (d.plannerShoppingItems || []).filter(s => s.eventId !== ev.id),
         deletedIds: deleted,
       };
     });
@@ -15352,6 +15358,43 @@ function PlannerEventsView({ data, setData, goToFriends }) {
         plannerPayments: prev ? list.map(p => p.id === id ? entry : p) : [...list, entry],
       };
     });
+  };
+
+  // Список покупок: та же id-коллекция со штампом updatedAt, что и у трат —
+  // организатор пишет сюда напрямую, участники по ссылке через свой эндпоинт,
+  // слияние между устройствами разруливает «новее — побеждает».
+  const saveShoppingItem = (ev, item) => {
+    setData(d => {
+      const list = d.plannerShoppingItems || [];
+      const exists = list.some(s => s.id === item.id);
+      return {
+        ...d,
+        plannerShoppingItems: exists
+          ? list.map(s => s.id === item.id ? item : s)
+          : [...list, item],
+      };
+    });
+  };
+
+  const removeShoppingItem = (item) => {
+    setData(d => ({
+      ...d,
+      plannerShoppingItems: (d.plannerShoppingItems || []).filter(s => s.id !== item.id),
+      deletedIds: withDeletedId(d, 'plannerShoppingItems', item.id),
+    }));
+  };
+
+  const toggleShoppingItem = (item) => {
+    const taken = !item.takenBy;
+    setData(d => ({
+      ...d,
+      plannerShoppingItems: (d.plannerShoppingItems || []).map(s => s.id === item.id ? {
+        ...s,
+        takenBy: taken ? 'organizer' : null,
+        takenAt: taken ? Date.now() : 0,
+        updatedAt: Date.now(),
+      } : s),
+    }));
   };
 
   const toggleShare = (ev) => {
@@ -15455,6 +15498,10 @@ function PlannerEventsView({ data, setData, goToFriends }) {
               onEditExpense={(e) => setEditingExpense(e)}
               onDeleteExpense={removeExpense}
               onTogglePayment={(row) => togglePayment(ev, row)}
+              shoppingItems={shoppingItems.filter(s => s.eventId === ev.id)}
+              onAddShoppingItem={(item) => saveShoppingItem(ev, item)}
+              onDeleteShoppingItem={removeShoppingItem}
+              onToggleShoppingItem={toggleShoppingItem}
               onToggleShare={() => toggleShare(ev)}
               onRegenerate={() => regenerateToken(ev)}
               onToggleConfirmed={() => toggleConfirmed(ev)}
@@ -15493,7 +15540,8 @@ function PlannerEventsView({ data, setData, goToFriends }) {
 
 function PlannerEventCard({ event: ev, friends, guests, responses, comments, expenses, payments,
                             onEdit, onDelete, onDeleteComment, onDeleteGuest, onToggleShare, onRegenerate,
-                            onAddExpense, onEditExpense, onDeleteExpense, onTogglePayment, onToggleConfirmed }) {
+                            onAddExpense, onEditExpense, onDeleteExpense, onTogglePayment, onToggleConfirmed,
+                            shoppingItems, onAddShoppingItem, onDeleteShoppingItem, onToggleShoppingItem }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -15710,6 +15758,15 @@ function PlannerEventCard({ event: ev, friends, guests, responses, comments, exp
               </div>
             )}
           </div>
+
+          <PlannerShoppingSection
+            event={ev}
+            nameById={nameById}
+            items={shoppingItems}
+            onAdd={onAddShoppingItem}
+            onDelete={onDeleteShoppingItem}
+            onToggle={onToggleShoppingItem}
+          />
 
           <PlannerExpensesSection
             event={ev}
@@ -16087,6 +16144,117 @@ function PlannerFriendModal({ initial, onSave, onClose }) {
         </div>
       </div>
     </Modal>
+  );
+}
+
+// ── Список покупок события (сторона организатора) ──────────────────────────
+// Название и количество — свободный текст: «Молоко» / «2 л». Взять и снять
+// отметку могут все — как и с отметкой о переводе денег, чтобы случайный
+// тап не блокировал позицию до появления того, кто её изначально добавил.
+function PlannerShoppingSection({ event: ev, nameById, items, onAdd, onDelete, onToggle }) {
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState('');
+  const [qty, setQty] = useState('');
+
+  const whoName = (id) => {
+    if (!id) return '';
+    if (id === 'organizer') return 'Организатор';
+    return nameById[id] || 'Бывший участник';
+  };
+
+  const submit = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    onAdd({
+      id: crypto.randomUUID(),
+      eventId: ev.id,
+      name: trimmed,
+      qty: qty.trim(),
+      takenBy: null,
+      takenAt: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    setName('');
+    setQty('');
+    setAdding(false);
+  };
+
+  const taken = items.filter(i => i.takenBy);
+  const pending = items.filter(i => !i.takenBy);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)]">Список покупок</div>
+        {!adding && (
+          <button onClick={() => setAdding(true)} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] underline">
+            добавить продукт
+          </button>
+        )}
+      </div>
+
+      {adding && (
+        <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 mb-3 space-y-2">
+          <div className="flex gap-2">
+            <input
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="Продукт, например «Молоко»"
+              autoFocus
+              className="flex-[2] !py-2 !px-3 text-sm"
+              onKeyDown={e => e.key === 'Enter' && submit()}
+            />
+            <input
+              value={qty}
+              onChange={e => setQty(e.target.value)}
+              placeholder="Сколько, напр. «2 л»"
+              className="flex-1 !py-2 !px-3 text-sm"
+              onKeyDown={e => e.key === 'Enter' && submit()}
+            />
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => { setAdding(false); setName(''); setQty(''); }} className="btn-secondary !py-1.5 text-sm flex-1">Отмена</button>
+            <button onClick={submit} className="btn-primary !py-1.5 text-sm flex-1">Добавить</button>
+          </div>
+        </div>
+      )}
+
+      {items.length === 0 && !adding ? (
+        <div className="text-sm text-[var(--text-subtle)]">
+          Список пуст. Добавьте продукты — участники смогут отмечать по ссылке, кто что взял в магазине.
+        </div>
+      ) : items.length > 0 && (
+        <>
+          <div className="text-sm text-[var(--text-muted)] mb-2">Взято {taken.length} из {items.length}</div>
+          <div className="space-y-1.5">
+            {[...pending, ...taken].map(it => (
+              <div key={it.id} className="flex items-center gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2">
+                <button
+                  onClick={() => onToggle(it)}
+                  className={`check-box flex-shrink-0 ${it.takenBy ? 'checked' : ''}`}
+                  style={{ width: 22, height: 22 }}
+                  aria-label={it.takenBy ? 'Снять отметку' : 'Отметить взятым'}
+                >
+                  <Icon name="check" size={12} />
+                </button>
+                <div className="flex-1 min-w-0">
+                  <div className={`text-sm font-medium truncate ${it.takenBy ? 'line-through text-[var(--text-subtle)]' : ''}`}>
+                    {it.name}{it.qty ? ` — ${it.qty}` : ''}
+                  </div>
+                  {it.takenBy && (
+                    <div className="text-xs text-[var(--text-subtle)] truncate">Взял(а): {whoName(it.takenBy)}</div>
+                  )}
+                </div>
+                <button onClick={() => onDelete(it)} className="text-[var(--text-subtle)] hover:text-red-500 flex-shrink-0" title="Удалить">
+                  <Icon name="x" size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

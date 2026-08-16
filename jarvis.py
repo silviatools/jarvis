@@ -89,6 +89,9 @@ MAX_EVENT_EXPENSES      = 500   # трат на одно событие
 MAX_EVENT_EXPENSE_TEXT  = 200   # «за что» и реквизиты
 MAX_EVENT_MONEY_CENTS   = 100_000_000_000  # 1 млрд ₽ — потолок вменяемой суммы
 EXPENSE_SPLIT_MODES     = {"equal", "custom"}
+MAX_EVENT_SHOPPING_ITEMS = 300   # позиций в списке покупок одного события
+MAX_EVENT_SHOPPING_NAME  = 120   # «Молоко 2.5%»
+MAX_EVENT_SHOPPING_QTY   = 40    # «2 л», «1 пачка» — свободный текст, не число
 
 # Generic file uploads (e.g. training programs attached to «Режим»)
 ALLOWED_FILE_EXT = {
@@ -1388,6 +1391,30 @@ def planner_public_payload(app: dict, ev: dict) -> dict:
         for p in (app.get("plannerPayments") or [])
         if isinstance(p, dict) and p.get("eventId") == eid
     ]
+    # «Организатор» — тот же псевдо-участник, что и в paidBy у переводов:
+    # владелец приложения отмечает покупки прямо из своей копии, не будучи
+    # обычным участником события.
+    participant_names = {p["id"]: p["name"] for p in participants}
+    shopping_items = sorted(
+        (
+            {
+                "id": it.get("id"),
+                "name": it.get("name") or "",
+                "qty": it.get("qty") or "",
+                "takenBy": it.get("takenBy") or None,
+                "takenByName": (
+                    "Организатор" if it.get("takenBy") == "organizer"
+                    else participant_names.get(it.get("takenBy"))
+                ) if it.get("takenBy") else None,
+                "takenAt": it.get("takenAt") or 0,
+                "createdAt": it.get("createdAt") or 0,
+                "updatedAt": it.get("updatedAt") or 0,
+            }
+            for it in (app.get("plannerShoppingItems") or [])
+            if isinstance(it, dict) and it.get("eventId") == eid and it.get("id")
+        ),
+        key=lambda it: it["createdAt"],
+    )
     return {
         "event": {
             "id": eid,
@@ -1408,6 +1435,7 @@ def planner_public_payload(app: dict, ev: dict) -> dict:
         "comments": comments,
         "expenses": expenses,
         "payments": payments,
+        "shoppingItems": shopping_items,
         "serverNow": int(time.time() * 1000),
     }
 
@@ -1699,6 +1727,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._event_expense_delete(token_from_route(route, "/api/event/", "/expense-delete"))
         elif token_from_route(route, "/api/event/", "/payment"):
             self._event_payment(token_from_route(route, "/api/event/", "/payment"))
+        elif token_from_route(route, "/api/event/", "/shopping-add"):
+            self._event_shopping_add(token_from_route(route, "/api/event/", "/shopping-add"))
+        elif token_from_route(route, "/api/event/", "/shopping-delete"):
+            self._event_shopping_delete(token_from_route(route, "/api/event/", "/shopping-delete"))
+        elif token_from_route(route, "/api/event/", "/shopping-toggle"):
+            self._event_shopping_toggle(token_from_route(route, "/api/event/", "/shopping-toggle"))
         elif self.path == "/api/config":
             length = self._content_length()
             if length is None:
@@ -2149,6 +2183,91 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 "updatedAt": now_ms,
             }
             app["plannerPayments"] = [p for p in payments if p.get("id") != pid] + [entry]
+            return None
+
+        code, body = planner_guest_write(token, friend_id, apply)
+        self._json(code, body)
+
+    def _event_shopping_add(self, token: str):
+        """Список покупок — общий: любой участник может дописать в него
+        забытую позицию, как и заносить свою трату."""
+        payload = self._guest_json_body()
+        if payload is None:
+            return
+        friend_id = str(payload.get("friendId") or "")
+        name = " ".join(str(payload.get("name") or "").split())[:MAX_EVENT_SHOPPING_NAME]
+        qty = " ".join(str(payload.get("qty") or "").split())[:MAX_EVENT_SHOPPING_QTY]
+        if not name:
+            self._json(400, {"error": "empty name"})
+            return
+
+        def apply(app, ev):
+            items = [i for i in (app.get("plannerShoppingItems") or []) if isinstance(i, dict)]
+            if sum(1 for i in items if i.get("eventId") == ev.get("id")) >= MAX_EVENT_SHOPPING_ITEMS:
+                return 429, {"error": "too many items"}
+            now_ms = int(time.time() * 1000)
+            items.append({
+                "id": str(uuid.uuid4()),
+                "eventId": ev.get("id"),
+                "name": name,
+                "qty": qty,
+                "takenBy": None,
+                "takenAt": 0,
+                "createdAt": now_ms,
+                "updatedAt": now_ms,
+            })
+            app["plannerShoppingItems"] = items
+            return None
+
+        code, body = planner_guest_write(token, friend_id, apply)
+        self._json(code, body)
+
+    def _event_shopping_delete(self, token: str):
+        payload = self._guest_json_body()
+        if payload is None:
+            return
+        friend_id = str(payload.get("friendId") or "")
+        item_id = str(payload.get("itemId") or "")
+
+        def apply(app, ev):
+            items = [i for i in (app.get("plannerShoppingItems") or []) if isinstance(i, dict)]
+            target = next((i for i in items
+                           if i.get("id") == item_id and i.get("eventId") == ev.get("id")), None)
+            if target is None:
+                return 404, {"error": "item not found"}
+            app["plannerShoppingItems"] = [i for i in items if i.get("id") != item_id]
+            deleted = dict(app.get("deletedIds") or {})
+            coll = dict(deleted.get("plannerShoppingItems") or {})
+            coll[item_id] = int(time.time() * 1000)
+            deleted["plannerShoppingItems"] = coll
+            app["deletedIds"] = deleted
+            return None
+
+        code, body = planner_guest_write(token, friend_id, apply)
+        self._json(code, body)
+
+    def _event_shopping_toggle(self, token: str):
+        """Отметка «взял(а) в магазине» — ставит и снимает любой участник,
+        как и отметку о переводе денег, чтобы ошибочный тап не блокировал
+        остальных до появления автора позиции."""
+        payload = self._guest_json_body()
+        if payload is None:
+            return
+        friend_id = str(payload.get("friendId") or "")
+        item_id = str(payload.get("itemId") or "")
+        taken = bool(payload.get("taken"))
+
+        def apply(app, ev):
+            items = [i for i in (app.get("plannerShoppingItems") or []) if isinstance(i, dict)]
+            target = next((i for i in items
+                           if i.get("id") == item_id and i.get("eventId") == ev.get("id")), None)
+            if target is None:
+                return 404, {"error": "item not found"}
+            now_ms = int(time.time() * 1000)
+            target["takenBy"] = friend_id if taken else None
+            target["takenAt"] = now_ms if taken else 0
+            target["updatedAt"] = now_ms
+            app["plannerShoppingItems"] = items
             return None
 
         code, body = planner_guest_write(token, friend_id, apply)

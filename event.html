@@ -321,7 +321,8 @@
   // 25 секунд перерисовывает страницу целиком, и без этих черновиков оно
   // стирало бы комментарий прямо во время набора.
   var state = { data: null, me: null, busy: false, error: null, tab: 'home',
-                noteDraft: null, commentDraft: '', nameDraft: '', expenseForm: null };
+                noteDraft: null, commentDraft: '', nameDraft: '', expenseForm: null,
+                shoppingForm: null };
 
   function isTyping() {
     var a = document.activeElement;
@@ -465,6 +466,7 @@
     home: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
     chat: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
     money: '<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/>',
+    cart: '<circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/>',
   };
 
   function icon(name) {
@@ -476,9 +478,10 @@
   }
 
   var TABS = [
-    { id: 'home',  label: 'Главная', icon: 'home'  },
-    { id: 'chat',  label: 'Чат',     icon: 'chat'  },
-    { id: 'money', label: 'Деньги',  icon: 'money' },
+    { id: 'home',     label: 'Главная', icon: 'home'  },
+    { id: 'shopping', label: 'Покупки', icon: 'cart'  },
+    { id: 'chat',     label: 'Чат',     icon: 'chat'  },
+    { id: 'money',    label: 'Деньги',  icon: 'money' },
   ];
 
   function renderNav() {
@@ -493,6 +496,7 @@
       var mine = settlement().byParticipant[state.me];
       if (mine) unpaid = mine.owes.filter(function (r) { return !r.paid; }).length;
     }
+    var pending = (state.data.shoppingItems || []).filter(function (it) { return !it.takenBy; }).length;
 
     TABS.forEach(function (t) {
       var b = el('button', 'nav-btn' + (state.tab === t.id ? ' on' : ''));
@@ -500,6 +504,9 @@
       b.appendChild(el('span', 'lbl', t.label));
       if (t.id === 'chat' && comments) {
         b.appendChild(el('span', 'nav-badge', comments > 99 ? '99+' : String(comments)));
+      }
+      if (t.id === 'shopping' && pending) {
+        b.appendChild(el('span', 'nav-badge', pending > 99 ? '99+' : String(pending)));
       }
       if (t.id === 'money' && unpaid) b.appendChild(el('span', 'nav-dot'));
       b.onclick = function () {
@@ -560,6 +567,8 @@
       foot.style.marginTop = '18px';
       foot.textContent = 'Страница события. Видна только тем, у кого есть ссылка.';
       root.appendChild(foot);
+    } else if (state.tab === 'shopping') {
+      root.appendChild(renderShopping());
     } else if (state.tab === 'chat') {
       root.appendChild(renderChat());
     } else {
@@ -1265,6 +1274,162 @@
       state.data = json;
       render();
       toast('Трата удалена');
+    }).catch(function (e) {
+      toast('Не удалось удалить: ' + e.message);
+    }).then(function () { state.busy = false; });
+  }
+
+  // ── Список покупок ─────────────────────────────────────────────────────
+  function renderShopping() {
+    var wrap = el('div');
+    var card = el('div', 'card');
+    var head = el('div', 'sec-head');
+    head.appendChild(el('div', 'card-title', 'Список покупок')).style.marginBottom = '0';
+    if (state.me && !state.shoppingForm) {
+      var add = el('button', 'btn-small', '+ Добавить продукт');
+      add.onclick = function () { state.shoppingForm = { name: '', qty: '' }; render(); };
+      head.appendChild(add);
+    }
+    card.appendChild(head);
+
+    if (state.shoppingForm) card.appendChild(renderShoppingForm());
+
+    var items = state.data.shoppingItems || [];
+    if (!items.length) {
+      card.appendChild(el('div', 'empty', state.me
+        ? 'Список пуст. Добавьте, что нужно купить, — остальные увидят и смогут отметить в магазине, кто что взял.'
+        : 'Список пуст.'));
+      wrap.appendChild(card);
+      return wrap;
+    }
+
+    var taken = items.filter(function (it) { return it.takenBy; });
+    card.appendChild(el('div', 'muted', 'Взято ' + taken.length + ' из ' + items.length));
+
+    var pending = items.filter(function (it) { return !it.takenBy; });
+    pending.concat(taken).forEach(function (it) { card.appendChild(shoppingRow(it)); });
+
+    wrap.appendChild(card);
+    return wrap;
+  }
+
+  function shoppingRow(it) {
+    var row = el('div', 'exp-row');
+    var cb = el('input');
+    cb.type = 'checkbox';
+    cb.className = 'cb';
+    cb.checked = !!it.takenBy;
+    cb.disabled = !state.me;
+    cb.onchange = function () { toggleShoppingItem(it, cb.checked); };
+    row.appendChild(cb);
+
+    var mid = el('div');
+    mid.style.flex = '1';
+    mid.style.minWidth = '0';
+    var t = el('div');
+    t.style.fontSize = '15px';
+    t.style.overflowWrap = 'anywhere';
+    t.textContent = it.name + (it.qty ? ' — ' + it.qty : '');
+    if (it.takenBy) { t.style.textDecoration = 'line-through'; t.style.color = 'var(--text-subtle)'; }
+    mid.appendChild(t);
+    if (it.takenBy) mid.appendChild(el('div', 'subtle', 'Взял(а): ' + (it.takenByName || 'бывший участник')));
+    row.appendChild(mid);
+
+    if (state.me) {
+      var del = el('button', 'btn-ghost', 'удал.');
+      del.onclick = function () { deleteShoppingItem(it); };
+      row.appendChild(del);
+    }
+    return row;
+  }
+
+  function renderShoppingForm() {
+    var f = state.shoppingForm;
+    var box = el('div');
+    box.style.marginBottom = '16px';
+    box.style.paddingBottom = '16px';
+    box.style.borderBottom = '1px solid var(--border)';
+
+    var row = el('div');
+    row.style.display = 'flex';
+    row.style.gap = '8px';
+    var nameInp = el('input');
+    nameInp.type = 'text';
+    nameInp.placeholder = 'Продукт, например «Молоко»';
+    nameInp.maxLength = 120;
+    nameInp.value = f.name;
+    nameInp.style.flex = '2';
+    nameInp.oninput = function () { f.name = nameInp.value; };
+    var qtyInp = el('input');
+    qtyInp.type = 'text';
+    qtyInp.placeholder = 'Сколько, напр. «2 л»';
+    qtyInp.maxLength = 40;
+    qtyInp.value = f.qty;
+    qtyInp.style.flex = '1';
+    qtyInp.oninput = function () { f.qty = qtyInp.value; };
+    var onEnter = function (e) { if (e.key === 'Enter') addShoppingItem(); };
+    nameInp.onkeydown = onEnter;
+    qtyInp.onkeydown = onEnter;
+    row.appendChild(nameInp);
+    row.appendChild(qtyInp);
+    box.appendChild(row);
+
+    var actions = el('div');
+    actions.style.display = 'flex';
+    actions.style.gap = '8px';
+    actions.style.marginTop = '8px';
+    var cancel = el('button', 'btn-small', 'Отмена');
+    cancel.style.flex = '1';
+    cancel.onclick = function () { state.shoppingForm = null; render(); };
+    var save = el('button', 'btn-primary', 'Добавить');
+    save.style.flex = '2';
+    save.style.padding = '11px';
+    save.onclick = addShoppingItem;
+    actions.appendChild(cancel);
+    actions.appendChild(save);
+    box.appendChild(actions);
+
+    setTimeout(function () { nameInp.focus(); }, 0);
+    return box;
+  }
+
+  function addShoppingItem() {
+    var f = state.shoppingForm;
+    if (!f || state.busy) return;
+    var name = f.name.trim();
+    if (!name) { toast('Введите название продукта'); return; }
+    state.busy = true;
+    api('/shopping-add', { friendId: state.me, name: name, qty: f.qty.trim() }).then(function (json) {
+      state.data = json;
+      state.shoppingForm = null;
+      render();
+      toast('Добавлено');
+    }).catch(function (e) {
+      toast('Не удалось добавить: ' + e.message);
+    }).then(function () { state.busy = false; });
+  }
+
+  function toggleShoppingItem(it, taken) {
+    if (state.busy) return;
+    state.busy = true;
+    api('/shopping-toggle', { friendId: state.me, itemId: it.id, taken: taken }).then(function (json) {
+      state.data = json;
+      render();
+      toast(taken ? 'Отмечено' : 'Отметка снята');
+    }).catch(function (e) {
+      toast('Не удалось: ' + e.message);
+      load(true);
+    }).then(function () { state.busy = false; });
+  }
+
+  function deleteShoppingItem(it) {
+    if (state.busy) return;
+    if (!confirm('Удалить «' + it.name + '» из списка?')) return;
+    state.busy = true;
+    api('/shopping-delete', { friendId: state.me, itemId: it.id }).then(function (json) {
+      state.data = json;
+      render();
+      toast('Удалено');
     }).catch(function (e) {
       toast('Не удалось удалить: ' + e.message);
     }).then(function () { state.busy = false; });
