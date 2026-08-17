@@ -305,6 +305,7 @@ const BUDGET_SLICE_KEYS = [
   'budgetFactValues', 'budgetIncomeFactValues',
   'budgetStatementMappings', 'budgetStatementAccount',
   'budgetStatementRows', 'budgetStatementFileName',
+  'budgetCashflowAccounts', 'budgetCashflowOps', 'budgetCashflowSettings',
 ];
 
 const emptyBudgetSlice = () => ({
@@ -330,6 +331,11 @@ const emptyBudgetSlice = () => ({
   budgetCategoryOrder: [],
   budgetSupplements: [],
   budgetSupplementAssignments: {},
+  // ДДС: счета, операции расхода/дохода и настройки быстрого ввода
+  // (их пишет и вкладка «ДДС», и мобильное приложение /pf/<token>).
+  budgetCashflowAccounts: [],
+  budgetCashflowOps: [],
+  budgetCashflowSettings: {},
 });
 
 const extractBudgetSlice = (data) => {
@@ -10557,6 +10563,84 @@ const autoMapStatementCategory = (categoryName, targetGroups, savedMappings) => 
   return bestScore >= 2 ? best : '';
 };
 
+// ── ДДС: счета, операции и факт по статьям ──────────────────────────────────
+// Статьи, по которым можно записывать операции ДДС — ровно те строки вкладки
+// «По месяцу», факт по которым ведётся вручную: источники дохода, статьи
+// ручных категорий и категории «Постоянные». Накопления и Долги сюда не
+// входят: их факт считается из платежей на своих вкладках, и запись через
+// ДДС удвоила бы суммы.
+// ДЕРЖАТЬ В СИНХРОНЕ с pf_articles() из jarvis.py — по этому же списку
+// мобильное приложение /pf/<token> показывает статьи на телефоне.
+const cashflowArticles = (data) => {
+  const out = [];
+  (data.budgetIncomeSources || []).forEach(src => {
+    if (!src || !src.id) return;
+    out.push({ id: src.id, label: src.label || 'Доход', direction: 'in', group: 'Приход', emoji: '💰' });
+  });
+  (data.budgetPlanCategories || []).forEach(cat => {
+    if (!cat) return;
+    (cat.items || []).forEach(it => {
+      if (!it || !it.id) return;
+      out.push({
+        id: it.id, label: it.label || 'Статья', direction: 'out',
+        group: cat.label || '', emoji: it.emoji || cat.emoji || '',
+      });
+    });
+  });
+  const recCats = getRecurringCats(data);
+  const usedRec = [...new Set((data.budgetRecurring || [])
+    .filter(r => r && !r.archived).map(r => r.category).filter(Boolean))];
+  usedRec.forEach(cid => {
+    const c = recCats.find(x => x.id === cid) || {};
+    out.push({
+      id: `__rec_${cid}`, label: c.label || cid, direction: 'out',
+      group: 'Постоянные', emoji: c.emoji || '🔄',
+    });
+  });
+  return out;
+};
+
+const cashflowOpsOf = (data) => (data.budgetCashflowOps || []).filter(o => o && o.id);
+
+// Баланс счёта = первоначальный остаток + доходы − расходы по его операциям.
+const cashflowAccountBalance = (acc, ops) => {
+  const start = Number(acc?.initialBalance) || 0;
+  return ops.reduce((sum, op) => {
+    if (op.accountId !== acc.id) return sum;
+    const amt = Number(op.amount) || 0;
+    return sum + (op.direction === 'in' ? amt : -amt);
+  }, start);
+};
+
+// Факт из ДДС по ключам `${статья}_${YYYY-MM}` — отдельно расход и доход.
+// Он СКЛАДЫВАЕТСЯ с ручным фактом и фактом из выписки, а не заменяет их.
+const cashflowFactMaps = (ops) => {
+  const expense = {};
+  const income = {};
+  ops.forEach(op => {
+    const month = String(op.date || '').slice(0, 7);
+    const cat = op.categoryId;
+    if (!month || !cat) return;
+    const amt = Number(op.amount) || 0;
+    if (!amt) return;
+    const target = op.direction === 'in' ? income : expense;
+    const key = `${cat}_${month}`;
+    target[key] = (target[key] || 0) + amt;
+  });
+  return { expense, income };
+};
+
+const formatRubExact = (n) => {
+  const num = Number(n) || 0;
+  return new Intl.NumberFormat('ru-RU', {
+    minimumFractionDigits: Number.isInteger(num) ? 0 : 2,
+    maximumFractionDigits: 2,
+  }).format(num);
+};
+
+const financeAppUrl = (user) =>
+  user && user.financeToken ? `${window.location.origin}/pf/${user.financeToken}` : '';
+
 function BudgetView({ data, setData }) {
   const [budgetTab, setBudgetTab] = useState('monthly');
   const [showUsers, setShowUsers] = useState(false);
@@ -10636,7 +10720,7 @@ function BudgetView({ data, setData }) {
 
         <div className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-6">
           <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
-            {[['monthly','По месяцу'],['expenses','Накопления'],['recurring','Постоянные'],['supplements','Спортпит'],['debts','Долги']].map(([id, label]) => (
+            {[['monthly','По месяцу'],['cashflow','ДДС'],['expenses','Накопления'],['recurring','Постоянные'],['supplements','Спортпит'],['debts','Долги']].map(([id, label]) => (
               <button key={id} onClick={() => setBudgetTab(id)}
                 className={`px-3 sm:px-4 py-2.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${budgetTab === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
                 {label}
@@ -10649,6 +10733,7 @@ function BudgetView({ data, setData }) {
       {/* Контент: на ПК таблицы могут быть шире шапки, сама шапка не меняется */}
       <div className="max-w-5xl mx-auto md:w-fit md:min-w-[min(100%,64rem)] md:max-w-full">
         {budgetTab === 'monthly'   && <BudgetMonthlyView   key={activeId} data={scopedData} setData={scopedSetData} />}
+        {budgetTab === 'cashflow'  && <BudgetCashflowView  key={activeId} data={scopedData} setData={scopedSetData} userId={activeId} />}
         {budgetTab === 'expenses'  && <BudgetExpensesView  key={activeId} data={scopedData} setData={scopedSetData} />}
         {budgetTab === 'recurring' && <BudgetRecurringView key={activeId} data={scopedData} setData={scopedSetData} />}
         {budgetTab === 'supplements' && <BudgetSupplementsView key={activeId} data={scopedData} setData={scopedSetData} />}
@@ -10804,8 +10889,14 @@ function BudgetMonthlyView({ data, setData }) {
   const incomeSources = data.budgetIncomeSources || [];
   const incomeVals    = data.budgetIncomeValues  || {};
 
+  // Операции ДДС (мобильное приложение + ручной ввод на вкладке «ДДС»)
+  // попадают в столбцы «Факт» автоматически, поверх ручных значений и
+  // импорта выписки.
+  const ddsFact = useMemo(() => cashflowFactMaps(cashflowOpsOf(data)), [data.budgetCashflowOps]);
+
   const getIncomeVal    = (srcId, month) => incomeVals[`${srcId}_${month}`] || 0;
-  const getIncomeFactVal = (srcId, month) => incomeFactVals[`${srcId}_${month}`] || 0;
+  const getIncomeFactVal = (srcId, month) =>
+    (incomeFactVals[`${srcId}_${month}`] || 0) + (ddsFact.income[`${srcId}_${month}`] || 0);
   const incomeSrcTotal  = (month) => incomeSources.reduce((s, src) => s + getIncomeVal(src.id, month), 0);
   const incomeFactTotal = (month) => incomeSources.reduce((s, src) => s + getIncomeFactVal(src.id, month), 0);
 
@@ -10945,7 +11036,9 @@ function BudgetMonthlyView({ data, setData }) {
 
   // ── Value helpers ─────────────────────────────────────────────────────────
   const getItemVal   = (item, month) => item.getAutoVal ? item.getAutoVal(month) : (vals[`${item.id}_${month}`] || 0);
-  const getItemFact  = (item, month) => item.getAutoFact ? item.getAutoFact(month) : (factVals[`${item.id}_${month}`] || 0);
+  const getItemFact  = (item, month) => item.getAutoFact
+    ? item.getAutoFact(month)
+    : (factVals[`${item.id}_${month}`] || 0) + (ddsFact.expense[`${item.id}_${month}`] || 0);
   const catTotal     = (cat, month)  => (cat.items || []).reduce((s, it) => s + getItemVal(it, month), 0);
   const catFactTotal = (cat, month)  => (cat.items || []).reduce((s, it) => s + getItemFact(it, month), 0);
   const grandTotal   = (month)       => allCats.flatMap(c => c.items || []).reduce((s, it) => s + getItemVal(it, month), 0);
@@ -11356,6 +11449,569 @@ function BudgetMonthlyView({ data, setData }) {
         />
       )}
     </div>
+  );
+}
+
+
+// ── Вкладка «ДДС» ───────────────────────────────────────────────────────────
+// История операций расхода и дохода: сюда падает всё, что записано с телефона
+// через /pf/<token>, и всё, что добавлено руками здесь же. Отсюда суммы
+// автоматически попадают в столбцы «Факт» на вкладке «По месяцу».
+function BudgetCashflowView({ data, setData, userId }) {
+  const [month,      setMonth]      = useState(getCurrentMonthStr());
+  const [accFilter,  setAccFilter]  = useState('');
+  const [dirFilter,  setDirFilter]  = useState('');
+  const [query,      setQuery]      = useState('');
+  const [editingOp,  setEditingOp]  = useState(null);   // объект операции или {} для новой
+  const [showAccounts, setShowAccounts] = useState(false);
+  const [copied,     setCopied]     = useState(false);
+
+  const accounts = data.budgetCashflowAccounts || [];
+  const ops      = cashflowOpsOf(data);
+  const articles = useMemo(() => cashflowArticles(data), [data.budgetIncomeSources, data.budgetPlanCategories, data.budgetRecurring, data.budgetRecurringCategories]);
+  const artById  = useMemo(() => Object.fromEntries(articles.map(a => [a.id, a])), [articles]);
+  const accById  = useMemo(() => Object.fromEntries(accounts.map(a => [a.id, a])), [accounts]);
+
+  const user = (data.budgetUsers || []).find(u => u.id === userId) || null;
+  const shareUrl = financeAppUrl(user);
+  const shareOn  = !!user && user.financeShareEnabled !== false;
+
+  const months = useMemo(() => {
+    const set = new Set(ops.map(o => String(o.date || '').slice(0, 7)).filter(Boolean));
+    set.add(getCurrentMonthStr());
+    return [...set].sort().reverse();
+  }, [ops]);
+
+  const visibleOps = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return ops
+      .filter(o => !month || String(o.date || '').slice(0, 7) === month)
+      .filter(o => !accFilter || o.accountId === accFilter)
+      .filter(o => !dirFilter || o.direction === dirFilter)
+      .filter(o => {
+        if (!q) return true;
+        const hay = [
+          artById[o.categoryId]?.label || '',
+          accById[o.accountId]?.name || '',
+          o.purpose || '',
+        ].join(' ').toLowerCase();
+        return hay.includes(q);
+      })
+      .sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))
+        || (b.createdAt || 0) - (a.createdAt || 0));
+  }, [ops, month, accFilter, dirFilter, query, artById, accById]);
+
+  const totals = useMemo(() => visibleOps.reduce((acc, o) => {
+    const amt = Number(o.amount) || 0;
+    if (o.direction === 'in') acc.income += amt; else acc.expense += amt;
+    return acc;
+  }, { income: 0, expense: 0 }), [visibleOps]);
+
+  const saveOp = (op) => {
+    const clean = {
+      ...op,
+      amount: Math.round((Number(op.amount) || 0) * 100) / 100,
+      purpose: (op.purpose || '').trim().slice(0, 200),
+      updatedAt: Date.now(),
+    };
+    setData(d => {
+      const list = d.budgetCashflowOps || [];
+      const exists = list.some(o => o.id === clean.id);
+      return {
+        ...d,
+        budgetCashflowOps: exists
+          ? list.map(o => o.id === clean.id ? { ...o, ...clean } : o)
+          : [...list, { source: 'manual', createdAt: Date.now(), ...clean }],
+      };
+    });
+    setEditingOp(null);
+  };
+
+  const deleteOp = (id) => {
+    if (!confirm('Удалить операцию?')) return;
+    setData(d => ({
+      ...d,
+      budgetCashflowOps: (d.budgetCashflowOps || []).filter(o => o.id !== id),
+      deletedIds: withDeletedId(d, 'budgetCashflowOps', id),
+    }));
+  };
+
+  const ensureToken = () => {
+    if (!user) return;
+    if (!user.financeToken || !shareOn) {
+      setData(d => ({
+        ...d,
+        budgetUsers: (d.budgetUsers || []).map(u => u.id === userId
+          ? { ...u, financeToken: u.financeToken || makePlannerToken(), financeShareEnabled: true, updatedAt: Date.now() }
+          : u),
+      }));
+    }
+  };
+
+  const revokeToken = () => {
+    if (!confirm('Отключить ссылку?\n\nПриложение на телефоне перестанет открываться, пока вы не включите её снова.')) return;
+    setData(d => ({
+      ...d,
+      budgetUsers: (d.budgetUsers || []).map(u => u.id === userId
+        ? { ...u, financeShareEnabled: false, updatedAt: Date.now() } : u),
+    }));
+  };
+
+  const regenerateToken = () => {
+    if (!confirm('Сделать новую ссылку?\n\nСтарая перестанет работать — на телефоне придётся открыть приложение заново.')) return;
+    setData(d => ({
+      ...d,
+      budgetUsers: (d.budgetUsers || []).map(u => u.id === userId
+        ? { ...u, financeToken: makePlannerToken(), financeShareEnabled: true, updatedAt: Date.now() } : u),
+    }));
+  };
+
+  const copyLink = async () => {
+    const ok = await copyToClipboard(shareUrl);
+    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
+    else prompt('Скопируйте ссылку вручную:', shareUrl);
+  };
+
+  const totalBalance = accounts.reduce((s, a) => s + cashflowAccountBalance(a, ops), 0);
+
+  return (
+    <div className="space-y-6">
+      {/* ── Счета ───────────────────────────────────────────────── */}
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div>
+            <div className="font-medium">Счета</div>
+            <div className="text-xs text-[var(--text-subtle)] mt-0.5">
+              Первоначальный баланс + операции. Эти же счета видны в приложении на телефоне.
+            </div>
+          </div>
+          <button onClick={() => setShowAccounts(true)}
+            className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors whitespace-nowrap">
+            Настроить
+          </button>
+        </div>
+
+        {accounts.length === 0 ? (
+          <div className="text-sm text-[var(--text-subtle)] py-3">
+            Счетов пока нет — нажмите «Настроить», чтобы завести первый.
+          </div>
+        ) : (
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {accounts.map(a => {
+              const bal = cashflowAccountBalance(a, ops);
+              return (
+                <div key={a.id} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3.5 py-3">
+                  <div className="text-sm font-medium truncate">{a.name || 'Счёт'}</div>
+                  <div className={`mt-1 text-lg font-semibold tabular-nums ${bal < 0 ? 'text-red-500' : 'text-[var(--text)]'}`}>
+                    {formatRubExact(bal)} ₽
+                  </div>
+                  <div className="text-[11px] text-[var(--text-subtle)] mt-0.5">
+                    старт: {formatRubExact(a.initialBalance || 0)} ₽
+                  </div>
+                </div>
+              );
+            })}
+            {accounts.length > 1 && (
+              <div className="rounded-xl border border-dashed border-[var(--border-strong)] px-3.5 py-3">
+                <div className="text-sm font-medium truncate text-[var(--text-muted)]">Всего</div>
+                <div className={`mt-1 text-lg font-semibold tabular-nums ${totalBalance < 0 ? 'text-red-500' : 'text-[var(--text)]'}`}>
+                  {formatRubExact(totalBalance)} ₽
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Ссылка на мобильное приложение ───────────────────────── */}
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
+        <div className="font-medium">Приложение на телефон</div>
+        <div className="text-xs text-[var(--text-subtle)] mt-0.5 mb-3">
+          Отдельная ссылка для этого пользователя бюджета: откройте её на iPhone и добавьте на экран «Домой».
+          Записанные там траты и доходы сразу появятся здесь.
+        </div>
+
+        {!user ? (
+          <div className="text-sm text-[var(--text-subtle)]">Выберите пользователя бюджета.</div>
+        ) : !user.financeToken || !shareOn ? (
+          <button onClick={ensureToken} className="btn-primary text-sm px-4 py-2">
+            {user.financeToken ? 'Включить ссылку' : 'Создать ссылку'}
+          </button>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <input readOnly value={shareUrl} onFocus={e => e.target.select()}
+                className="flex-1 min-w-[16rem] bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm font-mono" />
+              <button onClick={copyLink} className="btn-primary text-sm px-4 py-2">
+                {copied ? 'Скопировано' : 'Копировать'}
+              </button>
+              <a href={shareUrl} target="_blank" rel="noopener noreferrer"
+                className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors">
+                Открыть
+              </a>
+            </div>
+            <div className="flex flex-wrap gap-3 text-xs">
+              <button onClick={regenerateToken} className="text-[var(--text-muted)] hover:text-[var(--text)]">Новая ссылка</button>
+              <button onClick={revokeToken} className="text-red-500 hover:text-red-600">Отключить</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Операции ─────────────────────────────────────────────── */}
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+        <div className="p-4 sm:p-5 border-b border-[var(--border)]">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <select value={month} onChange={e => setMonth(e.target.value)}
+              className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm">
+              <option value="">Все месяцы</option>
+              {months.map(m => <option key={m} value={m}>{formatMonthFull(m)}</option>)}
+            </select>
+
+            <select value={accFilter} onChange={e => setAccFilter(e.target.value)}
+              className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm">
+              <option value="">Все счета</option>
+              {accounts.map(a => <option key={a.id} value={a.id}>{a.name || 'Счёт'}</option>)}
+            </select>
+
+            <select value={dirFilter} onChange={e => setDirFilter(e.target.value)}
+              className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm">
+              <option value="">Расход и доход</option>
+              <option value="out">Только расход</option>
+              <option value="in">Только доход</option>
+            </select>
+
+            <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Поиск по статье, счёту, назначению"
+              className="flex-1 min-w-[12rem] bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+
+            <button
+              onClick={() => setEditingOp({
+                id: crypto.randomUUID(),
+                date: new Date().toISOString().slice(0, 10),
+                direction: 'out',
+                amount: '',
+                accountId: (data.budgetCashflowSettings || {}).quickAccountId || accounts[0]?.id || '',
+                categoryId: '',
+                purpose: '',
+                source: 'manual',
+                _isNew: true,
+              })}
+              disabled={!accounts.length || !articles.length}
+              className="btn-primary text-sm px-4 py-2 inline-flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+              title={!accounts.length ? 'Сначала заведите счёт' : (!articles.length ? 'Сначала добавьте статьи в «По месяцу»' : '')}>
+              <Icon name="plus" size={14} /> Операция
+            </button>
+          </div>
+
+          <div className="flex flex-wrap gap-4 mt-3 text-sm">
+            <div><span className="text-[var(--text-subtle)]">Доходы: </span>
+              <span className="font-semibold text-emerald-600">{formatRubExact(totals.income)} ₽</span></div>
+            <div><span className="text-[var(--text-subtle)]">Расходы: </span>
+              <span className="font-semibold text-[var(--text)]">{formatRubExact(totals.expense)} ₽</span></div>
+            <div><span className="text-[var(--text-subtle)]">Итог: </span>
+              <span className={`font-semibold ${totals.income - totals.expense >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                {totals.income - totals.expense >= 0 ? '+' : '−'}{formatRubExact(Math.abs(totals.income - totals.expense))} ₽
+              </span></div>
+            <div className="text-[var(--text-subtle)]">{visibleOps.length} оп.</div>
+          </div>
+        </div>
+
+        {visibleOps.length === 0 ? (
+          <div className="px-4 py-12 text-center text-[var(--text-subtle)]">
+            <div className="text-3xl mb-2">💸</div>
+            <div className="text-sm">Операций за выбранный период нет</div>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="bg-[var(--bg)] text-[var(--text-subtle)]">
+                  <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide border-b border-[var(--border)]">Дата</th>
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide border-b border-[var(--border)]">Статья</th>
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide border-b border-[var(--border)]">Счёт</th>
+                  <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide border-b border-[var(--border)]">Назначение</th>
+                  <th className="px-3 py-2.5 text-right text-xs font-semibold uppercase tracking-wide border-b border-[var(--border)]">Сумма</th>
+                  <th className="px-4 py-2.5 border-b border-[var(--border)]" />
+                </tr>
+              </thead>
+              <tbody>
+                {visibleOps.map(op => {
+                  const art = artById[op.categoryId];
+                  const isIn = op.direction === 'in';
+                  return (
+                    <tr key={op.id} className="border-b border-[var(--border)] hover:bg-black/[0.02]">
+                      <td className="px-4 py-2.5 whitespace-nowrap text-[var(--text-muted)]">
+                        {(op.date || '').split('-').reverse().join('.')}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isIn ? 'bg-emerald-500' : 'bg-blue-500'}`} />
+                          <span className="truncate">{art ? art.label : <span className="text-red-500">Статья удалена</span>}</span>
+                          {art && <span className="text-[11px] text-[var(--text-subtle)] hidden sm:inline">· {art.group}</span>}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5 text-[var(--text-muted)] whitespace-nowrap">
+                        {accById[op.accountId]?.name || <span className="text-red-500">Счёт удалён</span>}
+                      </td>
+                      <td className="px-3 py-2.5 text-[var(--text-muted)] max-w-[16rem] truncate">
+                        {op.purpose || '—'}
+                        {op.source === 'pwa' && <span className="ml-2 text-[10px] uppercase tracking-wide text-[var(--text-subtle)]">телефон</span>}
+                      </td>
+                      <td className={`px-3 py-2.5 text-right font-semibold tabular-nums whitespace-nowrap ${isIn ? 'text-emerald-600' : 'text-[var(--text)]'}`}>
+                        {isIn ? '+' : '−'}{formatRubExact(op.amount)} ₽
+                      </td>
+                      <td className="px-4 py-2.5 whitespace-nowrap text-right">
+                        <button onClick={() => setEditingOp({ ...op })} className="p-1.5 text-[var(--text-muted)] hover:text-[var(--text)]" title="Изменить">
+                          <Icon name="edit" size={15} />
+                        </button>
+                        <button onClick={() => deleteOp(op.id)} className="p-1.5 text-[var(--text-muted)] hover:text-red-500" title="Удалить">
+                          <Icon name="trash" size={15} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="px-4 py-3 text-xs text-[var(--text-subtle)] border-t border-[var(--border)]">
+          Суммы отсюда автоматически складываются в столбцы «Факт» на вкладке «По месяцу»
+          (поверх ручных значений и импорта выписки).
+        </div>
+      </div>
+
+      {showAccounts && (
+        <CashflowAccountsModal data={data} setData={setData} onClose={() => setShowAccounts(false)} />
+      )}
+
+      {editingOp && (
+        <CashflowOpModal
+          op={editingOp}
+          accounts={accounts}
+          articles={articles}
+          onSave={saveOp}
+          onClose={() => setEditingOp(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function CashflowAccountsModal({ data, setData, onClose }) {
+  const accounts = data.budgetCashflowAccounts || [];
+  const ops = cashflowOpsOf(data);
+  const [newName, setNewName] = useState('');
+  const [newBalance, setNewBalance] = useState('');
+  const [editing, setEditing] = useState(null); // { id, name, initialBalance }
+
+  const parseMoney = (v) => {
+    const n = parseFloat(String(v).replace(/\s/g, '').replace(',', '.'));
+    return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+  };
+
+  const addAccount = () => {
+    const name = newName.trim();
+    if (!name) return;
+    const acc = {
+      id: crypto.randomUUID(),
+      name,
+      initialBalance: parseMoney(newBalance),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    setData(d => ({ ...d, budgetCashflowAccounts: [...(d.budgetCashflowAccounts || []), acc] }));
+    setNewName('');
+    setNewBalance('');
+  };
+
+  const saveEdit = () => {
+    if (!editing?.name?.trim()) return;
+    setData(d => ({
+      ...d,
+      budgetCashflowAccounts: (d.budgetCashflowAccounts || []).map(a => a.id === editing.id
+        ? { ...a, name: editing.name.trim(), initialBalance: parseMoney(editing.initialBalance), updatedAt: Date.now() }
+        : a),
+    }));
+    setEditing(null);
+  };
+
+  const removeAccount = (id) => {
+    const used = ops.filter(o => o.accountId === id);
+    const acc = accounts.find(a => a.id === id);
+    const msg = used.length
+      ? `Удалить счёт «${acc?.name || ''}» и ${used.length} его операц.? Суммы исчезнут и из столбцов «Факт».`
+      : `Удалить счёт «${acc?.name || ''}»?`;
+    if (!confirm(msg)) return;
+    setData(d => {
+      let deleted = withDeletedId(d, 'budgetCashflowAccounts', id);
+      used.forEach(o => {
+        deleted = { ...deleted, budgetCashflowOps: { ...(deleted.budgetCashflowOps || {}), [String(o.id)]: Date.now() } };
+      });
+      return {
+        ...d,
+        budgetCashflowAccounts: (d.budgetCashflowAccounts || []).filter(a => a.id !== id),
+        budgetCashflowOps: (d.budgetCashflowOps || []).filter(o => o.accountId !== id),
+        deletedIds: deleted,
+      };
+    });
+  };
+
+  return (
+    <Modal title="Счета ДДС" onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-sm text-[var(--text-muted)]">
+          Название и первоначальный баланс счёта. Текущий баланс считается сам: старт + доходы − расходы.
+        </p>
+
+        <div className="space-y-2">
+          {accounts.map(a => (
+            <div key={a.id} className="p-3 rounded-xl border border-[var(--border)]">
+              {editing?.id === a.id ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <input autoFocus value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })}
+                    className="flex-1 min-w-[8rem] bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+                  <input value={editing.initialBalance} onChange={e => setEditing({ ...editing, initialBalance: e.target.value })}
+                    inputMode="decimal" placeholder="Старт, ₽"
+                    className="w-28 bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+                  <button onClick={saveEdit} className="text-sm px-3 py-1.5 rounded-lg bg-[var(--text)] text-white">OK</button>
+                  <button onClick={() => setEditing(null)} className="text-sm px-2 py-1.5 text-[var(--text-muted)]">Отмена</button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{a.name || 'Счёт'}</div>
+                    <div className="text-xs text-[var(--text-subtle)]">
+                      старт {formatRubExact(a.initialBalance || 0)} ₽ · сейчас {formatRubExact(cashflowAccountBalance(a, ops))} ₽
+                    </div>
+                  </div>
+                  <button onClick={() => setEditing({ id: a.id, name: a.name || '', initialBalance: String(a.initialBalance ?? '') })}
+                    className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] px-2 py-1">Изменить</button>
+                  <button onClick={() => removeAccount(a.id)} className="text-xs text-red-500 hover:text-red-600 px-2 py-1">Удалить</button>
+                </div>
+              )}
+            </div>
+          ))}
+          {accounts.length === 0 && (
+            <div className="text-sm text-[var(--text-subtle)]">Счетов пока нет.</div>
+          )}
+        </div>
+
+        <div className="pt-2 border-t border-[var(--border)]">
+          <div className="text-xs uppercase tracking-wide text-[var(--text-subtle)] font-medium mb-2">Новый счёт</div>
+          <div className="flex flex-wrap gap-2">
+            <input value={newName} onChange={e => setNewName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') addAccount(); }}
+              placeholder="Название (например, Карта Тинькофф)"
+              className="flex-1 min-w-[12rem] bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+            <input value={newBalance} onChange={e => setNewBalance(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') addAccount(); }}
+              inputMode="decimal" placeholder="Баланс, ₽"
+              className="w-32 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+            <button onClick={addAccount} disabled={!newName.trim()}
+              className="btn-primary text-sm px-4 py-2 flex items-center gap-1.5 disabled:opacity-40">
+              <Icon name="plus" size={14} /> Добавить
+            </button>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function CashflowOpModal({ op, accounts, articles, onSave, onClose }) {
+  const [form, setForm] = useState(() => ({
+    ...op,
+    amount: op.amount === '' || op.amount == null ? '' : String(op.amount),
+  }));
+
+  const set = (patch) => setForm(f => ({ ...f, ...patch }));
+  const dirArticles = articles.filter(a => a.direction === form.direction);
+  const grouped = dirArticles.reduce((acc, a) => {
+    (acc[a.group || '—'] = acc[a.group || '—'] || []).push(a);
+    return acc;
+  }, {});
+
+  const amountNum = parseFloat(String(form.amount).replace(/\s/g, '').replace(',', '.'));
+  const valid = Number.isFinite(amountNum) && amountNum > 0 && form.date && form.accountId && form.categoryId;
+
+  const submit = () => {
+    if (!valid) return;
+    const { _isNew, ...rest } = form;
+    onSave({ ...rest, amount: amountNum });
+  };
+
+  return (
+    <Modal title={op._isNew ? 'Новая операция' : 'Операция'} onClose={onClose}>
+      <div className="space-y-4">
+        <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
+          {[['out', 'Расход'], ['in', 'Доход']].map(([id, label]) => (
+            <button key={id}
+              onClick={() => set({ direction: id, categoryId: articles.some(a => a.id === form.categoryId && a.direction === id) ? form.categoryId : '' })}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${form.direction === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Дата</label>
+            <input type="date" value={form.date || ''} onChange={e => set({ date: e.target.value })}
+              className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Сумма, ₽</label>
+            <input value={form.amount} onChange={e => set({ amount: e.target.value })}
+              inputMode="decimal" placeholder="0"
+              className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Счёт</label>
+          <select value={form.accountId || ''} onChange={e => set({ accountId: e.target.value })}
+            className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm">
+            <option value="">Выберите счёт…</option>
+            {accounts.map(a => <option key={a.id} value={a.id}>{a.name || 'Счёт'}</option>)}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Статья</label>
+          <select value={form.categoryId || ''} onChange={e => set({ categoryId: e.target.value })}
+            className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm">
+            <option value="">Выберите статью…</option>
+            {Object.entries(grouped).map(([group, items]) => (
+              <optgroup key={group} label={group}>
+                {items.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+              </optgroup>
+            ))}
+          </select>
+          {!dirArticles.length && (
+            <div className="text-xs text-amber-600 mt-1.5">
+              Нет статей этого направления — добавьте их в настройках вкладки «По месяцу».
+            </div>
+          )}
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Назначение</label>
+          <input value={form.purpose || ''} onChange={e => set({ purpose: e.target.value })}
+            placeholder="Необязательно" maxLength={200}
+            className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+        </div>
+      </div>
+
+      <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
+        <button onClick={onClose} className="btn-secondary">Отмена</button>
+        <button onClick={submit} disabled={!valid}
+          className="btn-primary flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
+          Сохранить
+        </button>
+      </div>
+    </Modal>
   );
 }
 

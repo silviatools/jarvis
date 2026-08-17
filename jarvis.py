@@ -28,6 +28,7 @@ import zipfile
 from datetime import datetime, date, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
+from urllib.parse import parse_qs
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 # Moscow time is UTC+3, no DST (since 2014) — reliable without tzdata
@@ -1551,6 +1552,249 @@ def camping_trip_public_payload(app: dict, trip: dict) -> dict:
     }
 
 
+# ── Личные финансы: PWA быстрого ввода операций (ДДС) ──────────────────────
+# Телефон открывает /pf/<token> — отдельную страницу finance.html, которая
+# ходит только в /api/pf/<token>/*. Токен привязан к КОНКРЕТНОМУ пользователю
+# бюджета (budgetUsers[i].financeToken), поэтому у каждого пользователя своя
+# ссылка и своё приложение: чужие счета и статьи по ней не видны.
+#
+# Всё, что записано через приложение, ложится в срез этого пользователя
+# (budgetByUser[uid]) в те же массивы, что читает вкладка «ДДС» на сайте:
+#   budgetCashflowAccounts — счета (имя + первоначальный баланс),
+#   budgetCashflowOps      — операции расхода/дохода,
+#   budgetCashflowSettings — счёт по умолчанию для быстрого ввода.
+
+FINANCE_PAGE_FILE = DIR / "finance.html"
+
+MAX_PF_BODY          = 16 * 1024
+MAX_PF_PURPOSE       = 200
+MAX_PF_OPS           = 20000          # потолок истории на одного пользователя
+MAX_PF_AMOUNT_CENTS  = 100_000_000_000  # 1 млрд ₽ — потолок вменяемой суммы
+PF_DIRECTIONS        = {"in", "out"}
+
+# Зеркало BUDGET_RECURRING_CATS из index (9).html: подписи авто-строк
+# «Постоянные», пока пользователь не завёл свой список категорий.
+# ДЕРЖАТЬ В СИНХРОНЕ с фронтендом.
+PF_DEFAULT_RECURRING_CATS = [
+    {"id": "subscriptions", "emoji": "📺", "label": "Подписки"},
+    {"id": "internet",      "emoji": "🌐", "label": "Интернет"},
+    {"id": "mobile",        "emoji": "📱", "label": "Мобильная связь"},
+    {"id": "rent",          "emoji": "🏠", "label": "Аренда"},
+    {"id": "insurance",     "emoji": "🛡️", "label": "Страховка"},
+    {"id": "utilities",     "emoji": "💡", "label": "Коммуналка"},
+    {"id": "gym",           "emoji": "💪", "label": "Фитнес"},
+    {"id": "bank",          "emoji": "🏦", "label": "Банк / карта"},
+    {"id": "transport",     "emoji": "🚇", "label": "Транспорт"},
+    {"id": "other",         "emoji": "📌", "label": "Другое"},
+]
+
+
+def find_budget_user(app: dict, token: str):
+    """(uid, user) пользователя бюджета с активной ссылкой на приложение.
+    Отключённая ссылка (financeShareEnabled = false) — то же самое, что
+    несуществующая: отзыв ссылки должен работать."""
+    for u in (app.get("budgetUsers") or []):
+        if not isinstance(u, dict):
+            continue
+        if str(u.get("financeToken") or "") != token:
+            continue
+        if not u.get("financeShareEnabled", True):
+            return None, None
+        return str(u.get("id") or ""), u
+    return None, None
+
+
+def budget_slice_of(app: dict, uid: str) -> dict:
+    by_user = app.get("budgetByUser")
+    if not isinstance(by_user, dict):
+        return {}
+    sl = by_user.get(uid)
+    return sl if isinstance(sl, dict) else {}
+
+
+def _pf_list(sl: dict, key: str) -> list:
+    v = sl.get(key)
+    return v if isinstance(v, list) else []
+
+
+def pf_accounts(sl: dict) -> list:
+    """Счета пользователя с балансом: первоначальный остаток + доходы − расходы."""
+    ops = _pf_list(sl, "budgetCashflowOps")
+    delta = {}
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        acc = str(op.get("accountId") or "")
+        if not acc:
+            continue
+        amount = op.get("amount")
+        if not isinstance(amount, (int, float)):
+            continue
+        sign = 1 if op.get("direction") == "in" else -1
+        delta[acc] = delta.get(acc, 0.0) + sign * float(amount)
+
+    out = []
+    for a in _pf_list(sl, "budgetCashflowAccounts"):
+        if not isinstance(a, dict) or not a.get("id"):
+            continue
+        aid = str(a["id"])
+        initial = a.get("initialBalance")
+        initial = float(initial) if isinstance(initial, (int, float)) else 0.0
+        out.append({
+            "id": aid,
+            "name": str(a.get("name") or "Счёт"),
+            "archived": bool(a.get("archived")),
+            "initial_balance": round(initial, 2),
+            "balance": round(initial + delta.get(aid, 0.0), 2),
+        })
+    return out
+
+
+def pf_articles(sl: dict) -> list:
+    """Статьи расхода и дохода — ровно те строки вкладки «По месяцу», факт по
+    которым ведётся вручную (и, значит, может прийти из ДДС):
+      • источники дохода            → direction=in,  id = <srcId>
+      • статьи ручных категорий     → direction=out, id = <itemId>
+      • категории «Постоянные»      → direction=out, id = __rec_<catId>
+    Накопления и Долги сюда не попадают: их факт считается из платежей на
+    своих вкладках, запись через ДДС удвоила бы суммы.
+    ДЕРЖАТЬ В СИНХРОНЕ с cashflowArticles() из index (9).html."""
+    arts = []
+
+    for src in _pf_list(sl, "budgetIncomeSources"):
+        if isinstance(src, dict) and src.get("id"):
+            arts.append({
+                "id": str(src["id"]),
+                "name": str(src.get("label") or "Доход"),
+                "direction": "in",
+                "group_name": "Приход",
+                "emoji": "💰",
+            })
+
+    for cat in _pf_list(sl, "budgetPlanCategories"):
+        if not isinstance(cat, dict):
+            continue
+        cat_label = str(cat.get("label") or "")
+        items = cat.get("items")
+        for it in (items if isinstance(items, list) else []):
+            if isinstance(it, dict) and it.get("id"):
+                arts.append({
+                    "id": str(it["id"]),
+                    "name": str(it.get("label") or "Статья"),
+                    "direction": "out",
+                    "group_name": cat_label,
+                    "emoji": str(it.get("emoji") or cat.get("emoji") or ""),
+                })
+
+    rec_cats = _pf_list(sl, "budgetRecurringCategories") or PF_DEFAULT_RECURRING_CATS
+    rec_by_id = {str(c.get("id")): c for c in rec_cats if isinstance(c, dict) and c.get("id")}
+    seen_rec = []
+    for r in _pf_list(sl, "budgetRecurring"):
+        if not isinstance(r, dict) or r.get("archived"):
+            continue
+        cid = str(r.get("category") or "")
+        if cid and cid not in seen_rec:
+            seen_rec.append(cid)
+    for cid in seen_rec:
+        c = rec_by_id.get(cid) or {}
+        arts.append({
+            "id": f"__rec_{cid}",
+            "name": str(c.get("label") or cid),
+            "direction": "out",
+            "group_name": "Постоянные",
+            "emoji": str(c.get("emoji") or "🔄"),
+        })
+
+    counts = {}
+    for op in _pf_list(sl, "budgetCashflowOps"):
+        if isinstance(op, dict) and op.get("categoryId"):
+            key = str(op["categoryId"])
+            counts[key] = counts.get(key, 0) + 1
+    for a in arts:
+        a["use_count"] = counts.get(a["id"], 0)
+        a["code"] = ""
+    return arts
+
+
+def pf_settings(sl: dict) -> dict:
+    s = sl.get("budgetCashflowSettings")
+    s = s if isinstance(s, dict) else {}
+    return {
+        "quick_expense_account_id": str(s.get("quickAccountId") or ""),
+        "default_currency": str(s.get("defaultCurrency") or "руб."),
+    }
+
+
+def pf_operation_public(op: dict) -> dict:
+    date = str(op.get("date") or "")
+    return {
+        "id": str(op.get("id") or ""),
+        "date": date,
+        "payment_date": date,
+        "direction": "in" if op.get("direction") == "in" else "out",
+        "amount": float(op.get("amount") or 0),
+        "account_id": str(op.get("accountId") or ""),
+        "category_id": str(op.get("categoryId") or ""),
+        "purpose": str(op.get("purpose") or ""),
+        "comment": str(op.get("purpose") or ""),
+        "currency": "руб.",
+        "payment_status": "paid",
+        "source": str(op.get("source") or ""),
+    }
+
+
+def pf_route(route: str):
+    """(token, action) для путей /api/pf/<token>/<action>. (None, None) —
+    если токен не проходит валидацию: произвольная строка из URL не должна
+    доходить до поиска по данным."""
+    prefix = "/api/pf/"
+    if not route.startswith(prefix):
+        return None, None
+    token, _, action = route[len(prefix):].partition("/")
+    if not PLANNER_TOKEN_RE.match(token):
+        return None, None
+    return token, action
+
+
+PF_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def pf_parse_date(value, fallback: str) -> str:
+    raw = str(value or "").strip()
+    if not PF_DATE_RE.match(raw):
+        return fallback
+    try:
+        datetime.strptime(raw, "%Y-%m-%d")
+    except ValueError:
+        return fallback
+    return raw
+
+
+def pf_write(token: str, apply):
+    """Обвязка записи из приложения: найти пользователя по токену и под общим
+    локом применить apply(app, uid, slice). apply возвращает (code, payload)
+    при ошибке или None, если всё в порядке. Срез пользователя создаётся,
+    если его ещё нет. Возвращает (http_code, payload)."""
+    with APP_DATA_LOCK:
+        app = load_app_data() if APP_DATA_FILE.exists() else {}
+        uid, _user = find_budget_user(app, token)
+        if not uid:
+            return 404, {"error": "not found"}
+        by_user = app.get("budgetByUser")
+        if not isinstance(by_user, dict):
+            by_user = {}
+        sl = by_user.get(uid)
+        if not isinstance(sl, dict):
+            sl = {}
+        err = apply(app, uid, sl)
+        if err:
+            return err
+        by_user[uid] = sl
+        app["budgetByUser"] = by_user
+        save_app_data(app)
+        return 200, {"ok": True}
+
+
 # ── HTTP handler ───────────────────────────────────────────────────────────
 
 class JarvisHandler(SimpleHTTPRequestHandler):
@@ -1558,8 +1802,16 @@ class JarvisHandler(SimpleHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(200)
         self._cors()
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.end_headers()
+
+    def do_PUT(self):
+        route = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if route.startswith("/api/pf/"):
+            self._pf_put(route)
+        else:
+            self.send_response(404)
+            self.end_headers()
 
     def do_DELETE(self):
         if self.path.startswith("/api/photos/"):
@@ -1608,6 +1860,11 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif token_from_route(route, "/trip/"):
             # Гостевая страница чек-листа поездки — тоже отдельный файл.
             self._serve_trip_page()
+        elif token_from_route(route, "/pf/"):
+            # Мобильное приложение личных финансов — отдельная страница.
+            self._serve_finance_page()
+        elif route.startswith("/api/pf/"):
+            self._pf_get(route)
         elif token_from_route(route, "/api/camping-trip/"):
             token = token_from_route(route, "/api/camping-trip/")
             with APP_DATA_LOCK:
@@ -1733,6 +1990,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._event_shopping_delete(token_from_route(route, "/api/event/", "/shopping-delete"))
         elif token_from_route(route, "/api/event/", "/shopping-toggle"):
             self._event_shopping_toggle(token_from_route(route, "/api/event/", "/shopping-toggle"))
+        elif route.startswith("/api/pf/"):
+            self._pf_post(route)
         elif self.path == "/api/config":
             length = self._content_length()
             if length is None:
@@ -2305,6 +2564,230 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"camping-trip.html not found")
+
+    def _serve_finance_page(self):
+        try:
+            content = FINANCE_PAGE_FILE.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            # Личная ссылка: в поиск попадать не должна.
+            self.send_header("X-Robots-Tag", "noindex, nofollow")
+            self.send_header("Cache-Control", "no-store")
+            self._cors()
+            self.end_headers()
+            self.wfile.write(content)
+        except FileNotFoundError:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"finance.html not found")
+
+    # ── Личные финансы: API мобильного приложения ──────────────────────────
+
+    def _pf_get(self, route: str):
+        token, action = pf_route(route)
+        if not token:
+            self._json(404, {"error": "not found"})
+            return
+
+        query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+
+        def one(name, default=""):
+            v = query.get(name)
+            return v[0] if v else default
+
+        with APP_DATA_LOCK:
+            app = load_app_data() if APP_DATA_FILE.exists() else {}
+            uid, user = find_budget_user(app, token)
+            if not uid:
+                self._json(404, {"error": "not found"})
+                return
+            sl = budget_slice_of(app, uid)
+            user_name = str((user or {}).get("name") or "")
+
+        if action == "manifest.webmanifest":
+            self._pf_manifest(token, user_name)
+            return
+
+        if action == "profile":
+            self._json(200, {"user_name": user_name})
+        elif action == "accounts":
+            self._json(200, [a for a in pf_accounts(sl) if not a["archived"]])
+        elif action == "categories":
+            self._json(200, pf_articles(sl))
+        elif action == "categories/popular":
+            direction = one("direction", "out")
+            if direction not in PF_DIRECTIONS:
+                direction = "out"
+            try:
+                limit = max(1, min(50, int(one("limit", "5"))))
+            except ValueError:
+                limit = 5
+            items = [c for c in pf_articles(sl) if c["direction"] == direction]
+            # Ни одной операции ещё нет — показываем начало справочника,
+            # иначе экран быстрых статей был бы пустым до первой записи.
+            items.sort(key=lambda c: -c["use_count"])
+            self._json(200, items[:limit])
+        elif action == "settings":
+            self._json(200, pf_settings(sl))
+        elif action == "operations":
+            date_from = one("date_from")
+            date_to = one("date_to")
+            account_id = one("account_id")
+            direction = one("direction")
+            try:
+                limit = max(1, min(500, int(one("limit", "50"))))
+            except ValueError:
+                limit = 50
+            ops = [o for o in _pf_list(sl, "budgetCashflowOps") if isinstance(o, dict)]
+            picked = []
+            for op in ops:
+                d = str(op.get("date") or "")
+                if date_from and d < date_from:
+                    continue
+                if date_to and d > date_to:
+                    continue
+                if account_id and str(op.get("accountId") or "") != account_id:
+                    continue
+                if direction in PF_DIRECTIONS and op.get("direction") != direction:
+                    continue
+                picked.append(op)
+            # Новые сверху: внутри одного дня — по времени создания.
+            picked.sort(key=lambda o: (str(o.get("date") or ""),
+                                       o.get("createdAt") if isinstance(o.get("createdAt"), (int, float)) else 0),
+                        reverse=True)
+            self._json(200, [pf_operation_public(o) for o in picked[:limit]])
+        else:
+            self._json(404, {"error": "not found"})
+
+    def _pf_manifest(self, token: str, user_name: str):
+        name = f"Финансы — {user_name}" if user_name else "Личные финансы"
+        manifest = {
+            "name": name,
+            "short_name": "Финансы",
+            "description": "Быстрая запись расходов и доходов",
+            "start_url": f"/pf/{token}",
+            "scope": f"/pf/{token}",
+            "display": "standalone",
+            "orientation": "portrait",
+            "background_color": "#f2f2fa",
+            "theme_color": "#4338ca",
+            "lang": "ru",
+            "icons": [
+                {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            ],
+        }
+        body = json.dumps(manifest, ensure_ascii=False).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/manifest+json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _pf_body(self):
+        """Разобранное тело запроса или (None, ответ уже отправлен)."""
+        length = self._content_length()
+        if length is None:
+            self._json(411, {"error": "Content-Length required"})
+            return None
+        if length > MAX_PF_BODY:
+            self._json(413, {"error": "body too large"})
+            return None
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            self._json(400, {"error": "invalid json"})
+            return None
+        if not isinstance(payload, dict):
+            self._json(400, {"error": "invalid json"})
+            return None
+        return payload
+
+    def _pf_put(self, route: str):
+        token, action = pf_route(route)
+        if not token or action != "settings":
+            self._json(404, {"error": "not found"})
+            return
+        payload = self._pf_body()
+        if payload is None:
+            return
+        account_id = str(payload.get("quick_expense_account_id") or "")[:64]
+
+        def apply(app, uid, sl):
+            accounts = {a["id"] for a in pf_accounts(sl)}
+            if account_id and account_id not in accounts:
+                return 400, {"error": "unknown account"}
+            settings = sl.get("budgetCashflowSettings")
+            settings = dict(settings) if isinstance(settings, dict) else {}
+            settings["quickAccountId"] = account_id
+            settings["updatedAt"] = int(time.time() * 1000)
+            sl["budgetCashflowSettings"] = settings
+            return None
+
+        code, body = pf_write(token, apply)
+        self._json(code, body)
+
+    def _pf_post(self, route: str):
+        token, action = pf_route(route)
+        if not token or action != "operations":
+            self._json(404, {"error": "not found"})
+            return
+        payload = self._pf_body()
+        if payload is None:
+            return
+
+        cents = money_to_cents(payload.get("amount"))
+        if cents is None or cents <= 0 or cents > MAX_PF_AMOUNT_CENTS:
+            self._json(400, {"error": "invalid amount"})
+            return
+        amount = cents / 100
+        direction = payload.get("direction")
+        if direction not in PF_DIRECTIONS:
+            self._json(400, {"error": "invalid direction"})
+            return
+        account_id = str(payload.get("account_id") or "")[:64]
+        category_id = str(payload.get("category_id") or "")[:64]
+        purpose = str(payload.get("purpose") or payload.get("comment") or "").strip()[:MAX_PF_PURPOSE]
+        op_date = pf_parse_date(payload.get("date") or payload.get("payment_date"),
+                                today_msk().isoformat())
+
+        created = {"id": ""}
+
+        def apply(app, uid, sl):
+            ops = _pf_list(sl, "budgetCashflowOps")
+            if len(ops) >= MAX_PF_OPS:
+                return 409, {"error": "too many operations"}
+            accounts = {a["id"] for a in pf_accounts(sl)}
+            if account_id not in accounts:
+                return 400, {"error": "unknown account"}
+            article = next((c for c in pf_articles(sl)
+                            if c["id"] == category_id and c["direction"] == direction), None)
+            if article is None:
+                return 400, {"error": "unknown category"}
+            now_ms = int(time.time() * 1000)
+            op = {
+                "id": str(uuid.uuid4()),
+                "date": op_date,
+                "direction": direction,
+                "amount": amount,
+                "accountId": account_id,
+                "categoryId": category_id,
+                "purpose": purpose,
+                "source": "pwa",
+                "createdAt": now_ms,
+                "updatedAt": now_ms,
+            }
+            sl["budgetCashflowOps"] = [*ops, op]
+            created["id"] = op["id"]
+            return None
+
+        code, body = pf_write(token, apply)
+        if code == 200:
+            body = {"ok": True, "id": created["id"]}
+        self._json(code, body)
 
     def _serve_html(self):
         try:

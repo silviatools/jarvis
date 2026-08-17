@@ -1,0 +1,1150 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#4338ca">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Финансы">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="robots" content="noindex, nofollow">
+<link rel="manifest" id="manifestLink" href="/manifest.json">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="icon" href="/favicon.ico" type="image/x-icon">
+<title>Личные финансы</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #eef0f8;
+  --bg-elev: #f8f9fd;
+  --surface: #ffffff;
+  --text: #1b1c33;
+  --muted: #6d7191;
+  --line: #dcdff0;
+  --accent: #4338ca;
+  --accent-2: #6366f1;
+  --accent-soft: #e4e5fb;
+  --income: #0f9d6e;
+  --danger: #c0392b;
+  --shadow: 0 8px 28px rgba(27, 28, 51, 0.10);
+  --radius: 18px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-t: env(safe-area-inset-top, 0px);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  font-family: Manrope, system-ui, sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(120% 80% at 50% -10%, #d5d8f7 0%, transparent 55%),
+    linear-gradient(180deg, #f6f7fc 0%, var(--bg) 40%, #e7e9f4 100%);
+}
+
+body { padding-top: var(--safe-t); }
+
+.app {
+  height: 100%;
+  max-width: 480px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px 8px;
+  flex-shrink: 0;
+}
+
+.brand {
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  white-space: nowrap;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.acc-btn, .icon-btn {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 999px;
+  height: 36px;
+  padding: 0 12px;
+  font: inherit;
+  font-weight: 600;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 1px 2px rgba(27,28,51,.04);
+}
+
+.acc-btn { flex: 1; min-width: 0; justify-content: space-between; }
+.acc-btn .acc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acc-btn .acc-bal {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-left: auto;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.acc-btn .chev { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.icon-btn { width: 36px; justify-content: center; padding: 0; font-size: 16px; }
+
+.screen { display: none; flex: 1; min-height: 0; flex-direction: column; }
+.screen.active { display: flex; }
+
+/* ── Amount entry ── */
+.amount-wrap {
+  padding: 8px 18px 4px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.amount-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.amount {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-weight: 700;
+  font-size: clamp(2.4rem, 11vw, 3.4rem);
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  color: var(--text);
+  min-height: 1.15em;
+  word-break: break-all;
+}
+
+.amount .cur {
+  font-size: 0.42em;
+  font-weight: 600;
+  color: var(--muted);
+  margin-left: 6px;
+  vertical-align: 0.35em;
+}
+
+.amount.empty { color: #adb1cc; }
+.amount.pulse { animation: amountIn .18s ease; }
+@keyframes amountIn {
+  from { transform: scale(0.98); opacity: .7; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.search-wrap {
+  padding: 8px 14px 6px;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.search-wrap input {
+  width: 100%;
+  height: 42px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 0 40px 0 14px;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  outline: none;
+  box-shadow: 0 1px 2px rgba(27,28,51,.04);
+}
+
+.search-wrap input:focus {
+  border-color: var(--accent-2);
+  box-shadow: 0 0 0 3px rgba(99,102,241,.18);
+}
+
+.search-clear {
+  position: absolute;
+  right: 22px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  width: 28px;
+  height: 28px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.search-clear.show { display: inline-flex; }
+
+.cats-block {
+  flex: 0 1 auto;
+  max-height: 36%;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 14px 4px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.cats-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  margin: 4px 2px 8px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.cat-list, .recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cat-chip, .recent-chip {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 14px;
+  padding: 12px 14px;
+  text-align: left;
+  font: inherit;
+  font-weight: 650;
+  font-size: 15px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 1px 2px rgba(27,28,51,.04);
+  transition: transform .12s ease, background .12s ease;
+  width: 100%;
+}
+
+.cat-chip:active, .recent-chip:active { transform: scale(0.985); background: var(--accent-soft); }
+.cat-chip:disabled, .recent-chip:disabled { opacity: .55; pointer-events: none; }
+.cat-chip .dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--accent-2); flex-shrink: 0;
+}
+.cat-chip .dot.in { background: var(--income); }
+.cat-chip .meta, .recent-chip .meta {
+  font-size: 12px; font-weight: 500; color: var(--muted); margin-left: auto;
+  flex-shrink: 0;
+}
+.cat-chip .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-block {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 14px 8px;
+  border-top: 1px solid var(--line);
+  -webkit-overflow-scrolling: touch;
+}
+
+.recent-chip {
+  align-items: flex-start;
+  padding: 10px 12px;
+}
+
+.recent-chip .rc-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.recent-chip .rc-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.recent-chip .rc-amount {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.recent-chip .rc-amount.in { color: var(--income); }
+
+.recent-chip .rc-cat {
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-chip .rc-sub {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-chip .rc-date {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.empty-hint {
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+  padding: 18px 8px;
+}
+
+.pad {
+  flex-shrink: 0;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--line);
+  padding: 8px 10px calc(10px + var(--safe-b));
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  box-shadow: 0 -8px 24px rgba(27,28,51,.05);
+}
+
+.key {
+  height: 56px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 24px;
+  font-weight: 600;
+  box-shadow: 0 1px 0 rgba(27,28,51,.06), inset 0 0 0 1px rgba(220,223,240,.8);
+  transition: transform .08s ease, background .08s ease;
+}
+
+.key:active { transform: scale(0.96); background: #eceefb; }
+.key.wide { font-size: 22px; }
+.key.back { font-size: 22px; color: var(--muted); }
+
+/* ── Purpose step ── */
+.purpose-screen {
+  padding: 8px 16px calc(16px + var(--safe-b));
+  gap: 14px;
+}
+
+.back-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.summary-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px 16px;
+  box-shadow: var(--shadow);
+  animation: slideUp .22s ease;
+}
+
+@keyframes slideUp {
+  from { transform: translateY(12px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.summary-amount {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.summary-cat {
+  margin-top: 6px;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--accent);
+}
+
+.summary-cat.in { color: var(--income); }
+
+.summary-acc {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 8px;
+}
+
+.field input {
+  width: 100%;
+  height: 48px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 0 14px;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 500;
+  outline: none;
+}
+
+.field input:focus {
+  border-color: var(--accent-2);
+  box-shadow: 0 0 0 3px rgba(99,102,241,.18);
+}
+
+.save-btn {
+  margin-top: auto;
+  height: 54px;
+  border: 0;
+  border-radius: 16px;
+  background: linear-gradient(180deg, var(--accent-2), var(--accent));
+  color: #fff;
+  font: inherit;
+  font-size: 17px;
+  font-weight: 750;
+  box-shadow: 0 10px 24px rgba(67,56,202,.28);
+  transition: transform .1s ease, opacity .1s ease;
+}
+
+.save-btn:active { transform: scale(0.98); }
+.save-btn:disabled { opacity: .55; }
+
+/* ── Sheets / toast ── */
+.overlay {
+  position: fixed; inset: 0;
+  background: rgba(27,28,51,.35);
+  display: none;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 40;
+  padding: 12px;
+  padding-bottom: calc(12px + var(--safe-b));
+}
+.overlay.show { display: flex; animation: fadeIn .15s ease; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.sheet {
+  width: min(480px, 100%);
+  background: var(--surface);
+  border-radius: 20px;
+  padding: 16px;
+  max-height: 70vh;
+  overflow: auto;
+  box-shadow: var(--shadow);
+  animation: sheetUp .2s ease;
+}
+@keyframes sheetUp {
+  from { transform: translateY(24px); opacity: .5; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.sheet h3 { font-size: 16px; font-weight: 750; margin-bottom: 12px; }
+.sheet-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  font: inherit;
+  font-weight: 600;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sheet-item .si-bal {
+  margin-left: auto;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.sheet-item.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.sheet-item.active .si-bal { color: var(--accent); }
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + var(--safe-b));
+  transform: translateX(-50%) translateY(20px);
+  background: #23243d;
+  color: #fff;
+  padding: 12px 16px;
+  border-radius: 14px;
+  font-size: 14px;
+  font-weight: 600;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 50;
+  max-width: min(90vw, 360px);
+  text-align: center;
+  transition: opacity .2s ease, transform .2s ease;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast.err { background: #7a1f1a; }
+.toast.ok { background: var(--accent); }
+
+.loading {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(238,240,248,.72);
+  z-index: 30;
+  font-weight: 650;
+  color: var(--muted);
+}
+.loading.hidden { display: none; }
+
+@media (min-width: 520px) {
+  .app {
+    margin-top: 12px;
+    height: calc(100% - 24px);
+    border-radius: 24px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+    background: linear-gradient(180deg, #f8f9fd, var(--bg));
+  }
+}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="loading" id="loading">Загрузка…</div>
+
+  <div class="topbar">
+    <div class="brand" id="brand">Финансы</div>
+    <button type="button" class="acc-btn" id="accBtn" onclick="openAccountSheet()">
+      <span class="acc-name" id="accLabel">Счёт не выбран</span>
+      <span class="acc-bal" id="accBalance"></span>
+      <span class="chev">▾</span>
+    </button>
+  </div>
+
+  <!-- Шаг 1: сумма + статьи + клавиатура -->
+  <section class="screen active" id="screenAmount">
+    <div class="amount-wrap">
+      <div class="amount-label">Сумма</div>
+      <div class="amount empty" id="amountView">0<span class="cur">₽</span></div>
+    </div>
+
+    <div class="search-wrap">
+      <input type="search" id="catSearch" placeholder="Поиск статьи…" autocomplete="off" enterkeyhint="search"
+             oninput="onSearchInput()">
+      <button type="button" class="search-clear" id="searchClear" onclick="clearSearch()" aria-label="Очистить">×</button>
+    </div>
+
+    <div class="cats-block">
+      <div class="cats-title" id="catsTitle">Частые статьи</div>
+      <div class="cat-list" id="catList"></div>
+    </div>
+
+    <div class="recent-block" id="recentBlock">
+      <div class="cats-title">Недавние операции</div>
+      <div class="recent-list" id="recentList"></div>
+    </div>
+
+    <div class="pad" id="pad" aria-label="Клавиатура суммы">
+      <button type="button" class="key" data-k="1">1</button>
+      <button type="button" class="key" data-k="2">2</button>
+      <button type="button" class="key" data-k="3">3</button>
+      <button type="button" class="key" data-k="4">4</button>
+      <button type="button" class="key" data-k="5">5</button>
+      <button type="button" class="key" data-k="6">6</button>
+      <button type="button" class="key" data-k="7">7</button>
+      <button type="button" class="key" data-k="8">8</button>
+      <button type="button" class="key" data-k="9">9</button>
+      <button type="button" class="key wide" data-k=",">,</button>
+      <button type="button" class="key" data-k="0">0</button>
+      <button type="button" class="key back" data-k="back" aria-label="Удалить">⌫</button>
+    </div>
+  </section>
+
+  <!-- Шаг 2: назначение + сохранение -->
+  <section class="screen purpose-screen" id="screenPurpose">
+    <div class="back-row">
+      <button type="button" class="icon-btn" onclick="backToAmount()" aria-label="Назад">←</button>
+      <div class="brand" style="color:var(--text);max-width:none">Назначение</div>
+    </div>
+
+    <div class="summary-card">
+      <div class="summary-amount" id="sumAmount">0 ₽</div>
+      <div class="summary-cat" id="sumCat">—</div>
+      <div class="summary-acc" id="sumAcc">—</div>
+    </div>
+
+    <div class="field">
+      <label for="purposeInput">Назначение платежа</label>
+      <input type="text" id="purposeInput" placeholder="Необязательно" autocomplete="off" enterkeyhint="done">
+    </div>
+
+    <button type="button" class="save-btn" id="saveBtn" onclick="saveOperation()">Сохранить</button>
+  </section>
+</div>
+
+<div class="overlay" id="accOverlay" onclick="if(event.target===this)closeAccountSheet()">
+  <div class="sheet">
+    <h3>Счёт по умолчанию</h3>
+    <div id="accSheetList"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  // Токен из адреса: /pf/<token>. Он же определяет пользователя бюджета —
+  // у каждого пользователя своя ссылка и свои счета/статьи.
+  const TOKEN = (location.pathname.match(/^\/pf\/([A-Za-z0-9_-]{8,64})/) || [])[1] || '';
+  const API = '/api/pf/' + TOKEN;
+  const LS_ACC = 'pf_quick_account_id:' + TOKEN;
+
+  let accounts = [];
+  let categories = [];
+  let popular = [];
+  let recentOps = [];
+  let settings = {};
+  let accountId = '';
+  let amountRaw = ''; // цифры и, возможно, запятая: «1234,56»
+  let selectedCat = null;
+  let searchQ = '';
+  let copyingRecent = false;
+
+  const $ = (id) => document.getElementById(id);
+
+  function pad2(n) { return String(n).padStart(2, '0'); }
+
+  function todayISO() {
+    const d = new Date();
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  }
+
+  function daysAgoISO(n) {
+    const d = new Date();
+    d.setHours(12, 0, 0, 0);
+    d.setDate(d.getDate() - n);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  }
+
+  function formatRuDate(iso) {
+    if (!iso || iso.length < 10) return '';
+    return iso.slice(8, 10) + '.' + iso.slice(5, 7);
+  }
+
+  function formatMoney(n) {
+    const num = Number(n) || 0;
+    const fixed = Math.abs(num).toFixed(2);
+    const [i, f] = fixed.split('.');
+    const withSpaces = i.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    const sign = num < 0 ? '−' : '';
+    return sign + (f === '00' ? withSpaces : withSpaces + ',' + f) + ' ₽';
+  }
+
+  function categoryName(id) {
+    const c = categories.find(x => x.id === id);
+    return c ? c.name : 'Без статьи';
+  }
+
+  function toast(msg, kind) {
+    const el = $('toast');
+    el.textContent = msg;
+    el.className = 'toast show' + (kind === 'error' ? ' err' : kind === 'ok' ? ' ok' : '');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => { el.className = 'toast'; }, 2400);
+  }
+
+  async function api(url, opts) {
+    const r = await fetch(url, opts);
+    if (!r.ok) {
+      let msg = r.statusText;
+      try {
+        const j = await r.json();
+        msg = j.error || j.detail || j.message || msg;
+        if (Array.isArray(msg)) msg = msg.map(x => x.msg || JSON.stringify(x)).join('; ');
+      } catch (_) {
+        try { msg = await r.text(); } catch (__) {}
+      }
+      throw new Error(msg || ('Ошибка ' + r.status));
+    }
+    return r.status === 204 ? null : r.json();
+  }
+
+  function accountById(id) {
+    return accounts.find(a => a.id === id) || null;
+  }
+
+  function parseAmount(raw) {
+    if (!raw) return 0;
+    const n = Number(String(raw).replace(',', '.'));
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function renderAmount() {
+    const el = $('amountView');
+    const empty = !amountRaw;
+    el.className = 'amount' + (empty ? ' empty' : '') + ' pulse';
+    el.innerHTML = esc(amountRaw || '0') + '<span class="cur">₽</span>';
+    setTimeout(() => el.classList.remove('pulse'), 180);
+  }
+
+  function pressKey(k) {
+    if (k === 'back') {
+      amountRaw = amountRaw.slice(0, -1);
+      renderAmount();
+      return;
+    }
+    if (k === ',') {
+      if (!amountRaw) amountRaw = '0,';
+      else if (!amountRaw.includes(',')) amountRaw += ',';
+      renderAmount();
+      return;
+    }
+    if (!/^\d$/.test(k)) return;
+
+    if (amountRaw.includes(',')) {
+      const frac = amountRaw.split(',')[1] || '';
+      if (frac.length >= 2) return;
+      amountRaw += k;
+    } else {
+      // ведущие нули не копим: 0 + 5 → 5
+      if (amountRaw === '0') amountRaw = k;
+      else if (amountRaw.length >= 9) return;
+      else amountRaw += k;
+    }
+    renderAmount();
+  }
+
+  function dirLabel(c) {
+    return (c && c.direction === 'in') ? 'Доходы' : 'Расходы';
+  }
+
+  async function loadPopular() {
+    const [out, inn] = await Promise.all([
+      api(API + '/categories/popular?direction=out&limit=5'),
+      api(API + '/categories/popular?direction=in&limit=5'),
+    ]);
+    popular = [...(out || []), ...(inn || [])]
+      .sort((a, b) => (b.use_count || 0) - (a.use_count || 0) || String(a.name || '').localeCompare(String(b.name || ''), 'ru'))
+      .slice(0, 8);
+  }
+
+  function filteredCategories() {
+    const q = searchQ.trim().toLowerCase();
+    if (!q) return null; // null = показываем частые
+    return categories.filter(c => {
+      const hay = (
+        (c.code || '') + ' ' + (c.name || '') + ' ' + (c.group_name || '') + ' ' + dirLabel(c)
+      ).toLowerCase();
+      return hay.includes(q);
+    });
+  }
+
+  function renderCats() {
+    const list = $('catList');
+    const title = $('catsTitle');
+    const found = filteredCategories();
+    const items = found === null ? popular : found;
+
+    title.textContent = found === null ? 'Частые статьи' : (items.length ? 'Найдено' : 'Ничего не найдено');
+
+    if (!items.length) {
+      list.innerHTML = '<div class="empty-hint">' +
+        (found === null
+          ? 'Нет статей — добавьте их в разделе «Бюджет» на сайте'
+          : 'Попробуйте другой запрос') +
+        '</div>';
+      return;
+    }
+
+    list.innerHTML = items.map(c => {
+      const isIn = c.direction === 'in';
+      return `<button type="button" class="cat-chip" data-id="${escAttr(c.id)}">
+        <span class="dot${isIn ? ' in' : ''}"></span>
+        <span class="name">${esc(c.name)}</span>
+        <span class="meta">${esc(dirLabel(c))}</span>
+      </button>`;
+    }).join('');
+  }
+
+  function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, ch => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+  }
+  function escAttr(s) { return esc(s).replace(/`/g, ''); }
+
+  function onSearchInput() {
+    searchQ = $('catSearch').value || '';
+    $('searchClear').classList.toggle('show', !!searchQ);
+    renderCats();
+  }
+
+  function clearSearch() {
+    $('catSearch').value = '';
+    searchQ = '';
+    $('searchClear').classList.remove('show');
+    renderCats();
+  }
+
+  function selectCategory(id) {
+    const amount = parseAmount(amountRaw);
+    if (!(amount > 0)) {
+      toast('Введите сумму', 'error');
+      return;
+    }
+    if (!accountId) {
+      toast('Выберите счёт', 'error');
+      openAccountSheet();
+      return;
+    }
+    selectedCat = categories.find(c => c.id === id) || popular.find(c => c.id === id);
+    if (!selectedCat) {
+      toast('Статья не найдена', 'error');
+      return;
+    }
+    showPurpose();
+  }
+
+  function showPurpose() {
+    $('screenAmount').classList.remove('active');
+    $('screenPurpose').classList.add('active');
+    const amount = parseAmount(amountRaw);
+    const fmt = amountRaw || String(amount).replace('.', ',');
+    const isIn = selectedCat && selectedCat.direction === 'in';
+    $('sumAmount').textContent = (isIn ? '+' : '') + fmt + ' ₽';
+    $('sumCat').className = 'summary-cat' + (isIn ? ' in' : '');
+    $('sumCat').textContent = selectedCat
+      ? (selectedCat.name + ' · ' + dirLabel(selectedCat))
+      : '—';
+    const acc = accountById(accountId);
+    $('sumAcc').textContent = acc ? ('Счёт: ' + acc.name) : 'Счёт не выбран';
+    $('purposeInput').value = '';
+    setTimeout(() => $('purposeInput').focus(), 50);
+  }
+
+  function backToAmount() {
+    selectedCat = null;
+    $('screenPurpose').classList.remove('active');
+    $('screenAmount').classList.add('active');
+    $('purposeInput').blur();
+  }
+
+  function renderAccLabel() {
+    const acc = accountById(accountId);
+    $('accLabel').textContent = acc ? acc.name : 'Счёт не выбран';
+    $('accBalance').textContent = acc ? formatMoney(acc.balance) : '';
+  }
+
+  function openAccountSheet() {
+    const box = $('accSheetList');
+    if (!accounts.length) {
+      box.innerHTML = '<div class="empty-hint">Нет счетов — заведите их во вкладке «ДДС» на сайте</div>';
+    } else {
+      box.innerHTML = accounts.map(a =>
+        `<button type="button" class="sheet-item${a.id === accountId ? ' active' : ''}" data-id="${escAttr(a.id)}">
+          <span>${esc(a.name)}</span>
+          <span class="si-bal">${esc(formatMoney(a.balance))}</span>
+        </button>`
+      ).join('');
+    }
+    $('accOverlay').classList.add('show');
+  }
+
+  function closeAccountSheet() {
+    $('accOverlay').classList.remove('show');
+  }
+
+  async function setAccount(id) {
+    accountId = id;
+    try { localStorage.setItem(LS_ACC, id); } catch (_) {}
+    renderAccLabel();
+    closeAccountSheet();
+    loadRecent();
+    try {
+      await api(API + '/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quick_expense_account_id: id }),
+      });
+    } catch (_) { /* локального выбора достаточно */ }
+  }
+
+  function renderRecent() {
+    const list = $('recentList');
+    if (!accountId) {
+      list.innerHTML = '<div class="empty-hint">Выберите счёт</div>';
+      return;
+    }
+    if (!recentOps.length) {
+      list.innerHTML = '<div class="empty-hint">Нет операций за 14 дней</div>';
+      return;
+    }
+    list.innerHTML = recentOps.map(op => {
+      const purpose = (op.purpose || op.comment || '').trim();
+      const date = op.payment_date || op.date || '';
+      const isIn = op.direction === 'in';
+      return `<button type="button" class="recent-chip" data-oid="${escAttr(op.id)}" title="Повторить на сегодня">
+        <div class="rc-body">
+          <div class="rc-top">
+            <span class="rc-amount${isIn ? ' in' : ''}">${isIn ? '+' : ''}${esc(formatMoney(op.amount))}</span>
+            <span class="rc-date">${esc(formatRuDate(date))}</span>
+          </div>
+          <div class="rc-cat">${esc(categoryName(op.category_id))}</div>
+          ${purpose ? `<div class="rc-sub">${esc(purpose)}</div>` : ''}
+        </div>
+      </button>`;
+    }).join('');
+  }
+
+  async function loadRecent() {
+    if (!accountId) {
+      recentOps = [];
+      renderRecent();
+      return;
+    }
+    try {
+      const qs = new URLSearchParams({
+        date_from: daysAgoISO(14),
+        date_to: todayISO(),
+        account_id: accountId,
+        limit: '50',
+      });
+      const ops = await api(API + '/operations?' + qs.toString());
+      // API уже сортирует по дате DESC — берём 15 последних
+      recentOps = (ops || []).slice(0, 15);
+      renderRecent();
+    } catch (e) {
+      recentOps = [];
+      $('recentList').innerHTML = '<div class="empty-hint">Не удалось загрузить</div>';
+    }
+  }
+
+  async function reloadAccounts() {
+    try {
+      accounts = (await api(API + '/accounts')) || [];
+      renderAccLabel();
+    } catch (_) {}
+  }
+
+  async function repeatRecent(oid) {
+    if (copyingRecent) return;
+    const op = recentOps.find(o => o.id === oid);
+    if (!op) { toast('Операция не найдена', 'error'); return; }
+    if (!(Number(op.amount) > 0)) { toast('У операции нет суммы', 'error'); return; }
+
+    copyingRecent = true;
+    const btns = $('recentList').querySelectorAll('.recent-chip');
+    btns.forEach(b => { b.disabled = true; });
+    try {
+      const date = todayISO();
+      await api(API + '/operations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date,
+          payment_date: date,
+          direction: op.direction || 'out',
+          amount: Number(op.amount) || 0,
+          account_id: op.account_id || accountId,
+          category_id: op.category_id || '',
+          currency: (settings && settings.default_currency) || 'руб.',
+          payment_status: 'paid',
+          purpose: op.purpose || op.comment || '',
+          comment: op.purpose || op.comment || '',
+        }),
+      });
+      toast('Повторено на сегодня', 'ok');
+      await loadRecent();
+      await reloadAccounts();
+      try {
+        await loadPopular();
+        renderCats();
+      } catch (_) {}
+    } catch (e) {
+      toast(e.message || 'Ошибка копирования', 'error');
+      btns.forEach(b => { b.disabled = false; });
+    } finally {
+      copyingRecent = false;
+    }
+  }
+
+  async function saveOperation() {
+    const amount = parseAmount(amountRaw);
+    if (!(amount > 0)) { toast('Введите сумму', 'error'); return; }
+    if (!selectedCat) { toast('Выберите статью', 'error'); return; }
+    if (!accountId) { toast('Выберите счёт', 'error'); return; }
+
+    const purpose = ($('purposeInput').value || '').trim();
+    const date = todayISO();
+    const payload = {
+      date,
+      payment_date: date,
+      direction: selectedCat.direction || 'out',
+      amount,
+      account_id: accountId,
+      category_id: selectedCat.id,
+      currency: (settings && settings.default_currency) || 'руб.',
+      payment_status: 'paid',
+      purpose,
+      comment: purpose,
+    };
+
+    const btn = $('saveBtn');
+    btn.disabled = true;
+    try {
+      await api(API + '/operations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      toast(payload.direction === 'in' ? 'Доход записан' : 'Расход записан', 'ok');
+      amountRaw = '';
+      selectedCat = null;
+      clearSearch();
+      renderAmount();
+      backToAmount();
+      try {
+        await loadPopular();
+        renderCats();
+      } catch (_) {}
+      loadRecent();
+      reloadAccounts();
+    } catch (e) {
+      toast(e.message || 'Ошибка сохранения', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function init() {
+    if (TOKEN) {
+      $('manifestLink').setAttribute('href', API + '/manifest.webmanifest');
+    }
+    try {
+      const [prof, accs, cats, sett] = await Promise.all([
+        api(API + '/profile'),
+        api(API + '/accounts'),
+        api(API + '/categories'),
+        api(API + '/settings'),
+      ]);
+      if (prof && prof.user_name) {
+        $('brand').textContent = prof.user_name;
+        document.title = 'Финансы — ' + prof.user_name;
+      }
+      accounts = accs || [];
+      categories = cats || [];
+      settings = sett || {};
+      await loadPopular();
+
+      let saved = '';
+      try { saved = localStorage.getItem(LS_ACC) || ''; } catch (_) {}
+      const fromServer = settings.quick_expense_account_id || '';
+      accountId = [saved, fromServer, accounts[0] && accounts[0].id]
+        .find(id => id && accounts.some(a => a.id === id)) || '';
+
+      renderAccLabel();
+      renderAmount();
+      renderCats();
+      await loadRecent();
+    } catch (e) {
+      toast(e.message || 'Не удалось загрузить данные', 'error');
+      $('catList').innerHTML = '<div class="empty-hint">Ссылка недействительна или отозвана</div>';
+    } finally {
+      $('loading').classList.add('hidden');
+    }
+  }
+
+  // События
+  $('pad').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-k]');
+    if (!btn) return;
+    pressKey(btn.getAttribute('data-k'));
+  });
+
+  $('catList').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-id]');
+    if (!btn) return;
+    selectCategory(btn.getAttribute('data-id'));
+  });
+
+  $('recentList').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-oid]');
+    if (!btn) return;
+    repeatRecent(btn.getAttribute('data-oid'));
+  });
+
+  $('accSheetList').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-id]');
+    if (!btn) return;
+    setAccount(btn.getAttribute('data-id'));
+  });
+
+  // Физическая клавиатура (десктоп / bluetooth)
+  window.addEventListener('keydown', (e) => {
+    if (!$('screenAmount').classList.contains('active')) return;
+    if (document.activeElement === $('catSearch')) return;
+    if (e.key >= '0' && e.key <= '9') { pressKey(e.key); e.preventDefault(); }
+    else if (e.key === ',' || e.key === '.') { pressKey(','); e.preventDefault(); }
+    else if (e.key === 'Backspace') { pressKey('back'); e.preventDefault(); }
+  });
+
+  // Для инлайновых обработчиков
+  window.onSearchInput = onSearchInput;
+  window.clearSearch = clearSearch;
+  window.openAccountSheet = openAccountSheet;
+  window.closeAccountSheet = closeAccountSheet;
+  window.backToAmount = backToAmount;
+  window.saveOperation = saveOperation;
+
+  init();
+})();
+</script>
+</body>
+</html>
