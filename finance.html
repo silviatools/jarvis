@@ -9,7 +9,13 @@
 <meta name="apple-mobile-web-app-title" content="Финансы">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="robots" content="noindex, nofollow">
-<link rel="manifest" id="manifestLink" href="/manifest.json">
+<!-- Манифест ОТНОСИТЕЛЬНЫЙ и статичный: страница живёт по адресу-папке
+     /pf/<token>/, поэтому ссылка разрешается в /pf/<token>/manifest.webmanifest
+     — со своими start_url и scope. Абсолютную ссылку на /manifest.json ставить
+     нельзя: это манифест сайта со start_url «/», и иконка с экрана «Домой»
+     открывала бы главный экран Jarvis. Подставлять href скриптом тоже нельзя —
+     iOS читает манифест в момент «На экран „Домой“» и на правку не смотрит. -->
+<link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
@@ -1064,9 +1070,6 @@ body { padding-top: var(--safe-t); }
   }
 
   async function init() {
-    if (TOKEN) {
-      $('manifestLink').setAttribute('href', API + '/manifest.webmanifest');
-    }
     try {
       const [prof, accs, cats, sett] = await Promise.all([
         api(API + '/profile'),

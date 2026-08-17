@@ -1860,9 +1860,9 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif token_from_route(route, "/trip/"):
             # Гостевая страница чек-листа поездки — тоже отдельный файл.
             self._serve_trip_page()
-        elif token_from_route(route, "/pf/"):
+        elif self.path.split("?", 1)[0].startswith("/pf/"):
             # Мобильное приложение личных финансов — отдельная страница.
-            self._serve_finance_page()
+            self._pf_page(self.path.split("?", 1)[0])
         elif route.startswith("/api/pf/"):
             self._pf_get(route)
         elif token_from_route(route, "/api/camping-trip/"):
@@ -2565,6 +2565,42 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"camping-trip.html not found")
 
+    def _pf_page(self, raw_path: str):
+        """Страница приложения и её манифест.
+
+        Канонический адрес — С завершающим слэшем: /pf/<token>/. Только так
+        относительная ссылка <link rel="manifest" href="manifest.webmanifest">
+        разрешается ВНУТРИ приложения. Без слэша браузер искал бы манифест в
+        /pf/manifest.webmanifest, не находил его и при добавлении на экран
+        «Домой» брал общий /manifest.json сайта — со start_url «/», из-за чего
+        иконка открывала главный экран Jarvis, а не приложение финансов.
+        Поэтому /pf/<token> отвечает редиректом на /pf/<token>/."""
+        rest = raw_path[len("/pf/"):]
+        token, sep, tail = rest.partition("/")
+        if not PLANNER_TOKEN_RE.match(token):
+            self._json(404, {"error": "not found"})
+            return
+        if not sep:
+            self.send_response(301)
+            self.send_header("Location", f"/pf/{token}/")
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        if tail == "":
+            self._serve_finance_page()
+            return
+        if tail == "manifest.webmanifest":
+            with APP_DATA_LOCK:
+                app = load_app_data() if APP_DATA_FILE.exists() else {}
+                _uid, user = find_budget_user(app, token)
+            if user is None:
+                self._json(404, {"error": "not found"})
+                return
+            self._pf_manifest(token, str(user.get("name") or ""))
+            return
+        self._json(404, {"error": "not found"})
+
     def _serve_finance_page(self):
         try:
             content = FINANCE_PAGE_FILE.read_bytes()
@@ -2663,11 +2699,17 @@ class JarvisHandler(SimpleHTTPRequestHandler):
     def _pf_manifest(self, token: str, user_name: str):
         name = f"Финансы — {user_name}" if user_name else "Личные финансы"
         manifest = {
+            # id/start_url/scope — по адресу-папке и с токеном внутри: так
+            # приложения разных пользователей бюджета остаются РАЗНЫМИ
+            # приложениями, а не одной иконкой на телефоне.
+            "id": f"/pf/{token}/",
             "name": name,
-            "short_name": "Финансы",
+            # Подпись под иконкой: имя пользователя, чтобы отличать их на
+            # экране «Домой».
+            "short_name": user_name or "Финансы",
             "description": "Быстрая запись расходов и доходов",
-            "start_url": f"/pf/{token}",
-            "scope": f"/pf/{token}",
+            "start_url": f"/pf/{token}/",
+            "scope": f"/pf/{token}/",
             "display": "standalone",
             "orientation": "portrait",
             "background_color": "#f2f2fa",

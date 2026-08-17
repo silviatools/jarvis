@@ -10638,8 +10638,12 @@ const formatRubExact = (n) => {
   }).format(num);
 };
 
+// Адрес приложения — С завершающим слэшем: только по нему относительная
+// ссылка на манифест внутри finance.html разрешается в /pf/<token>/manifest.
+// webmanifest. Без слэша iOS при добавлении на экран «Домой» подхватывал
+// общий манифест сайта и иконка открывала главный экран Jarvis.
 const financeAppUrl = (user) =>
-  user && user.financeToken ? `${window.location.origin}/pf/${user.financeToken}` : '';
+  user && user.financeToken ? `${window.location.origin}/pf/${user.financeToken}/` : '';
 
 function BudgetView({ data, setData }) {
   const [budgetTab, setBudgetTab] = useState('monthly');
