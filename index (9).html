@@ -11824,8 +11824,8 @@ function BudgetCashflowView({ data, setData, userId }) {
 }
 
 // Выводы по месяцу: пункты, которые нужно соблюдать. Их же приложение на
-// телефоне показывает напоминанием раз в день, в случайный момент.
-// Прошлые месяцы не стираются — их видно в «Истории» ниже.
+// телефоне показывает напоминанием: первый заход за день — всегда, дальше
+// 50/50. Прошлые месяцы не стираются — их видно в «Истории» ниже.
 function BudgetMonthlyNotesBlock({ data, setData }) {
   const [month, setMonth] = useState(getCurrentMonthStr());
   const [newText, setNewText] = useState('');
@@ -11902,8 +11902,8 @@ function BudgetMonthlyNotesBlock({ data, setData }) {
         <div>
           <div className="font-medium">Выводы по месяцу</div>
           <div className="text-xs text-[var(--text-subtle)] mt-0.5">
-            Пункты, которые нужно соблюдать. Приложение на телефоне раз в день, в случайный момент,
-            напоминает о них перед записью траты.
+            Пункты, которые нужно соблюдать. Приложение на телефоне напоминает о них перед записью траты:
+            при первом заходе за день — всегда, дальше — примерно через раз.
           </div>
         </div>
         <div className="flex items-center gap-0 bg-[var(--bg)] border border-[var(--border)] rounded-xl overflow-hidden shrink-0">

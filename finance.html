@@ -734,14 +734,13 @@ body { padding-top: var(--safe-t); }
   const TOKEN = (location.pathname.match(/^\/pf\/([A-Za-z0-9_-]{8,64})/) || [])[1] || '';
   const API = '/api/pf/' + TOKEN;
   const LS_ACC = 'pf_quick_account_id:' + TOKEN;
-  const LS_NOTES = 'pf_notes_seen:' + TOKEN;
+  // Дата последнего захода — по ней видно, первый ли это заход за сегодня.
+  const LS_NOTES = 'pf_notes_visit:' + TOKEN;
 
-  // Напоминание с «выводами месяца»: не чаще раза в день и в случайный
-  // момент — на каждом заходе бросаем монетку, а если день уже к вечеру и
-  // выводы ещё не показывались, показываем наверняка. Так напоминание
-  // попадается «то там, то тут», но не мозолит глаза на каждой трате.
-  const NOTES_CHANCE = 0.4;
-  const NOTES_FORCE_HOUR = 19;
+  // Напоминание с «выводами месяца»: первый заход за день — показываем
+  // всегда, дальше в тот же день бросаем монетку 50/50 на каждом заходе.
+  // Ограничения по числу показов за день нет.
+  const NOTES_CHANCE = 0.5;
 
   const MONTH_NAMES = ['Январь','Февраль','Март','Апрель','Май','Июнь',
                        'Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
@@ -1085,8 +1084,7 @@ body { padding-top: var(--safe-t); }
     $('brand').classList.toggle('has-notes', notes.items.length > 0);
   }
 
-  // manual = открыл сам, тапнув по имени: показываем без всяких условий и
-  // не тратим на это «показ дня».
+  // manual = открыл сам, тапнув по имени: показываем без всяких условий.
   function openNotes(manual) {
     if (!notes.items.length) {
       if (manual) toast('На этот месяц выводов нет', 'error');
@@ -1096,9 +1094,6 @@ body { padding-top: var(--safe-t); }
     $('notesList').innerHTML = notes.items.map((it, i) =>
       `<div class="note-row"><span class="num">${i + 1}</span><span class="txt">${esc(it.text)}</span></div>`
     ).join('');
-    if (!manual) {
-      try { localStorage.setItem(LS_NOTES, todayISO()); } catch (_) {}
-    }
     $('notesOverlay').classList.add('show');
   }
 
@@ -1108,11 +1103,12 @@ body { padding-top: var(--safe-t); }
 
   function maybeShowNotes() {
     if (!notes.items.length) return;
-    let seen = '';
-    try { seen = localStorage.getItem(LS_NOTES) || ''; } catch (_) {}
-    if (seen === todayISO()) return;
-    if (new Date().getHours() < NOTES_FORCE_HOUR && Math.random() >= NOTES_CHANCE) return;
-    openNotes(false);
+    const today = todayISO();
+    let lastVisit = '';
+    try { lastVisit = localStorage.getItem(LS_NOTES) || ''; } catch (_) {}
+    try { localStorage.setItem(LS_NOTES, today); } catch (_) {}
+    // Первый заход за день — напоминание обязательно; дальше 50/50.
+    if (lastVisit !== today || Math.random() < NOTES_CHANCE) openNotes(false);
   }
 
   async function reloadAccounts() {
