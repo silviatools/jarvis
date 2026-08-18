@@ -306,6 +306,7 @@ const BUDGET_SLICE_KEYS = [
   'budgetStatementMappings', 'budgetStatementAccount',
   'budgetStatementRows', 'budgetStatementFileName',
   'budgetCashflowAccounts', 'budgetCashflowOps', 'budgetCashflowSettings',
+  'budgetMonthlyNotes',
 ];
 
 const emptyBudgetSlice = () => ({
@@ -336,6 +337,10 @@ const emptyBudgetSlice = () => ({
   budgetCashflowAccounts: [],
   budgetCashflowOps: [],
   budgetCashflowSettings: {},
+  // «Выводы по месяцу»: один элемент = один пункт, привязанный к месяцу.
+  // Плоский список (а не объект по месяцам) — чтобы правки с телефона и с
+  // компьютера сливались по id, а прошлые месяцы оставались в истории.
+  budgetMonthlyNotes: [],
 });
 
 const extractBudgetSlice = (data) => {
@@ -10642,6 +10647,18 @@ const formatRubExact = (n) => {
 // ссылка на манифест внутри finance.html разрешается в /pf/<token>/manifest.
 // webmanifest. Без слэша iOS при добавлении на экран «Домой» подхватывал
 // общий манифест сайта и иконка открывала главный экран Jarvis.
+// Выводы одного месяца, в том же порядке, что показывает приложение
+// (сначала по sort, потом по времени создания).
+// ДЕРЖАТЬ В СИНХРОНЕ с pf_reminders() из jarvis.py.
+const monthlyNotesFor = (data, month) => (data.budgetMonthlyNotes || [])
+  .filter(n => n && n.id && n.month === month)
+  .sort((a, b) => (a.sort || 0) - (b.sort || 0) || (a.createdAt || 0) - (b.createdAt || 0));
+
+// Месяцы, на которые выводы вообще заводились — новые сверху.
+const monthlyNotesMonths = (data) => [...new Set((data.budgetMonthlyNotes || [])
+  .filter(n => n && n.id && n.month && String(n.text || '').trim())
+  .map(n => n.month))].sort().reverse();
+
 const financeAppUrl = (user) =>
   user && user.financeToken ? `${window.location.origin}/pf/${user.financeToken}/` : '';
 
@@ -11627,6 +11644,9 @@ function BudgetCashflowView({ data, setData, userId }) {
         )}
       </div>
 
+      {/* ── Выводы по месяцу ─────────────────────────────────────── */}
+      <BudgetMonthlyNotesBlock data={data} setData={setData} />
+
       {/* ── Ссылка на мобильное приложение ───────────────────────── */}
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
         <div className="font-medium">Приложение на телефон</div>
@@ -11798,6 +11818,201 @@ function BudgetCashflowView({ data, setData, userId }) {
           onSave={saveOp}
           onClose={() => setEditingOp(null)}
         />
+      )}
+    </div>
+  );
+}
+
+// Выводы по месяцу: пункты, которые нужно соблюдать. Их же приложение на
+// телефоне показывает напоминанием раз в день, в случайный момент.
+// Прошлые месяцы не стираются — их видно в «Истории» ниже.
+function BudgetMonthlyNotesBlock({ data, setData }) {
+  const [month, setMonth] = useState(getCurrentMonthStr());
+  const [newText, setNewText] = useState('');
+  const [editing, setEditing] = useState(null); // { id, text }
+  const [showHistory, setShowHistory] = useState(false);
+
+  const items = useMemo(() => monthlyNotesFor(data, month), [data.budgetMonthlyNotes, month]);
+  const historyMonths = useMemo(() => monthlyNotesMonths(data), [data.budgetMonthlyNotes]);
+  const prevMonth = addMonthsStr(month, -1);
+  const prevItems = useMemo(() => monthlyNotesFor(data, prevMonth), [data.budgetMonthlyNotes, prevMonth]);
+
+  const addNote = () => {
+    const text = newText.trim();
+    if (!text) return;
+    const maxSort = items.reduce((m, n) => Math.max(m, n.sort || 0), 0);
+    const note = {
+      id: crypto.randomUUID(), month, text: text.slice(0, 200),
+      sort: maxSort + 1, createdAt: Date.now(), updatedAt: Date.now(),
+    };
+    setData(d => ({ ...d, budgetMonthlyNotes: [...(d.budgetMonthlyNotes || []), note] }));
+    setNewText('');
+  };
+
+  const saveEdit = () => {
+    const text = (editing?.text || '').trim();
+    if (!text) return;
+    setData(d => ({
+      ...d,
+      budgetMonthlyNotes: (d.budgetMonthlyNotes || []).map(n => n.id === editing.id
+        ? { ...n, text: text.slice(0, 200), updatedAt: Date.now() } : n),
+    }));
+    setEditing(null);
+  };
+
+  const removeNote = (id) => {
+    setData(d => ({
+      ...d,
+      budgetMonthlyNotes: (d.budgetMonthlyNotes || []).filter(n => n.id !== id),
+      deletedIds: withDeletedId(d, 'budgetMonthlyNotes', id),
+    }));
+  };
+
+  // Порядок держится на поле sort — перестановка меняет местами именно его,
+  // чтобы нумерация совпадала на всех устройствах и в приложении.
+  const moveNote = (id, dir) => {
+    const idx = items.findIndex(n => n.id === id);
+    const other = items[idx + dir];
+    if (!other) return;
+    const cur = items[idx];
+    const curSort = cur.sort || 0, otherSort = other.sort || 0;
+    const [a, b] = curSort === otherSort ? [otherSort - dir, otherSort] : [otherSort, curSort];
+    setData(d => ({
+      ...d,
+      budgetMonthlyNotes: (d.budgetMonthlyNotes || []).map(n =>
+        n.id === cur.id ? { ...n, sort: a, updatedAt: Date.now() }
+        : n.id === other.id ? { ...n, sort: b, updatedAt: Date.now() }
+        : n),
+    }));
+  };
+
+  const copyFromPrev = () => {
+    if (!prevItems.length) return;
+    const now = Date.now();
+    const copies = prevItems.map((n, i) => ({
+      id: crypto.randomUUID(), month, text: n.text,
+      sort: i + 1, createdAt: now + i, updatedAt: now + i,
+    }));
+    setData(d => ({ ...d, budgetMonthlyNotes: [...(d.budgetMonthlyNotes || []), ...copies] }));
+  };
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-1">
+        <div>
+          <div className="font-medium">Выводы по месяцу</div>
+          <div className="text-xs text-[var(--text-subtle)] mt-0.5">
+            Пункты, которые нужно соблюдать. Приложение на телефоне раз в день, в случайный момент,
+            напоминает о них перед записью траты.
+          </div>
+        </div>
+        <div className="flex items-center gap-0 bg-[var(--bg)] border border-[var(--border)] rounded-xl overflow-hidden shrink-0">
+          <button onClick={() => setMonth(m => addMonthsStr(m, -1))}
+            className="px-3 py-2 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-black/5 transition-colors text-base leading-none"
+            title="Предыдущий месяц">‹</button>
+          <span className="px-3 py-2 text-sm font-semibold min-w-[8.5rem] text-center">{formatMonthFull(month)}</span>
+          <button onClick={() => setMonth(m => addMonthsStr(m, 1))}
+            className="px-3 py-2 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-black/5 transition-colors text-base leading-none"
+            title="Следующий месяц">›</button>
+        </div>
+      </div>
+
+      {month !== getCurrentMonthStr() && (
+        <button onClick={() => setMonth(getCurrentMonthStr())}
+          className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] mb-2">
+          ← к текущему месяцу
+        </button>
+      )}
+
+      <div className="space-y-2 mt-3">
+        {items.map((n, i) => (
+          <div key={n.id} className="flex items-start gap-2.5 p-3 rounded-xl border border-[var(--border)] bg-[var(--bg)]">
+            <span className="mt-0.5 w-6 h-6 rounded-lg bg-[var(--surface)] border border-[var(--border)] text-xs font-semibold flex items-center justify-center shrink-0">
+              {i + 1}
+            </span>
+            {editing?.id === n.id ? (
+              <>
+                <input autoFocus value={editing.text} maxLength={200}
+                  onChange={e => setEditing({ ...editing, text: e.target.value })}
+                  onKeyDown={e => { if (e.key === 'Enter') saveEdit(); if (e.key === 'Escape') setEditing(null); }}
+                  className="flex-1 bg-[var(--surface)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+                <button onClick={saveEdit} className="text-sm px-3 py-1.5 rounded-lg bg-[var(--text)] text-white">OK</button>
+                <button onClick={() => setEditing(null)} className="text-sm px-2 py-1.5 text-[var(--text-muted)]">Отмена</button>
+              </>
+            ) : (
+              <>
+                <span className="flex-1 text-sm leading-relaxed min-w-0 break-words">{n.text}</span>
+                <div className="flex items-center shrink-0">
+                  <button onClick={() => moveNote(n.id, -1)} disabled={i === 0}
+                    className="px-1.5 py-1 text-[var(--text-subtle)] hover:text-[var(--text)] disabled:opacity-25" title="Выше">↑</button>
+                  <button onClick={() => moveNote(n.id, 1)} disabled={i === items.length - 1}
+                    className="px-1.5 py-1 text-[var(--text-subtle)] hover:text-[var(--text)] disabled:opacity-25" title="Ниже">↓</button>
+                  <button onClick={() => setEditing({ id: n.id, text: n.text })}
+                    className="p-1.5 text-[var(--text-muted)] hover:text-[var(--text)]" title="Изменить">
+                    <Icon name="edit" size={14} />
+                  </button>
+                  <button onClick={() => removeNote(n.id)}
+                    className="p-1.5 text-[var(--text-muted)] hover:text-red-500" title="Удалить">
+                    <Icon name="trash" size={14} />
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        ))}
+
+        {!items.length && (
+          <div className="text-sm text-[var(--text-subtle)] py-1">
+            На {formatMonthFull(month).toLowerCase()} выводов пока нет.
+            {prevItems.length > 0 && (
+              <button onClick={copyFromPrev} className="ml-1 text-[var(--text-muted)] underline hover:text-[var(--text)]">
+                Скопировать из «{formatMonthShortBudget(prevMonth)}» ({prevItems.length})
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="flex gap-2 mt-3">
+        <input value={newText} onChange={e => setNewText(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') addNote(); }}
+          maxLength={200}
+          placeholder={`Например: следить за тратами на продукты`}
+          className="flex-1 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+        <button onClick={addNote} disabled={!newText.trim()}
+          className="btn-primary text-sm px-4 py-2 flex items-center gap-1.5 disabled:opacity-40">
+          <Icon name="plus" size={14} /> Добавить
+        </button>
+      </div>
+
+      {/* История: выводы прошлых месяцев никуда не деваются */}
+      {historyMonths.length > 0 && (
+        <div className="mt-4 pt-3 border-t border-[var(--border)]">
+          <button onClick={() => setShowHistory(v => !v)}
+            className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text)] inline-flex items-center gap-1.5">
+            {showHistory ? 'Скрыть историю' : `История выводов (${historyMonths.length} мес.)`}
+          </button>
+
+          {showHistory && (
+            <div className="mt-3 space-y-3">
+              {historyMonths.map(m => {
+                const list = monthlyNotesFor(data, m);
+                return (
+                  <div key={m} className={`rounded-xl border px-3.5 py-3 ${m === month ? 'border-[var(--text)] bg-[var(--bg)]' : 'border-[var(--border)]'}`}>
+                    <button onClick={() => setMonth(m)}
+                      className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)] hover:text-[var(--text)]">
+                      {formatMonthFull(m)}
+                      {m === getCurrentMonthStr() && <span className="ml-2 normal-case tracking-normal text-[10px] text-[var(--text-subtle)]">текущий</span>}
+                    </button>
+                    <ol className="mt-1.5 space-y-1 text-sm text-[var(--text-muted)] list-decimal list-inside">
+                      {list.map(n => <li key={n.id} className="leading-relaxed break-words">{n.text}</li>)}
+                    </ol>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

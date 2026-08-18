@@ -84,6 +84,18 @@ body { padding-top: var(--safe-t); }
   text-overflow: ellipsis;
 }
 
+/* Точка у имени = на этот месяц заданы выводы, по тапу их видно снова */
+.brand.has-notes::after {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  margin-left: 5px;
+  vertical-align: 3px;
+}
+
 .acc-btn, .icon-btn {
   border: 1px solid var(--line);
   background: var(--surface);
@@ -486,6 +498,67 @@ body { padding-top: var(--safe-t); }
 }
 
 .sheet h3 { font-size: 16px; font-weight: 750; margin-bottom: 12px; }
+.sheet .sheet-sub {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin: -8px 0 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* ── Напоминание «Выводы по месяцу» ── */
+.notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.note-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+
+.note-row .num {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 8px;
+  min-width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.note-row .txt {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.sheet-btn {
+  width: 100%;
+  height: 50px;
+  border: 0;
+  border-radius: 14px;
+  background: linear-gradient(180deg, var(--accent-2), var(--accent));
+  color: #fff;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 750;
+  box-shadow: 0 8px 20px rgba(67,56,202,.24);
+}
+.sheet-btn:active { transform: scale(0.98); }
 .sheet-item {
   width: 100%;
   text-align: left;
@@ -566,7 +639,7 @@ body { padding-top: var(--safe-t); }
   <div class="loading" id="loading">Загрузка…</div>
 
   <div class="topbar">
-    <div class="brand" id="brand">Финансы</div>
+    <div class="brand" id="brand" onclick="openNotes(true)">Финансы</div>
     <button type="button" class="acc-btn" id="accBtn" onclick="openAccountSheet()">
       <span class="acc-name" id="accLabel">Счёт не выбран</span>
       <span class="acc-bal" id="accBalance"></span>
@@ -642,6 +715,16 @@ body { padding-top: var(--safe-t); }
   </div>
 </div>
 
+<!-- Напоминание с «Выводами по месяцу» — раз в день, в случайный момент -->
+<div class="overlay" id="notesOverlay" onclick="if(event.target===this)closeNotes()">
+  <div class="sheet">
+    <h3>Помним про это</h3>
+    <div class="sheet-sub" id="notesMonth"></div>
+    <div class="notes-list" id="notesList"></div>
+    <button type="button" class="sheet-btn" onclick="closeNotes()">Понятно</button>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -651,12 +734,24 @@ body { padding-top: var(--safe-t); }
   const TOKEN = (location.pathname.match(/^\/pf\/([A-Za-z0-9_-]{8,64})/) || [])[1] || '';
   const API = '/api/pf/' + TOKEN;
   const LS_ACC = 'pf_quick_account_id:' + TOKEN;
+  const LS_NOTES = 'pf_notes_seen:' + TOKEN;
+
+  // Напоминание с «выводами месяца»: не чаще раза в день и в случайный
+  // момент — на каждом заходе бросаем монетку, а если день уже к вечеру и
+  // выводы ещё не показывались, показываем наверняка. Так напоминание
+  // попадается «то там, то тут», но не мозолит глаза на каждой трате.
+  const NOTES_CHANCE = 0.4;
+  const NOTES_FORCE_HOUR = 19;
+
+  const MONTH_NAMES = ['Январь','Февраль','Март','Апрель','Май','Июнь',
+                       'Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
 
   let accounts = [];
   let categories = [];
   let popular = [];
   let recentOps = [];
   let settings = {};
+  let notes = { month: '', items: [] };
   let accountId = '';
   let amountRaw = ''; // цифры и, возможно, запятая: «1234,56»
   let selectedCat = null;
@@ -972,6 +1067,54 @@ body { padding-top: var(--safe-t); }
     }
   }
 
+  // ── Выводы по месяцу ─────────────────────────────────────────────────────
+
+  function monthLabel(ym) {
+    const m = /^(\d{4})-(\d{2})$/.exec(ym || '');
+    if (!m) return '';
+    return `${MONTH_NAMES[Number(m[2]) - 1] || ''} ${m[1]}`;
+  }
+
+  async function loadNotes() {
+    try {
+      const res = await api(API + '/reminders');
+      notes = { month: (res && res.month) || '', items: (res && res.items) || [] };
+    } catch (_) {
+      notes = { month: '', items: [] };
+    }
+    $('brand').classList.toggle('has-notes', notes.items.length > 0);
+  }
+
+  // manual = открыл сам, тапнув по имени: показываем без всяких условий и
+  // не тратим на это «показ дня».
+  function openNotes(manual) {
+    if (!notes.items.length) {
+      if (manual) toast('На этот месяц выводов нет', 'error');
+      return;
+    }
+    $('notesMonth').textContent = monthLabel(notes.month) ? ('Выводы · ' + monthLabel(notes.month)) : 'Выводы месяца';
+    $('notesList').innerHTML = notes.items.map((it, i) =>
+      `<div class="note-row"><span class="num">${i + 1}</span><span class="txt">${esc(it.text)}</span></div>`
+    ).join('');
+    if (!manual) {
+      try { localStorage.setItem(LS_NOTES, todayISO()); } catch (_) {}
+    }
+    $('notesOverlay').classList.add('show');
+  }
+
+  function closeNotes() {
+    $('notesOverlay').classList.remove('show');
+  }
+
+  function maybeShowNotes() {
+    if (!notes.items.length) return;
+    let seen = '';
+    try { seen = localStorage.getItem(LS_NOTES) || ''; } catch (_) {}
+    if (seen === todayISO()) return;
+    if (new Date().getHours() < NOTES_FORCE_HOUR && Math.random() >= NOTES_CHANCE) return;
+    openNotes(false);
+  }
+
   async function reloadAccounts() {
     try {
       accounts = (await api(API + '/accounts')) || [];
@@ -1096,6 +1239,8 @@ body { padding-top: var(--safe-t); }
       renderAmount();
       renderCats();
       await loadRecent();
+      await loadNotes();
+      maybeShowNotes();
     } catch (e) {
       toast(e.message || 'Не удалось загрузить данные', 'error');
       $('catList').innerHTML = '<div class="empty-hint">Ссылка недействительна или отозвана</div>';
@@ -1145,6 +1290,8 @@ body { padding-top: var(--safe-t); }
   window.closeAccountSheet = closeAccountSheet;
   window.backToAmount = backToAmount;
   window.saveOperation = saveOperation;
+  window.openNotes = openNotes;
+  window.closeNotes = closeNotes;
 
   init();
 })();

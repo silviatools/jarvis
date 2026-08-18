@@ -1716,6 +1716,29 @@ def pf_articles(sl: dict) -> list:
     return arts
 
 
+def pf_reminders(sl: dict, month: str) -> list:
+    """«Выводы по месяцу» — пункты, которые пользователь себе задал на этот
+    месяц во вкладке «ДДС». Приложение показывает их напоминанием.
+    Порядок — как во вкладке: по полю sort, затем по времени создания."""
+    items = []
+    for it in _pf_list(sl, "budgetMonthlyNotes"):
+        if not isinstance(it, dict) or not it.get("id"):
+            continue
+        if str(it.get("month") or "") != month:
+            continue
+        text = str(it.get("text") or "").strip()
+        if not text:
+            continue
+        items.append({
+            "id": str(it["id"]),
+            "text": text,
+            "_sort": it.get("sort") if isinstance(it.get("sort"), (int, float)) else 0,
+            "_created": it.get("createdAt") if isinstance(it.get("createdAt"), (int, float)) else 0,
+        })
+    items.sort(key=lambda i: (i["_sort"], i["_created"]))
+    return [{"id": i["id"], "text": i["text"]} for i in items]
+
+
 def pf_settings(sl: dict) -> dict:
     s = sl.get("budgetCashflowSettings")
     s = s if isinstance(s, dict) else {}
@@ -2666,6 +2689,11 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, items[:limit])
         elif action == "settings":
             self._json(200, pf_settings(sl))
+        elif action == "reminders":
+            month = one("month")
+            if not re.match(r"^\d{4}-\d{2}$", month):
+                month = today_msk().strftime("%Y-%m")
+            self._json(200, {"month": month, "items": pf_reminders(sl, month)})
         elif action == "operations":
             date_from = one("date_from")
             date_to = one("date_to")
