@@ -65,7 +65,7 @@ FREQ_DAYS = {
 # PATH_TAB_MAP in index (9).html.
 SPA_ROUTES = {
     "/mybody", "/budget", "/supplements", "/meals", "/weather",
-    "/house", "/cars", "/holidays", "/settings", "/planner",
+    "/house", "/cars", "/holidays", "/settings", "/planner", "/health",
 }
 
 # ── Планировщик дел: гостевые ссылки на событие ────────────────────────────
