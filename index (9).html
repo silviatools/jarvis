@@ -399,6 +399,12 @@ const DEFAULT_DATA = () => ({
   bodyPhotoCategories: [...DEFAULT_BODY_PHOTO_CATEGORIES],
   cars: [],
   serviceRecords: [],
+  // Здоровье: реестр состояний (хронические/разрешённые/операции) и таймлайн
+  // событий (болезни, визиты к врачу, процедуры) — тот же id-массив + LWW
+  // паттерн, что и у serviceRecords/cars (событие ссылается на состояние
+  // через conditionId, как serviceRecords.carId → cars.id).
+  healthConditions: [],
+  healthEvents: [],
   budgetUsers: [{ id: DEFAULT_BUDGET_USER_ID, name: 'Основной', createdAt: 0, updatedAt: 0 }],
   activeBudgetUserId: DEFAULT_BUDGET_USER_ID,
   budgetByUser: { [DEFAULT_BUDGET_USER_ID]: emptyBudgetSlice() },
@@ -1001,6 +1007,7 @@ const Icon = ({ name, size = 22 }) => {
     share: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg>,
     backpack: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20V10a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M8 21v-5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v5"/><path d="M8 10h8"/></svg>,
     search: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>,
+    heartPulse: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/><path d="M3.22 12H9.5l.5-1 2 4.5 2-7 1.5 3.5h5.27"/></svg>,
   };
   return icons[name] || null;
 };
@@ -1155,6 +1162,7 @@ const PATH_TAB_MAP = {
   '/weather': 'weather',
   '/house': 'house',
   '/cars': 'cars',
+  '/health': 'health',
   // Праздники переехали вкладкой внутрь планировщика, но старый адрес живой:
   // он открывает раздел сразу на этой вкладке (см. PLANNER_SUB_BY_PATH).
   '/holidays': 'planner',
@@ -1442,6 +1450,7 @@ function App() {
           {tab === 'meals' && <MealsView data={data} setData={setData} mealTab={mealTab} setMealTab={setMealTab} />}
           {tab === 'weather' && <WeatherView settings={data.settings} />}
           {tab === 'body' && <BodyView data={data} setData={setData} />}
+          {tab === 'health' && <HealthView data={data} setData={setData} />}
           {tab === 'cars' && <CarsView data={data} setData={setData} />}
           {tab === 'planner' && (
             <PlannerView data={data} setData={setData} sub={plannerTab} setSub={setPlannerTab} />
@@ -1475,13 +1484,14 @@ function Header({ tab, setTab }) {
   ];
 
   const moreItems = [
-    { id: 'body',     icon: 'user',     label: 'Моё тело'      },
-    { id: 'cars',     icon: 'car',      label: 'Автомобили'    },
+    { id: 'body',     icon: 'user',       label: 'Моё тело'      },
+    { id: 'health',   icon: 'heartPulse', label: 'Здоровье'      },
+    { id: 'cars',     icon: 'car',        label: 'Автомобили'    },
     // «Праздники» отдельным разделом больше нет — это вкладка планировщика.
-    { id: 'planner',  icon: 'calendar', label: 'Планировщик'   },
-    { id: 'budget',   icon: 'wallet',   label: 'Бюджет'        },
-    { id: 'english',  icon: 'book',     label: 'English'       },
-    { id: 'settings', icon: 'settings', label: 'Настройки'     },
+    { id: 'planner',  icon: 'calendar',   label: 'Планировщик'   },
+    { id: 'budget',   icon: 'wallet',     label: 'Бюджет'        },
+    { id: 'english',  icon: 'book',       label: 'English'       },
+    { id: 'settings', icon: 'settings',   label: 'Настройки'     },
   ];
 
   const moreActive = moreItems.some(i => i.id === tab);
@@ -1562,13 +1572,14 @@ function BottomNav({ tab, setTab }) {
   ];
 
   const moreItems = [
-    { id: 'body',     icon: 'user',     label: 'Моё тело'      },
-    { id: 'cars',     icon: 'car',      label: 'Автомобили'    },
+    { id: 'body',     icon: 'user',       label: 'Моё тело'      },
+    { id: 'health',   icon: 'heartPulse', label: 'Здоровье'      },
+    { id: 'cars',     icon: 'car',        label: 'Автомобили'    },
     // «Праздники» отдельным разделом больше нет — это вкладка планировщика.
-    { id: 'planner',  icon: 'calendar', label: 'Планировщик'   },
-    { id: 'budget',   icon: 'wallet',   label: 'Бюджет'        },
-    { id: 'english',  icon: 'book',     label: 'English'       },
-    { id: 'settings', icon: 'settings', label: 'Настройки'     },
+    { id: 'planner',  icon: 'calendar',   label: 'Планировщик'   },
+    { id: 'budget',   icon: 'wallet',     label: 'Бюджет'        },
+    { id: 'english',  icon: 'book',       label: 'English'       },
+    { id: 'settings', icon: 'settings',   label: 'Настройки'     },
   ];
 
   const moreActive = moreItems.some(i => i.id === tab);
@@ -9968,6 +9979,815 @@ function ServiceRecordModal({ record, cars, allServiceNames, onSave, onClose }) 
         </div>
       </div>
     </Modal>
+  );
+}
+
+// ============== HEALTH VIEW (Здоровье) ==============
+
+const HEALTH_EVENT_TYPES = [
+  { id: 'illness',   label: 'Болезнь' },
+  { id: 'visit',     label: 'Приём врача' },
+  { id: 'procedure', label: 'Процедура/операция' },
+  { id: 'flare_up',  label: 'Обострение' },
+  { id: 'note',      label: 'Заметка' },
+];
+const healthEventTypeLabel = (id) => (HEALTH_EVENT_TYPES.find(t => t.id === id) || {}).label || id;
+
+function formatHealthDate(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr + 'T00:00:00');
+  const months = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+  return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+function HealthView({ data, setData }) {
+  const [healthTab, setHealthTab] = useState('overview');
+  const [editingEvent, setEditingEvent] = useState(null);         // 'new' | event | null
+  const [newEventDefaults, setNewEventDefaults] = useState(null); // prefill for a 'new' event (e.g. conditionId)
+  const [editingCondition, setEditingCondition] = useState(null); // 'new' | condition | null
+  const [viewingCondition, setViewingCondition] = useState(null); // condition | null
+
+  const conditions = [...(data.healthConditions || [])].sort((a, b) => (b.diagnosedDate || '').localeCompare(a.diagnosedDate || ''));
+  const events = [...(data.healthEvents || [])].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+  const openNewEvent = (defaults = null) => {
+    setNewEventDefaults(defaults);
+    setEditingEvent('new');
+  };
+
+  const saveEvent = (event) => {
+    const now = Date.now();
+    event = { ...event, updatedAt: now, createdAt: event.createdAt || now };
+    setData(d => {
+      const list = d.healthEvents || [];
+      const exists = list.find(e => e.id === event.id);
+      return { ...d, healthEvents: exists ? list.map(e => e.id === event.id ? event : e) : [...list, event] };
+    });
+    setEditingEvent(null);
+  };
+
+  const deleteEvent = (id) => {
+    const event = events.find(e => e.id === id);
+    (event?.photos || []).map(normalizePhoto).forEach(p => deletePhoto(p.filename));
+    (event?.files || []).forEach(f => deleteFile(f.filename));
+    setData(d => ({
+      ...d,
+      healthEvents: (d.healthEvents || []).filter(e => e.id !== id),
+      deletedIds: withDeletedId(d, 'healthEvents', id),
+    }));
+  };
+
+  const saveCondition = (condition) => {
+    const now = Date.now();
+    condition = { ...condition, updatedAt: now, createdAt: condition.createdAt || now };
+    setData(d => {
+      const list = d.healthConditions || [];
+      const exists = list.find(c => c.id === condition.id);
+      return { ...d, healthConditions: exists ? list.map(c => c.id === condition.id ? condition : c) : [...list, condition] };
+    });
+    setViewingCondition(v => (v && v.id === condition.id) ? condition : v);
+    setEditingCondition(null);
+    return condition;
+  };
+
+  // Удаление состояния не трогает связанные события — они остаются в истории,
+  // только теряют привязку (conditionId обнуляется), чтобы не терять записи о лечении.
+  const deleteCondition = (id) => {
+    if (!confirm('Удалить состояние? Связанные записи в истории останутся, но потеряют привязку к нему.')) return;
+    setData(d => ({
+      ...d,
+      healthConditions: (d.healthConditions || []).filter(c => c.id !== id),
+      healthEvents: (d.healthEvents || []).map(e => e.conditionId === id ? { ...e, conditionId: '', updatedAt: Date.now() } : e),
+      deletedIds: withDeletedId(d, 'healthConditions', id),
+    }));
+    setViewingCondition(v => (v && v.id === id) ? null : v);
+  };
+
+  if (editingEvent !== null) {
+    return (
+      <HealthEventForm
+        event={editingEvent === 'new' ? null : editingEvent}
+        defaults={newEventDefaults}
+        conditions={data.healthConditions || []}
+        onSave={saveEvent}
+        onCancel={() => setEditingEvent(null)}
+        onCreateCondition={(name) => saveCondition({
+          id: crypto.randomUUID(), name, isChronic: false, status: 'active',
+          diagnosedDate: '', resolvedDate: '', notes: '', tags: [],
+        })}
+      />
+    );
+  }
+
+  if (editingCondition !== null) {
+    return (
+      <HealthConditionForm
+        condition={editingCondition === 'new' ? null : editingCondition}
+        onSave={saveCondition}
+        onCancel={() => setEditingCondition(null)}
+      />
+    );
+  }
+
+  const tabs = [
+    { id: 'overview',   label: 'Обзор'     },
+    { id: 'timeline',   label: 'История'   },
+    { id: 'conditions', label: 'Состояния' },
+  ];
+
+  return (
+    <div className="fade-in">
+      <div className="mb-6 flex items-end justify-between">
+        <div>
+          <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Раздел</div>
+          <h1 className="font-display text-3xl md:text-4xl">Здоровье</h1>
+        </div>
+        {healthTab === 'timeline' && (
+          <button onClick={() => openNewEvent()} className="btn-primary flex items-center gap-2 text-sm">
+            <Icon name="plus" size={16} /> Запись
+          </button>
+        )}
+        {healthTab === 'conditions' && (
+          <button onClick={() => setEditingCondition('new')} className="btn-primary flex items-center gap-2 text-sm">
+            <Icon name="plus" size={16} /> Состояние
+          </button>
+        )}
+      </div>
+
+      <div className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-6">
+        <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 gap-0">
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => setHealthTab(t.id)}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${healthTab===t.id?'bg-[var(--text)] text-white':'text-[var(--text-muted)]'}`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {healthTab === 'overview'   && <HealthOverview conditions={conditions} events={events} onSelectCondition={setViewingCondition} />}
+      {healthTab === 'timeline'   && <HealthTimeline events={events} conditions={data.healthConditions || []} onEdit={setEditingEvent} onDelete={deleteEvent} />}
+      {healthTab === 'conditions' && <HealthConditionsList conditions={conditions} events={events} onEdit={setEditingCondition} onDelete={deleteCondition} onView={setViewingCondition} />}
+
+      {viewingCondition && (
+        <HealthConditionDetail
+          condition={viewingCondition}
+          events={events.filter(e => e.conditionId === viewingCondition.id)}
+          onClose={() => setViewingCondition(null)}
+          onEdit={() => { setEditingCondition(viewingCondition); setViewingCondition(null); }}
+          onAddEvent={() => { openNewEvent({ conditionId: viewingCondition.id, type: 'flare_up' }); setViewingCondition(null); }}
+          onEditEvent={(ev) => { setEditingEvent(ev); setViewingCondition(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function HealthOverview({ conditions, events, onSelectCondition }) {
+  const active = conditions.filter(c => c.status === 'active');
+  const lastEventFor = (conditionId) => events.find(e => e.conditionId === conditionId) || null; // events отсортированы по убыванию даты
+
+  if (active.length === 0) {
+    return <EmptyState title="Нет активных состояний" text="Добавьте состояние во вкладке «Состояния» или запись во вкладке «История»" />;
+  }
+
+  return (
+    <div className="space-y-3">
+      {active.map(c => {
+        const last = lastEventFor(c.id);
+        return (
+          <button key={c.id} onClick={() => onSelectCondition(c)}
+            className="w-full text-left bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 hover:border-[var(--border-strong)] transition-colors">
+            <div className="flex items-center gap-2 flex-wrap mb-1">
+              <span className="font-display text-lg">{c.name}</span>
+              {c.isChronic && (
+                <span className="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full bg-[var(--text)] text-white">Хроническое</span>
+              )}
+            </div>
+            <div className="text-xs text-[var(--text-muted)]">
+              {c.diagnosedDate ? `С ${formatHealthDate(c.diagnosedDate)}` : 'Дата диагноза не указана'}
+            </div>
+            {last && (
+              <div className="text-sm text-[var(--text-muted)] mt-2">
+                Последняя запись: <span className="text-[var(--text)]">{formatHealthDate(last.date)}</span>{last.title ? ` — ${last.title}` : ''}
+              </div>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function HealthTimeline({ events, conditions, onEdit, onDelete }) {
+  const [query, setQuery] = useState('');
+  const [filterType, setFilterType] = useState('all');
+  const [filterCondition, setFilterCondition] = useState('all');
+
+  const getConditionName = (id) => conditions.find(c => c.id === id)?.name || '';
+
+  const q = query.trim().toLowerCase();
+  const filtered = events
+    .filter(e => filterType === 'all' || e.type === filterType)
+    .filter(e => filterCondition === 'all' || e.conditionId === filterCondition)
+    .filter(e => {
+      if (!q) return true;
+      const haystack = [
+        e.title, e.symptoms, e.diagnosis, e.outcome, e.doctor, e.clinic,
+        ...(e.medications || []).map(m => m.name),
+        ...(e.tags || []),
+      ].filter(Boolean).join(' ').toLowerCase();
+      return haystack.includes(q);
+    });
+
+  if (events.length === 0) {
+    return <EmptyState title="Нет записей" text="Нажмите «Запись» чтобы внести первую запись о болезни, визите к врачу или процедуре" />;
+  }
+
+  return (
+    <div>
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 mb-4 space-y-3">
+        <div className="relative">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-subtle)]">
+            <Icon name="search" size={16} />
+          </span>
+          <input value={query} onChange={e => setQuery(e.target.value)}
+            placeholder="Поиск по названию, диагнозу, препарату, тегам…" className="w-full !pl-9" />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <select value={filterType} onChange={e => setFilterType(e.target.value)}>
+            <option value="all">Все типы</option>
+            {HEALTH_EVENT_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+          <select value={filterCondition} onChange={e => setFilterCondition(e.target.value)}>
+            <option value="all">Все состояния</option>
+            {conditions.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState title="Ничего не найдено" text="Попробуйте изменить запрос или фильтры" />
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(event => (
+            <HealthEventRow key={event.id} event={event} conditionName={getConditionName(event.conditionId)}
+              onEdit={() => onEdit(event)} onDelete={() => onDelete(event.id)} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HealthEventRow({ event, conditionName, onEdit, onDelete }) {
+  const meds = event.medications || [];
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-display text-lg truncate">{event.title || healthEventTypeLabel(event.type)}</span>
+            <span className="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]">{healthEventTypeLabel(event.type)}</span>
+          </div>
+          <div className="text-xs text-[var(--text-muted)] mt-1 flex flex-wrap gap-x-2">
+            <span>{formatHealthDate(event.date)}{event.endDate ? ` — ${formatHealthDate(event.endDate)}` : ''}</span>
+            {conditionName && <span>· {conditionName}</span>}
+            {event.doctor && <span>· {event.doctor}</span>}
+          </div>
+        </div>
+        <div className="flex gap-1 shrink-0">
+          <button onClick={onEdit} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={16} /></button>
+          <button onClick={() => { if (confirm('Удалить запись?')) onDelete(); }} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]"><Icon name="trash" size={16} /></button>
+        </div>
+      </div>
+      {event.diagnosis && <div className="text-sm text-[var(--text-muted)] mb-1"><span className="text-[var(--text-subtle)]">Диагноз:</span> {event.diagnosis}</div>}
+      {meds.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {meds.map(m => (
+            <span key={m.id} className="px-2.5 py-1 rounded-full text-xs bg-[var(--bg)] border border-[var(--border)]">
+              💊 {m.name}{m.dosage ? `, ${m.dosage}` : ''}
+            </span>
+          ))}
+        </div>
+      )}
+      {event.outcome && <div className="text-sm text-[var(--text-muted)] mt-2 italic">{event.outcome}</div>}
+    </div>
+  );
+}
+
+function HealthConditionsList({ conditions, events, onEdit, onDelete, onView }) {
+  if (conditions.length === 0) {
+    return <EmptyState title="Нет состояний" text="Добавьте хроническое заболевание или перенесённую операцию" />;
+  }
+
+  const eventCount = (id) => events.filter(e => e.conditionId === id).length;
+  const chronicActive = conditions.filter(c => c.isChronic && c.status === 'active');
+  const rest = conditions.filter(c => !(c.isChronic && c.status === 'active'));
+
+  const Row = (c) => {
+    const n = eventCount(c.id);
+    return (
+      <div key={c.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div className="flex items-start justify-between gap-3">
+          <button onClick={() => onView(c)} className="text-left flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-medium">{c.name}</span>
+              {c.isChronic && <span className="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full bg-[var(--text)] text-white">Хроническое</span>}
+              {c.status === 'resolved' && <span className="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full border border-[var(--border)] text-[var(--text-muted)]">Разрешено</span>}
+            </div>
+            <div className="text-xs text-[var(--text-muted)] mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+              {c.diagnosedDate && <span>С {formatHealthDate(c.diagnosedDate)}</span>}
+              {n > 0 && <span>{n} {n === 1 ? 'запись' : n < 5 ? 'записи' : 'записей'}</span>}
+            </div>
+          </button>
+          <div className="flex gap-1 shrink-0">
+            <button onClick={() => onEdit(c)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={16} /></button>
+            <button onClick={() => onDelete(c.id)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={16} /></button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-3">
+      {chronicActive.map(Row)}
+      {rest.map(Row)}
+    </div>
+  );
+}
+
+function HealthConditionDetail({ condition, events, onClose, onEdit, onAddEvent, onEditEvent }) {
+  return (
+    <Modal title={condition.name} onClose={onClose} wide>
+      <div className="space-y-5">
+        <div className="flex flex-wrap gap-2 text-xs">
+          {condition.isChronic && <span className="px-2.5 py-1 rounded-full font-semibold uppercase tracking-wide bg-[var(--text)] text-white">Хроническое</span>}
+          <span className="px-2.5 py-1 rounded-full font-medium border border-[var(--border)] text-[var(--text-muted)]">{condition.status === 'resolved' ? 'Разрешено' : 'Активно'}</span>
+        </div>
+        <div className="text-sm text-[var(--text-muted)] space-y-0.5">
+          {condition.diagnosedDate && <div>Диагностировано: <b className="text-[var(--text)]">{formatHealthDate(condition.diagnosedDate)}</b></div>}
+          {condition.resolvedDate && <div>Разрешено: <b className="text-[var(--text)]">{formatHealthDate(condition.resolvedDate)}</b></div>}
+        </div>
+        {condition.notes && <div className="text-sm bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3">{condition.notes}</div>}
+
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs uppercase tracking-wide text-[var(--text-subtle)] font-medium">История ({events.length})</div>
+            <button onClick={onAddEvent} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1"><Icon name="plus" size={14} /> Эпизод</button>
+          </div>
+          {events.length === 0 ? (
+            <div className="text-sm text-[var(--text-subtle)]">Пока нет связанных записей</div>
+          ) : (
+            <div className="space-y-2">
+              {events.map(e => (
+                <button key={e.id} onClick={() => onEditEvent(e)}
+                  className="w-full text-left bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 hover:border-[var(--border-strong)] transition-colors">
+                  <div className="text-sm font-medium">{formatHealthDate(e.date)} · {e.title || healthEventTypeLabel(e.type)}</div>
+                  {e.diagnosis && <div className="text-xs text-[var(--text-muted)] mt-0.5">{e.diagnosis}</div>}
+                  {(e.medications || []).length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {e.medications.map(m => (
+                        <span key={m.id} className="px-2 py-0.5 rounded-full text-[10px] bg-[var(--surface)] border border-[var(--border)]">💊 {m.name}{m.dosage ? `, ${m.dosage}` : ''}</span>
+                      ))}
+                    </div>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onEdit} className="btn-secondary flex-1">Редактировать</button>
+          <button onClick={onClose} className="btn-primary flex-1">Закрыть</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCreateCondition }) {
+  const today = getTodayKey();
+  const [form, setForm] = useState(() => event
+    ? {
+        ...event,
+        medications: (event.medications || []).map(m => ({ ...m })),
+        photos: (event.photos || []).map(normalizePhoto),
+        files: (event.files || []).map(f => ({ ...f })),
+        tags: [...(event.tags || [])],
+      }
+    : {
+        id: crypto.randomUUID(),
+        date: today, endDate: '',
+        type: (defaults && defaults.type) || 'illness',
+        conditionId: (defaults && defaults.conditionId) || '',
+        title: '', symptoms: '', diagnosis: '', doctor: '', clinic: '',
+        medications: [], outcome: '', photos: [], files: [], tags: [], notes: '',
+      });
+  const [pending, setPending] = useState([]); // {file, preview, category}
+  const [tagInput, setTagInput] = useState('');
+  const [addingCondition, setAddingCondition] = useState(false);
+  const [newConditionName, setNewConditionName] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const addMed = () => set('medications', [...form.medications, { id: crypto.randomUUID(), name: '', dosage: '', schedule: '', duration: '', notes: '' }]);
+  const updMed = (id, k, v) => set('medications', form.medications.map(m => m.id === id ? { ...m, [k]: v } : m));
+  const delMed = (id) => set('medications', form.medications.filter(m => m.id !== id));
+
+  const addTag = () => {
+    const t = tagInput.trim();
+    if (t && !form.tags.includes(t)) set('tags', [...form.tags, t]);
+    setTagInput('');
+  };
+  const removeTag = (t) => set('tags', form.tags.filter(x => x !== t));
+
+  const confirmNewCondition = () => {
+    const name = newConditionName.trim();
+    if (!name) { setAddingCondition(false); return; }
+    const condition = onCreateCondition(name);
+    set('conditionId', condition.id);
+    setNewConditionName('');
+    setAddingCondition(false);
+  };
+
+  const handleFiles = (e) => {
+    const files = Array.from(e.target.files);
+    setPending(p => [...p, ...files.map(f => ({ file: f, preview: URL.createObjectURL(f), category: '' }))]);
+    e.target.value = '';
+  };
+  const removePending = (i) => setPending(p => { URL.revokeObjectURL(p[i].preview); return p.filter((_, j) => j !== i); });
+  const setPendingCategory = (i, cat) => setPending(p => p.map((item, j) => j === i ? { ...item, category: cat } : item));
+  const setExistingCategory = (filename, cat) => set('photos', form.photos.map(ph => ph.filename === filename ? { ...ph, category: cat } : ph));
+  const removeExistingPhoto = async (filename) => {
+    await deletePhoto(filename);
+    set('photos', form.photos.filter(ph => ph.filename !== filename));
+  };
+
+  const onFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setUploadingFile(true);
+    try {
+      const filename = await uploadFile(file);
+      set('files', [...form.files, { filename, originalName: file.name, ext: (file.name.split('.').pop() || '').toLowerCase() }]);
+    } catch {
+      alert('Не удалось загрузить файл');
+    }
+    setUploadingFile(false);
+    e.target.value = '';
+  };
+  const removeExistingFile = async (filename) => {
+    await deleteFile(filename);
+    set('files', form.files.filter(f => f.filename !== filename));
+  };
+
+  const handleSave = async () => {
+    if (!form.title.trim()) { alert('Введите название записи'); return; }
+    setUploading(true);
+    try {
+      // Фото грузятся независимо: одна неудачная загрузка (офлайн, сбой сервера)
+      // не должна отменять всю запись — остальное сохранится и без неё.
+      const results = await Promise.allSettled(pending.map(async p => {
+        const filename = await uploadPhoto(p.file);
+        return { filename, category: p.category || '' };
+      }));
+      const uploaded = results.filter(r => r.status === 'fulfilled').map(r => r.value);
+      const failed = results.length - uploaded.length;
+      pending.forEach(p => URL.revokeObjectURL(p.preview));
+      if (failed > 0) alert(`Не удалось загрузить ${failed} фото — запись сохранена без них.`);
+      onSave({
+        ...form,
+        medications: form.medications.filter(m => (m.name || '').trim()),
+        photos: [...form.photos, ...uploaded],
+      });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const PhotoCategoryPills = ({ value, onChange }) => (
+    <div className="flex flex-wrap gap-1 mt-1.5">
+      <button onClick={() => onChange('')}
+        className={`px-2 py-0.5 rounded-full text-[10px] font-medium border transition-all ${!value ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
+        Без категории
+      </button>
+      {['анализы', 'снимок', 'выписка', 'рецепт'].map(c => (
+        <button key={c} onClick={() => onChange(c)}
+          className={`px-2 py-0.5 rounded-full text-[10px] font-medium border transition-all ${value===c ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
+          {c}
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="fade-in">
+      <div className="mb-6 flex items-center gap-3">
+        <button onClick={onCancel} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]"><Icon name="x" size={20} /></button>
+        <h2 className="font-display text-2xl">{event ? 'Редактировать запись' : 'Новая запись'}</h2>
+      </div>
+
+      <div className="space-y-4">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label>Дата начала</label>
+              <input type="date" value={form.date} max={today} onChange={e => set('date', e.target.value)} />
+            </div>
+            <div>
+              <label>Дата окончания (если растянулось)</label>
+              <input type="date" value={form.endDate || ''} onChange={e => set('endDate', e.target.value)} />
+            </div>
+          </div>
+          <div>
+            <label>Тип записи</label>
+            <div className="flex flex-wrap gap-1.5">
+              {HEALTH_EVENT_TYPES.map(t => (
+                <button key={t.id} onClick={() => set('type', t.id)}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${form.type===t.id ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <label>Название</label>
+          <input value={form.title} onChange={e => set('title', e.target.value)} placeholder="Например, ОРВИ, приём гастроэнтеролога…" />
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <label>Связанное состояние (необязательно)</label>
+          {!addingCondition ? (
+            <div className="flex gap-2">
+              <select value={form.conditionId || ''} onChange={e => set('conditionId', e.target.value)} className="flex-1">
+                <option value="">Без привязки</option>
+                {conditions.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <button onClick={() => setAddingCondition(true)} className="btn-secondary px-3 shrink-0 text-sm whitespace-nowrap">+ Новое</button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <input autoFocus value={newConditionName} onChange={e => setNewConditionName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); confirmNewCondition(); } }}
+                placeholder="Название нового состояния" className="flex-1" />
+              <button onClick={confirmNewCondition} className="btn-primary px-3 shrink-0 text-sm">Создать</button>
+              <button onClick={() => { setAddingCondition(false); setNewConditionName(''); }} className="btn-secondary px-3 shrink-0 text-sm">Отмена</button>
+            </div>
+          )}
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+          <div>
+            <label>Симптомы</label>
+            <textarea value={form.symptoms} rows={2} onChange={e => set('symptoms', e.target.value)} style={{ resize: 'vertical' }} placeholder="Что беспокоило..." />
+          </div>
+          <div>
+            <label>Диагноз</label>
+            <textarea value={form.diagnosis} rows={2} onChange={e => set('diagnosis', e.target.value)} style={{ resize: 'vertical' }} placeholder="Поставленный диагноз..." />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label>Врач</label>
+              <input value={form.doctor} onChange={e => set('doctor', e.target.value)} placeholder="ФИО врача" />
+            </div>
+            <div>
+              <label>Клиника</label>
+              <input value={form.clinic} onChange={e => set('clinic', e.target.value)} placeholder="Название клиники" />
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-display text-lg">Лечение / препараты</h3>
+            <button onClick={addMed} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1"><Icon name="plus" size={14} /> Добавить</button>
+          </div>
+          {form.medications.length === 0 ? (
+            <div className="text-sm text-[var(--text-subtle)]">Нет добавленных препаратов</div>
+          ) : (
+            <div className="space-y-3">
+              {form.medications.map(m => (
+                <div key={m.id} className="border border-[var(--border)] rounded-xl p-3 space-y-2">
+                  <div className="flex gap-2">
+                    <input value={m.name} onChange={e => updMed(m.id, 'name', e.target.value)} placeholder="Название препарата" />
+                    <button onClick={() => delMed(m.id)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0"><Icon name="trash" size={16} /></button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input value={m.dosage} onChange={e => updMed(m.id, 'dosage', e.target.value)} placeholder="Дозировка (напр. 500 мг)" />
+                    <input value={m.duration} onChange={e => updMed(m.id, 'duration', e.target.value)} placeholder="Длительность (напр. 7 дней)" />
+                  </div>
+                  <input value={m.schedule} onChange={e => updMed(m.id, 'schedule', e.target.value)} placeholder="Схема приёма (напр. 2 раза в день после еды)" />
+                  <input value={m.notes} onChange={e => updMed(m.id, 'notes', e.target.value)} placeholder="Заметка (необязательно)" />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <label>Результат / исход</label>
+          <textarea value={form.outcome} rows={2} onChange={e => set('outcome', e.target.value)} style={{ resize: 'vertical' }} placeholder="Помогло, симптомы прошли за..., не помогло..." />
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <h3 className="font-display text-lg mb-3">Фото</h3>
+          <div className="space-y-3">
+            {form.photos.map(ph => (
+              <div key={ph.filename} className="flex gap-3 items-start bg-[var(--bg)] rounded-xl p-2">
+                <div className="relative flex-shrink-0">
+                  <img src={`/api/photos/${ph.filename}`} className="w-16 h-16 object-cover rounded-xl" />
+                  <button onClick={() => removeExistingPhoto(ph.filename)}
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center">×</button>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-[var(--text-muted)] mb-0.5">Категория:</div>
+                  <PhotoCategoryPills value={ph.category} onChange={cat => setExistingCategory(ph.filename, cat)} />
+                </div>
+              </div>
+            ))}
+            {pending.map((p, i) => (
+              <div key={i} className="flex gap-3 items-start bg-[var(--bg)] rounded-xl p-2">
+                <div className="relative flex-shrink-0">
+                  <img src={p.preview} className="w-16 h-16 object-cover rounded-xl opacity-70" />
+                  <button onClick={() => removePending(i)}
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center">×</button>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-[var(--text-muted)] mb-0.5">Категория:</div>
+                  <PhotoCategoryPills value={p.category} onChange={cat => setPendingCategory(i, cat)} />
+                </div>
+              </div>
+            ))}
+            <label className="flex items-center gap-2 px-3 py-2.5 border-2 border-dashed border-[var(--border-strong)] rounded-xl cursor-pointer hover:bg-black/5 text-[var(--text-subtle)]">
+              <input type="file" accept="image/*" multiple className="hidden" onChange={handleFiles} />
+              <Icon name="plus" size={18} />
+              <span className="text-sm">Добавить фото</span>
+            </label>
+          </div>
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <h3 className="font-display text-lg mb-3">Документы (анализы, выписки, направления)</h3>
+          <div className="space-y-2">
+            {form.files.map(f => (
+              <div key={f.filename} className="flex items-center gap-2 text-sm px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--bg)]">
+                <Icon name="download" size={16} />
+                <a href={`/api/files/${f.filename}`} target="_blank" rel="noopener" download={f.originalName} className="truncate flex-1 hover:underline">{f.originalName}</a>
+                <button onClick={() => removeExistingFile(f.filename)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0"><Icon name="trash" size={15} /></button>
+              </div>
+            ))}
+            <label className="flex items-center justify-center gap-2 text-sm px-4 py-3 rounded-xl border border-dashed border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--text)] hover:text-[var(--text)] transition-colors cursor-pointer">
+              <Icon name="plus" size={16} />
+              {uploadingFile ? 'Загрузка…' : 'Загрузить файл (PDF, фото, doc…)'}
+              <input type="file" className="hidden" accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,.rtf,.csv,image/*" onChange={onFile} disabled={uploadingFile} />
+            </label>
+          </div>
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <label>Теги</label>
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {form.tags.map(t => (
+              <span key={t} className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-[var(--bg)] border border-[var(--border)]">
+                {t}
+                <button onClick={() => removeTag(t)} className="text-[var(--text-subtle)] hover:text-red-500">×</button>
+              </span>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <input value={tagInput} onChange={e => setTagInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }}
+              placeholder="Добавить тег и нажать Enter" />
+            <button onClick={addTag} className="btn-secondary px-3 shrink-0 text-sm">Добавить</button>
+          </div>
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <label>Заметки</label>
+          <textarea value={form.notes} rows={2} placeholder="Необязательно..."
+            onChange={e => set('notes', e.target.value)} style={{ resize: 'vertical' }} />
+        </div>
+
+        <div className="flex gap-3 pb-8">
+          <button onClick={handleSave} disabled={uploading} className="btn-primary flex-1">
+            {uploading ? 'Загружаю фото...' : 'Сохранить'}
+          </button>
+          <button onClick={onCancel} className="btn-secondary">Отмена</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HealthConditionForm({ condition, onSave, onCancel }) {
+  const [form, setForm] = useState(() => condition
+    ? { ...condition, tags: [...(condition.tags || [])] }
+    : { id: crypto.randomUUID(), name: '', isChronic: true, status: 'active', diagnosedDate: '', resolvedDate: '', notes: '', tags: [] });
+  const [tagInput, setTagInput] = useState('');
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const addTag = () => {
+    const t = tagInput.trim();
+    if (t && !form.tags.includes(t)) set('tags', [...form.tags, t]);
+    setTagInput('');
+  };
+  const removeTag = (t) => set('tags', form.tags.filter(x => x !== t));
+
+  const submit = () => {
+    if (!form.name.trim()) { alert('Введите название состояния'); return; }
+    onSave(form);
+  };
+
+  return (
+    <div className="fade-in">
+      <div className="mb-6 flex items-center gap-3">
+        <button onClick={onCancel} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]"><Icon name="x" size={20} /></button>
+        <h2 className="font-display text-2xl">{condition ? 'Редактировать состояние' : 'Новое состояние'}</h2>
+      </div>
+
+      <div className="space-y-4">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <label>Название</label>
+          <input value={form.name} onChange={e => set('name', e.target.value)} placeholder="Например, СИБО, Варикоцеле…" />
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+          <div>
+            <label>Тип</label>
+            <div className="flex gap-1.5">
+              <button onClick={() => set('isChronic', true)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${form.isChronic ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
+                Хроническое
+              </button>
+              <button onClick={() => set('isChronic', false)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${!form.isChronic ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
+                Разовое (напр. операция)
+              </button>
+            </div>
+          </div>
+          <div>
+            <label>Статус</label>
+            <div className="flex gap-1.5">
+              <button onClick={() => set('status', 'active')}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${form.status==='active' ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
+                Активно
+              </button>
+              <button onClick={() => set('status', 'resolved')}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${form.status==='resolved' ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
+                Разрешено
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label>Дата диагноза</label>
+              <input type="date" value={form.diagnosedDate || ''} onChange={e => set('diagnosedDate', e.target.value)} />
+            </div>
+            {form.status === 'resolved' && (
+              <div>
+                <label>Дата разрешения</label>
+                <input type="date" value={form.resolvedDate || ''} onChange={e => set('resolvedDate', e.target.value)} />
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <label>Теги</label>
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {form.tags.map(t => (
+              <span key={t} className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-[var(--bg)] border border-[var(--border)]">
+                {t}
+                <button onClick={() => removeTag(t)} className="text-[var(--text-subtle)] hover:text-red-500">×</button>
+              </span>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <input value={tagInput} onChange={e => setTagInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }}
+              placeholder="Добавить тег и нажать Enter" />
+            <button onClick={addTag} className="btn-secondary px-3 shrink-0 text-sm">Добавить</button>
+          </div>
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+          <label>Заметки</label>
+          <textarea value={form.notes} rows={3} onChange={e => set('notes', e.target.value)} style={{ resize: 'vertical' }} placeholder="Произвольное описание состояния..." />
+        </div>
+
+        <div className="flex gap-3 pb-8">
+          <button onClick={onCancel} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
