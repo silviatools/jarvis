@@ -20,6 +20,7 @@ Requirements: pip3 install requests
 import json
 import os
 import re
+import sys
 import time
 import threading
 import io
@@ -29,7 +30,7 @@ from datetime import datetime, date, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from urllib.parse import parse_qs
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 # Moscow time is UTC+3, no DST (since 2014) — reliable without tzdata
 MSK = timezone(timedelta(hours=3))
@@ -1986,6 +1987,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                     self._cors()
                     self.end_headers()
                     self.wfile.write(content)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
                 except Exception as e:
                     self._json(500, {"error": str(e)})
             else:
@@ -2905,6 +2908,18 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             super().log_message(fmt, *args)
 
 
+class JarvisServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # Clients disconnecting mid-response (broken pipe / reset) are routine,
+        # not application errors — don't spam the log with a traceback for them.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
+
 # ── main ───────────────────────────────────────────────────────────────────
 
 def main():
@@ -2923,7 +2938,7 @@ def main():
     threading.Thread(target=notifier_loop, daemon=True).start()
     threading.Thread(target=updates_loop, daemon=True).start()
 
-    server = HTTPServer(("0.0.0.0", args.port), JarvisHandler)
+    server = JarvisServer(("0.0.0.0", args.port), JarvisHandler)
     print(f"Jarvis is running → http://localhost:{args.port}")
     print(f"Data dir:    {DATA_DIR}")
     print(f"Config:      {CONFIG_FILE}")
