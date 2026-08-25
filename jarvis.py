@@ -82,6 +82,10 @@ AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 * 10
 AUTH_PUBLIC_FILES  = {
     "/manifest.json", "/favicon.ico", "/icon-192.png", "/icon-512.png",
     "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png",
+    # Подключается тегом <script> со страниц /e/<token> и /trip/<token> —
+    # без него у гостя без пароля падает расчёт взаиморасчётов, а вместе с
+    # ним и остальной рендер (например, пропадает нижнее меню событий).
+    "/planner-split.js",
 }
 
 
