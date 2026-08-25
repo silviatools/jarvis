@@ -17,6 +17,8 @@ Any Telegram user who messages the bot is auto-subscribed.
 Requirements: pip3 install requests
 """
 
+import hashlib
+import html
 import json
 import os
 import re
@@ -29,7 +31,7 @@ import zipfile
 from datetime import datetime, date, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 # Moscow time is UTC+3, no DST (since 2014) — reliable without tzdata
@@ -68,6 +70,31 @@ SPA_ROUTES = {
     "/mybody", "/budget", "/supplements", "/meals", "/weather",
     "/house", "/cars", "/holidays", "/settings", "/planner", "/health",
 }
+
+# ── Парольный доступ на весь сайт ───────────────────────────────────────────
+# Один общий код на семью. Не гейтим гостевые ссылки (/e/<token>, /trip/<token>
+# и их API) — по ним заходят друзья, которые кода не знают и знать не должны.
+# Cookie живёт 10 лет — «запомнить устройство», код спрашивается один раз.
+AUTH_PASSWORD      = "2004"
+AUTH_COOKIE_NAME   = "jarvis_auth"
+AUTH_COOKIE_VALUE  = hashlib.sha256(f"jarvis-site-auth-v1:{AUTH_PASSWORD}".encode()).hexdigest()
+AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 * 10
+AUTH_PUBLIC_FILES  = {
+    "/manifest.json", "/favicon.ico", "/icon-192.png", "/icon-512.png",
+    "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png",
+}
+
+
+def route_is_public(route: str) -> bool:
+    """Маршруты, доступные без пароля: страница логина, статика PWA-манифеста
+    и гостевые ссылки на события/поездки (их получают люди вне семьи)."""
+    if route == "/login" or route in AUTH_PUBLIC_FILES:
+        return True
+    if token_from_route(route, "/e/") or token_from_route(route, "/trip/"):
+        return True
+    if token_from_route(route, "/api/event/") or token_from_route(route, "/api/camping-trip/"):
+        return True
+    return False
 
 # ── Планировщик дел: гостевые ссылки на событие ────────────────────────────
 # Друг открывает /e/<token> — ОТДЕЛЬНУЮ страницу event.html, которая ходит
@@ -1831,6 +1858,9 @@ class JarvisHandler(SimpleHTTPRequestHandler):
 
     def do_PUT(self):
         route = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if not route_is_public(route) and not self._is_authed():
+            self._json(401, {"error": "unauthorized"})
+            return
         if route.startswith("/api/pf/"):
             self._pf_put(route)
         else:
@@ -1838,6 +1868,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.end_headers()
 
     def do_DELETE(self):
+        route = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if not route_is_public(route) and not self._is_authed():
+            self._json(401, {"error": "unauthorized"})
+            return
         if self.path.startswith("/api/photos/"):
             filename = self.path[len("/api/photos/"):]
             if "/" in filename or ".." in filename or not filename:
@@ -1866,6 +1900,16 @@ class JarvisHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         route = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if route == "/login":
+            query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            self._send_login_page(next_path=(query.get("next") or ["/"])[0], error="error" in query)
+            return
+        if not route_is_public(route) and not self._is_authed():
+            if route.startswith("/api/"):
+                self._json(401, {"error": "unauthorized"})
+            else:
+                self._send_login_page(next_path=self.path or "/")
+            return
         if route in ("/", "/index.html") or route in SPA_ROUTES:
             self._serve_html()
         elif token_from_route(route, "/e/"):
@@ -1998,6 +2042,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         route = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if route == "/login":
+            self._handle_login_post()
+            return
+        if not route_is_public(route) and not self._is_authed():
+            self._json(401, {"error": "unauthorized"})
+            return
         if token_from_route(route, "/api/event/", "/rsvp"):
             self._event_rsvp(token_from_route(route, "/api/event/", "/rsvp"))
         elif token_from_route(route, "/api/event/", "/comment"):
@@ -2861,6 +2911,97 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         if code == 200:
             body = {"ok": True, "id": created["id"]}
         self._json(code, body)
+
+    def _get_cookie(self, name: str):
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return None
+        for part in raw.split(";"):
+            part = part.strip()
+            if part.startswith(name + "="):
+                return part[len(name) + 1:]
+        return None
+
+    def _is_authed(self) -> bool:
+        return self._get_cookie(AUTH_COOKIE_NAME) == AUTH_COOKIE_VALUE
+
+    def _send_login_page(self, next_path: str = "/", error: bool = False):
+        if not next_path.startswith("/") or next_path.startswith("//"):
+            next_path = "/"
+        err_html = '<p class="err">Неверный код, попробуйте ещё раз</p>' if error else ''
+        page = f"""<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Вход</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: #0f0f13; color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    padding: 20px;
+  }}
+  form {{
+    width: 100%; max-width: 320px; background: #1a1a20; border: 1px solid #2b2b33;
+    border-radius: 16px; padding: 32px 28px; text-align: center;
+  }}
+  h1 {{ font-size: 17px; font-weight: 600; margin: 0 0 20px; color: #eee; }}
+  input {{
+    width: 100%; background: #0f0f13; border: 1px solid #34343d; color: #eee;
+    padding: 14px 16px; border-radius: 10px; font-size: 22px; text-align: center;
+    letter-spacing: .3em; font-family: 'JetBrains Mono', monospace;
+  }}
+  input:focus {{ outline: none; border-color: #f0c14b; }}
+  button {{
+    width: 100%; margin-top: 14px; padding: 13px; border: none; border-radius: 10px;
+    background: #f0c14b; color: #1a1a1f; font-size: 15px; font-weight: 600; cursor: pointer;
+  }}
+  .err {{ color: #ff6b6b; font-size: 13px; margin: -8px 0 14px; }}
+</style>
+</head>
+<body>
+  <form method="POST" action="/login">
+    <h1>🔒 Введите код доступа</h1>
+    {err_html}
+    <input type="password" inputmode="numeric" pattern="[0-9]*" name="password" maxlength="16" autofocus autocomplete="current-password" required>
+    <input type="hidden" name="next" value="{html.escape(next_path, quote=True)}">
+    <button type="submit">Войти</button>
+  </form>
+</body>
+</html>"""
+        body = page.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _handle_login_post(self):
+        length = self._content_length()
+        body = self.rfile.read(length) if length else b""
+        fields = parse_qs(body.decode("utf-8", "replace"))
+        password = (fields.get("password") or [""])[0]
+        next_path = (fields.get("next") or ["/"])[0]
+        if not next_path.startswith("/") or next_path.startswith("//"):
+            next_path = "/"
+        if password == AUTH_PASSWORD:
+            self.send_response(302)
+            self.send_header("Location", next_path)
+            self.send_header(
+                "Set-Cookie",
+                f"{AUTH_COOKIE_NAME}={AUTH_COOKIE_VALUE}; Max-Age={AUTH_COOKIE_MAX_AGE}; Path=/; HttpOnly; SameSite=Lax"
+            )
+            self._cors()
+            self.end_headers()
+        else:
+            self.send_response(302)
+            self.send_header("Location", f"/login?next={quote(next_path)}&error=1")
+            self._cors()
+            self.end_headers()
 
     def _serve_html(self):
         try:
