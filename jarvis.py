@@ -1942,6 +1942,13 @@ def _link_check_url(raw: str):
     return raw, None
 
 
+def _short_url(u: str) -> str:
+    """host+path без query — для компактного показа цепочки редиректов."""
+    from urllib.parse import urlparse
+    p = urlparse(u)
+    return (p.hostname or "") + (p.path or "")
+
+
 def _link_fetch(url: str, referer: str = "", max_bytes: int = LINK_PREVIEW_MAX_BYTES,
                 ua: str = LINK_PREVIEW_UA, accept: str = "", timeout: float = LINK_PREVIEW_TIMEOUT):
     """GET с ручной обработкой редиректов: каждый следующий хоп проверяется тем
@@ -1962,12 +1969,14 @@ def _link_fetch(url: str, referer: str = "", max_bytes: int = LINK_PREVIEW_MAX_B
     if referer:
         headers["Referer"] = referer
     session = requests.Session()
+    hops = []
     try:
         current = url
         for _ in range(LINK_PREVIEW_REDIRECTS + 1):
             checked, err = _link_check_url(current)
             if err:
                 return None, err
+            hops.append(checked)
             try:
                 resp = session.get(
                     checked, headers=headers, timeout=timeout,
@@ -1985,8 +1994,9 @@ def _link_fetch(url: str, referer: str = "", max_bytes: int = LINK_PREVIEW_MAX_B
                 continue
             if resp.status_code != 200:
                 code = resp.status_code
+                snippet = _link_error_snippet(resp)
                 resp.close()
-                return None, f"http {code}"
+                return None, f"http {code}{snippet}"
             chunks, total = [], 0
             try:
                 for chunk in resp.iter_content(64 * 1024):
@@ -2002,7 +2012,11 @@ def _link_fetch(url: str, referer: str = "", max_bytes: int = LINK_PREVIEW_MAX_B
                 "body": b"".join(chunks)[:max_bytes],
                 "encoding": resp.encoding,
             }, None
-        return None, "too many redirects"
+        # Цепочка хопов — иначе «too many redirects» ничего не говорит о том,
+        # зациклился ли редирект на одном и том же адресе (антибот-проверка
+        # без cookie) или честно ходит по длинной цепочке партнёрских ссылок.
+        chain = " → ".join(_short_url(h) for h in hops[-(LINK_PREVIEW_REDIRECTS + 1):])
+        return None, f"too many redirects: {chain}"
     finally:
         session.close()
 
@@ -2018,6 +2032,47 @@ _ITEMPROP_PRICE_RE = re.compile(
     r"""<[^>]*itemprop\s*=\s*["']price["'][^>]*content\s*=\s*["']([^"']+)["']""", re.I)
 _JSON_PRICE_RE = re.compile(
     r'"(?:price|salePriceU|finalPrice|currentPrice|priceValue)"\s*:\s*"?(\d[\d\s.,]*)"?', re.I)
+
+# Заголовки, которые обычно называют, кто именно стоит перед магазином (CDN
+# или антибот-защита), плюс то, что подсказывает причину отказа (лимит
+# запросов, идентификатор антибот-проверки). Показываем сырые пары
+# имя=значение, а не придуманные подписи вроде «это Cloudflare» — с готовой
+# расшифровкой легко ошибиться, а сырые данные всегда честны и их можно
+# сверить самостоятельно.
+_LINK_DIAG_HEADERS = (
+    "server", "via", "cf-ray", "cf-mitigated", "x-datadome", "x-akamai-transformed-by",
+    "x-amz-cf-id", "x-amz-cf-pop", "x-robots-tag", "retry-after", "x-request-id",
+    "x-qrator-forwarded-for",
+)
+
+
+def _link_error_snippet(resp) -> str:
+    """Короткая расшифровка отказа: диагностические заголовки ответа плюс
+    <title>/текст самой страницы. «http 403» само по себе ничего не говорит —
+    это может быть и капча антибота, и обычная страница «товар не найден»,
+    и лимит запросов с просьбой подождать. Заголовок или пара слов текста
+    обычно отличают одно от другого с первого взгляда."""
+    parts = []
+    for h in _LINK_DIAG_HEADERS:
+        v = resp.headers.get(h)
+        if v:
+            parts.append(f"{h}={v.strip()[:60]}")
+    try:
+        chunk = next(resp.iter_content(4096), b"")
+    except Exception:
+        chunk = b""
+    if chunk:
+        text = chunk.decode("utf-8", "replace")
+        m = _TITLE_RE.search(text)
+        if m:
+            title = re.sub(r"\s+", " ", html.unescape(m.group(1))).strip()[:100]
+            if title:
+                parts.append(f"title=«{title}»")
+        elif not parts:
+            snippet = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip()[:100]
+            if snippet:
+                parts.append(f"текст: {snippet}")
+    return " [" + "; ".join(parts) + "]" if parts else ""
 
 
 def _link_meta_map(text: str) -> dict:
@@ -2165,14 +2220,19 @@ def _link_extract(body: bytes, encoding: str, page_url: str) -> dict:
     return out
 
 
-def _link_save_image(image_url: str, referer: str):
+def _link_save_image(image_url: str, referer: str, notes: list = None):
     """Скачиваем картинку к себе: прямые ссылки на CDN магазинов часто
     отдают 403 постороннему сайту, и превью в хотелках просто не грузилось бы."""
     got, err = _link_fetch(image_url, referer=referer, max_bytes=LINK_IMAGE_MAX_BYTES)
     if err or not got:
+        if notes is not None:
+            notes.append(f"фото {_short_url(image_url)}: {err or 'нет ответа'}")
         return None
     ext = LINK_IMAGE_TYPES.get(got["content_type"])
     if not ext or not got["body"]:
+        if notes is not None:
+            ctype = got["content_type"] or "без Content-Type"
+            notes.append(f"фото {_short_url(image_url)}: сервер отдал не картинку ({ctype})")
         return None
     photos_dir = DATA_DIR / "photos"
     photos_dir.mkdir(parents=True, exist_ok=True)
@@ -2206,7 +2266,10 @@ def _link_json(url: str, note_prefix: str, notes: list, referer: str = "", timeo
     try:
         return json.loads(got["body"].decode("utf-8", "replace"))
     except Exception as e:
-        notes.append(f"{note_prefix}: ответ не JSON ({e})")
+        # Сам текст ответа важнее сообщения об ошибке парсинга: часто это
+        # HTML-страница капчи там, где ждали JSON, и это сразу видно.
+        preview = re.sub(r"\s+", " ", got["body"][:200].decode("utf-8", "replace")).strip()
+        notes.append(f"{note_prefix}: ответ не JSON ({e}) — начало ответа: {preview[:120]!r}")
         return None
 
 
@@ -2275,11 +2338,21 @@ def _wb_find_basket(nm: int, notes: list):
             elif err:
                 errs.append(err)
     if not hits:
-        # Одна и та же ошибка на все 32 хоста почти всегда значит не «не
-        # нашли», а «нас не пускают» (например, http 498 — сигнатура WAF):
-        # показываем её явно, иначе не отличить блокировку от смены схемы.
-        sample = errs[0] if errs else "нет ответа"
-        notes.append(f"wb basket: не найден среди 1–{WB_BASKET_MAX} (например: {sample})")
+        # Один и тот же код на большинство из 32 хостов почти всегда значит не
+        # «не нашли», а «нас не пускают» (например, http 498 — сигнатура WAF):
+        # показываем распределение кодов и один пример целиком — иначе не
+        # отличить блокировку от смены схемы адресов basket-хостов.
+        if errs:
+            from collections import Counter
+            short = lambda e: e.split(" [", 1)[0].split(": ", 1)[0]
+            counts = Counter(short(e) for e in errs)
+            top = ", ".join(f"{code} ×{n}" for code, n in counts.most_common(3))
+            top_code = counts.most_common(1)[0][0]
+            example = next(e for e in errs if short(e) == top_code)
+            notes.append(f"wb basket: не найден среди 1–{WB_BASKET_MAX} "
+                        f"(коды: {top}; пример: {example})")
+        else:
+            notes.append(f"wb basket: не найден среди 1–{WB_BASKET_MAX} (нет ответа ни от одного хоста)")
         return None, None
     basket, got = min(hits, key=lambda x: x[0])
     _WB_BASKET_CACHE[vol] = basket
@@ -2307,7 +2380,12 @@ def _wb_card_product(nm: int, notes: list):
             notes.append(f"wb card api ({ver}): карточка получена")
             return products[0]
         if payload is not None:
-            notes.append(f"wb card api ({ver}): товар не найден в ответе")
+            # Показываем сам ответ: пустой products[] (артикул сняли с продажи)
+            # и другая схема JSON (WB и её меняла) выглядят одинаково издалека
+            # («товар не найден»), но чинятся по-разному — 150 символов хватает
+            # отличить одно от другого.
+            preview = json.dumps(payload, ensure_ascii=False)[:150]
+            notes.append(f"wb card api ({ver}): товар не найден в ответе (ответ: {preview})")
     return None
 
 
@@ -2499,7 +2577,7 @@ def link_preview(raw_url: str) -> tuple:
                 continue
             if got["content_type"].startswith("image/"):
                 # Дали ссылку прямо на картинку — сохраняем её как фото хотелки.
-                saved = _link_save_image(url, referer=url)
+                saved = _link_save_image(url, referer=url, notes=notes)
                 if saved:
                     return 200, {**result, "image": saved, "tried": notes + ["ссылка ведёт на картинку"]}
             _link_merge(
@@ -2515,11 +2593,9 @@ def link_preview(raw_url: str) -> tuple:
     fallback = result.pop("imageFallback", "")
     if result.get("image"):
         result["imageUrl"] = result["image"]
-        saved = _link_save_image(result["image"], referer=url)
+        saved = _link_save_image(result["image"], referer=url, notes=notes)
         if not saved and fallback:
-            saved = _link_save_image(fallback, referer=url)
-        if not saved:
-            notes.append("фото: скачать не удалось")
+            saved = _link_save_image(fallback, referer=url, notes=notes)
         result["image"] = saved or ""
 
     result["tried"] = notes
