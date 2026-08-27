@@ -374,6 +374,7 @@
     <button class="nav-tab active" data-page="cards">🃏 Flashcards</button>
     <button class="nav-tab" data-page="fill">✍ Fill-in-the-blank</button>
     <button class="nav-tab" data-page="mysentence">📝 My Sentence</button>
+    <button class="nav-tab" data-page="cipher">🔐 Cipher Sentences</button>
     <button class="nav-tab" data-page="typing">⌨ Typing mode</button>
   </nav>
 
@@ -572,6 +573,73 @@
         <div class="gen-status">
           Choose a filter and click Start.<br>
           <span style="font-size:12px;opacity:.6">Write your own sentence with the shown word, get AI feedback, then say the word out loud.</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- PAGE: CIPHER SENTENCES -->
+  <div class="page" id="page-cipher">
+    <div class="layout">
+
+      <!-- LEFT: settings -->
+      <aside class="panel">
+        <h2>Settings</h2>
+
+        <div class="field">
+          <label>Word filter</label>
+          <select id="selCipherFilter">
+            <option value="all">All words</option>
+            <option value="not-shown">New words only (not shown yet)</option>
+            <option value="hard">Hard words only</option>
+            <option value="not-hard">Non-hard words only</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label>Word count (0 = all)</label>
+          <input type="number" id="inpCipherCount" min="0" max="500" value="10" />
+        </div>
+
+        <div class="field">
+          <label>Order</label>
+          <select id="selCipherOrder">
+            <option value="random">Random</option>
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label>Date range</label>
+          <select id="selCipherDate">
+            <option value="all">All dates</option>
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label>AI review prompt</label>
+          <textarea id="txtCipherPrompt" rows="9" style="width:100%;background:var(--bg-2);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:9px;font-family:inherit;font-size:12.5px;line-height:1.5;resize:vertical"></textarea>
+          <div class="hint">Placeholders: <code>{word}</code>, <code>{translation}</code>, <code>{ruSentence}</code>, <code>{answer}</code></div>
+          <button id="btnCipherResetPrompt" class="ghost" style="margin-top:8px;width:100%;justify-content:center">↺ Reset to default</button>
+        </div>
+
+        <div class="field" style="margin-top:6px">
+          <button id="btnCipherStart" class="primary" style="width:100%;justify-content:center;padding:13px">▶ Start</button>
+        </div>
+
+        <div id="cipherMeta" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim);margin-top:10px;text-align:center"></div>
+      </aside>
+
+      <!-- RIGHT: card -->
+      <div id="cipherMain">
+        <div class="gen-status">
+          Choose a filter and click Start.<br>
+          <span style="font-size:12px;opacity:.6">AI generates a Russian sentence using the translation of a word from your dictionary. Decrypt the cipher to recall the English word, then translate the sentence into English using it.</span>
         </div>
       </div>
 
@@ -1372,6 +1440,10 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
       const count = S.rawData.length;
       $('mySentMeta').textContent = `${count} words available`;
     }
+    if(tab.dataset.page === 'cipher' && S.rawData) {
+      const count = S.rawData.length;
+      $('cipherMeta').textContent = `${count} words available`;
+    }
   };
 });
 
@@ -1981,6 +2053,244 @@ function mySentRenderFinish(){
       <h3>Custom sentences complete</h3>
       <p>You wrote and reviewed ${s.done} sentence(s) — well done.</p>
       <button class="primary" onclick="$('btnMySentStart').click()">↻ Repeat</button>
+    </div>
+  `;
+}
+
+/* ============== CIPHER SENTENCES ==============
+   AI writes a Russian sentence using the translation of a dictionary word.
+   The target English word is shown ROT13-ciphered (click to decrypt) instead
+   of in plain text, so the student has to recall it rather than just read it.
+   The student translates the Russian sentence into English using that word,
+   then AI reviews the translation. */
+function rot13(s){
+  return String(s).replace(/[a-zA-Z]/g, c => {
+    const base = c <= 'Z' ? 65 : 97;
+    return String.fromCharCode((c.charCodeAt(0) - base + 13) % 26 + base);
+  });
+}
+
+const CIPHER_DEFAULT_PROMPT = `You are a friendly, encouraging English teacher. The student was shown this Russian sentence:
+
+"{ruSentence}"
+
+They were asked to translate it into English using the word "{word}" (translation: "{translation}"). Their translation:
+
+"{answer}"
+
+Review it and reply in Russian, briefly (3-5 sentences):
+1. How accurate and natural is the translation of the sentence overall?
+2. Is the word "{word}" used correctly (meaning + grammar)? If there are mistakes, point them out and give a corrected version.
+3. If everything is good, say so and optionally suggest a more natural/advanced alternative.
+Be warm and concise, no markdown, no headers.`;
+
+const CIPHER = {
+  filter: 'all', order: 'random', dateRange: 'all', count: 10,
+  prompt: localStorage.getItem('eng_cipher_prompt') || CIPHER_DEFAULT_PROMPT,
+  queue: [], cur: 0,
+  stats: { done: 0 }
+};
+
+$('selCipherFilter').onchange = e => CIPHER.filter = e.target.value;
+$('selCipherOrder').onchange = e => CIPHER.order = e.target.value;
+$('selCipherDate').onchange = e => CIPHER.dateRange = e.target.value;
+$('inpCipherCount').oninput = e => { CIPHER.count = parseInt(e.target.value) || 0; };
+
+$('txtCipherPrompt').value = CIPHER.prompt;
+$('txtCipherPrompt').oninput = e => {
+  CIPHER.prompt = e.target.value;
+  localStorage.setItem('eng_cipher_prompt', CIPHER.prompt);
+};
+$('btnCipherResetPrompt').onclick = () => {
+  CIPHER.prompt = CIPHER_DEFAULT_PROMPT;
+  $('txtCipherPrompt').value = CIPHER_DEFAULT_PROMPT;
+  localStorage.setItem('eng_cipher_prompt', CIPHER_DEFAULT_PROMPT);
+};
+
+$('btnCipherStart').onclick = async () => {
+  if(!S.rawData || !S.rawData.length){ alert('Load data from spreadsheet first'); return; }
+  if(!isAIConfigured()){ alert('Configure AI (🤖 button) first — this mode needs AI to generate sentences.'); return; }
+
+  inferYearFromData();
+
+  let pool = S.rawData.slice();
+  if(CIPHER.filter === 'hard') pool = pool.filter(w => w.hard);
+  else if(CIPHER.filter === 'not-hard') pool = pool.filter(w => !w.hard);
+  else if(CIPHER.filter === 'not-shown') pool = pool.filter(w => !w.showNew);
+
+  if(CIPHER.dateRange !== 'all'){
+    const days = parseInt(CIPHER.dateRange);
+    const allDates = S.rawData.map(w => parseDate(w.date)).filter(d => d).map(d => d.getTime());
+    const refTime = allDates.length ? Math.max(...allDates) : Date.now();
+    const cutoff = refTime - (days-1)*86400000;
+    pool = pool.filter(w => { const d = parseDate(w.date); return d && d.getTime() >= cutoff; });
+  }
+
+  if(!pool.length){ alert('No words match this filter'); return; }
+
+  if(CIPHER.order === 'random') pool.sort(() => Math.random()-.5);
+  else if(CIPHER.order === 'newest') pool.sort((a,b) => (parseDate(b.date)?.getTime()||0)-(parseDate(a.date)?.getTime()||0));
+  else if(CIPHER.order === 'oldest') pool.sort((a,b) => (parseDate(a.date)?.getTime()||0)-(parseDate(b.date)?.getTime()||0));
+
+  const count = CIPHER.count > 0 ? Math.min(CIPHER.count, pool.length) : pool.length;
+  const batch = pool.slice(0, count);
+
+  const btn = $('btnCipherStart');
+  btn.disabled = true;
+  btn.textContent = `⏳ Generating ${batch.length} sentences...`;
+  $('cipherMain').innerHTML = `<div class="gen-status">⏳ AI is generating Russian sentences for ${batch.length} words...<br><span style="font-size:12px;opacity:.6">This may take up to a minute</span></div>`;
+
+  const wordList = batch.map(w => `- "${w.ru}" (this is the Russian translation of the English word "${w.en}")`).join('\n');
+  const prompt = `You are a Russian teacher preparing exercises for a Russian-speaking student learning English.
+For each Russian word below, write ONE natural Russian sentence (8-14 words) that uses that Russian word (or its natural inflected form) exactly once, in a clear everyday context.
+
+Rules:
+- Write the sentence in Russian only
+- The given Russian word (or a natural grammatical form of it) must appear exactly once
+- Keep it simple, natural and unambiguous, do not add explanations
+- Return ONLY valid JSON array, no markdown, no backticks
+
+Words:
+${wordList}
+
+Return format (strict JSON array):
+[
+  {"ru": "русское слово1", "sentence": "Предложение на русском с этим словом."},
+  {"ru": "русское слово2", "sentence": "Предложение на русском с этим словом."}
+]`;
+
+  try {
+    const raw = await callAI(prompt);
+    const jsonMatch = raw.match(/\[[\s\S]*\]/);
+    if(!jsonMatch) throw new Error('AI returned an invalid format');
+    const items = JSON.parse(jsonMatch[0]);
+    if(!Array.isArray(items) || !items.length) throw new Error('Empty response from AI');
+
+    CIPHER.queue = batch.map((w, idx) => {
+      const item = items.find(it => String(it.ru||'').trim().toLowerCase() === w.ru.trim().toLowerCase()) || items[idx] || items[0];
+      return { ...w, ruSentence: (item && item.sentence) || '', cipher: rot13(w.en) };
+    });
+    CIPHER.cur = 0;
+    CIPHER.stats = { done: 0 };
+    cipherRenderCard();
+  } catch(e) {
+    $('cipherMain').innerHTML = `<div class="gen-status" style="color:var(--red)">✗ Error: ${escapeHtml(e.message)}<br><br><button onclick="document.getElementById('btnCipherStart').click()" class="primary" style="margin-top:12px">Try again</button></div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '▶ Start';
+  }
+};
+
+function cipherRenderCard(){
+  const main = $('cipherMain');
+  const q = CIPHER.queue;
+  if(CIPHER.cur >= q.length){ cipherRenderFinish(); return; }
+
+  const w = q[CIPHER.cur];
+  const total = q.length, idx = CIPHER.cur + 1;
+  const pct = Math.round((CIPHER.cur / total) * 100);
+  const s = CIPHER.stats;
+
+  main.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:14px">
+
+      <div class="progress-bar"><div style="width:${pct}%"></div></div>
+
+      <div class="stats-row">
+        <div class="stat">card<b>${idx}/${total}</b></div>
+        <div class="stat green">done<b>${s.done}</b></div>
+      </div>
+
+      <div class="panel" style="text-align:center;padding:30px 28px">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.15em;margin-bottom:14px">encrypted target word</div>
+        <div id="cipherWord" data-en="${escapeHtml(w.en)}" style="font-family:'JetBrains Mono',monospace;font-size:clamp(22px,3.4vw,34px);font-weight:700;letter-spacing:.08em;color:var(--accent);cursor:pointer" title="Click to decrypt">${escapeHtml(w.cipher)}</div>
+        <div style="font-size:14px;color:var(--text-dim);margin-top:8px">(${escapeHtml(w.ru)})</div>
+        <div style="font-size:10.5px;color:var(--text-dim);margin-top:10px;font-family:'JetBrains Mono',monospace;opacity:.7">click the cipher to decrypt</div>
+      </div>
+
+      <div class="panel" style="padding:26px 28px">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.15em;margin-bottom:10px">translate to english</div>
+        <div style="font-family:'Fraunces',serif;font-style:italic;font-size:clamp(17px,2vw,21px);line-height:1.55">${w.ruSentence ? escapeHtml(w.ruSentence) : '<span style="opacity:.5">(no sentence generated)</span>'}</div>
+      </div>
+
+      <div class="field" style="margin:0">
+        <label>Your translation</label>
+        <textarea id="cipherInput" rows="3" placeholder="Translate the sentence into English, using the encrypted word..."
+          style="width:100%;background:var(--bg-2);border:1px solid var(--border);color:var(--text);padding:12px 14px;border-radius:10px;font-family:inherit;font-size:15px;line-height:1.5;resize:vertical"></textarea>
+      </div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button id="cipherCheck" class="primary" style="padding:12px 22px">Проверить</button>
+        <button id="cipherSkip" style="padding:12px 16px">Skip →</button>
+      </div>
+
+      <div id="cipherFeedback" style="display:none"></div>
+
+      <div id="cipherNext" style="display:none">
+        <button id="btnCipherNext" class="primary" style="width:100%;padding:13px;justify-content:center">Next word →</button>
+      </div>
+
+    </div>
+  `;
+
+  const ta = $('cipherInput');
+  ta.focus();
+  ta.onkeydown = e => { if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)) cipherCheck(); };
+  $('cipherCheck').onclick = cipherCheck;
+  $('cipherSkip').onclick = () => { CIPHER.cur++; cipherRenderCard(); };
+
+  const cw = $('cipherWord');
+  cw.onclick = () => { cw.textContent = cw.dataset.en; cw.style.cursor = 'default'; cw.onclick = null; };
+}
+
+async function cipherCheck(){
+  const ta = $('cipherInput');
+  const fb = $('cipherFeedback');
+  if(!ta) return;
+  const val = ta.value.trim();
+  if(!val){ ta.focus(); return; }
+
+  const w = CIPHER.queue[CIPHER.cur];
+
+  $('cipherCheck').disabled = true;
+  $('cipherSkip').disabled = true;
+  ta.disabled = true;
+
+  fb.style.display = 'block';
+  fb.innerHTML = `<div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 20px"><div style="font-size:13px;color:var(--text-dim)">⏳ AI проверяет твой перевод...</div></div>`;
+
+  let comment = '';
+  try {
+    const prompt = CIPHER.prompt
+      .replaceAll('{word}', w.en)
+      .replaceAll('{translation}', w.ru)
+      .replaceAll('{ruSentence}', w.ruSentence || '')
+      .replaceAll('{answer}', val);
+    comment = await callAI(prompt);
+  } catch(e) {
+    comment = '(AI unavailable: ' + e.message + ')';
+  }
+
+  fb.innerHTML = `<div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 20px;font-size:13.5px;line-height:1.6;white-space:pre-wrap">${escapeHtml(comment)}</div>`;
+
+  CIPHER.stats.done++;
+
+  const cw = $('cipherWord');
+  if(cw){ cw.textContent = cw.dataset.en; cw.style.cursor = 'default'; cw.onclick = null; }
+
+  const nextBlock = $('cipherNext');
+  nextBlock.style.display = 'block';
+  $('btnCipherNext').onclick = () => { CIPHER.cur++; cipherRenderCard(); };
+}
+
+function cipherRenderFinish(){
+  const s = CIPHER.stats;
+  $('cipherMain').innerHTML = `
+    <div class="finish">
+      <div class="big">✓</div>
+      <h3>Cipher sentences complete</h3>
+      <p>You decrypted, translated and reviewed ${s.done} sentence(s) — well done.</p>
+      <button class="primary" onclick="$('btnCipherStart').click()">↻ Repeat</button>
     </div>
   `;
 }
