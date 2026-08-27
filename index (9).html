@@ -1014,6 +1014,7 @@ const Icon = ({ name, size = 22 }) => {
     share: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/></svg>,
     backpack: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20V10a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M8 21v-5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v5"/><path d="M8 10h8"/></svg>,
     search: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>,
+    upload: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>,
     heartPulse: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/><path d="M3.22 12H9.5l.5-1 2 4.5 2-7 1.5 3.5h5.27"/></svg>,
     heart: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>,
     creditCard: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="14" x="2" y="5" rx="2"/><path d="M2 10h20"/></svg>,
@@ -3692,6 +3693,9 @@ function VoiceAssistantSettings({ data, setData }) {
           <h3 className="font-display text-lg mb-1">Голосовой ассистент</h3>
           <p className="text-sm text-[var(--text-muted)]">
             Добавляйте дела голосом. Нажмите кнопку микрофона внизу экрана, скажите что сделать — ИИ разберёт и добавит в нужный раздел.
+          </p>
+          <p className="text-sm text-[var(--text-muted)]">
+            Этот же ключ используется в разделе «Здоровье» для распознавания загруженных документов (результатов приёма у врача) — поля записи заполняются автоматически.
           </p>
         </div>
 
@@ -7995,8 +7999,8 @@ ${bossLines}
 {"action":"clarify","question":"короткий вопрос"}`;
 }
 
-async function callAI(messages, settings, appData) {
-  const systemPrompt = buildVoiceSystemPrompt(appData || {});
+async function callAI(messages, settings, appData, systemPromptOverride) {
+  const systemPrompt = systemPromptOverride || buildVoiceSystemPrompt(appData || {});
   const provider = settings.voiceProvider || 'claude';
   const key = (settings.voiceApiKey || '').trim();
   if (!key) throw new Error('no_key');
@@ -8048,6 +8052,88 @@ async function callAI(messages, settings, appData) {
     const text = resp.choices?.[0]?.message?.content || '';
     return JSON.parse(text);
   }
+}
+
+// ============== ЗДОРОВЬЕ: РАСПОЗНАВАНИЕ ДОКУМЕНТА ЧЕРЕЗ ИИ ==============
+// Переиспользует ту же connectivity (callAI, settings.voiceProvider/voiceApiKey),
+// что и голосовой ассистент — второй ключ ИИ заводить не нужно.
+
+const HEALTH_EXTRACT_SYSTEM_PROMPT = `Ты помогаешь заполнить карточку приёма у врача в приложении учёта здоровья по присланному документу (результат осмотра/обследования, выписка, заключение).
+Извлеки из документа только то, что там реально написано — ничего не придумывай и не дополняй медицинскими предположениями. Если какого-то поля в документе нет — оставь пустую строку или пустой массив.
+Верни СТРОГО валидный JSON без markdown-разметки, без пояснений до или после, ровно такой структуры:
+{"type":"visit","date":"YYYY-MM-DD","title":"","doctor":"","clinic":"","symptoms":"","diagnosis":"","medications":[{"name":"","dosage":"","schedule":"","duration":"","notes":""}],"outcome":"","vision":{"acuityRight":"","acuityLeft":"","iopRight":"","iopLeft":""},"tags":[]}
+Пояснения по полям:
+- type: "visit" для приёма/осмотра врача, "procedure" для операции/процедуры, "illness" для описания самой болезни, "note" если не подходит ни то ни другое. По умолчанию "visit".
+- date: дата приёма/документа, переведи в формат YYYY-MM-DD (например 13.07.2026 → 2026-07-13).
+- title: короткое название, например специализация врача или основной диагноз.
+- diagnosis: диагноз, можно с кодом МКБ-10, как в документе.
+- medications: только реально назначенные препараты со схемой приёма (из плана лечения/рекомендаций), не общие советы по режиму.
+- outcome: рекомендации и план лечения, которые не уместились в medications (диета, режим, немедикаментозные советы).
+- vision: заполняй ТОЛЬКО если документ — офтальмологический и содержит остроту зрения или внутриглазное давление, иначе оставь все 4 подполя пустыми строками.
+- tags: 1-3 коротких тега по теме приёма (например специализация врача).`;
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = () => reject(new Error('read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+const HEALTH_DOC_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
+async function extractHealthEventFromDocument(file, settings) {
+  const provider = settings?.voiceProvider || 'claude';
+  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+  if (isPdf && provider !== 'claude') {
+    throw new Error('Распознавание PDF работает только с провайдером Claude — переключите его в Настройках → Ассистент, либо сфотографируйте документ и загрузите как изображение.');
+  }
+  const mediaType = isPdf ? 'application/pdf' : (HEALTH_DOC_MEDIA_TYPES.includes(file.type) ? file.type : 'image/jpeg');
+  const base64 = await fileToBase64(file);
+
+  const docBlock = isPdf
+    ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
+    : provider === 'openai'
+      ? { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } }
+      : { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } };
+
+  const messages = [{
+    role: 'user',
+    content: [docBlock, { type: 'text', text: 'Заполни JSON по этому документу согласно инструкции.' }],
+  }];
+
+  let parsed;
+  try {
+    parsed = await callAI(messages, settings, null, HEALTH_EXTRACT_SYSTEM_PROMPT);
+  } catch (e) {
+    if (e.message === 'no_key') throw new Error('Сначала укажите API-ключ ИИ в Настройках → Ассистент');
+    throw new Error(e.message?.includes('JSON') ? 'ИИ вернул нераспознаваемый ответ, попробуйте ещё раз' : (e.message || 'Не удалось распознать документ'));
+  }
+
+  const allowedTypes = ['visit', 'procedure', 'illness', 'note'];
+  return {
+    type: allowedTypes.includes(parsed.type) ? parsed.type : 'visit',
+    date: /^\d{4}-\d{2}-\d{2}$/.test(parsed.date || '') ? parsed.date : getTodayKey(),
+    title: parsed.title || '',
+    doctor: parsed.doctor || '',
+    clinic: parsed.clinic || '',
+    symptoms: parsed.symptoms || '',
+    diagnosis: parsed.diagnosis || '',
+    medications: Array.isArray(parsed.medications) ? parsed.medications.map(m => ({
+      id: crypto.randomUUID(),
+      name: m?.name || '', dosage: m?.dosage || '', schedule: m?.schedule || '',
+      duration: m?.duration || '', notes: m?.notes || '',
+    })).filter(m => m.name) : [],
+    outcome: parsed.outcome || '',
+    vision: {
+      acuityRight: parsed.vision?.acuityRight || '',
+      acuityLeft: parsed.vision?.acuityLeft || '',
+      iopRight: parsed.vision?.iopRight || '',
+      iopLeft: parsed.vision?.iopLeft || '',
+    },
+    tags: Array.isArray(parsed.tags) ? parsed.tags.filter(Boolean) : [],
+  };
 }
 
 function applyVoiceTask(parsed, setData) {
@@ -10367,9 +10453,12 @@ function HealthView({ data, setData }) {
           <h1 className="font-display text-3xl md:text-4xl">Здоровье</h1>
         </div>
         {healthTab === 'timeline' && (
-          <button onClick={() => openNewEvent()} className="btn-primary flex items-center gap-2 text-sm">
-            <Icon name="plus" size={16} /> Запись
-          </button>
+          <div className="flex flex-wrap justify-end items-start gap-2">
+            <HealthDocumentImportButton settings={data.settings} onDraftReady={openNewEvent} />
+            <button onClick={() => openNewEvent()} className="btn-primary flex items-center gap-2 text-sm">
+              <Icon name="plus" size={16} /> Запись
+            </button>
+          </div>
         )}
         {healthTab === 'conditions' && (
           <button onClick={() => setEditingCondition('new')} className="btn-primary flex items-center gap-2 text-sm">
@@ -10413,6 +10502,53 @@ function HealthView({ data, setData }) {
           onDelete={() => { if (confirm('Удалить запись?')) { deleteEvent(viewingEvent.id); setViewingEvent(null); } }}
         />
       )}
+    </div>
+  );
+}
+
+function HealthDocumentImportButton({ settings, onDraftReady }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    setError('');
+
+    const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+    const isImage = file.type.startsWith('image/');
+    if (!isPdf && !isImage) {
+      setError('Поддерживаются PDF и изображения (JPG, PNG)');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const draft = await extractHealthEventFromDocument(file, settings);
+      // Прикладываем исходный документ файлом к записи — он и есть источник данных.
+      try {
+        const filename = await uploadFile(file);
+        draft.files = [{ filename, originalName: file.name, ext: (file.name.split('.').pop() || '').toLowerCase() }];
+      } catch {
+        // Не смогли приложить файл — черновик всё равно открываем, поля важнее.
+      }
+      onDraftReady(draft);
+    } catch (err) {
+      setError(err.message || 'Не удалось распознать документ');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="text-right">
+      <label className={`btn-secondary flex items-center gap-2 text-sm cursor-pointer ${busy ? 'opacity-60 pointer-events-none' : ''}`}>
+        <Icon name="upload" size={16} />
+        {busy ? 'Распознаю…' : 'Из документа (ИИ)'}
+        <input type="file" accept=".pdf,image/*" className="hidden" onChange={handleFile} disabled={busy} />
+      </label>
+      {error && <div className="text-xs text-red-500 mt-1.5 max-w-[220px]">{error}</div>}
     </div>
   );
 }
@@ -10780,11 +10916,16 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
     : {
         id: crypto.randomUUID(),
         date: today, endDate: '',
-        type: (defaults && defaults.type) || 'illness',
-        conditionId: (defaults && defaults.conditionId) || '',
+        type: 'illness',
+        conditionId: '',
         title: '', symptoms: '', diagnosis: '', doctor: '', clinic: '',
         medications: [], outcome: '', photos: [], files: [], tags: [], notes: '',
         vision: { acuityRight: '', acuityLeft: '', iopRight: '', iopLeft: '' },
+        // defaults прикрывает и точечный prefill (type/conditionId из «Добавить эпизод»),
+        // и полный черновик из ИИ-распознавания документа — vision мержится отдельно,
+        // чтобы частичный объект из defaults не затёр остальные подполя undefined-ами.
+        ...defaults,
+        vision: { acuityRight: '', acuityLeft: '', iopRight: '', iopLeft: '', ...((defaults && defaults.vision) || {}) },
       });
   const [pending, setPending] = useState([]); // {file, preview, category}
   const [tagInput, setTagInput] = useState('');
