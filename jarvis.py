@@ -90,6 +90,19 @@ AUTH_PUBLIC_FILES  = {
 }
 
 
+def _route_token_prefix_public(route: str, prefix: str) -> bool:
+    """route начинается с prefix + <валидный токен>, а дальше — что угодно
+    (/rsvp, /comment, /join, …). Используется для гостевых API: сам токен —
+    это и есть пропуск гостя, каждый обработчик всё равно ищет событие/поездку
+    по нему заново и отвечает 404, если ссылка не существует или отключена —
+    так что открывать по префиксу, а не перечислять действия по одному,
+    безопасно и не забывается при добавлении нового действия."""
+    if not route.startswith(prefix):
+        return False
+    token = route[len(prefix):].split("/", 1)[0]
+    return bool(PLANNER_TOKEN_RE.match(token))
+
+
 def route_is_public(route: str) -> bool:
     """Маршруты, доступные без пароля: страница логина, статика PWA-манифеста
     и гостевые ссылки на события/поездки (их получают люди вне семьи)."""
@@ -97,7 +110,7 @@ def route_is_public(route: str) -> bool:
         return True
     if token_from_route(route, "/e/") or token_from_route(route, "/trip/"):
         return True
-    if token_from_route(route, "/api/event/") or token_from_route(route, "/api/camping-trip/"):
+    if _route_token_prefix_public(route, "/api/event/") or _route_token_prefix_public(route, "/api/camping-trip/"):
         return True
     return False
 
