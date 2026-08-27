@@ -2135,12 +2135,41 @@ $('btnCipherStart').onclick = async () => {
   const count = CIPHER.count > 0 ? Math.min(CIPHER.count, pool.length) : pool.length;
   const batch = pool.slice(0, count);
 
+  if(batch.length > 50){
+    const ok = confirm(`Will generate ${batch.length} sentences. This may take a while and use many tokens. Continue?`);
+    if(!ok) return;
+  }
+
+  // Every sentence for the whole session is generated up front, in parallel
+  // chunks, before the first card is shown — so there's no AI wait between
+  // words while studying. Chunking (as in the Flashcards example-sentence
+  // prefetch) keeps each request small enough that the AI's response isn't
+  // truncated when a large word count is chosen.
+  const CHUNK = 15;
+  const chunks = [];
+  for(let i=0; i<batch.length; i+=CHUNK) chunks.push(batch.slice(i, i+CHUNK));
+
   const btn = $('btnCipherStart');
   btn.disabled = true;
   btn.textContent = `⏳ Generating ${batch.length} sentences...`;
-  $('cipherMain').innerHTML = `<div class="gen-status">⏳ AI is generating Russian sentences for ${batch.length} words...<br><span style="font-size:12px;opacity:.6">This may take up to a minute</span></div>`;
+  $('cipherMain').innerHTML = `<div class="gen-status">⏳ AI is generating all ${batch.length} Russian sentence(s) up front${chunks.length > 1 ? ` (${chunks.length} batches, in parallel)` : ''}, so there's no waiting between cards...<br><span style="font-size:12px;opacity:.6">This may take up to a minute</span></div>`;
 
-  const wordList = batch.map(w => `- "${w.ru}" (this is the Russian translation of the English word "${w.en}")`).join('\n');
+  try {
+    const chunkResults = await Promise.all(chunks.map(generateCipherChunk));
+    CIPHER.queue = chunkResults.flat();
+    CIPHER.cur = 0;
+    CIPHER.stats = { done: 0 };
+    cipherRenderCard();
+  } catch(e) {
+    $('cipherMain').innerHTML = `<div class="gen-status" style="color:var(--red)">✗ Error: ${escapeHtml(e.message)}<br><br><button onclick="document.getElementById('btnCipherStart').click()" class="primary" style="margin-top:12px">Try again</button></div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '▶ Start';
+  }
+};
+
+async function generateCipherChunk(chunk){
+  const wordList = chunk.map(w => `- "${w.ru}" (this is the Russian translation of the English word "${w.en}")`).join('\n');
   const prompt = `You are a Russian teacher preparing exercises for a Russian-speaking student learning English.
 For each Russian word below, write ONE natural Russian sentence (8-14 words) that uses that Russian word (or its natural inflected form) exactly once, in a clear everyday context.
 
@@ -2159,27 +2188,17 @@ Return format (strict JSON array):
   {"ru": "русское слово2", "sentence": "Предложение на русском с этим словом."}
 ]`;
 
-  try {
-    const raw = await callAI(prompt);
-    const jsonMatch = raw.match(/\[[\s\S]*\]/);
-    if(!jsonMatch) throw new Error('AI returned an invalid format');
-    const items = JSON.parse(jsonMatch[0]);
-    if(!Array.isArray(items) || !items.length) throw new Error('Empty response from AI');
+  const raw = await callAI(prompt);
+  const jsonMatch = raw.match(/\[[\s\S]*\]/);
+  if(!jsonMatch) throw new Error('AI returned an invalid format');
+  const items = JSON.parse(jsonMatch[0]);
+  if(!Array.isArray(items) || !items.length) throw new Error('Empty response from AI');
 
-    CIPHER.queue = batch.map((w, idx) => {
-      const item = items.find(it => String(it.ru||'').trim().toLowerCase() === w.ru.trim().toLowerCase()) || items[idx] || items[0];
-      return { ...w, ruSentence: (item && item.sentence) || '', cipher: rot13(w.en) };
-    });
-    CIPHER.cur = 0;
-    CIPHER.stats = { done: 0 };
-    cipherRenderCard();
-  } catch(e) {
-    $('cipherMain').innerHTML = `<div class="gen-status" style="color:var(--red)">✗ Error: ${escapeHtml(e.message)}<br><br><button onclick="document.getElementById('btnCipherStart').click()" class="primary" style="margin-top:12px">Try again</button></div>`;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '▶ Start';
-  }
-};
+  return chunk.map((w, idx) => {
+    const item = items.find(it => String(it.ru||'').trim().toLowerCase() === w.ru.trim().toLowerCase()) || items[idx] || items[0];
+    return { ...w, ruSentence: (item && item.sentence) || '', cipher: rot13(w.en) };
+  });
+}
 
 function cipherRenderCard(){
   const main = $('cipherMain');
