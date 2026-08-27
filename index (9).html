@@ -20251,6 +20251,11 @@ function WishlistItemModal({ initial, categories, onSave, onClose }) {
   });
   const [parsing, setParsing] = useState(false);
   const [parseMsg, setParseMsg] = useState('');
+  // Что именно сервер пробовал и чем это кончилось. Маркетплейсы меняют свои
+  // источники без предупреждения, и без этого списка «не заполнилось» —
+  // необъяснимо: непонятно, сломался разбор или магазин просто закрылся.
+  const [parseLog, setParseLog] = useState([]);
+  const [showParseLog, setShowParseLog] = useState(false);
   const [uploading, setUploading] = useState(false);
   const set = (patch) => setF(prev => ({ ...prev, ...patch }));
 
@@ -20260,6 +20265,7 @@ function WishlistItemModal({ initial, categories, onSave, onClose }) {
     if (!url) { setParseMsg('Сначала вставьте ссылку'); return; }
     setParsing(true);
     setParseMsg('');
+    setParseLog([]);
     try {
       const res = await fetch('/api/link-preview', {
         method: 'POST',
@@ -20268,19 +20274,23 @@ function WishlistItemModal({ initial, categories, onSave, onClose }) {
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error || `ошибка ${res.status}`);
+      setParseLog(j.tried || []);
       if (j.empty) {
         setParseMsg('Магазин не отдал данные о товаре — заполните вручную');
         return;
       }
       const patch = {};
-      const got = [];
+      const got = [], missed = [];
       if (j.title && !f.title.trim()) { patch.title = j.title; got.push('название'); }
       if (j.price && !String(f.price).trim()) { patch.price = j.price; got.push('цену'); }
       if (j.image && !f.image) { patch.image = j.image; patch.imageUrl = j.imageUrl || ''; got.push('фото'); }
+      if (!j.price) missed.push('цену');
+      if (!j.image) missed.push('фото');
       set(patch);
-      setParseMsg(got.length
-        ? `Подставлено: ${got.join(', ')}`
-        : 'Всё, что нашлось, уже заполнено — очистите поле, чтобы перезаписать');
+      setParseMsg([
+        got.length ? `Подставлено: ${got.join(', ')}` : 'Всё, что нашлось, уже заполнено',
+        missed.length ? `магазин не отдал ${missed.join(' и ')}` : '',
+      ].filter(Boolean).join('; '));
     } catch (e) {
       setParseMsg(`Не получилось прочитать ссылку: ${e.message}`);
     } finally {
@@ -20336,10 +20346,26 @@ function WishlistItemModal({ initial, categories, onSave, onClose }) {
             </button>
             {parseMsg && <span className="text-[11px] text-[var(--text-muted)]">{parseMsg}</span>}
           </div>
+
+          {parseLog.length > 0 && (
+            <div className="mt-1.5">
+              <button
+                onClick={() => setShowParseLog(v => !v)}
+                className="text-[11px] text-[var(--text-subtle)] underline"
+              >{showParseLog ? 'скрыть подробности' : 'почему так?'}</button>
+              {showParseLog && (
+                <ul className="mt-1 space-y-0.5 text-[11px] text-[var(--text-subtle)] font-mono break-words">
+                  {parseLog.map((line, i) => <li key={i}>· {line}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
+
           <div className="text-[11px] text-[var(--text-subtle)] mt-1.5">
-            Сайт сам читает страницу и достаёт название, цену и фото. Получается не
-            везде: часть магазинов отдаёт цену только внутри браузера — тогда просто
-            впишите руками.
+            Сайт сам читает страницу и достаёт название, цену и фото. Wildberries,
+            Ozon и Яндекс Маркет разбираются отдельно — у каждого свой источник.
+            Маркетплейсы такие запросы периодически прикрывают, так что если поле
+            осталось пустым — впишите руками, это нормально.
           </div>
         </div>
 
