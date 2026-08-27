@@ -8082,25 +8082,44 @@ function fileToBase64(file) {
 }
 
 const HEALTH_DOC_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const MAX_HEALTH_DOC_FILES = 6; // страниц/фото одного документа за раз
 
-async function extractHealthEventFromDocument(file, settings) {
+function isHealthDocPdf(file) {
+  return file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+}
+
+// files: один File (PDF или фото) или массив File — несколько фото одного документа
+// (несколько страниц, сфотографированных по очереди); PDF допускается только один за раз.
+async function extractHealthEventFromDocument(files, settings) {
+  const fileList = Array.isArray(files) ? files : [files];
   const provider = settings?.voiceProvider || 'claude';
-  const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
-  if (isPdf && provider !== 'claude') {
-    throw new Error('Распознавание PDF работает только с провайдером Claude — переключите его в Настройках → Ассистент, либо сфотографируйте документ и загрузите как изображение.');
+  const hasPdf = fileList.some(isHealthDocPdf);
+  if (hasPdf && fileList.length > 1) {
+    throw new Error('PDF можно приложить только один файл за раз — для нескольких страниц сфотографируйте их и загрузите как изображения.');
   }
-  const mediaType = isPdf ? 'application/pdf' : (HEALTH_DOC_MEDIA_TYPES.includes(file.type) ? file.type : 'image/jpeg');
-  const base64 = await fileToBase64(file);
+  if (hasPdf && provider !== 'claude') {
+    throw new Error('Распознавание PDF работает только с провайдером Claude — переключите его в Настройках → Ассистент, либо сфотографируйте документ и загрузите как изображение(я).');
+  }
 
-  const docBlock = isPdf
-    ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
-    : provider === 'openai'
+  const docBlocks = await Promise.all(fileList.map(async (file) => {
+    const isPdf = isHealthDocPdf(file);
+    const base64 = await fileToBase64(file);
+    if (isPdf) {
+      return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } };
+    }
+    const mediaType = HEALTH_DOC_MEDIA_TYPES.includes(file.type) ? file.type : 'image/jpeg';
+    return provider === 'openai'
       ? { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } }
       : { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } };
+  }));
+
+  const promptText = fileList.length > 1
+    ? 'Это несколько страниц или фото одного документа по порядку — прочитай их как единое целое и заполни один JSON согласно инструкции.'
+    : 'Заполни JSON по этому документу согласно инструкции.';
 
   const messages = [{
     role: 'user',
-    content: [docBlock, { type: 'text', text: 'Заполни JSON по этому документу согласно инструкции.' }],
+    content: [...docBlocks, { type: 'text', text: promptText }],
   }];
 
   let parsed;
@@ -10510,28 +10529,40 @@ function HealthDocumentImportButton({ settings, onDraftReady }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  const handleFile = async (e) => {
-    const file = e.target.files && e.target.files[0];
+  const handleFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
     e.target.value = '';
-    if (!file) return;
+    if (files.length === 0) return;
     setError('');
 
-    const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
-    const isImage = file.type.startsWith('image/');
-    if (!isPdf && !isImage) {
+    if (files.some(f => !isHealthDocPdf(f) && !f.type.startsWith('image/'))) {
       setError('Поддерживаются PDF и изображения (JPG, PNG)');
+      return;
+    }
+    if (files.length > 1 && files.some(isHealthDocPdf)) {
+      setError('Несколько файлов можно загрузить только фотографиями — PDF прикладывайте по одному');
+      return;
+    }
+    if (files.length > MAX_HEALTH_DOC_FILES) {
+      setError(`Можно приложить не больше ${MAX_HEALTH_DOC_FILES} фото за раз`);
       return;
     }
 
     setBusy(true);
     try {
-      const draft = await extractHealthEventFromDocument(file, settings);
-      // Прикладываем исходный документ файлом к записи — он и есть источник данных.
-      try {
-        const filename = await uploadFile(file);
-        draft.files = [{ filename, originalName: file.name, ext: (file.name.split('.').pop() || '').toLowerCase() }];
-      } catch {
-        // Не смогли приложить файл — черновик всё равно открываем, поля важнее.
+      const draft = await extractHealthEventFromDocument(files, settings);
+      // Прикладываем исходный документ к записи — он и есть источник данных.
+      // PDF — файлом (как есть), несколько фото — фотогалереей записи.
+      if (isHealthDocPdf(files[0])) {
+        try {
+          const filename = await uploadFile(files[0]);
+          draft.files = [{ filename, originalName: files[0].name, ext: (files[0].name.split('.').pop() || '').toLowerCase() }];
+        } catch {
+          // Не смогли приложить файл — черновик всё равно открываем, поля важнее.
+        }
+      } else {
+        const uploaded = await Promise.allSettled(files.map(async f => ({ filename: await uploadPhoto(f), category: '' })));
+        draft.photos = uploaded.filter(r => r.status === 'fulfilled').map(r => r.value);
       }
       onDraftReady(draft);
     } catch (err) {
@@ -10546,7 +10577,7 @@ function HealthDocumentImportButton({ settings, onDraftReady }) {
       <label className={`btn-secondary flex items-center gap-2 text-sm cursor-pointer ${busy ? 'opacity-60 pointer-events-none' : ''}`}>
         <Icon name="upload" size={16} />
         {busy ? 'Распознаю…' : 'Из документа (ИИ)'}
-        <input type="file" accept=".pdf,image/*" className="hidden" onChange={handleFile} disabled={busy} />
+        <input type="file" accept=".pdf,image/*" multiple className="hidden" onChange={handleFiles} disabled={busy} />
       </label>
       {error && <div className="text-xs text-red-500 mt-1.5 max-w-[220px]">{error}</div>}
     </div>
