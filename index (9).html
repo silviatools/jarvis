@@ -10249,6 +10249,19 @@ function formatHealthDate(dateStr) {
   return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
 }
 
+// Компактная сводка по зрению (острота, ВГД) для карточек истории — null, если ничего не заполнено
+function formatVisionSummary(vision) {
+  if (!vision) return null;
+  const parts = [];
+  if (vision.acuityRight || vision.acuityLeft) {
+    parts.push(`Острота: OD ${vision.acuityRight || '—'} / OS ${vision.acuityLeft || '—'}`);
+  }
+  if (vision.iopRight || vision.iopLeft) {
+    parts.push(`ВГД: OD ${vision.iopRight || '—'} / OS ${vision.iopLeft || '—'} мм рт.ст.`);
+  }
+  return parts.length ? parts.join(' · ') : null;
+}
+
 function HealthView({ data, setData }) {
   const [healthTab, setHealthTab] = useState('overview');
   const [editingEvent, setEditingEvent] = useState(null);         // 'new' | event | null
@@ -10511,6 +10524,7 @@ function HealthEventRow({ event, conditionName, onEdit, onDelete }) {
         </div>
       </div>
       {event.diagnosis && <div className="text-sm text-[var(--text-muted)] mb-1"><span className="text-[var(--text-subtle)]">Диагноз:</span> {event.diagnosis}</div>}
+      {formatVisionSummary(event.vision) && <div className="text-sm text-[var(--text-muted)] mb-1">👁 {formatVisionSummary(event.vision)}</div>}
       {meds.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mt-2">
           {meds.map(m => (
@@ -10595,6 +10609,7 @@ function HealthConditionDetail({ condition, events, onClose, onEdit, onAddEvent,
                   className="w-full text-left bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 hover:border-[var(--border-strong)] transition-colors">
                   <div className="text-sm font-medium">{formatHealthDate(e.date)} · {e.title || healthEventTypeLabel(e.type)}</div>
                   {e.diagnosis && <div className="text-xs text-[var(--text-muted)] mt-0.5">{e.diagnosis}</div>}
+                  {formatVisionSummary(e.vision) && <div className="text-xs text-[var(--text-muted)] mt-0.5">👁 {formatVisionSummary(e.vision)}</div>}
                   {(e.medications || []).length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-1.5">
                       {e.medications.map(m => (
@@ -10626,6 +10641,7 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
         photos: (event.photos || []).map(normalizePhoto),
         files: (event.files || []).map(f => ({ ...f })),
         tags: [...(event.tags || [])],
+        vision: { acuityRight: '', acuityLeft: '', iopRight: '', iopLeft: '', ...(event.vision || {}) },
       }
     : {
         id: crypto.randomUUID(),
@@ -10634,6 +10650,7 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
         conditionId: (defaults && defaults.conditionId) || '',
         title: '', symptoms: '', diagnosis: '', doctor: '', clinic: '',
         medications: [], outcome: '', photos: [], files: [], tags: [], notes: '',
+        vision: { acuityRight: '', acuityLeft: '', iopRight: '', iopLeft: '' },
       });
   const [pending, setPending] = useState([]); // {file, preview, category}
   const [tagInput, setTagInput] = useState('');
@@ -10643,6 +10660,7 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
   const [uploadingFile, setUploadingFile] = useState(false);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const setVision = (k, v) => setForm(f => ({ ...f, vision: { ...f.vision, [k]: v } }));
 
   const addMed = () => set('medications', [...form.medications, { id: crypto.randomUUID(), name: '', dosage: '', schedule: '', duration: '', notes: '' }]);
   const updMed = (id, k, v) => set('medications', form.medications.map(m => m.id === id ? { ...m, [k]: v } : m));
@@ -10812,6 +10830,27 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
             </div>
           </div>
         </div>
+
+        {form.type === 'visit' && (
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+            <h3 className="font-display text-lg">Зрение</h3>
+            <div>
+              <label>Острота зрения (OD — правый / OS — левый)</label>
+              <div className="grid grid-cols-2 gap-3">
+                <input value={form.vision.acuityRight} onChange={e => setVision('acuityRight', e.target.value)} placeholder="OD, напр. 1.0" />
+                <input value={form.vision.acuityLeft} onChange={e => setVision('acuityLeft', e.target.value)} placeholder="OS, напр. 0.8" />
+              </div>
+            </div>
+            <div>
+              <label>Внутриглазное давление, мм рт.ст. (OD / OS)</label>
+              <div className="grid grid-cols-2 gap-3">
+                <input value={form.vision.iopRight} onChange={e => setVision('iopRight', e.target.value)} placeholder="OD, напр. 16" />
+                <input value={form.vision.iopLeft} onChange={e => setVision('iopLeft', e.target.value)} placeholder="OS, напр. 18" />
+              </div>
+            </div>
+            <p className="text-xs text-[var(--text-subtle)]">Остальные показатели из заключения можно приложить документом ниже</p>
+          </div>
+        )}
 
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
           <div className="flex items-center justify-between mb-3">
