@@ -1860,10 +1860,21 @@ def pf_write(token: str, apply):
 #   2) микроразметка itemprop="price" — та же схема, но атрибутами в вёрстке;
 #   3) OpenGraph (og:title, og:image, product:price:amount) — есть почти везде;
 #   4) инлайновый JSON состояния страницы ("price": 1234) — грубый запасной путь.
-# Что не покрывается: магазины, которые рисуют цену только скриптом в браузере
-# и отдают роботу пустую разметку (частый случай — Ozon), и сайты за защитой от
-# ботов. Поэтому любое поле остаётся редактируемым руками, а ошибка разбора не
-# мешает сохранить хотелку.
+#
+# Крупные маркетплейсы так просто не читаются, и каждый по своей причине —
+# поэтому к ним есть отдельные обработчики (LINK_SITE_HANDLERS):
+#   • Wildberries — карточки в HTML нет вовсе, но открыт JSON по артикулу
+#     (цена, название) и статика basket-*.wbbasket.ru (фото);
+#   • Ozon — цену дорисовывает браузер, читаем тот же composer-эндпоинт,
+#     из которого её берёт и сам сайт;
+#   • Яндекс Маркет — разметка на странице есть, мешает только защита от
+#     ботов: чистим адрес и представляемся краулером мессенджера.
+# Ни один из этих путей не гарантирован: маркетплейсы меняют их без
+# предупреждения и режут запросы с серверных адресов. Поэтому шаги идут
+# каскадом, любое поле остаётся редактируемым руками, ошибка разбора не мешает
+# сохранить хотелку, а в ответе всегда есть `tried` — список того, что
+# пробовали и чем закончилось: без него на чужом сервере не понять, почему
+# поля не заполнились.
 
 LINK_PREVIEW_TIMEOUT   = 12      # секунд на запрос страницы
 LINK_PREVIEW_MAX_BYTES = 2 * 1024 * 1024
@@ -1873,10 +1884,20 @@ LINK_PREVIEW_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 )
+# Крупные маркетплейсы прячут карточку от «обычного» робота, но отдают лёгкую
+# страницу с og-тегами тому, кто представляется краулером мессенджера или
+# соцсети: иначе у них не рисовалось бы превью при отправке ссылки в чат.
+# Поэтому страницу пробуем несколькими UA по очереди.
+LINK_PREVIEW_UAS = [
+    ("telegram", "TelegramBot (like TwitterBot)"),
+    ("facebook", "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"),
+    ("browser",  LINK_PREVIEW_UA),
+]
 LINK_IMAGE_TYPES = {
     "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png",
     "image/webp": "webp", "image/gif": "gif",
 }
+LINK_PREVIEW_FIELDS = ("title", "price", "image")
 
 
 def _link_host_is_public(host: str) -> bool:
@@ -1921,15 +1942,16 @@ def _link_check_url(raw: str):
     return raw, None
 
 
-def _link_fetch(url: str, referer: str = "", max_bytes: int = LINK_PREVIEW_MAX_BYTES):
+def _link_fetch(url: str, referer: str = "", max_bytes: int = LINK_PREVIEW_MAX_BYTES,
+                ua: str = LINK_PREVIEW_UA, accept: str = "", timeout: float = LINK_PREVIEW_TIMEOUT):
     """GET с ручной обработкой редиректов: каждый следующий хоп проверяется тем
     же SSRF-фильтром (иначе редирект на 127.0.0.1 обошёл бы проверку)."""
     if requests is None:
         return None, "requests not installed"
     headers = {
-        "User-Agent": LINK_PREVIEW_UA,
+        "User-Agent": ua,
         "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-        "Accept": "text/html,application/xhtml+xml,image/avif,image/webp,*/*;q=0.8",
+        "Accept": accept or "text/html,application/xhtml+xml,image/avif,image/webp,*/*;q=0.8",
     }
     if referer:
         headers["Referer"] = referer
@@ -1940,7 +1962,7 @@ def _link_fetch(url: str, referer: str = "", max_bytes: int = LINK_PREVIEW_MAX_B
             return None, err
         try:
             resp = requests.get(
-                checked, headers=headers, timeout=LINK_PREVIEW_TIMEOUT,
+                checked, headers=headers, timeout=timeout,
                 allow_redirects=False, stream=True,
             )
         except Exception as e:
@@ -2149,77 +2171,331 @@ def _link_save_image(image_url: str, referer: str):
     return filename
 
 
+def _link_merge(result: dict, found: dict, notes: list, source: str):
+    """Заполняем только пустые поля: первый сработавший источник — самый
+    надёжный для этого магазина, дальше идут запасные."""
+    added = []
+    for key, value in (found or {}).items():
+        if value and not result.get(key):
+            result[key] = value
+            if key in LINK_PREVIEW_FIELDS:
+                added.append(key)
+    notes.append(f"{source}: " + (", ".join(added) if added else "ничего нового"))
+    return added
+
+
+def _link_json(url: str, note_prefix: str, notes: list, referer: str = "", timeout: float = LINK_PREVIEW_TIMEOUT):
+    """GET + json.loads с записью исхода в диагностику."""
+    got, err = _link_fetch(
+        url, referer=referer, ua=LINK_PREVIEW_UA, timeout=timeout,
+        accept="application/json,text/plain,*/*",
+    )
+    if err or not got:
+        notes.append(f"{note_prefix}: {err or 'нет ответа'}")
+        return None
+    try:
+        return json.loads(got["body"].decode("utf-8", "replace"))
+    except Exception as e:
+        notes.append(f"{note_prefix}: ответ не JSON ({e})")
+        return None
+
+
+# ── Wildberries ────────────────────────────────────────────────────────────
 _WB_NM_RE = re.compile(r"wildberries\.[a-z]+/catalog/(\d+)", re.I)
+WB_BASKET_MAX = 32          # сколько basket-хостов перебирать
+WB_BASKET_WORKERS = 16      # в два захода, чтобы перебор не растянулся на минуту
+WB_BASKET_TIMEOUT = 5
 
 
-def _link_wildberries(url: str) -> dict:
-    """Wildberries отдаёт роботу пустую карточку, но у него есть открытый JSON
-    по артикулу из адреса — берём цену и название оттуда."""
+def _wb_price_from(product: dict):
+    """Цена WB приходит в копейках и за годы переезжала между полями."""
+    for size in (product.get("sizes") or []):
+        price = size.get("price") or {}
+        for key in ("product", "total", "basic"):
+            if price.get(key):
+                return Decimal(str(price[key])) / 100
+    for key in ("salePriceU", "priceU"):
+        if product.get(key):
+            return Decimal(str(product[key])) / 100
+    return None
+
+
+def _wb_basket_urls(nm: int, basket: int) -> tuple:
+    vol, part = nm // 100000, nm // 1000
+    host = f"https://basket-{basket:02d}.wbbasket.ru/vol{vol}/part{part}/{nm}"
+    return f"{host}/info/ru/card.json", f"{host}/images/big/1.webp", f"{host}/images/big/1.jpg"
+
+
+_WB_BASKET_CACHE = {}       # vol → номер basket: у соседних артикулов он один
+
+
+def _wb_find_basket(nm: int, notes: list):
+    """Картинки WB лежат на basket-NN.wbbasket.ru, и какой именно NN — зависит
+    от диапазона артикула. Таблицу диапазонов WB меняет по мере роста, поэтому
+    жёстко её зашивать нельзя: перебираем хосты параллельно и берём первый,
+    который отдал карточку. Найденный номер запоминаем по vol — товары одного
+    диапазона лежат в одном basket, так что перебор нужен один раз на диапазон."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    vol = nm // 100000
+    cached = _WB_BASKET_CACHE.get(vol)
+    if cached:
+        card_url, _, _ = _wb_basket_urls(nm, cached)
+        got, err = _link_fetch(card_url, max_bytes=256 * 1024, timeout=WB_BASKET_TIMEOUT,
+                               accept="application/json,*/*")
+        if got and not err:
+            notes.append(f"wb basket: {cached:02d} (из кэша)")
+            try:
+                return cached, json.loads(got["body"].decode("utf-8", "replace"))
+            except Exception:
+                return cached, {}
+        _WB_BASKET_CACHE.pop(vol, None)   # WB переехал — перебираем заново
+
+    def probe(basket):
+        card_url, _, _ = _wb_basket_urls(nm, basket)
+        got, err = _link_fetch(card_url, max_bytes=256 * 1024, timeout=WB_BASKET_TIMEOUT,
+                               accept="application/json,*/*")
+        return (basket, got) if got and not err else (basket, None)
+
+    hits = []
+    with ThreadPoolExecutor(max_workers=WB_BASKET_WORKERS) as pool:
+        for basket, got in pool.map(probe, range(1, WB_BASKET_MAX + 1)):
+            if got:
+                hits.append((basket, got))
+    if not hits:
+        notes.append(f"wb basket: не найден среди 1–{WB_BASKET_MAX}")
+        return None, None
+    basket, got = min(hits, key=lambda x: x[0])
+    _WB_BASKET_CACHE[vol] = basket
+    notes.append(f"wb basket: {basket:02d}")
+    try:
+        card = json.loads(got["body"].decode("utf-8", "replace"))
+    except Exception:
+        card = {}
+    return basket, card
+
+
+def _link_wildberries(url: str, notes: list) -> dict:
+    """У WB карточка роботу не отдаётся, зато открыты два служебных источника:
+    JSON с ценой по артикулу и статика с картинками и названием."""
     m = _WB_NM_RE.search(url)
     if not m or requests is None:
         return {}
-    nm = m.group(1)
-    api = (f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub"
-           f"&dest=-1257786&spp=30&nm={nm}")
-    got, err = _link_fetch(api)
-    if err or not got:
+    nm = int(m.group(1))
+    out = {"currency": "RUB"}
+
+    payload = _link_json(
+        f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm}",
+        "wb card api", notes)
+    products = ((payload or {}).get("data") or {}).get("products") or []
+    if products:
+        notes.append("wb card api: карточка получена")
+        p = products[0]
+        name = " ".join(x for x in (p.get("brand"), p.get("name")) if isinstance(x, str) and x.strip())
+        if name:
+            out["title"] = name.strip()[:200]
+        price = _wb_price_from(p)
+        if price:
+            out["price"] = _link_price_number(price) or ""
+    elif payload is not None:
+        notes.append("wb card api: товар не найден в ответе")
+
+    basket, card = _wb_find_basket(nm, notes)
+    if basket:
+        _, webp, jpg = _wb_basket_urls(nm, basket)
+        out["image"] = webp
+        out["imageFallback"] = jpg
+        if not out.get("title"):
+            name = card.get("imt_name") or card.get("subj_name")
+            if isinstance(name, str) and name.strip():
+                out["title"] = name.strip()[:200]
+    return {k: v for k, v in out.items() if v}
+
+
+# ── Ozon ───────────────────────────────────────────────────────────────────
+_OZON_PATH_RE = re.compile(r"/(product|t)/[^/?#]+", re.I)
+
+
+def _link_ozon(url: str, notes: list) -> dict:
+    """Ozon рисует цену уже в браузере, поэтому в HTML её нет. Зато собственное
+    веб-приложение Ozon берёт карточку из открытого composer-эндпоинта — тем же
+    запросом, что и сам сайт, только без браузера."""
+    from urllib.parse import urlparse, quote
+    path = _OZON_PATH_RE.search(urlparse(url).path or "")
+    if not path or requests is None:
         return {}
-    try:
-        payload = json.loads(got["body"].decode("utf-8", "replace"))
-        product = (payload.get("data") or {}).get("products") or []
-        if not product:
-            return {}
-        p = product[0]
-        out = {}
-        if isinstance(p.get("name"), str):
-            out["title"] = p["name"].strip()[:200]
-        # Цена приходит в копейках — либо в sizes[].price, либо в salePriceU
-        raw_price = None
-        for size in (p.get("sizes") or []):
-            price = size.get("price") or {}
-            raw_price = price.get("product") or price.get("total")
-            if raw_price:
-                break
-        if raw_price is None:
-            raw_price = p.get("salePriceU") or p.get("priceU")
-        if raw_price:
-            out["price"] = _link_price_number(Decimal(str(raw_price)) / 100) or ""
-        out["currency"] = "RUB"
-        return {k: v for k, v in out.items() if v}
-    except Exception:
+    api = ("https://www.ozon.ru/api/composer-api.bx/page/json/v2?url="
+           + quote(path.group(0) + "/", safe=""))
+    payload = _link_json(api, "ozon composer", notes, referer=url)
+    if not isinstance(payload, dict):
         return {}
+
+    out = {}
+    # 1. seo-блок: тот же JSON-LD, что Ozon отдаёт поисковикам
+    seo = payload.get("seo")
+    if isinstance(seo, dict):
+        for script in (seo.get("script") or []):
+            inner = (script or {}).get("innerHTML")
+            if not isinstance(inner, str):
+                continue
+            ld = _link_from_ldjson(f'<script type="application/ld+json">{inner}</script>')
+            for key, value in ld.items():
+                out.setdefault(key, value)
+        if not out.get("title") and isinstance(seo.get("title"), str):
+            out["title"] = seo["title"].strip()[:200]
+
+    # 2. состояния виджетов: заголовок, цена и галерея лежат JSON-строками
+    states = payload.get("widgetStates")
+    if isinstance(states, dict):
+        for key, raw in states.items():
+            if not isinstance(raw, str):
+                continue
+            try:
+                widget = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(widget, dict):
+                continue
+            if key.startswith("webProductHeading") and not out.get("title"):
+                title = widget.get("title")
+                if isinstance(title, str) and title.strip():
+                    out["title"] = title.strip()[:200]
+            if key.startswith(("webPrice", "webSale")) and not out.get("price"):
+                for field in ("cardPrice", "price", "originalPrice"):
+                    price = _link_price_number(widget.get(field))
+                    if price:
+                        out["price"] = price
+                        break
+            if key.startswith("webGallery") and not out.get("image"):
+                image = widget.get("coverImage")
+                if not image:
+                    images = widget.get("images") or []
+                    first = images[0] if images else None
+                    image = first.get("src") if isinstance(first, dict) else first
+                if isinstance(image, str) and image.startswith("http"):
+                    out["image"] = image
+    if out:
+        out.setdefault("currency", "RUB")
+    return out
+
+
+# ── Яндекс Маркет ──────────────────────────────────────────────────────────
+_YM_ID_RE = re.compile(r"market\.yandex\.[a-z.]+/card/[^/?#]+/(\d+)", re.I)
+
+
+def _link_yandex_market(url: str, notes: list) -> dict:
+    """У Маркета цена и фото есть в обычной разметке страницы — но только если
+    он не принял нас за робота. Отдельного открытого API у карточки нет,
+    поэтому вся работа тут — представиться краулером (см. LINK_PREVIEW_UAS);
+    сам разбор делает общий парсер. Здесь только чистим адрес: без длинного
+    рекламного хвоста Маркет отвечает заметно охотнее."""
+    from urllib.parse import urlparse, urlunparse
+    m = _YM_ID_RE.search(url)
+    if not m:
+        return {}
+    p = urlparse(url)
+    clean = urlunparse((p.scheme, p.netloc, p.path, "", "", ""))
+    if clean != url:
+        notes.append("яндекс маркет: убран рекламный хвост из адреса")
+        return {"_retryUrl": clean}
+    return {}
+
+
+# ── Название из адреса ─────────────────────────────────────────────────────
+_SLUG_RE = re.compile(r"/(?:product|card|catalog|item|goods|p)/([a-z0-9][a-z0-9-]{6,})", re.I)
+
+
+def _link_slug_title(url: str) -> str:
+    """Последний рубеж: в адресе товара обычно лежит его же название через
+    дефисы. Читается хуже настоящего, зато не пусто и правится в одно касание."""
+    from urllib.parse import urlparse
+    m = _SLUG_RE.search(urlparse(url).path or "")
+    if not m:
+        return ""
+    words = [w for w in m.group(1).split("-") if w and not w.isdigit()]
+    if len(words) < 2:
+        return ""
+    text = " ".join(words)[:200].strip()
+    return text[:1].upper() + text[1:]
+
+
+LINK_SITE_HANDLERS = (
+    ("wildberries.", _link_wildberries),
+    ("ozon.ru",      _link_ozon),
+    ("market.yandex", _link_yandex_market),
+)
 
 
 def link_preview(raw_url: str) -> tuple:
-    """(http_code, payload) для POST /api/link-preview."""
+    """(http_code, payload) для POST /api/link-preview.
+
+    Порядок: обработчик магазина (если есть) → обычный разбор страницы
+    несколькими user-agent → название из адреса. Каждый шаг только дополняет
+    пустые поля, а что именно сработало, видно в `tried` — без этого на чужом
+    сервере невозможно понять, почему хотелка не заполнилась."""
     url, err = _link_check_url(raw_url)
     if err:
         return 400, {"error": err}
 
+    notes = []
     result = {"title": "", "price": "", "currency": "", "image": "", "siteName": "", "url": url}
-    got, fetch_err = _link_fetch(url)
-    if got and got["content_type"].startswith("image/"):
-        # Дали ссылку прямо на картинку — сохраняем её как фото хотелки.
-        saved = _link_save_image(url, referer=url)
-        if saved:
-            result["image"] = saved
-            return 200, result
-    if got:
-        result.update({k: v for k, v in _link_extract(
-            got["body"], got["encoding"], got["url"]).items() if v})
+    host = ""
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        pass
 
-    special = _link_wildberries(url)
-    for key, value in special.items():
-        if value and (key == "price" or not result.get(key)):
-            result[key] = value
+    for marker, handler in LINK_SITE_HANDLERS:
+        if marker not in host:
+            continue
+        try:
+            found = handler(url, notes)
+        except Exception as e:
+            notes.append(f"{marker}: ошибка обработчика ({e})")
+            break
+        retry = found.pop("_retryUrl", "")
+        if retry:
+            url = retry
+            result["url"] = retry
+        _link_merge(result, found, notes, marker)
+        break
 
+    fetch_err = None
+    if not all(result.get(f) for f in LINK_PREVIEW_FIELDS):
+        for ua_name, ua in LINK_PREVIEW_UAS:
+            got, fetch_err = _link_fetch(url, ua=ua)
+            if not got:
+                notes.append(f"страница ({ua_name}): {fetch_err}")
+                continue
+            if got["content_type"].startswith("image/"):
+                # Дали ссылку прямо на картинку — сохраняем её как фото хотелки.
+                saved = _link_save_image(url, referer=url)
+                if saved:
+                    return 200, {**result, "image": saved, "tried": notes + ["ссылка ведёт на картинку"]}
+            _link_merge(
+                result,
+                _link_extract(got["body"], got["encoding"], got["url"]),
+                notes, f"страница ({ua_name})")
+            if all(result.get(f) for f in LINK_PREVIEW_FIELDS):
+                break
+
+    if not result.get("title"):
+        _link_merge(result, {"title": _link_slug_title(url)}, notes, "адрес")
+
+    fallback = result.pop("imageFallback", "")
     if result.get("image"):
-        saved = _link_save_image(result["image"], referer=url)
         result["imageUrl"] = result["image"]
+        saved = _link_save_image(result["image"], referer=url)
+        if not saved and fallback:
+            saved = _link_save_image(fallback, referer=url)
+        if not saved:
+            notes.append("фото: скачать не удалось")
         result["image"] = saved or ""
 
+    result["tried"] = notes
     if not (result.get("title") or result.get("price") or result.get("image")):
-        return 200, {**result, "empty": True, "reason": fetch_err or "no metadata found"}
+        return 200, {**result, "empty": True, "reason": fetch_err or "магазин не отдал данные"}
     return 200, result
 
 
