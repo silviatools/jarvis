@@ -1197,7 +1197,7 @@ function App() {
     });
   }, []);
   const [tab, setTab] = useState(getTabFromPath); // home | supplements | meals | weather | house | settings
-  const [plannerTab, setPlannerTab] = useState(getPlannerSubFromPath); // plans | holidays | events | friends
+  const [plannerTab, setPlannerTab] = useState(getPlannerSubFromPath); // plans | holidays | events | camping
   const [settingsTab, setSettingsTab] = useState('general');
   const [houseTab, setHouseTab] = useState('boss');
   const [mealTab, setMealTab] = useState('plan');
@@ -16729,11 +16729,10 @@ const plannerWeekSegments = (items, week) => {
 // поэтому активная вкладка должна попадать в URL наравне с разделом.
 function PlannerView({ data, setData, sub, setSub }) {
   const TABS = [
-    { id: 'plans',    label: 'Мои планы', icon: 'calendar' },
-    { id: 'holidays', label: 'Праздники', icon: 'gift'     },
-    { id: 'events',   label: 'События',   icon: 'star'     },
-    { id: 'friends',  label: 'Друзья',    icon: 'users'    },
-    { id: 'camping',  label: 'Кемпинг',   icon: 'backpack' },
+    { id: 'plans',    label: 'Календарь планов', icon: 'calendar' },
+    { id: 'holidays', label: 'Праздники',        icon: 'gift'     },
+    { id: 'events',   label: 'События',          icon: 'star'     },
+    { id: 'camping',  label: 'Кемпинг',          icon: 'backpack' },
   ];
 
   return (
@@ -16762,8 +16761,7 @@ function PlannerView({ data, setData, sub, setSub }) {
 
       {sub === 'plans'    && <PlannerPlansView data={data} setData={setData} goToEvents={() => setSub('events')} />}
       {sub === 'holidays' && <HolidaysView data={data} setData={setData} embedded />}
-      {sub === 'events'   && <PlannerEventsView data={data} setData={setData} goToFriends={() => setSub('friends')} />}
-      {sub === 'friends'  && <PlannerFriendsView data={data} setData={setData} />}
+      {sub === 'events'   && <PlannerEventsView data={data} setData={setData} />}
       {sub === 'camping'  && <PlannerCampingView data={data} setData={setData} />}
     </div>
   );
@@ -16899,65 +16897,71 @@ function PlannerPlansView({ data, setData, goToEvents }) {
           const segs = plannerWeekSegments(items, week);
           const lanes = segs.reduce((m, s) => Math.max(m, s.lane + 1), 0);
           return (
-            <div key={wi} className="mb-1.5">
-              <div className="grid grid-cols-7 gap-1">
-                {week.map(d => {
-                  const iso = plannerIso(d);
-                  const outside = d.getMonth() !== month;
-                  const isToday = iso === todayIso;
-                  const isSelected = iso === selected;
-                  const hasHoliday = segs.some(s => s.kind === 'holiday' && s.start === iso);
-                  return (
-                    <button
-                      key={iso}
-                      onClick={() => setSelected(iso)}
-                      className={`h-9 rounded-lg text-sm font-medium transition-all border ${
-                        isSelected
-                          ? 'bg-[var(--text)] text-white border-[var(--text)]'
-                          : isToday
-                            ? 'border-[var(--text)] text-[var(--text)]'
-                            : 'border-transparent hover:bg-black/5'
-                      } ${!isSelected && outside ? 'text-[var(--text-subtle)] opacity-60' : ''} ${
-                        !isSelected && !outside && hasHoliday ? 'text-amber-600' : ''}`}
-                    >{d.getDate()}</button>
-                  );
-                })}
-              </div>
-
-              {lanes > 0 && (
+            <div
+              key={wi}
+              className="grid grid-cols-7 gap-1 mb-1.5"
+              style={{ gridTemplateRows: `auto${lanes ? ` repeat(${lanes}, 18px)` : ''}` }}
+            >
+              {/* Рамка каждого дня — число и его события внутри одной обведённой
+                  ячейки, чтобы полосу события не путать с соседней неделей сверху/снизу. */}
+              {week.map((d, di) => (
                 <div
-                  className="grid grid-cols-7 gap-x-1 mt-1"
-                  style={{ gridAutoRows: '18px', rowGap: '3px' }}
-                >
-                  {segs.map(s => {
-                    const c = PLANNER_CAL_COLORS[s.kind];
-                    return (
-                      <button
-                        key={s.key}
-                        onClick={() => setSelected(s.start > plannerIso(week[0]) ? s.start : plannerIso(week[0]))}
-                        title={s.title}
-                        className="min-w-0 flex items-center px-1.5 text-[10px] leading-none font-medium truncate text-left"
-                        style={{
-                          gridColumn: `${s.col + 1} / span ${s.span}`,
-                          gridRow: s.lane + 1,
-                          background: c.bg,
-                          color: c.text,
-                          borderLeft: s.startsHere ? `3px solid ${c.bar}` : 'none',
-                          borderTopLeftRadius: s.startsHere ? 6 : 0,
-                          borderBottomLeftRadius: s.startsHere ? 6 : 0,
-                          borderTopRightRadius: s.endsHere ? 6 : 0,
-                          borderBottomRightRadius: s.endsHere ? 6 : 0,
-                        }}
-                      >
-                        <span className="truncate">
-                          {s.kind === 'holiday' ? `${PLANNER_HOLIDAY_EMOJI[s.ref.type] || '🎉'} ` : ''}
-                          {s.startsHere ? s.title : `→ ${s.title}`}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+                  key={`box-${plannerIso(d)}`}
+                  className="rounded-lg border border-[var(--border)] pointer-events-none"
+                  style={{ gridColumn: di + 1, gridRow: '1 / -1', margin: '-2px' }}
+                />
+              ))}
+
+              {week.map((d, di) => {
+                const iso = plannerIso(d);
+                const outside = d.getMonth() !== month;
+                const isToday = iso === todayIso;
+                const isSelected = iso === selected;
+                const hasHoliday = segs.some(s => s.kind === 'holiday' && s.start === iso);
+                return (
+                  <button
+                    key={iso}
+                    onClick={() => setSelected(iso)}
+                    style={{ gridColumn: di + 1, gridRow: 1 }}
+                    className={`h-9 rounded-lg text-sm font-medium transition-all border ${
+                      isSelected
+                        ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                        : isToday
+                          ? 'border-[var(--text)] text-[var(--text)]'
+                          : 'border-transparent hover:bg-black/5'
+                    } ${!isSelected && outside ? 'text-[var(--text-subtle)] opacity-60' : ''} ${
+                      !isSelected && !outside && hasHoliday ? 'text-amber-600' : ''}`}
+                  >{d.getDate()}</button>
+                );
+              })}
+
+              {segs.map(s => {
+                const c = PLANNER_CAL_COLORS[s.kind];
+                return (
+                  <button
+                    key={s.key}
+                    onClick={() => setSelected(s.start > plannerIso(week[0]) ? s.start : plannerIso(week[0]))}
+                    title={s.title}
+                    className="min-w-0 flex items-center px-1.5 text-[10px] leading-none font-medium truncate text-left"
+                    style={{
+                      gridColumn: `${s.col + 1} / span ${s.span}`,
+                      gridRow: s.lane + 2,
+                      background: c.bg,
+                      color: c.text,
+                      borderLeft: s.startsHere ? `3px solid ${c.bar}` : 'none',
+                      borderTopLeftRadius: s.startsHere ? 6 : 0,
+                      borderBottomLeftRadius: s.startsHere ? 6 : 0,
+                      borderTopRightRadius: s.endsHere ? 6 : 0,
+                      borderBottomRightRadius: s.endsHere ? 6 : 0,
+                    }}
+                  >
+                    <span className="truncate">
+                      {s.kind === 'holiday' ? `${PLANNER_HOLIDAY_EMOJI[s.ref.type] || '🎉'} ` : ''}
+                      {s.startsHere ? s.title : `→ ${s.title}`}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           );
         })}
@@ -17123,9 +17127,13 @@ function PlannerPlanModal({ initial, onSave, onClose }) {
 }
 
 // ── События ────────────────────────────────────────────────────────────────
-function PlannerEventsView({ data, setData, goToFriends }) {
+// «Друзья» вложены сюда как внутренняя вкладка: список друзей нужен только
+// как источник участников события, отдельным верхнеуровневым разделом он не является.
+function PlannerEventsView({ data, setData }) {
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState('active');
+  const [view, setView] = useState('events'); // events | friends
+  const goToFriends = () => setView('friends');
 
   const friends = data.plannerFriends || [];
   const events = data.plannerEvents || [];
@@ -17351,8 +17359,37 @@ function PlannerEventsView({ data, setData, goToFriends }) {
     return pa ? db.localeCompare(da) : da.localeCompare(db);
   });
 
+  const EVENT_SUBVIEWS = [
+    { id: 'events',  label: 'События', icon: 'star'  },
+    { id: 'friends', label: 'Друзья',  icon: 'users' },
+  ];
+
   return (
     <div>
+      <div className="flex gap-1.5 mb-4">
+        {EVENT_SUBVIEWS.map(v => (
+          <button
+            key={v.id}
+            onClick={() => setView(v.id)}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-sm font-medium transition-all ${
+              view === v.id
+                ? 'bg-[var(--text)] text-white'
+                : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'
+            }`}
+          >
+            <Icon name={v.icon} size={14} />
+            {v.label}
+            {v.id === 'friends' && friends.length > 0 && (
+              <span className={view === v.id ? 'opacity-80' : 'text-[var(--text-subtle)]'}>{friends.length}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {view === 'friends' ? (
+        <PlannerFriendsView data={data} setData={setData} />
+      ) : (
+      <>
       <button
         onClick={() => setEditing(newPlannerEvent())}
         className="btn-primary w-full flex items-center justify-center gap-2 mb-4"
@@ -17447,6 +17484,8 @@ function PlannerEventsView({ data, setData, goToFriends }) {
           />
         );
       })()}
+      </>
+      )}
     </div>
   );
 }
@@ -17526,7 +17565,7 @@ function PlannerEventCard({ event: ev, friends, guests, responses, comments, exp
             ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
             : 'bg-[var(--bg)] border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-strong)]'
         }`}
-        title={confirmed ? 'Снять подтверждение — событие исчезнет из календаря' : 'Подтвердить — событие появится в календаре «Мои планы»'}
+        title={confirmed ? 'Снять подтверждение — событие исчезнет из календаря' : 'Подтвердить — событие появится на вкладке «Календарь планов»'}
       >
         <Icon name={confirmed ? 'check' : 'calendar'} size={13} />
         {confirmed ? 'Подтверждено' : 'Не подтверждено'}
@@ -17908,7 +17947,7 @@ function PlannerEventModal({ initial, friends, onSave, onClose }) {
           </label>
           <div className="text-[11px] text-[var(--text-subtle)] mt-1.5">
             Статус ставите вы сами, ответы друзей на него не влияют. Подтверждённое
-            событие появляется в календаре на вкладке «Мои планы».
+            событие появляется в календаре на вкладке «Календарь планов».
           </div>
         </div>
 
