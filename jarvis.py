@@ -2265,15 +2265,21 @@ def _wb_find_basket(nm: int, notes: list):
         card_url, _, _ = _wb_basket_urls(nm, basket)
         got, err = _link_fetch(card_url, max_bytes=256 * 1024, timeout=WB_BASKET_TIMEOUT,
                                accept="application/json,*/*")
-        return (basket, got) if got and not err else (basket, None)
+        return basket, got, err
 
-    hits = []
+    hits, errs = [], []
     with ThreadPoolExecutor(max_workers=WB_BASKET_WORKERS) as pool:
-        for basket, got in pool.map(probe, range(1, WB_BASKET_MAX + 1)):
-            if got:
+        for basket, got, err in pool.map(probe, range(1, WB_BASKET_MAX + 1)):
+            if got and not err:
                 hits.append((basket, got))
+            elif err:
+                errs.append(err)
     if not hits:
-        notes.append(f"wb basket: не найден среди 1–{WB_BASKET_MAX}")
+        # Одна и та же ошибка на все 32 хоста почти всегда значит не «не
+        # нашли», а «нас не пускают» (например, http 498 — сигнатура WAF):
+        # показываем её явно, иначе не отличить блокировку от смены схемы.
+        sample = errs[0] if errs else "нет ответа"
+        notes.append(f"wb basket: не найден среди 1–{WB_BASKET_MAX} (например: {sample})")
         return None, None
     basket, got = min(hits, key=lambda x: x[0])
     _WB_BASKET_CACHE[vol] = basket
@@ -2285,6 +2291,26 @@ def _wb_find_basket(nm: int, notes: list):
     return basket, card
 
 
+# WB несколько раз за последние годы переносил этот эндпоинт на новую версию,
+# не оставляя старую рабочей (v1 → v2 → …) — поэтому пробуем по очереди,
+# вместо того чтобы полагаться на одну и упасть в день очередного переезда.
+WB_CARD_API_VERSIONS = ("v2", "v1", "v3", "v4")
+
+
+def _wb_card_product(nm: int, notes: list):
+    for ver in WB_CARD_API_VERSIONS:
+        payload = _link_json(
+            f"https://card.wb.ru/cards/{ver}/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm}",
+            f"wb card api ({ver})", notes)
+        products = ((payload or {}).get("data") or {}).get("products") or []
+        if products:
+            notes.append(f"wb card api ({ver}): карточка получена")
+            return products[0]
+        if payload is not None:
+            notes.append(f"wb card api ({ver}): товар не найден в ответе")
+    return None
+
+
 def _link_wildberries(url: str, notes: list) -> dict:
     """У WB карточка роботу не отдаётся, зато открыты два служебных источника:
     JSON с ценой по артикулу и статика с картинками и названием."""
@@ -2294,21 +2320,14 @@ def _link_wildberries(url: str, notes: list) -> dict:
     nm = int(m.group(1))
     out = {"currency": "RUB"}
 
-    payload = _link_json(
-        f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm}",
-        "wb card api", notes)
-    products = ((payload or {}).get("data") or {}).get("products") or []
-    if products:
-        notes.append("wb card api: карточка получена")
-        p = products[0]
+    p = _wb_card_product(nm, notes)
+    if p:
         name = " ".join(x for x in (p.get("brand"), p.get("name")) if isinstance(x, str) and x.strip())
         if name:
             out["title"] = name.strip()[:200]
         price = _wb_price_from(p)
         if price:
             out["price"] = _link_price_number(price) or ""
-    elif payload is not None:
-        notes.append("wb card api: товар не найден в ответе")
 
     basket, card = _wb_find_basket(nm, notes)
     if basket:
