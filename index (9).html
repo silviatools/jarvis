@@ -7578,6 +7578,226 @@ function MySentenceTab({rawData,ai,prompt,onSavePrompt}){
   );
 }
 
+const ENG_CIPHER_DEFAULT_PROMPT = `Ты — дружелюбный преподаватель английского. Ученику показали русское предложение и зашифрованное английское слово "{word}" (перевод: "{translation}"), которое нужно было использовать в переводе.
+
+Русское предложение: "{ruSentence}"
+Перевод ученика: "{answer}"
+
+Проверь перевод и ответь по-русски, кратко (3-5 предложений):
+1. Насколько точно и естественно переведено предложение в целом.
+2. Правильно ли использовано слово "{word}" (по смыслу и грамматике) — если есть ошибки, укажи их и дай исправленный вариант.
+3. Если всё хорошо — похвали и, при желании, предложи более естественный/продвинутый вариант.
+Будь тёплым и лаконичным, без markdown и заголовков.`;
+
+function engRot13(s){
+  return String(s).replace(/[a-zA-Z]/g, c => {
+    const base = c <= 'Z' ? 65 : 97;
+    return String.fromCharCode((c.charCodeAt(0) - base + 13) % 26 + base);
+  });
+}
+
+// AI writes a Russian sentence using the translation of a dictionary word.
+// The target English word is shown ROT13-ciphered (click to decrypt) instead
+// of in plain text, so the student has to recall it rather than just read it.
+// The student translates the Russian sentence into English using that word,
+// then AI reviews the translation. All sentences for the session are
+// generated up front, in parallel chunks (same pattern as engPrefetchSentences),
+// so there's no AI wait between cards during study.
+function CipherTab({rawData,ai,prompt,onSavePrompt}){
+  const [filter,setFilter]=useState('all');
+  const [order,setOrder]=useState('random');
+  const [dateRange,setDateRange]=useState('all');
+  const [count,setCount]=useState(10);
+  const [promptDraft,setPromptDraft]=useState(prompt);
+  useEffect(()=>{setPromptDraft(prompt);},[prompt]);
+  const [phase,setPhase]=useState('setup'); // setup|loading|study|finish
+  const [queue,setQueue]=useState([]);
+  const [cur,setCur]=useState(0);
+  const [stats,setStats]=useState({done:0});
+  const [revealed,setRevealed]=useState(false);
+  const [answer,setAnswer]=useState('');
+  const [feedback,setFeedback]=useState(null); // {loading,text}
+  const taRef=useRef(null);
+  useEffect(()=>{if(phase==='study'&&taRef.current)taRef.current.focus();},[cur,phase]);
+
+  const genChunk=async(chunk)=>{
+    const wordList=chunk.map(w=>`- "${w.ru}" (перевод английского слова "${w.en}")`).join('\n');
+    const p=`Ты — репетитор русского языка, который готовит упражнения для русскоязычного ученика, изучающего английский.
+Для каждого русского слова ниже напиши ОДНО естественное русское предложение (8-14 слов), в котором это слово (или его естественная форма) встречается ровно один раз, в понятном бытовом контексте.
+
+Правила:
+- Пиши предложение только на русском
+- Заданное слово (или его естественная грамматическая форма) должно встретиться ровно один раз
+- Пиши просто и естественно, без пояснений
+- Верни ТОЛЬКО валидный JSON-массив, без markdown и обратных кавычек
+
+Слова:
+${wordList}
+
+Формат ответа (строго JSON-массив):
+[{"ru":"слово1","sentence":"Предложение на русском с этим словом."}]`;
+    const raw=await engCallAI(ai,p);
+    const m=raw.match(/\[[\s\S]*\]/);
+    if(!m) throw new Error('AI returned an invalid format');
+    const items=JSON.parse(m[0]);
+    if(!Array.isArray(items)||!items.length) throw new Error('Empty response from AI');
+    return chunk.map((w,idx)=>{
+      const item=items.find(it=>String(it.ru||'').trim().toLowerCase()===w.ru.trim().toLowerCase())||items[idx]||items[0];
+      return {...w, ruSentence:(item&&item.sentence)||'', cipher:engRot13(w.en)};
+    });
+  };
+
+  const start=async()=>{
+    if(!rawData){alert('Load data first');return;}
+    if(!engAIConfigured(ai)){alert('Configure AI first — this mode needs it to generate sentences.');return;}
+    let pool=rawData.slice();
+    if(filter==='hard') pool=pool.filter(w=>w.hard);
+    else if(filter==='not-hard') pool=pool.filter(w=>!w.hard);
+    else if(filter==='not-shown') pool=pool.filter(w=>!w.showNew);
+    if(dateRange!=='all'){
+      const days=parseInt(dateRange);
+      const times=rawData.map(w=>engParseDate(w.date)).filter(Boolean).map(d=>d.getTime());
+      const ref=times.length?Math.max(...times):Date.now();
+      pool=pool.filter(w=>{const d=engParseDate(w.date);return d&&d.getTime()>=ref-(days-1)*86400000;});
+    }
+    if(!pool.length){alert('No words match this filter');return;}
+    if(order==='random') pool.sort(()=>Math.random()-.5);
+    else if(order==='newest') pool.sort((a,b)=>(engParseDate(b.date)?.getTime()||0)-(engParseDate(a.date)?.getTime()||0));
+    else if(order==='oldest') pool.sort((a,b)=>(engParseDate(a.date)?.getTime()||0)-(engParseDate(b.date)?.getTime()||0));
+
+    const n=count>0?Math.min(count,pool.length):pool.length;
+    const batch=pool.slice(0,n);
+    if(batch.length>50&&!confirm(`Will generate ${batch.length} sentences. This may take a while and use many tokens. Continue?`)) return;
+
+    setPhase('loading');
+    const CHUNK=15;
+    const chunks=[];
+    for(let i=0;i<batch.length;i+=CHUNK) chunks.push(batch.slice(i,i+CHUNK));
+    try{
+      const results=await Promise.all(chunks.map(genChunk));
+      setQueue(results.flat());setCur(0);setStats({done:0});setRevealed(false);setAnswer('');setFeedback(null);
+      setPhase('study');
+    }catch(e){
+      alert('AI error: '+e.message);
+      setPhase('setup');
+    }
+  };
+
+  const check=async()=>{
+    const val=answer.trim();
+    if(!val) return;
+    const w=queue[cur];
+    setFeedback({loading:true,text:''});
+    try{
+      const p=(prompt||ENG_CIPHER_DEFAULT_PROMPT)
+        .replaceAll('{word}',w.en).replaceAll('{translation}',w.ru)
+        .replaceAll('{ruSentence}',w.ruSentence||'').replaceAll('{answer}',val);
+      const c=await engCallAI(ai,p);
+      setFeedback({loading:false,text:c});
+    }catch(e){
+      setFeedback({loading:false,text:'(AI unavailable: '+e.message+')'});
+    }
+    setStats(s=>({...s,done:s.done+1}));
+    setRevealed(true);
+  };
+
+  const next=()=>{
+    setAnswer('');setFeedback(null);setRevealed(false);
+    if(cur+1>=queue.length){setPhase('finish');return;}
+    setCur(c=>c+1);
+  };
+
+  if(!rawData) return <div className="text-center py-20 text-[var(--text-subtle)]"><p>Load data from Google Sheets</p></div>;
+
+  if(phase==='setup') return(
+    <div className="max-w-lg mx-auto space-y-5 pb-8">
+      <div><label>Word filter</label>
+        <select value={filter} onChange={e=>setFilter(e.target.value)}>
+          <option value="all">All words</option>
+          <option value="not-shown">New words only (not shown yet)</option>
+          <option value="hard">Hard words only</option>
+          <option value="not-hard">Non-hard words only</option>
+        </select>
+      </div>
+      <div><label>Word count (0 = all)</label><input type="number" min="0" max="500" value={count||''} onChange={e=>setCount(parseInt(e.target.value)||0)}/></div>
+      <div><label>Order</label><select value={order} onChange={e=>setOrder(e.target.value)}><option value="random">Random</option><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></div>
+      <div><label>Date range</label><select value={dateRange} onChange={e=>setDateRange(e.target.value)}><option value="all">All time</option><option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option></select></div>
+      <div>
+        <label>AI review prompt</label>
+        <textarea value={promptDraft} onChange={e=>setPromptDraft(e.target.value)} rows={9} style={{resize:'vertical',fontFamily:'inherit'}} className="w-full text-sm"/>
+        <p className="text-xs text-[var(--text-subtle)] mt-1">Placeholders: <code>{'{word}'}</code>, <code>{'{translation}'}</code>, <code>{'{ruSentence}'}</code>, <code>{'{answer}'}</code></p>
+        <div className="flex gap-2 mt-2">
+          <button onClick={()=>onSavePrompt(promptDraft)} disabled={promptDraft===prompt} className="btn-secondary text-xs py-1.5 px-3">Save prompt</button>
+          <button onClick={()=>setPromptDraft(ENG_CIPHER_DEFAULT_PROMPT)} className="btn-secondary text-xs py-1.5 px-3">↺ Reset</button>
+        </div>
+      </div>
+      <button onClick={start} className="btn-primary w-full py-3.5">▶ Start</button>
+    </div>
+  );
+
+  if(phase==='loading') return(
+    <div className="text-center py-20 text-[var(--text-subtle)]">
+      <p>⏳ AI is generating Russian sentences...</p>
+      <p className="text-xs mt-2">Generating everything up front, so there's no waiting between cards</p>
+    </div>
+  );
+
+  if(phase==='finish'){
+    return(
+      <div className="text-center py-8 max-w-lg mx-auto pb-12">
+        <div className="font-display text-6xl mb-1">✓</div>
+        <h2 className="font-display text-2xl mb-2">Cipher sentences complete</h2>
+        <p className="text-[var(--text-muted)] mb-8">Decrypted, translated and reviewed: {stats.done}</p>
+        <button onClick={()=>setPhase('setup')} className="btn-primary px-8 py-3">↻ Repeat</button>
+      </div>
+    );
+  }
+
+  const w=queue[cur];const total=queue.length;const pct=Math.round(cur/total*100);
+  return(
+    <div className="max-w-2xl mx-auto space-y-4 pb-8">
+      <div className="h-1.5 bg-[var(--surface)] rounded-full overflow-hidden"><div className="h-full bg-[var(--text)] transition-all" style={{width:pct+'%'}}/></div>
+      <div className="flex gap-2 text-xs flex-wrap">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1">card <b>{cur+1}/{total}</b></div>
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1 text-green-500">done <b>{stats.done}</b></div>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-8 text-center">
+        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-3">encrypted target word</div>
+        <div className="font-mono text-2xl sm:text-3xl font-bold tracking-widest cursor-pointer" onClick={()=>setRevealed(true)} title="Click to decrypt">{revealed?w.en:w.cipher}</div>
+        <div className="text-sm text-[var(--text-subtle)] mt-2">({w.ru})</div>
+        {!revealed&&<div className="text-[10px] text-[var(--text-subtle)] mt-2 uppercase tracking-wide opacity-70">click the cipher to decrypt</div>}
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6">
+        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-2">translate to english</div>
+        <div className="font-display text-lg italic">{w.ruSentence || '(no sentence generated)'}</div>
+      </div>
+
+      <div>
+        <label>Your translation</label>
+        <textarea ref={taRef} value={answer} onChange={e=>setAnswer(e.target.value)} rows={3} placeholder="Translate the sentence into English, using the encrypted word..." className="w-full" disabled={!!feedback}/>
+      </div>
+
+      {!feedback?(
+        <div className="flex gap-2">
+          <button onClick={check} disabled={!answer.trim()} className="btn-primary px-5">Проверить</button>
+          <button onClick={next} className="btn-secondary px-4">Skip →</button>
+        </div>
+      ):(
+        <>
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4">
+            {feedback.loading
+              ? <div className="text-sm text-[var(--text-muted)]">⏳ AI проверяет твой перевод...</div>
+              : <div className="text-sm text-[var(--text-muted)] whitespace-pre-wrap">{feedback.text}</div>}
+          </div>
+          <button onClick={next} className="btn-primary w-full py-3">Next word →</button>
+        </>
+      )}
+    </div>
+  );
+}
+
 // Legacy-чтение настроек English из localStorage (так они хранились раньше —
 // на каждом устройстве отдельно, и Safari стирал их через ~7 дней простоя).
 const engLegacyCfg = () => ({
@@ -7604,6 +7824,7 @@ function EnglishView({ data, setData }){
   const ai = data.engAI || engLegacyAI();
   const studyPlan = data.engStudyPlan || { text: '', updatedAt: 0 };
   const mySentPrompt = typeof data.engMySentPrompt === 'string' ? data.engMySentPrompt : ENG_MYSENT_DEFAULT_PROMPT;
+  const cipherPrompt = typeof data.engCipherPrompt === 'string' ? data.engCipherPrompt : ENG_CIPHER_DEFAULT_PROMPT;
   const [rawData,setRawData]=useState(()=>{try{return JSON.parse(localStorage.getItem('eng_raw_data')||'null');}catch{return null;}});
   const [loading,setLoading]=useState(false);
   const initStatus=()=>{try{const d=localStorage.getItem('eng_raw_data');return d?{type:'ok',text:`${JSON.parse(d).length} words`}:{type:'',text:'Load from Google Sheets'};}catch{return{type:'',text:'Load from Google Sheets'};}};
@@ -7617,6 +7838,7 @@ function EnglishView({ data, setData }){
   const saveAI=(a)=>setData(d=>({...d, engAI:{...a, updatedAt: Date.now()}}));
   const saveStudyPlan=(p)=>setData(d=>({...d, engStudyPlan:{ text: p.text || '', updatedAt: p.updatedAt || Date.now() }}));
   const saveMySentPrompt=(p)=>setData(d=>({...d, engMySentPrompt: p}));
+  const saveCipherPrompt=(p)=>setData(d=>({...d, engCipherPrompt: p}));
 
   // One-time migration: keys entered before this fix only live in this
   // browser's localStorage — move them into the DB so they stop getting lost.
@@ -7667,7 +7889,7 @@ function EnglishView({ data, setData }){
           </div>
         </div>
         <div className="flex gap-2 py-3 border-b border-[var(--border)]">
-          {[['cards','🃏 Flashcards'],['fill','✍ Fill in the blank'],['mysentence','📝 My Sentence'],['typing','⌨ Typing']].map(([id,l])=>(
+          {[['cards','🃏 Flashcards'],['fill','✍ Fill in the blank'],['mysentence','📝 My Sentence'],['cipher','🔐 Cipher'],['typing','⌨ Typing']].map(([id,l])=>(
             <button key={id} onClick={()=>setEngTab(id)} className={`px-3 py-2 rounded-xl text-sm font-medium transition-all ${engTab===id?'bg-[var(--text)] text-white':'text-[var(--text-muted)] hover:text-[var(--text)]'}`}>{l}</button>
           ))}
         </div>
@@ -7675,6 +7897,7 @@ function EnglishView({ data, setData }){
           {engTab==='cards'&&<FlashcardsTab rawData={rawData} cfg={cfg} ai={ai}/>}
           {engTab==='fill'&&<FillTab rawData={rawData} ai={ai}/>}
           {engTab==='mysentence'&&<MySentenceTab rawData={rawData} ai={ai} prompt={mySentPrompt} onSavePrompt={saveMySentPrompt}/>}
+          {engTab==='cipher'&&<CipherTab rawData={rawData} ai={ai} prompt={cipherPrompt} onSavePrompt={saveCipherPrompt}/>}
           {engTab==='typing'&&<TypingTab rawData={rawData} ai={ai}/>}
         </div>
       </div>
