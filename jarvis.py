@@ -1945,7 +1945,13 @@ def _link_check_url(raw: str):
 def _link_fetch(url: str, referer: str = "", max_bytes: int = LINK_PREVIEW_MAX_BYTES,
                 ua: str = LINK_PREVIEW_UA, accept: str = "", timeout: float = LINK_PREVIEW_TIMEOUT):
     """GET с ручной обработкой редиректов: каждый следующий хоп проверяется тем
-    же SSRF-фильтром (иначе редирект на 127.0.0.1 обошёл бы проверку)."""
+    же SSRF-фильтром (иначе редирект на 127.0.0.1 обошёл бы проверку).
+
+    Хопы идут через общую requests.Session(), чтобы cookie с одного шага
+    доезжали до следующего. Без этого антибот-проверки крупных магазинов
+    (замечено на Ozon) зацикливаются: первый ответ ставит cookie и редиректит
+    на ту же проверку, а без cookie она редиректит снова — на каждый запрос
+    заново, до истечения лимита редиректов."""
     if requests is None:
         return None, "requests not installed"
     headers = {
@@ -1955,46 +1961,50 @@ def _link_fetch(url: str, referer: str = "", max_bytes: int = LINK_PREVIEW_MAX_B
     }
     if referer:
         headers["Referer"] = referer
-    current = url
-    for _ in range(LINK_PREVIEW_REDIRECTS + 1):
-        checked, err = _link_check_url(current)
-        if err:
-            return None, err
-        try:
-            resp = requests.get(
-                checked, headers=headers, timeout=timeout,
-                allow_redirects=False, stream=True,
-            )
-        except Exception as e:
-            return None, f"fetch failed: {e}"
-        if resp.status_code in (301, 302, 303, 307, 308):
-            location = resp.headers.get("Location") or ""
-            resp.close()
-            if not location:
-                return None, "redirect without location"
-            from urllib.parse import urljoin
-            current = urljoin(checked, location)
-            continue
-        if resp.status_code != 200:
-            code = resp.status_code
-            resp.close()
-            return None, f"http {code}"
-        chunks, total = [], 0
-        try:
-            for chunk in resp.iter_content(64 * 1024):
-                chunks.append(chunk)
-                total += len(chunk)
-                if total > max_bytes:
-                    break
-        finally:
-            resp.close()
-        return {
-            "url": resp.url or checked,
-            "content_type": (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower(),
-            "body": b"".join(chunks)[:max_bytes],
-            "encoding": resp.encoding,
-        }, None
-    return None, "too many redirects"
+    session = requests.Session()
+    try:
+        current = url
+        for _ in range(LINK_PREVIEW_REDIRECTS + 1):
+            checked, err = _link_check_url(current)
+            if err:
+                return None, err
+            try:
+                resp = session.get(
+                    checked, headers=headers, timeout=timeout,
+                    allow_redirects=False, stream=True,
+                )
+            except Exception as e:
+                return None, f"fetch failed: {e}"
+            if resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("Location") or ""
+                resp.close()
+                if not location:
+                    return None, "redirect without location"
+                from urllib.parse import urljoin
+                current = urljoin(checked, location)
+                continue
+            if resp.status_code != 200:
+                code = resp.status_code
+                resp.close()
+                return None, f"http {code}"
+            chunks, total = [], 0
+            try:
+                for chunk in resp.iter_content(64 * 1024):
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total > max_bytes:
+                        break
+            finally:
+                resp.close()
+            return {
+                "url": resp.url or checked,
+                "content_type": (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower(),
+                "body": b"".join(chunks)[:max_bytes],
+                "encoding": resp.encoding,
+            }, None
+        return None, "too many redirects"
+    finally:
+        session.close()
 
 
 _META_RE = re.compile(r"<meta\b[^>]*>", re.I)
