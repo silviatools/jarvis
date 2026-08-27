@@ -69,6 +69,7 @@ FREQ_DAYS = {
 SPA_ROUTES = {
     "/mybody", "/budget", "/supplements", "/meals", "/weather",
     "/house", "/cars", "/holidays", "/settings", "/planner", "/health",
+    "/misc", "/wishlist", "/cards",
 }
 
 # ── Парольный доступ на весь сайт ───────────────────────────────────────────
@@ -1850,6 +1851,378 @@ def pf_write(token: str, apply):
         return 200, {"ok": True}
 
 
+# ── Хотелки: что удаётся вытащить по ссылке на товар ───────────────────────
+# Ссылки ведут на разные магазины, поэтому «парсер под каждый сайт» не вариант.
+# Работает обратное: почти все магазины сами отдают карточку товара в машинном
+# виде — для превью в мессенджерах и для поисковиков. Читаем именно это, одним
+# кодом для всех сайтов, по убыванию надёжности:
+#   1) JSON-LD schema.org/Product — name + offers.price, самый точный источник;
+#   2) микроразметка itemprop="price" — та же схема, но атрибутами в вёрстке;
+#   3) OpenGraph (og:title, og:image, product:price:amount) — есть почти везде;
+#   4) инлайновый JSON состояния страницы ("price": 1234) — грубый запасной путь.
+# Что не покрывается: магазины, которые рисуют цену только скриптом в браузере
+# и отдают роботу пустую разметку (частый случай — Ozon), и сайты за защитой от
+# ботов. Поэтому любое поле остаётся редактируемым руками, а ошибка разбора не
+# мешает сохранить хотелку.
+
+LINK_PREVIEW_TIMEOUT   = 12      # секунд на запрос страницы
+LINK_PREVIEW_MAX_BYTES = 2 * 1024 * 1024
+LINK_IMAGE_MAX_BYTES   = 8 * 1024 * 1024
+LINK_PREVIEW_REDIRECTS = 4
+LINK_PREVIEW_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+)
+LINK_IMAGE_TYPES = {
+    "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png",
+    "image/webp": "webp", "image/gif": "gif",
+}
+
+
+def _link_host_is_public(host: str) -> bool:
+    """SSRF-заслон: адрес должен резолвиться только в публичные IP. Иначе через
+    «хотелку» можно было бы заставить сервер сходить на свой же localhost или
+    во внутреннюю сеть хостинга и принести оттуда ответ."""
+    import ipaddress
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+            return False
+    return True
+
+
+def _link_check_url(raw: str):
+    """(url, error): пропускаем только http(s) на публичный хост."""
+    from urllib.parse import urlparse
+    raw = (raw or "").strip()
+    if not raw:
+        return None, "empty url"
+    if "://" not in raw:
+        raw = "https://" + raw
+    try:
+        p = urlparse(raw)
+    except Exception:
+        return None, "bad url"
+    if p.scheme not in ("http", "https") or not p.hostname:
+        return None, "bad url"
+    if not _link_host_is_public(p.hostname):
+        return None, "host not allowed"
+    return raw, None
+
+
+def _link_fetch(url: str, referer: str = "", max_bytes: int = LINK_PREVIEW_MAX_BYTES):
+    """GET с ручной обработкой редиректов: каждый следующий хоп проверяется тем
+    же SSRF-фильтром (иначе редирект на 127.0.0.1 обошёл бы проверку)."""
+    if requests is None:
+        return None, "requests not installed"
+    headers = {
+        "User-Agent": LINK_PREVIEW_UA,
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,image/avif,image/webp,*/*;q=0.8",
+    }
+    if referer:
+        headers["Referer"] = referer
+    current = url
+    for _ in range(LINK_PREVIEW_REDIRECTS + 1):
+        checked, err = _link_check_url(current)
+        if err:
+            return None, err
+        try:
+            resp = requests.get(
+                checked, headers=headers, timeout=LINK_PREVIEW_TIMEOUT,
+                allow_redirects=False, stream=True,
+            )
+        except Exception as e:
+            return None, f"fetch failed: {e}"
+        if resp.status_code in (301, 302, 303, 307, 308):
+            location = resp.headers.get("Location") or ""
+            resp.close()
+            if not location:
+                return None, "redirect without location"
+            from urllib.parse import urljoin
+            current = urljoin(checked, location)
+            continue
+        if resp.status_code != 200:
+            code = resp.status_code
+            resp.close()
+            return None, f"http {code}"
+        chunks, total = [], 0
+        try:
+            for chunk in resp.iter_content(64 * 1024):
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > max_bytes:
+                    break
+        finally:
+            resp.close()
+        return {
+            "url": resp.url or checked,
+            "content_type": (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower(),
+            "body": b"".join(chunks)[:max_bytes],
+            "encoding": resp.encoding,
+        }, None
+    return None, "too many redirects"
+
+
+_META_RE = re.compile(r"<meta\b[^>]*>", re.I)
+_ATTR_RE = re.compile(r"""([a-zA-Z:\-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""")
+_LDJSON_RE = re.compile(
+    r"<script[^>]+type\s*=\s*[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
+    re.I | re.S,
+)
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+_ITEMPROP_PRICE_RE = re.compile(
+    r"""<[^>]*itemprop\s*=\s*["']price["'][^>]*content\s*=\s*["']([^"']+)["']""", re.I)
+_JSON_PRICE_RE = re.compile(
+    r'"(?:price|salePriceU|finalPrice|currentPrice|priceValue)"\s*:\s*"?(\d[\d\s.,]*)"?', re.I)
+
+
+def _link_meta_map(text: str) -> dict:
+    """property/name → content из всех <meta> страницы (порядок атрибутов любой)."""
+    out = {}
+    for tag in _META_RE.findall(text):
+        attrs = {}
+        for m in _ATTR_RE.finditer(tag):
+            attrs[m.group(1).lower()] = m.group(2) or m.group(3) or m.group(4) or ""
+        key = attrs.get("property") or attrs.get("name") or attrs.get("itemprop")
+        content = attrs.get("content")
+        if key and content:
+            out.setdefault(key.lower(), html.unescape(content).strip())
+    return out
+
+
+def _link_price_number(value):
+    """«12 990,50 ₽», «12990.50», 1299000 (копейки WB) → '12990.5'. None, если не число."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        text = f"{value:.2f}"
+    else:
+        text = str(value)
+    text = text.replace("\xa0", " ").strip()
+    m = re.search(r"\d[\d\s.,]*", text)
+    if not m:
+        return None
+    raw = m.group(0).replace(" ", "")
+    # Разделители: последний из . и , считаем десятичным, остальные — тысячными
+    last_dot, last_comma = raw.rfind("."), raw.rfind(",")
+    sep = max(last_dot, last_comma)
+    if sep >= 0 and len(raw) - sep - 1 in (1, 2):
+        whole = re.sub(r"[.,]", "", raw[:sep])
+        frac = raw[sep + 1:]
+        raw = f"{whole}.{frac}"
+    else:
+        raw = re.sub(r"[.,]", "", raw)
+    try:
+        num = Decimal(raw)
+    except (InvalidOperation, ValueError):
+        return None
+    if num <= 0 or num > Decimal("100000000"):
+        return None
+    # format(..., 'f') — иначе Decimal отдаёт круглые суммы как «6.499E+4»
+    text = format(num.quantize(Decimal("0.01")), "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
+
+
+def _link_from_ldjson(text: str) -> dict:
+    """schema.org/Product из JSON-LD: имя, картинка, цена предложения."""
+    found = {}
+    for raw in _LDJSON_RE.findall(text):
+        try:
+            parsed = json.loads(html.unescape(raw.strip()))
+        except Exception:
+            continue
+        stack = [parsed]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, list):
+                stack.extend(node)
+                continue
+            if not isinstance(node, dict):
+                continue
+            stack.extend(v for v in node.values() if isinstance(v, (dict, list)))
+            types = node.get("@type")
+            types = types if isinstance(types, list) else [types]
+            if not any(isinstance(t, str) and t.lower() == "product" for t in types):
+                continue
+            if not found.get("title") and isinstance(node.get("name"), str):
+                found["title"] = node["name"].strip()
+            image = node.get("image")
+            if isinstance(image, dict):
+                image = image.get("url")
+            if isinstance(image, list):
+                image = next((i for i in image if isinstance(i, str)), None)
+            if not found.get("image") and isinstance(image, str):
+                found["image"] = image.strip()
+            offers = node.get("offers")
+            offers = offers if isinstance(offers, list) else [offers]
+            for off in offers:
+                if not isinstance(off, dict):
+                    continue
+                price = _link_price_number(off.get("price") or off.get("lowPrice"))
+                if price and not found.get("price"):
+                    found["price"] = price
+                    cur = off.get("priceCurrency")
+                    if isinstance(cur, str):
+                        found["currency"] = cur.strip()[:8]
+    return found
+
+
+def _link_extract(body: bytes, encoding: str, page_url: str) -> dict:
+    from urllib.parse import urljoin
+    charset = None
+    head = body[:4096].decode("ascii", "ignore")
+    m = re.search(r'charset\s*=\s*["\']?([\w\-]+)', head, re.I)
+    if m:
+        charset = m.group(1)
+    text = body.decode(charset or encoding or "utf-8", "replace")
+
+    out = {"title": "", "price": "", "currency": "", "image": "", "siteName": ""}
+    ld = _link_from_ldjson(text)
+    meta = _link_meta_map(text)
+
+    out["title"] = (
+        ld.get("title")
+        or meta.get("og:title") or meta.get("twitter:title") or meta.get("title") or ""
+    )
+    if not out["title"]:
+        t = _TITLE_RE.search(text)
+        if t:
+            out["title"] = re.sub(r"\s+", " ", html.unescape(t.group(1))).strip()
+    out["title"] = html.unescape(out["title"])[:200].strip()
+
+    out["siteName"] = (meta.get("og:site_name") or "")[:80]
+    out["currency"] = ld.get("currency") or meta.get("product:price:currency") or meta.get("og:price:currency") or ""
+
+    price = ld.get("price")
+    if not price:
+        for key in ("product:price:amount", "og:price:amount", "product:price",
+                    "twitter:data1", "price"):
+            price = _link_price_number(meta.get(key))
+            if price:
+                break
+    if not price:
+        ip = _ITEMPROP_PRICE_RE.search(text)
+        if ip:
+            price = _link_price_number(ip.group(1))
+    if not price:
+        jm = _JSON_PRICE_RE.search(text)
+        if jm:
+            price = _link_price_number(jm.group(1))
+    out["price"] = price or ""
+
+    image = (
+        ld.get("image") or meta.get("og:image:secure_url") or meta.get("og:image")
+        or meta.get("twitter:image") or meta.get("twitter:image:src") or ""
+    )
+    if image:
+        out["image"] = urljoin(page_url, html.unescape(image).strip())
+    return out
+
+
+def _link_save_image(image_url: str, referer: str):
+    """Скачиваем картинку к себе: прямые ссылки на CDN магазинов часто
+    отдают 403 постороннему сайту, и превью в хотелках просто не грузилось бы."""
+    got, err = _link_fetch(image_url, referer=referer, max_bytes=LINK_IMAGE_MAX_BYTES)
+    if err or not got:
+        return None
+    ext = LINK_IMAGE_TYPES.get(got["content_type"])
+    if not ext or not got["body"]:
+        return None
+    photos_dir = DATA_DIR / "photos"
+    photos_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid.uuid4()}.{ext}"
+    (photos_dir / filename).write_bytes(got["body"])
+    return filename
+
+
+_WB_NM_RE = re.compile(r"wildberries\.[a-z]+/catalog/(\d+)", re.I)
+
+
+def _link_wildberries(url: str) -> dict:
+    """Wildberries отдаёт роботу пустую карточку, но у него есть открытый JSON
+    по артикулу из адреса — берём цену и название оттуда."""
+    m = _WB_NM_RE.search(url)
+    if not m or requests is None:
+        return {}
+    nm = m.group(1)
+    api = (f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub"
+           f"&dest=-1257786&spp=30&nm={nm}")
+    got, err = _link_fetch(api)
+    if err or not got:
+        return {}
+    try:
+        payload = json.loads(got["body"].decode("utf-8", "replace"))
+        product = (payload.get("data") or {}).get("products") or []
+        if not product:
+            return {}
+        p = product[0]
+        out = {}
+        if isinstance(p.get("name"), str):
+            out["title"] = p["name"].strip()[:200]
+        # Цена приходит в копейках — либо в sizes[].price, либо в salePriceU
+        raw_price = None
+        for size in (p.get("sizes") or []):
+            price = size.get("price") or {}
+            raw_price = price.get("product") or price.get("total")
+            if raw_price:
+                break
+        if raw_price is None:
+            raw_price = p.get("salePriceU") or p.get("priceU")
+        if raw_price:
+            out["price"] = _link_price_number(Decimal(str(raw_price)) / 100) or ""
+        out["currency"] = "RUB"
+        return {k: v for k, v in out.items() if v}
+    except Exception:
+        return {}
+
+
+def link_preview(raw_url: str) -> tuple:
+    """(http_code, payload) для POST /api/link-preview."""
+    url, err = _link_check_url(raw_url)
+    if err:
+        return 400, {"error": err}
+
+    result = {"title": "", "price": "", "currency": "", "image": "", "siteName": "", "url": url}
+    got, fetch_err = _link_fetch(url)
+    if got and got["content_type"].startswith("image/"):
+        # Дали ссылку прямо на картинку — сохраняем её как фото хотелки.
+        saved = _link_save_image(url, referer=url)
+        if saved:
+            result["image"] = saved
+            return 200, result
+    if got:
+        result.update({k: v for k, v in _link_extract(
+            got["body"], got["encoding"], got["url"]).items() if v})
+
+    special = _link_wildberries(url)
+    for key, value in special.items():
+        if value and (key == "price" or not result.get(key)):
+            result[key] = value
+
+    if result.get("image"):
+        saved = _link_save_image(result["image"], referer=url)
+        result["imageUrl"] = result["image"]
+        result["image"] = saved or ""
+
+    if not (result.get("title") or result.get("price") or result.get("image")):
+        return 200, {**result, "empty": True, "reason": fetch_err or "no metadata found"}
+    return 200, result
+
+
 # ── HTTP handler ───────────────────────────────────────────────────────────
 
 class JarvisHandler(SimpleHTTPRequestHandler):
@@ -2161,6 +2534,20 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                     merged = merge_app_data(incoming, existing, mode="push")
                     save_app_data(merged)
                 self._json(200, {"ok": True})
+            except Exception as e:
+                self._json(400, {"error": str(e)})
+        elif self.path == "/api/link-preview":
+            length = self._content_length()
+            if length is None:
+                self._json(411, {"error": "Content-Length required"})
+                return
+            if length > 8 * 1024:
+                self._json(413, {"error": "body too large"})
+                return
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                code, result = link_preview(payload.get("url") or "")
+                self._json(code, result)
             except Exception as e:
                 self._json(400, {"error": str(e)})
         elif self.path == "/api/data/delete-log-entry":
