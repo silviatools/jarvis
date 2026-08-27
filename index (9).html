@@ -7578,27 +7578,23 @@ function MySentenceTab({rawData,ai,prompt,onSavePrompt}){
   );
 }
 
-const ENG_CIPHER_DEFAULT_PROMPT = `Ты — дружелюбный преподаватель английского. Ученику показали русское предложение и зашифрованное английское слово "{word}" (перевод: "{translation}"), которое нужно было использовать в переводе.
+const ENG_CIPHER_DEFAULT_PROMPT = `You are a friendly English teacher. The student was shown this Russian sentence:
 
-Русское предложение: "{ruSentence}"
-Перевод ученика: "{answer}"
+"{ruSentence}"
 
-Проверь перевод и ответь по-русски, кратко (3-5 предложений):
-1. Насколько точно и естественно переведено предложение в целом.
-2. Правильно ли использовано слово "{word}" (по смыслу и грамматике) — если есть ошибки, укажи их и дай исправленный вариант.
-3. Если всё хорошо — похвали и, при желании, предложи более естественный/продвинутый вариант.
-Будь тёплым и лаконичным, без markdown и заголовков.`;
+They were asked to translate it into English using the word "{word}" (translation: "{translation}"). Their translation:
 
-function engRot13(s){
-  return String(s).replace(/[a-zA-Z]/g, c => {
-    const base = c <= 'Z' ? 65 : 97;
-    return String.fromCharCode((c.charCodeAt(0) - base + 13) % 26 + base);
-  });
-}
+"{answer}"
+
+Reply in English, briefly (3-5 sentences):
+1. How accurate and natural is the translation of the sentence overall?
+2. Is the word "{word}" used correctly (meaning + grammar)? If there are mistakes, point them out and give a corrected version.
+3. If everything is good, say so and, if useful, suggest a more natural or advanced alternative.
+Be warm and to the point, no markdown, no headings.`;
 
 // AI writes a Russian sentence using the translation of a dictionary word.
-// The target English word is shown ROT13-ciphered (click to decrypt) instead
-// of in plain text, so the student has to recall it rather than just read it.
+// The target English word is shown blurred (click to reveal) instead of in
+// plain text, so the student has to recall it rather than just read it.
 // The student translates the Russian sentence into English using that word,
 // then AI reviews the translation. All sentences for the session are
 // generated up front, in parallel chunks (same pattern as engPrefetchSentences),
@@ -7643,7 +7639,7 @@ ${wordList}
     if(!Array.isArray(items)||!items.length) throw new Error('Empty response from AI');
     return chunk.map((w,idx)=>{
       const item=items.find(it=>String(it.ru||'').trim().toLowerCase()===w.ru.trim().toLowerCase())||items[idx]||items[0];
-      return {...w, ruSentence:(item&&item.sentence)||'', cipher:engRot13(w.en)};
+      return {...w, ruSentence:(item&&item.sentence)||''};
     });
   };
 
@@ -7747,7 +7743,7 @@ ${wordList}
       <div className="text-center py-8 max-w-lg mx-auto pb-12">
         <div className="font-display text-6xl mb-1">✓</div>
         <h2 className="font-display text-2xl mb-2">Cipher sentences complete</h2>
-        <p className="text-[var(--text-muted)] mb-8">Decrypted, translated and reviewed: {stats.done}</p>
+        <p className="text-[var(--text-muted)] mb-8">Translated and reviewed: {stats.done}</p>
         <button onClick={()=>setPhase('setup')} className="btn-primary px-8 py-3">↻ Repeat</button>
       </div>
     );
@@ -7763,20 +7759,20 @@ ${wordList}
       </div>
 
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-8 text-center">
-        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-3">encrypted target word</div>
-        <div className="font-mono text-2xl sm:text-3xl font-bold tracking-widest cursor-pointer" onClick={()=>setRevealed(true)} title="Click to decrypt">{revealed?w.en:w.cipher}</div>
-        <div className="text-sm text-[var(--text-subtle)] mt-2">({w.ru})</div>
-        {!revealed&&<div className="text-[10px] text-[var(--text-subtle)] mt-2 uppercase tracking-wide opacity-70">click the cipher to decrypt</div>}
-      </div>
-
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6">
-        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-2">translate to english</div>
+        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-4">translate to english using</div>
+        <div className="mb-5">
+          <span
+            className={`font-mono text-xl font-bold tracking-wide select-none transition-all ${revealed?'':'blur-sm cursor-pointer'}`}
+            onClick={()=>setRevealed(true)}
+            title={revealed?'':'Click to reveal'}
+          >{w.en}</span>
+        </div>
         <div className="font-display text-lg italic">{w.ruSentence || '(no sentence generated)'}</div>
       </div>
 
       <div>
         <label>Your translation</label>
-        <textarea ref={taRef} value={answer} onChange={e=>setAnswer(e.target.value)} rows={3} placeholder="Translate the sentence into English, using the encrypted word..." className="w-full" disabled={!!feedback}/>
+        <textarea ref={taRef} value={answer} onChange={e=>setAnswer(e.target.value)} rows={3} placeholder="Translate the sentence into English, using the blurred word..." className="w-full" disabled={!!feedback}/>
       </div>
 
       {!feedback?(
