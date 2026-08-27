@@ -438,6 +438,13 @@ const DEFAULT_DATA = () => ({
   campingCategories: [],
   campingItems: [],
   campingTrips: [],
+  // Прочее → Хотелки: списки-вкладки («Аня», «Общее», «Для дома») и вещи в них.
+  // Оба — id-массивы, LWW по updatedAt, как и всё остальное.
+  wishlistCategories: [],
+  wishlistItems: [],
+  // Прочее → Карты: карты лояльности. code+format — то, из чего рисуется
+  // штрихкод на экране; фото карты хранится отдельным файлом в /api/photos.
+  loyaltyCards: [],
   deletedIds: {},
   // План обучения English: произвольная заметка, LWW по updatedAt между устройствами
   engStudyPlan: { text: '', updatedAt: 0 },
@@ -1008,6 +1015,12 @@ const Icon = ({ name, size = 22 }) => {
     backpack: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20V10a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M8 21v-5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v5"/><path d="M8 10h8"/></svg>,
     search: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>,
     heartPulse: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/><path d="M3.22 12H9.5l.5-1 2 4.5 2-7 1.5 3.5h5.27"/></svg>,
+    heart: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>,
+    creditCard: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="14" x="2" y="5" rx="2"/><path d="M2 10h20"/></svg>,
+    grid: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="7" height="7" x="3" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="3" rx="1.5"/><rect width="7" height="7" x="14" y="14" rx="1.5"/><rect width="7" height="7" x="3" y="14" rx="1.5"/></svg>,
+    camera: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z"/><circle cx="12" cy="13" r="3.5"/></svg>,
+    externalLink: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>,
+    tag: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.6 2.6a2 2 0 0 0-1.4-.6H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.2 8.2a2 2 0 0 0 2.8 0l7.2-7.2a2 2 0 0 0 0-2.8Z"/><circle cx="7" cy="7" r="1.2"/></svg>,
   };
   return icons[name] || null;
 };
@@ -1167,6 +1180,11 @@ const PATH_TAB_MAP = {
   // он открывает раздел сразу на этой вкладке (см. PLANNER_SUB_BY_PATH).
   '/holidays': 'planner',
   '/planner': 'planner',
+  // Вкладки «Прочего» — тоже адреса: /wishlist и /cards открывают раздел сразу
+  // на нужной вкладке, '/misc' идёт последним и потому остаётся адресом раздела.
+  '/wishlist': 'misc',
+  '/cards': 'misc',
+  '/misc': 'misc',
   '/settings': 'settings',
 };
 // Порядок важен: '/planner' идёт последним, поэтому обратная карта ведёт
@@ -1175,6 +1193,9 @@ const TAB_PATH_MAP = Object.fromEntries(Object.entries(PATH_TAB_MAP).map(([p, t]
 
 const PLANNER_SUB_BY_PATH = { '/holidays': 'holidays' };
 const PLANNER_PATH_BY_SUB = { holidays: '/holidays' };
+
+const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards' };
+const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards' };
 
 const currentPathname = () => {
   try {
@@ -1185,6 +1206,8 @@ const currentPathname = () => {
 const getTabFromPath = () => PATH_TAB_MAP[currentPathname()] || 'home';
 
 const getPlannerSubFromPath = () => PLANNER_SUB_BY_PATH[currentPathname()] || 'plans';
+
+const getMiscSubFromPath = () => MISC_SUB_BY_PATH[currentPathname()] || 'wishlist';
 
 function App() {
   const [data, setRawData] = useState(loadData());
@@ -1198,6 +1221,7 @@ function App() {
   }, []);
   const [tab, setTab] = useState(getTabFromPath); // home | supplements | meals | weather | house | settings
   const [plannerTab, setPlannerTab] = useState(getPlannerSubFromPath); // plans | holidays | events | camping
+  const [miscTab, setMiscTab] = useState(getMiscSubFromPath); // wishlist | cards
   const [settingsTab, setSettingsTab] = useState('general');
   const [houseTab, setHouseTab] = useState('boss');
   const [mealTab, setMealTab] = useState('plan');
@@ -1337,6 +1361,7 @@ function App() {
   const navFromPopstate = React.useRef(false);
   useEffect(() => {
     const path = (tab === 'planner' && PLANNER_PATH_BY_SUB[plannerTab])
+      || (tab === 'misc' && MISC_PATH_BY_SUB[miscTab])
       || TAB_PATH_MAP[tab] || '/';
     const currentPath = currentPathname();
     if (currentPath !== path) {
@@ -1347,13 +1372,14 @@ function App() {
       }
     }
     navFromPopstate.current = false;
-  }, [tab, plannerTab]);
+  }, [tab, plannerTab, miscTab]);
 
   useEffect(() => {
     const onPopState = () => {
       navFromPopstate.current = true;
       setTab(getTabFromPath());
       setPlannerTab(getPlannerSubFromPath());
+      setMiscTab(getMiscSubFromPath());
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
@@ -1455,6 +1481,9 @@ function App() {
           {tab === 'planner' && (
             <PlannerView data={data} setData={setData} sub={plannerTab} setSub={setPlannerTab} />
           )}
+          {tab === 'misc' && (
+            <MiscView data={data} setData={setData} sub={miscTab} setSub={setMiscTab} />
+          )}
           {tab === 'settings' && (
             <SettingsView
               data={data}
@@ -1491,6 +1520,7 @@ function Header({ tab, setTab }) {
     { id: 'planner',  icon: 'calendar',   label: 'Планировщик'   },
     { id: 'budget',   icon: 'wallet',     label: 'Бюджет'        },
     { id: 'english',  icon: 'book',       label: 'English'       },
+    { id: 'misc',     icon: 'grid',       label: 'Прочее'        },
     { id: 'settings', icon: 'settings',   label: 'Настройки'     },
   ];
 
@@ -1579,6 +1609,7 @@ function BottomNav({ tab, setTab }) {
     { id: 'planner',  icon: 'calendar',   label: 'Планировщик'   },
     { id: 'budget',   icon: 'wallet',     label: 'Бюджет'        },
     { id: 'english',  icon: 'book',       label: 'English'       },
+    { id: 'misc',     icon: 'grid',       label: 'Прочее'        },
     { id: 'settings', icon: 'settings',   label: 'Настройки'     },
   ];
 
@@ -19870,6 +19901,1688 @@ function CampingPackingEditor({ catalogItems, categories, initial, onSave, onClo
         document.body
       )}
     </div>
+  );
+}
+
+// ============== ПРОЧЕЕ ==============
+// Раздел-«сборник» для того, что не тянет на собственный пункт меню:
+// хотелки (что хотим купить) и карты лояльности.
+
+function MiscView({ data, setData, sub, setSub }) {
+  const TABS = [
+    { id: 'wishlist', label: 'Хотелки', icon: 'heart'      },
+    { id: 'cards',    label: 'Карты',   icon: 'creditCard' },
+  ];
+
+  return (
+    <div className="fade-in">
+      <div className="mb-5 flex items-baseline justify-between gap-4">
+        <div className="font-display text-2xl">Прочее</div>
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">
+          {sub === 'cards' ? 'Карты' : 'Покупки'}
+        </div>
+      </div>
+
+      <div className="flex gap-1.5 mb-5 flex-wrap">
+        {TABS.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setSub(t.id)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+              sub === t.id
+                ? 'bg-[var(--text)] text-white'
+                : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'
+            }`}
+          >
+            <Icon name={t.icon} size={16} />
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {sub === 'cards'
+        ? <LoyaltyCardsView data={data} setData={setData} />
+        : <WishlistView data={data} setData={setData} />}
+    </div>
+  );
+}
+
+// ── Хотелки ────────────────────────────────────────────────────────────────
+// Вкладки внутри («Аня», «Миша», «Общее», «Для дома») заводит сам пользователь:
+// это обычная коллекция, а не фиксированный список в коде.
+
+const WISHLIST_STARTER_CATEGORIES = ['Общее', 'Для дома'];
+
+const newWishlistItem = (categoryId) => ({
+  id: crypto.randomUUID(),
+  categoryId: categoryId || '',
+  title: '',
+  url: '',
+  price: '',
+  description: '',
+  image: '',       // имя файла в /api/photos
+  imageUrl: '',    // откуда картинка приехала — на случай, если файл потеряется
+  bought: false,
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+});
+
+// «12 990,50 ₽» → 12990.5. Цена хранится строкой (её пишет и человек, и
+// парсер), а суммировать по вкладке всё равно надо числом.
+const wishPriceNumber = (raw) => {
+  const s = String(raw ?? '').replace(/ /g, ' ').trim();
+  if (!s) return 0;
+  const m = s.match(/\d[\d\s.,]*/);
+  if (!m) return 0;
+  let t = m[0].replace(/\s/g, '');
+  const sep = Math.max(t.lastIndexOf('.'), t.lastIndexOf(','));
+  if (sep >= 0 && [1, 2].includes(t.length - sep - 1)) {
+    t = t.slice(0, sep).replace(/[.,]/g, '') + '.' + t.slice(sep + 1);
+  } else {
+    t = t.replace(/[.,]/g, '');
+  }
+  const n = parseFloat(t);
+  return isNaN(n) ? 0 : n;
+};
+
+const wishMoney = (n) => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(n) + ' ₽';
+
+const wishHost = (url) => {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; }
+};
+
+function WishlistView({ data, setData }) {
+  const cats = data.wishlistCategories || [];
+  const items = data.wishlistItems || [];
+  const [active, setActive] = useState('all');
+  const [editing, setEditing] = useState(null);
+  const [manageCats, setManageCats] = useState(false);
+  const [showBought, setShowBought] = useState(false);
+
+  // Вкладка могла быть удалена на другом устройстве — не показываем пустоту.
+  useEffect(() => {
+    if (active !== 'all' && !cats.some(c => c.id === active)) setActive('all');
+  }, [cats, active]);
+
+  const saveItem = (item) => {
+    setData(d => {
+      const list = d.wishlistItems || [];
+      const exists = list.some(i => i.id === item.id);
+      return {
+        ...d,
+        wishlistItems: exists ? list.map(i => i.id === item.id ? item : i) : [...list, item],
+      };
+    });
+    setEditing(null);
+  };
+
+  const removeItem = (item) => {
+    if (!confirm(`Удалить «${item.title || 'без названия'}» из хотелок?`)) return;
+    if (item.image) deletePhoto(item.image);
+    setData(d => ({
+      ...d,
+      wishlistItems: (d.wishlistItems || []).filter(i => i.id !== item.id),
+      deletedIds: withDeletedId(d, 'wishlistItems', item.id),
+    }));
+  };
+
+  const toggleBought = (item) => {
+    setData(d => ({
+      ...d,
+      wishlistItems: (d.wishlistItems || []).map(i =>
+        i.id === item.id ? { ...i, bought: !i.bought, boughtAt: !i.bought ? Date.now() : 0 } : i),
+    }));
+  };
+
+  const inTab = active === 'all' ? items : items.filter(i => i.categoryId === active);
+  const wanted = inTab.filter(i => !i.bought);
+  const bought = inTab.filter(i => i.bought);
+  const total = wanted.reduce((s, i) => s + wishPriceNumber(i.price), 0);
+  const countIn = (catId) => items.filter(i => i.categoryId === catId && !i.bought).length;
+
+  const sortItems = (list) => [...list].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  return (
+    <div>
+      <button
+        onClick={() => setEditing(newWishlistItem(active === 'all' ? (cats[0]?.id || '') : active))}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-4"
+      >
+        <Icon name="plus" size={18} />
+        Новая хотелка
+      </button>
+
+      {/* Вкладки-списки + управление ими */}
+      <div className="flex gap-1.5 mb-4 flex-wrap items-center">
+        <button
+          onClick={() => setActive('all')}
+          className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${
+            active === 'all'
+              ? 'bg-[var(--text)] text-white'
+              : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'
+          }`}
+        >Все</button>
+        {cats.map(c => (
+          <button
+            key={c.id}
+            onClick={() => setActive(c.id)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${
+              active === c.id
+                ? 'bg-[var(--text)] text-white'
+                : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'
+            }`}
+          >
+            {c.name}
+            {countIn(c.id) > 0 && (
+              <span className={active === c.id ? 'opacity-80' : 'text-[var(--text-subtle)]'}>{countIn(c.id)}</span>
+            )}
+          </button>
+        ))}
+        <button
+          onClick={() => setManageCats(true)}
+          className="px-3 py-1.5 rounded-xl text-sm font-medium bg-[var(--surface)] border border-dashed border-[var(--border-strong)] text-[var(--text-muted)]"
+          title="Вкладки хотелок"
+        >
+          <Icon name="settings" size={14} />
+        </button>
+      </div>
+
+      {cats.length === 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4 text-sm text-amber-900">
+          Заведите вкладки — например «Аня», «Миша», «Общее», «Для дома», — и раскладывайте хотелки по ним.{' '}
+          <button onClick={() => setManageCats(true)} className="underline font-medium">Создать</button>
+        </div>
+      )}
+
+      {wanted.length > 0 && (
+        <div className="flex items-baseline justify-between gap-3 mb-2 text-sm">
+          <span className="text-[var(--text-muted)]">
+            {wanted.length} {plannerPlural(wanted.length, 'хотелка', 'хотелки', 'хотелок')}
+          </span>
+          {total > 0 && <span className="font-semibold tabular-nums">{wishMoney(total)}</span>}
+        </div>
+      )}
+
+      {wanted.length === 0 ? (
+        <EmptyState
+          title="Пока пусто"
+          text={items.length === 0
+            ? 'Добавьте то, что хотите купить — можно просто вставить ссылку'
+            : 'В этой вкладке ничего не запланировано'}
+        />
+      ) : (
+        <div className="space-y-2.5">
+          {sortItems(wanted).map(it => (
+            <WishlistCard
+              key={it.id}
+              item={it}
+              category={cats.find(c => c.id === it.categoryId)}
+              showCategory={active === 'all'}
+              onEdit={() => setEditing(it)}
+              onDelete={() => removeItem(it)}
+              onToggleBought={() => toggleBought(it)}
+            />
+          ))}
+        </div>
+      )}
+
+      {bought.length > 0 && (
+        <div className="mt-5">
+          <button
+            onClick={() => setShowBought(v => !v)}
+            className="flex items-center gap-2 text-sm text-[var(--text-muted)] hover:text-[var(--text)]"
+          >
+            <Icon name={showBought ? 'chevronDown' : 'chevronRight'} size={16} />
+            Куплено — {bought.length}
+          </button>
+          {showBought && (
+            <div className="space-y-2.5 mt-3">
+              {sortItems(bought).map(it => (
+                <WishlistCard
+                  key={it.id}
+                  item={it}
+                  category={cats.find(c => c.id === it.categoryId)}
+                  showCategory={active === 'all'}
+                  onEdit={() => setEditing(it)}
+                  onDelete={() => removeItem(it)}
+                  onToggleBought={() => toggleBought(it)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {editing && (
+        <WishlistItemModal
+          key={editing.id}
+          initial={editing}
+          categories={cats}
+          onSave={saveItem}
+          onClose={() => setEditing(null)}
+        />
+      )}
+
+      {manageCats && (
+        <WishlistCategoriesModal
+          data={data}
+          setData={setData}
+          onClose={() => setManageCats(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function WishlistCard({ item, category, showCategory, onEdit, onDelete, onToggleBought }) {
+  const host = wishHost(item.url);
+  const price = wishPriceNumber(item.price);
+  return (
+    <div className={`bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-3.5 flex gap-3.5 ${item.bought ? 'opacity-60' : ''}`}>
+      {item.image ? (
+        <a
+          href={item.url || `/api/photos/${item.image}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="w-20 h-20 flex-shrink-0 rounded-xl overflow-hidden bg-[var(--bg)] border border-[var(--border)]"
+        >
+          <img src={`/api/photos/${item.image}`} alt="" className="w-full h-full object-cover" />
+        </a>
+      ) : (
+        <div className="w-20 h-20 flex-shrink-0 rounded-xl bg-[var(--bg)] border border-dashed border-[var(--border-strong)] flex items-center justify-center text-[var(--text-subtle)]">
+          <Icon name="tag" size={22} />
+        </div>
+      )}
+
+      <div className="flex-1 min-w-0">
+        <div className={`font-medium leading-snug break-words ${item.bought ? 'line-through' : ''}`}>
+          {item.title || 'Без названия'}
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap mt-1">
+          {price > 0 && <span className="font-semibold tabular-nums text-[15px]">{wishMoney(price)}</span>}
+          {showCategory && category && (
+            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]">
+              {category.name}
+            </span>
+          )}
+        </div>
+
+        {item.description && (
+          <div className="text-sm text-[var(--text-muted)] mt-1 break-words whitespace-pre-wrap">{item.description}</div>
+        )}
+
+        {item.url && (
+          <a
+            href={item.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--text)] mt-1.5 underline"
+          >
+            <Icon name="externalLink" size={12} />
+            {host || 'ссылка'}
+          </a>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-1 flex-shrink-0">
+        <button
+          onClick={onToggleBought}
+          className={`p-1.5 rounded-lg ${item.bought ? 'text-emerald-600 bg-emerald-50' : 'text-[var(--text-muted)] hover:bg-black/5'}`}
+          title={item.bought ? 'Вернуть в хотелки' : 'Отметить купленным'}
+        >
+          <Icon name="check" size={15} />
+        </button>
+        <button onClick={onEdit} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+          <Icon name="edit" size={15} />
+        </button>
+        <button onClick={onDelete} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500">
+          <Icon name="trash" size={15} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function WishlistItemModal({ initial, categories, onSave, onClose }) {
+  const [f, setF] = useState({
+    ...initial,
+    categoryId: initial.categoryId || categories[0]?.id || '',
+  });
+  const [parsing, setParsing] = useState(false);
+  const [parseMsg, setParseMsg] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const set = (patch) => setF(prev => ({ ...prev, ...patch }));
+
+  // Разбор ссылки идёт на сервере: браузеру чужой сайт читать не даёт CORS.
+  const fillFromLink = async () => {
+    const url = (f.url || '').trim();
+    if (!url) { setParseMsg('Сначала вставьте ссылку'); return; }
+    setParsing(true);
+    setParseMsg('');
+    try {
+      const res = await fetch('/api/link-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || `ошибка ${res.status}`);
+      if (j.empty) {
+        setParseMsg('Магазин не отдал данные о товаре — заполните вручную');
+        return;
+      }
+      const patch = {};
+      const got = [];
+      if (j.title && !f.title.trim()) { patch.title = j.title; got.push('название'); }
+      if (j.price && !String(f.price).trim()) { patch.price = j.price; got.push('цену'); }
+      if (j.image && !f.image) { patch.image = j.image; patch.imageUrl = j.imageUrl || ''; got.push('фото'); }
+      set(patch);
+      setParseMsg(got.length
+        ? `Подставлено: ${got.join(', ')}`
+        : 'Всё, что нашлось, уже заполнено — очистите поле, чтобы перезаписать');
+    } catch (e) {
+      setParseMsg(`Не получилось прочитать ссылку: ${e.message}`);
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const pickPhoto = async (file) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      set({ image: await uploadPhoto(file), imageUrl: '' });
+    } catch {
+      alert('Не удалось загрузить фото');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const submit = () => {
+    if (!f.title.trim() && !f.url.trim()) return alert('Введите название или ссылку');
+    // Старый файл убираем только при сохранении: удали мы его сразу при замене,
+    // отмена в модалке оставила бы карточку со ссылкой на удалённое фото.
+    if (initial.image && initial.image !== f.image) deletePhoto(initial.image);
+    onSave({
+      ...f,
+      title: f.title.trim() || wishHost(f.url) || 'Без названия',
+      url: f.url.trim(),
+      price: String(f.price).trim(),
+      description: f.description.trim(),
+    });
+  };
+
+  return (
+    <Modal onClose={onClose} title={initial.title ? 'Хотелка' : 'Новая хотелка'}>
+      <div className="space-y-4">
+        <div>
+          <label>Ссылка</label>
+          <input
+            value={f.url}
+            onChange={e => set({ url: e.target.value })}
+            placeholder="https://…"
+            inputMode="url"
+          />
+          <div className="flex items-center gap-2 mt-2 flex-wrap">
+            <button
+              onClick={fillFromLink}
+              disabled={parsing}
+              className="btn-secondary text-sm flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <Icon name="download" size={14} />
+              {parsing ? 'Читаю страницу…' : 'Заполнить по ссылке'}
+            </button>
+            {parseMsg && <span className="text-[11px] text-[var(--text-muted)]">{parseMsg}</span>}
+          </div>
+          <div className="text-[11px] text-[var(--text-subtle)] mt-1.5">
+            Сайт сам читает страницу и достаёт название, цену и фото. Получается не
+            везде: часть магазинов отдаёт цену только внутри браузера — тогда просто
+            впишите руками.
+          </div>
+        </div>
+
+        <div>
+          <label>Название</label>
+          <input
+            value={f.title}
+            onChange={e => set({ title: e.target.value })}
+            placeholder="Что хотим купить"
+            autoFocus={!initial.title}
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label>Стоимость</label>
+            <input
+              value={f.price}
+              onChange={e => set({ price: e.target.value })}
+              placeholder="12 990"
+              inputMode="decimal"
+            />
+          </div>
+          <div>
+            <label>Вкладка</label>
+            <select value={f.categoryId} onChange={e => set({ categoryId: e.target.value })}>
+              <option value="">Без вкладки</option>
+              {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label>Описание</label>
+          <textarea
+            value={f.description}
+            onChange={e => set({ description: e.target.value })}
+            rows={3}
+            placeholder="Размер, цвет, где дешевле, когда покупать"
+          />
+        </div>
+
+        <div>
+          <label>Фото</label>
+          <div className="flex items-center gap-3">
+            {f.image ? (
+              <div className="relative">
+                <img src={`/api/photos/${f.image}`} alt="" className="w-20 h-20 object-cover rounded-xl border border-[var(--border)]" />
+                <button
+                  onClick={() => set({ image: '', imageUrl: '' })}
+                  className="absolute -top-2 -right-2 bg-[var(--surface)] border border-[var(--border)] rounded-full p-1 text-[var(--text-muted)] hover:text-red-500"
+                >
+                  <Icon name="x" size={12} />
+                </button>
+              </div>
+            ) : (
+              <div className="w-20 h-20 rounded-xl border border-dashed border-[var(--border-strong)] flex items-center justify-center text-[var(--text-subtle)]">
+                <Icon name="tag" size={20} />
+              </div>
+            )}
+            <label className="btn-secondary text-sm cursor-pointer">
+              {uploading ? 'Загрузка…' : 'Выбрать файл'}
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={e => pickPhoto(e.target.files?.[0])}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function WishlistCategoriesModal({ data, setData, onClose }) {
+  const cats = data.wishlistCategories || [];
+  const items = data.wishlistItems || [];
+  const [name, setName] = useState('');
+  const [renaming, setRenaming] = useState(null);
+
+  const add = (value) => {
+    const trimmed = (value ?? name).trim();
+    if (!trimmed) return;
+    if (cats.some(c => c.name.toLowerCase() === trimmed.toLowerCase())) {
+      alert('Такая вкладка уже есть');
+      return;
+    }
+    setData(d => ({
+      ...d,
+      wishlistCategories: [...(d.wishlistCategories || []), {
+        id: crypto.randomUUID(), name: trimmed, createdAt: Date.now(), updatedAt: Date.now(),
+      }],
+    }));
+    setName('');
+  };
+
+  const rename = (cat, value) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    setData(d => ({
+      ...d,
+      wishlistCategories: (d.wishlistCategories || []).map(c =>
+        c.id === cat.id ? { ...c, name: trimmed } : c),
+    }));
+    setRenaming(null);
+  };
+
+  // Хотелки удалённой вкладки не пропадают — они просто остаются без вкладки
+  // и видны в «Все». Удалить список — не то же самое, что удалить покупки.
+  const remove = (cat) => {
+    const used = items.filter(i => i.categoryId === cat.id).length;
+    const warn = used
+      ? `\n\n${used} ${plannerPlural(used, 'хотелка останется', 'хотелки останутся', 'хотелок останется')} без вкладки — их видно на «Все».`
+      : '';
+    if (!confirm(`Удалить вкладку «${cat.name}»?${warn}`)) return;
+    setData(d => ({
+      ...d,
+      wishlistCategories: (d.wishlistCategories || []).filter(c => c.id !== cat.id),
+      wishlistItems: (d.wishlistItems || []).map(i =>
+        i.categoryId === cat.id ? { ...i, categoryId: '' } : i),
+      deletedIds: withDeletedId(d, 'wishlistCategories', cat.id),
+    }));
+  };
+
+  return (
+    <Modal onClose={onClose} title="Вкладки хотелок">
+      <div className="space-y-4">
+        <div>
+          <label>Новая вкладка</label>
+          <div className="flex gap-2">
+            <input
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="Аня, Миша, Общее, Для дома…"
+              onKeyDown={e => e.key === 'Enter' && add()}
+              autoFocus
+            />
+            <button onClick={() => add()} className="btn-primary flex-shrink-0 px-4">
+              <Icon name="plus" size={16} />
+            </button>
+          </div>
+          {cats.length === 0 && (
+            <div className="flex gap-1.5 mt-2 flex-wrap">
+              {WISHLIST_STARTER_CATEGORIES.map(preset => (
+                <button
+                  key={preset}
+                  onClick={() => add(preset)}
+                  className="text-xs px-2.5 py-1 rounded-lg bg-[var(--surface)] border border-dashed border-[var(--border-strong)] text-[var(--text-muted)]"
+                >+ {preset}</button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {cats.length > 0 && (
+          <div className="space-y-2">
+            {cats.map(c => (
+              <div key={c.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-2.5 flex items-center gap-2">
+                {renaming === c.id ? (
+                  <input
+                    defaultValue={c.name}
+                    autoFocus
+                    onBlur={e => rename(c, e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') rename(c, e.target.value);
+                      if (e.key === 'Escape') setRenaming(null);
+                    }}
+                  />
+                ) : (
+                  <>
+                    <span className="flex-1 min-w-0 truncate font-medium">{c.name}</span>
+                    <span className="text-xs text-[var(--text-subtle)] flex-shrink-0">
+                      {items.filter(i => i.categoryId === c.id).length}
+                    </span>
+                    <button onClick={() => setRenaming(c.id)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+                      <Icon name="edit" size={14} />
+                    </button>
+                    <button onClick={() => remove(c)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500">
+                      <Icon name="trash" size={14} />
+                    </button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button onClick={onClose} className="btn-secondary w-full">Готово</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ── Карты лояльности ───────────────────────────────────────────────────────
+// Как в Stocard: карта хранится номером и форматом штрихкода, а на экране он
+// рисуется заново. Кодировщики свои, без внешних библиотек — карта на кассе
+// должна открываться и когда интернет еле дышит.
+
+const BC_EAN_L = ['0001101','0011001','0010011','0111101','0100011','0110001','0101111','0111011','0110111','0001011'];
+const BC_EAN_G = ['0100111','0110011','0011011','0100001','0011101','0111001','0000101','0010001','0001001','0010111'];
+const BC_EAN_R = BC_EAN_L.map(s => s.replace(/[01]/g, c => c === '0' ? '1' : '0'));
+const BC_EAN13_PARITY = ['LLLLLL','LLGLGG','LLGGLG','LLGGGL','LGLLGG','LGGLLG','LGGGLL','LGLGLG','LGLGGL','LGGLGL'];
+
+// Контрольная цифра EAN/UPC: веса 3 и 1, чередуются справа налево.
+const bcEanCheckDigit = (body) => {
+  let sum = 0;
+  for (let i = body.length - 1, w = 3; i >= 0; i--, w = w === 3 ? 1 : 3) sum += Number(body[i]) * w;
+  return (10 - (sum % 10)) % 10;
+};
+
+const bcEan13 = (digits) => {
+  const body = digits.slice(0, 12);
+  const parity = BC_EAN13_PARITY[Number(body[0])];
+  let out = '101';
+  for (let i = 1; i <= 6; i++) out += (parity[i - 1] === 'L' ? BC_EAN_L : BC_EAN_G)[Number(body[i])];
+  out += '01010';
+  for (const d of body.slice(7) + String(bcEanCheckDigit(body))) out += BC_EAN_R[Number(d)];
+  return out + '101';
+};
+
+const bcEan8 = (digits) => {
+  const body = digits.slice(0, 7);
+  let out = '101';
+  for (const d of body.slice(0, 4)) out += BC_EAN_L[Number(d)];
+  out += '01010';
+  for (const d of body.slice(4) + String(bcEanCheckDigit(body))) out += BC_EAN_R[Number(d)];
+  return out + '101';
+};
+
+const bcUpcA = (digits) => {
+  const body = digits.slice(0, 11);
+  let out = '101';
+  for (const d of body.slice(0, 6)) out += BC_EAN_L[Number(d)];
+  out += '01010';
+  for (const d of body.slice(6) + String(bcEanCheckDigit(body))) out += BC_EAN_R[Number(d)];
+  return out + '101';
+};
+
+const BC_C128 = ['11011001100','11001101100','11001100110','10010011000','10010001100','10001001100','10011001000','10011000100','10001100100','11001001000','11001000100','11000100100','10110011100','10011011100','10011001110','10111001100','10011101100','10011100110','11001110010','11001011100','11001001110','11011100100','11001110100','11101101110','11101001100','11100101100','11100100110','11101100100','11100110100','11100110010','11011011000','11011000110','11000110110','10100011000','10001011000','10001000110','10110001000','10001101000','10001100010','11010001000','11000101000','11000100010','10110111000','10110001110','10001101110','10111011000','10111000110','10001110110','11101110110','11010001110','11000101110','11011101000','11011100010','11011101110','11101011000','11101000110','11100010110','11101101000','11101100010','11100011010','11101111010','11001000010','11110001010','10100110000','10100001100','10010110000','10010000110','10000101100','10000100110','10110010000','10110000100','10011010000','10011000010','10000110100','10000110010','11000010010','11001010000','11110111010','11000010100','10001111010','10100111100','10010111100','10010011110','10111100100','10011110100','10011110010','11110100100','11110010100','11110010010','11011011110','11011110110','11110110110','10101111000','10100011110','10001011110','10111101000','10111100010','11110101000','11110100010','10111011110','10111101110','11101011110','11110101110','11010000100','11010010000','11010011100'];
+const BC_C128_STOP = '1100011101011';
+
+const bcC128B = (ch) => {
+  const c = ch.codePointAt(0);
+  return (c >= 32 && c <= 126) ? c - 32 : null;
+};
+
+const bcDigitRun = (s, i) => {
+  let n = 0;
+  while (i + n < s.length && s[i + n] >= '0' && s[i + n] <= '9') n++;
+  return n;
+};
+
+// Набор C кодирует пары цифр одним символом — на цифровых участках вдвое
+// короче, поэтому переключаемся туда, когда выигрыш перекрывает переключение.
+const bcCode128 = (text) => {
+  for (const ch of text) if (bcC128B(ch) === null) return null;
+  const codes = [];
+  let i = 0, mode;
+  const run0 = bcDigitRun(text, 0);
+  if (text.length && run0 % 2 === 0 && (run0 === text.length ? run0 > 0 : run0 >= 4)) {
+    mode = 'C'; codes.push(105);
+  } else {
+    mode = 'B'; codes.push(104);
+  }
+  while (i < text.length) {
+    const run = bcDigitRun(text, i);
+    if (mode === 'C') {
+      if (run >= 2) { codes.push(Number(text.substr(i, 2))); i += 2; continue; }
+      codes.push(100); mode = 'B'; continue;
+    }
+    const evenRun = run - (run % 2);
+    const atEnd = i + run === text.length;
+    if (evenRun >= 6 || (atEnd && run >= 4 && run % 2 === 0)) { codes.push(99); mode = 'C'; continue; }
+    codes.push(bcC128B(text[i]));
+    i++;
+  }
+  let sum = codes[0];
+  for (let k = 1; k < codes.length; k++) sum += k * codes[k];
+  codes.push(sum % 103);
+  return codes.map(c => BC_C128[c]).join('') + BC_C128_STOP;
+};
+
+const BC_C39 = {
+  '0':'nnnwwnwnn','1':'wnnwnnnnw','2':'nnwwnnnnw','3':'wnwwnnnnn','4':'nnnwwnnnw',
+  '5':'wnnwwnnnn','6':'nnwwwnnnn','7':'nnnwnnwnw','8':'wnnwnnwnn','9':'nnwwnnwnn',
+  'A':'wnnnnwnnw','B':'nnwnnwnnw','C':'wnwnnwnnn','D':'nnnnwwnnw','E':'wnnnwwnnn',
+  'F':'nnwnwwnnn','G':'nnnnnwwnw','H':'wnnnnwwnn','I':'nnwnnwwnn','J':'nnnnwwwnn',
+  'K':'wnnnnnnww','L':'nnwnnnnww','M':'wnwnnnnwn','N':'nnnnwnnww','O':'wnnnwnnwn',
+  'P':'nnwnwnnwn','Q':'nnnnnnwww','R':'wnnnnnwwn','S':'nnwnnnwwn','T':'nnnnwnwwn',
+  'U':'wwnnnnnnw','V':'nwwnnnnnw','W':'wwwnnnnnn','X':'nwnnwnnnw','Y':'wwnnwnnnn',
+  'Z':'nwwnwnnnn','-':'nwnnnnwnw','.':'wwnnnnwnn',' ':'nwwnnnwnn','$':'nwnwnwnnn',
+  '/':'nwnwnnnwn','+':'nwnnnwnwn','%':'nnnwnwnwn','*':'nwnnwnwnn',
+};
+
+const bcCode39 = (text) => {
+  const parts = [];
+  for (const ch of ('*' + text.toUpperCase() + '*')) {
+    const pat = BC_C39[ch];
+    if (!pat) return null;
+    let s = '';
+    pat.split('').forEach((w, idx) => { s += (idx % 2 === 0 ? '1' : '0').repeat(w === 'w' ? 3 : 1); });
+    parts.push(s);
+  }
+  return parts.join('0');
+};
+
+const BC_ITF = ['nnwwn','wnnnw','nwnnw','wwnnn','nnwnw','wnwnn','nwwnn','nnnww','wnnwn','nwnwn'];
+
+const bcItf = (digits) => {
+  let code = digits;
+  if (code.length % 2) code = '0' + code;
+  let out = '1010';
+  for (let i = 0; i < code.length; i += 2) {
+    const bars = BC_ITF[Number(code[i])], spaces = BC_ITF[Number(code[i + 1])];
+    for (let j = 0; j < 5; j++) {
+      out += '1'.repeat(bars[j] === 'w' ? 3 : 1);
+      out += '0'.repeat(spaces[j] === 'w' ? 3 : 1);
+    }
+  }
+  return out + '11101';
+};
+
+// ── QR ─────────────────────────────────────────────────────────────────────
+// Байтовый режим, версии 1–10: этого хватает на номер карты или ссылку.
+const QR_BLOCKS = {"1L":[7,1,19],"1M":[10,1,16],"1Q":[13,1,13],"1H":[17,1,9],"2L":[10,1,34],"2M":[16,1,28],"2Q":[22,1,22],"2H":[28,1,16],"3L":[15,1,55],"3M":[26,1,44],"3Q":[18,2,17],"3H":[22,2,13],"4L":[20,1,80],"4M":[18,2,32],"4Q":[26,2,24],"4H":[16,4,9],"5L":[26,1,108],"5M":[24,2,43],"5Q":[18,2,15,2,16],"5H":[22,2,11,2,12],"6L":[18,2,68],"6M":[16,4,27],"6Q":[24,4,19],"6H":[28,4,15],"7L":[20,2,78],"7M":[18,4,31],"7Q":[18,2,14,4,15],"7H":[26,4,13,1,14],"8L":[24,2,97],"8M":[22,2,38,2,39],"8Q":[22,4,18,2,19],"8H":[26,4,14,2,15],"9L":[30,2,116],"9M":[22,3,36,2,37],"9Q":[20,4,16,4,17],"9H":[24,4,12,4,13],"10L":[18,2,68,2,69],"10M":[26,4,43,1,44],"10Q":[24,6,19,2,20],"10H":[28,6,15,2,16]};
+const QR_ALIGN = [[], [], [6,18], [6,22], [6,26], [6,30], [6,34], [6,22,38], [6,24,42], [6,26,46], [6,28,50]];
+const QR_ECC_BITS = { L: 1, M: 0, Q: 3, H: 2 };
+
+const QR_EXP = new Uint8Array(512);
+const QR_LOG = new Uint8Array(256);
+(() => {
+  let x = 1;
+  for (let i = 0; i < 255; i++) { QR_EXP[i] = x; QR_LOG[x] = i; x <<= 1; if (x & 0x100) x ^= 0x11d; }
+  for (let i = 255; i < 512; i++) QR_EXP[i] = QR_EXP[i - 255];
+})();
+const qrMul = (a, b) => (a === 0 || b === 0) ? 0 : QR_EXP[QR_LOG[a] + QR_LOG[b]];
+
+const qrGenPoly = (n) => {
+  let poly = [1];
+  for (let i = 0; i < n; i++) {
+    const next = new Array(poly.length + 1).fill(0);
+    for (let j = 0; j < poly.length; j++) {
+      next[j] ^= poly[j];
+      next[j + 1] ^= qrMul(poly[j], QR_EXP[i]);
+    }
+    poly = next;
+  }
+  return poly;
+};
+
+const qrEcc = (data, ecLen) => {
+  const gen = qrGenPoly(ecLen);
+  const res = new Array(data.length + ecLen).fill(0);
+  data.forEach((b, i) => { res[i] = b; });
+  for (let i = 0; i < data.length; i++) {
+    const factor = res[i];
+    if (!factor) continue;
+    for (let j = 0; j < gen.length; j++) res[i + j] ^= qrMul(gen[j], factor);
+  }
+  return res.slice(data.length);
+};
+
+const qrBlockSpec = (version, level) => {
+  const raw = QR_BLOCKS[`${version}${level}`];
+  if (!raw) return null;
+  const blocks = [];
+  for (let i = 1; i < raw.length; i += 2) {
+    for (let n = 0; n < raw[i]; n++) blocks.push(raw[i + 1]);
+  }
+  return { ec: raw[0], blocks };
+};
+
+const qrFormatBits = (level, mask) => {
+  const data = (QR_ECC_BITS[level] << 3) | mask;
+  let rem = data;
+  for (let i = 0; i < 10; i++) rem = (rem << 1) ^ (((rem >> 9) & 1) * 0x537);
+  return (((data << 10) | rem) ^ 0x5412) & 0x7fff;
+};
+
+const qrVersionBits = (version) => {
+  let rem = version;
+  for (let i = 0; i < 12; i++) rem = (rem << 1) ^ (((rem >> 11) & 1) * 0x1f25);
+  return ((version << 12) | rem) & 0x3ffff;
+};
+
+const QR_MASKS = [
+  (i, j) => (i + j) % 2 === 0,
+  (i, j) => i % 2 === 0,
+  (i, j) => j % 3 === 0,
+  (i, j) => (i + j) % 3 === 0,
+  (i, j) => (Math.floor(i / 2) + Math.floor(j / 3)) % 2 === 0,
+  (i, j) => ((i * j) % 2) + ((i * j) % 3) === 0,
+  (i, j) => (((i * j) % 2) + ((i * j) % 3)) % 2 === 0,
+  (i, j) => (((i + j) % 2) + ((i * j) % 3)) % 2 === 0,
+];
+
+// В коде карты может оказаться кириллица — кодируем как UTF-8.
+const qrUtf8Bytes = (str) => {
+  const out = [];
+  for (const ch of unescape(encodeURIComponent(str))) out.push(ch.charCodeAt(0) & 0xff);
+  return out;
+};
+
+const qrBuildMatrix = (version, level, codewords, mask) => {
+  const size = 17 + 4 * version;
+  const m = Array.from({ length: size }, () => new Array(size).fill(0));
+  const reserved = Array.from({ length: size }, () => new Array(size).fill(false));
+  const put = (r, c, v) => { m[r][c] = v ? 1 : 0; reserved[r][c] = true; };
+
+  [[0, 0], [size - 7, 0], [0, size - 7]].forEach(([r0, c0]) => {
+    for (let r = -1; r <= 7; r++) {
+      for (let c = -1; c <= 7; c++) {
+        const rr = r0 + r, cc = c0 + c;
+        if (rr < 0 || rr >= size || cc < 0 || cc >= size) continue;
+        const on = (r >= 0 && r <= 6 && (c === 0 || c === 6))
+          || (c >= 0 && c <= 6 && (r === 0 || r === 6))
+          || (r >= 2 && r <= 4 && c >= 2 && c <= 4);
+        put(rr, cc, on);
+      }
+    }
+  });
+
+  for (let i = 8; i < size - 8; i++) {
+    put(6, i, i % 2 === 0);
+    put(i, 6, i % 2 === 0);
+  }
+
+  const coords = QR_ALIGN[version] || [];
+  coords.forEach(r0 => coords.forEach(c0 => {
+    const nearFinder = (r0 <= 8 && c0 <= 8) || (r0 <= 8 && c0 >= size - 9) || (r0 >= size - 9 && c0 <= 8);
+    if (nearFinder) return;
+    for (let r = -2; r <= 2; r++) {
+      for (let c = -2; c <= 2; c++) put(r0 + r, c0 + c, Math.max(Math.abs(r), Math.abs(c)) !== 1);
+    }
+  }));
+
+  put(size - 8, 8, true);
+  for (let i = 0; i < 9; i++) {
+    if (!reserved[8][i]) put(8, i, false);
+    if (!reserved[i][8]) put(i, 8, false);
+  }
+  for (let i = 0; i < 8; i++) {
+    if (!reserved[8][size - 1 - i]) put(8, size - 1 - i, false);
+    if (!reserved[size - 1 - i][8]) put(size - 1 - i, 8, false);
+  }
+  if (version >= 7) {
+    const vb = qrVersionBits(version);
+    for (let i = 0; i < 18; i++) {
+      const bit = (vb >> i) & 1;
+      put(Math.floor(i / 3), size - 11 + (i % 3), bit);
+      put(size - 11 + (i % 3), Math.floor(i / 3), bit);
+    }
+  }
+
+  // Данные — «змейкой» снизу справа, по две колонки, минуя колонку 6
+  const bits = [];
+  codewords.forEach(b => { for (let i = 7; i >= 0; i--) bits.push((b >> i) & 1); });
+  let dir = -1, row = size - 1, col = size - 1, idx = 0;
+  while (col > 0) {
+    if (col === 6) col--;
+    for (;;) {
+      for (let c = 0; c < 2; c++) {
+        const cc = col - c;
+        if (reserved[row][cc]) continue;
+        const bit = idx < bits.length ? bits[idx++] : 0;
+        m[row][cc] = QR_MASKS[mask](row, cc) ? bit ^ 1 : bit;
+      }
+      row += dir;
+      if (row < 0 || row >= size) { row -= dir; dir = -dir; break; }
+    }
+    col -= 2;
+  }
+
+  // Служебная информация. Порядок задан стандартом: младший бит формата
+  // ложится в (строка 0, колонка 8), а не наоборот — перепутать легко.
+  const fb = qrFormatBits(level, mask);
+  for (let i = 0; i < 15; i++) {
+    const bit = (fb >> i) & 1;
+    if (i < 6) m[i][8] = bit;
+    else if (i === 6) m[7][8] = bit;
+    else if (i === 7) m[8][8] = bit;
+    else if (i === 8) m[8][7] = bit;
+    else m[8][14 - i] = bit;
+    if (i < 8) m[8][size - 1 - i] = bit;
+    else m[size - 15 + i][8] = bit;
+  }
+  return m;
+};
+
+const qrPenalty = (m) => {
+  const size = m.length;
+  let score = 0;
+  const runScore = (get) => {
+    for (let a = 0; a < size; a++) {
+      let run = 1;
+      for (let b = 1; b < size; b++) {
+        if (get(a, b) === get(a, b - 1)) run++;
+        else { if (run >= 5) score += 3 + (run - 5); run = 1; }
+      }
+      if (run >= 5) score += 3 + (run - 5);
+    }
+  };
+  runScore((a, b) => m[a][b]);
+  runScore((a, b) => m[b][a]);
+  for (let r = 0; r < size - 1; r++) {
+    for (let c = 0; c < size - 1; c++) {
+      const v = m[r][c];
+      if (v === m[r][c + 1] && v === m[r + 1][c] && v === m[r + 1][c + 1]) score += 3;
+    }
+  }
+  const P1 = [1,0,1,1,1,0,1,0,0,0,0];
+  const P2 = [0,0,0,0,1,0,1,1,1,0,1];
+  const hasAt = (get, a, b, pat) => pat.every((p, k) => get(a, b + k) === p);
+  for (let a = 0; a < size; a++) {
+    for (let b = 0; b + 11 <= size; b++) {
+      if (hasAt((x, y) => m[x][y], a, b, P1) || hasAt((x, y) => m[x][y], a, b, P2)) score += 40;
+      if (hasAt((x, y) => m[y][x], a, b, P1) || hasAt((x, y) => m[y][x], a, b, P2)) score += 40;
+    }
+  }
+  let dark = 0;
+  m.forEach(row => row.forEach(v => { if (v) dark++; }));
+  score += Math.floor(Math.abs((dark * 100) / (size * size) - 50) / 5) * 10;
+  return score;
+};
+
+const qrEncode = (text, level = 'M') => {
+  const bytes = qrUtf8Bytes(text);
+  if (!bytes.length) return null;
+  let version = 0, spec = null;
+  for (let v = 1; v <= 10; v++) {
+    const s = qrBlockSpec(v, level);
+    const capacity = s.blocks.reduce((a, b) => a + b, 0) * 8;
+    if (4 + (v <= 9 ? 8 : 16) + bytes.length * 8 <= capacity) { version = v; spec = s; break; }
+  }
+  if (!version) return null;
+
+  const bits = [];
+  const push = (val, len) => { for (let i = len - 1; i >= 0; i--) bits.push((val >> i) & 1); };
+  push(0b0100, 4);
+  push(bytes.length, version <= 9 ? 8 : 16);
+  bytes.forEach(b => push(b, 8));
+  const totalData = spec.blocks.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < 4 && bits.length < totalData * 8; i++) bits.push(0);
+  while (bits.length % 8) bits.push(0);
+  const codewords = [];
+  for (let i = 0; i < bits.length; i += 8) codewords.push(bits.slice(i, i + 8).reduce((a, b) => (a << 1) | b, 0));
+  const PAD = [0xec, 0x11];
+  const real = codewords.length;
+  while (codewords.length < totalData) codewords.push(PAD[(codewords.length - real) % 2]);
+
+  const dataBlocks = [], eccBlocks = [];
+  let pos = 0;
+  spec.blocks.forEach(len => {
+    const block = codewords.slice(pos, pos + len);
+    pos += len;
+    dataBlocks.push(block);
+    eccBlocks.push(qrEcc(block, spec.ec));
+  });
+  const out = [];
+  const maxData = Math.max.apply(null, spec.blocks);
+  for (let i = 0; i < maxData; i++) dataBlocks.forEach(b => { if (i < b.length) out.push(b[i]); });
+  for (let i = 0; i < spec.ec; i++) eccBlocks.forEach(b => out.push(b[i]));
+
+  let best = null, bestScore = Infinity;
+  for (let mask = 0; mask < 8; mask++) {
+    const matrix = qrBuildMatrix(version, level, out, mask);
+    const s = qrPenalty(matrix);
+    if (s < bestScore) { bestScore = s; best = matrix; }
+  }
+  return best;
+};
+
+// ── Формат карты ───────────────────────────────────────────────────────────
+const CARD_FORMATS = [
+  { id: 'auto',    label: 'Определить автоматически' },
+  { id: 'ean13',   label: 'EAN-13 (13 цифр)'   },
+  { id: 'ean8',    label: 'EAN-8 (8 цифр)'     },
+  { id: 'upca',    label: 'UPC-A (12 цифр)'    },
+  { id: 'code128', label: 'Code 128'           },
+  { id: 'code39',  label: 'Code 39'            },
+  { id: 'itf',     label: 'ITF (чётное число цифр)' },
+  { id: 'qr',      label: 'QR-код'             },
+];
+
+const bcCheckOk = (digits) =>
+  Number(digits[digits.length - 1]) === bcEanCheckDigit(digits.slice(0, -1));
+
+// Если номер выглядит как EAN/UPC, но контрольная цифра не сходится — это либо
+// опечатка, либо просто «похожий» номер. Рисовать EAN нельзя: он бы отсканился
+// другим числом. В таком случае честнее Code 128 — он кодирует цифры как есть.
+const cardAutoFormat = (code) => {
+  const s = (code || '').trim();
+  if (/^\d{13}$/.test(s)) return bcCheckOk(s) ? 'ean13' : 'code128';
+  if (/^\d{12}$/.test(s)) return bcCheckOk(s) ? 'upca' : 'code128';
+  if (/^\d{8}$/.test(s))  return bcCheckOk(s) ? 'ean8' : 'code128';
+  if (/^[\x20-\x7e]+$/.test(s)) return 'code128';
+  return 'qr';
+};
+
+/** {kind:'1d', bits} | {kind:'qr', matrix} | {error} для кода карты. */
+const cardBarcode = (code, format) => {
+  const s = (code || '').trim();
+  if (!s) return { error: 'Номер не указан' };
+  const fmt = (!format || format === 'auto') ? cardAutoFormat(s) : format;
+  const digits = s.replace(/\D/g, '');
+  try {
+    if (fmt === 'ean13') {
+      if (digits.length < 12) return { error: 'Для EAN-13 нужно 12–13 цифр' };
+      return { kind: '1d', bits: bcEan13(digits), fmt };
+    }
+    if (fmt === 'ean8') {
+      if (digits.length < 7) return { error: 'Для EAN-8 нужно 7–8 цифр' };
+      return { kind: '1d', bits: bcEan8(digits), fmt };
+    }
+    if (fmt === 'upca') {
+      if (digits.length < 11) return { error: 'Для UPC-A нужно 11–12 цифр' };
+      return { kind: '1d', bits: bcUpcA(digits), fmt };
+    }
+    if (fmt === 'itf') {
+      if (!digits.length) return { error: 'ITF кодирует только цифры' };
+      return { kind: '1d', bits: bcItf(digits), fmt };
+    }
+    if (fmt === 'code39') {
+      const bits = bcCode39(s);
+      return bits ? { kind: '1d', bits, fmt } : { error: 'Code 39 не поддерживает эти символы' };
+    }
+    if (fmt === 'qr') {
+      const matrix = qrEncode(s);
+      return matrix ? { kind: 'qr', matrix, fmt } : { error: 'Слишком длинный код для QR' };
+    }
+    const bits = bcCode128(s);
+    return bits ? { kind: '1d', bits, fmt: 'code128' } : { error: 'Code 128 не поддерживает эти символы' };
+  } catch (e) {
+    return { error: 'Не получилось построить штрихкод' };
+  }
+};
+
+/** Полосы штрихкода. Соседние модули склеиваем в один прямоугольник —
+ *  иначе на длинном коде получаются сотни узлов SVG.
+ *  Белые поля по краям («тихая зона») — часть кода, а не отступ вёрстки:
+ *  без них сканер не находит границы и читает через раз. Стандарт просит
+ *  не меньше 10 модулей для EAN/UPC — их и рисуем внутри самого SVG. */
+const BARCODE_QUIET = 12;
+
+function BarcodeStripes({ bits, height = 120 }) {
+  const rects = [];
+  let run = 0;
+  for (let i = 0; i <= bits.length; i++) {
+    if (bits[i] === '1') { run++; continue; }
+    if (run) {
+      rects.push(<rect key={i} x={i - run + BARCODE_QUIET} y="0" width={run} height={height} fill="#000" />);
+      run = 0;
+    }
+  }
+  const total = bits.length + BARCODE_QUIET * 2;
+  return (
+    <svg
+      viewBox={`0 0 ${total} ${height}`}
+      preserveAspectRatio="none"
+      width="100%"
+      height={height}
+      shapeRendering="crispEdges"
+    >
+      <rect x="0" y="0" width={total} height={height} fill="#fff" />
+      {rects}
+    </svg>
+  );
+}
+
+// Тихая зона QR по стандарту — 4 модуля с каждой стороны.
+const QR_QUIET = 4;
+
+function QrSquares({ matrix, size = 260 }) {
+  const n = matrix.length;
+  const rects = [];
+  matrix.forEach((row, r) => {
+    let run = 0;
+    for (let c = 0; c <= n; c++) {
+      if (row[c] === 1) { run++; continue; }
+      if (run) {
+        rects.push(<rect key={`${r}-${c}`} x={c - run + QR_QUIET} y={r + QR_QUIET} width={run} height="1" fill="#000" />);
+        run = 0;
+      }
+    }
+  });
+  const total = n + QR_QUIET * 2;
+  // Сторону округляем вниз до кратной числу модулей: при дробном модуле
+  // (280px на 37 модулей — 7.57px) края «плывут» на доли пикселя, и часть
+  // сканеров такой код уже не берёт.
+  const px = Math.max(total, Math.floor(size / total) * total);
+  return (
+    <svg
+      viewBox={`0 0 ${total} ${total}`}
+      width={px}
+      height={px}
+      shapeRendering="crispEdges"
+      style={{ maxWidth: '100%' }}
+    >
+      <rect x="0" y="0" width={total} height={total} fill="#fff" />
+      {rects}
+    </svg>
+  );
+}
+
+const CARD_CATEGORIES = ['Продукты', 'Аптека', 'Одежда', 'Заправка', 'Кафе', 'Спорт', 'Красота', 'Дом', 'Другое'];
+const CARD_COLORS = ['#0f172a', '#b91c1c', '#c2410c', '#a16207', '#15803d', '#0f766e', '#1d4ed8', '#6d28d9', '#be185d', '#4b5563'];
+
+const newLoyaltyCard = () => ({
+  id: crypto.randomUUID(),
+  name: '',
+  category: '',
+  code: '',
+  format: 'auto',
+  note: '',
+  color: CARD_COLORS[Math.floor(Math.random() * CARD_COLORS.length)],
+  photo: '',
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+});
+
+function LoyaltyCardsView({ data, setData }) {
+  const cards = data.loyaltyCards || [];
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState('all');
+  const [editing, setEditing] = useState(null);
+  const [opened, setOpened] = useState(null);
+
+  const save = (card) => {
+    setData(d => {
+      const list = d.loyaltyCards || [];
+      const exists = list.some(c => c.id === card.id);
+      return {
+        ...d,
+        loyaltyCards: exists ? list.map(c => c.id === card.id ? card : c) : [...list, card],
+      };
+    });
+    setEditing(null);
+  };
+
+  const remove = (card) => {
+    if (!confirm(`Удалить карту «${card.name || 'без названия'}»?`)) return;
+    if (card.photo) deletePhoto(card.photo);
+    setData(d => ({
+      ...d,
+      loyaltyCards: (d.loyaltyCards || []).filter(c => c.id !== card.id),
+      deletedIds: withDeletedId(d, 'loyaltyCards', card.id),
+    }));
+    setOpened(null);
+    setEditing(null);
+  };
+
+  // Фильтр по категориям строим из самих карт: показывать пустые незачем.
+  const usedCategories = [...new Set(cards.map(c => (c.category || '').trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'ru'));
+
+  const q = query.trim().toLowerCase();
+  const filtered = cards.filter(c => {
+    if (category !== 'all' && (c.category || '') !== category) return false;
+    if (!q) return true;
+    return [c.name, c.category, c.code, c.note].some(v => (v || '').toLowerCase().includes(q));
+  }).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ru'));
+
+  // Открытую карту берём из актуального массива: после правки она должна
+  // перерисоваться, а не остаться снимком на момент открытия.
+  const openedCard = opened ? cards.find(c => c.id === opened) : null;
+
+  return (
+    <div>
+      <button
+        onClick={() => setEditing(newLoyaltyCard())}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-4"
+      >
+        <Icon name="plus" size={18} />
+        Новая карта
+      </button>
+
+      {cards.length > 0 && (
+        <>
+          <div className="relative mb-3">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-subtle)] pointer-events-none">
+              <Icon name="search" size={16} />
+            </span>
+            <input
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Поиск по названию, категории, номеру"
+              className="!pl-10"
+            />
+            {query && (
+              <button
+                onClick={() => setQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-lg text-[var(--text-subtle)] hover:text-[var(--text)]"
+              >
+                <Icon name="x" size={14} />
+              </button>
+            )}
+          </div>
+
+          {usedCategories.length > 0 && (
+            <div className="flex gap-1.5 mb-4 flex-wrap">
+              <button
+                onClick={() => setCategory('all')}
+                className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${
+                  category === 'all'
+                    ? 'bg-[var(--text)] text-white'
+                    : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'
+                }`}
+              >Все</button>
+              {usedCategories.map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => setCategory(cat)}
+                  className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${
+                    category === cat
+                      ? 'bg-[var(--text)] text-white'
+                      : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'
+                  }`}
+                >{cat}</button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {filtered.length === 0 ? (
+        <EmptyState
+          title={cards.length === 0 ? 'Карт пока нет' : 'Ничего не нашлось'}
+          text={cards.length === 0
+            ? 'Добавьте карту магазина — на кассе откроете её и покажете штрихкод с экрана'
+            : 'Попробуйте другой запрос или снимите фильтр'}
+        />
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+          {filtered.map(card => (
+            <button
+              key={card.id}
+              onClick={() => setOpened(card.id)}
+              className="rounded-2xl p-3.5 text-left text-white min-h-[92px] flex flex-col justify-between transition-transform active:scale-[0.98]"
+              style={{ background: card.color || CARD_COLORS[0] }}
+            >
+              <div className="font-medium leading-snug break-words">{card.name || 'Без названия'}</div>
+              <div className="flex items-center justify-between gap-2 mt-2">
+                <span className="text-[10px] uppercase tracking-wide opacity-70 truncate">
+                  {card.category || 'без категории'}
+                </span>
+                <span className="opacity-70 flex-shrink-0"><Icon name="creditCard" size={14} /></span>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {openedCard && (
+        <LoyaltyCardScreen
+          card={openedCard}
+          onClose={() => setOpened(null)}
+          onEdit={() => { setEditing(openedCard); setOpened(null); }}
+        />
+      )}
+
+      {editing && (
+        <LoyaltyCardModal
+          key={editing.id}
+          initial={editing}
+          existingCategories={usedCategories}
+          onSave={save}
+          onDelete={() => remove(editing)}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Экран показа карты на кассе: белый фон и чёрный код независимо от темы —
+// сканеру нужен контраст, а тёмная тема его убивает.
+function LoyaltyCardScreen({ card, onClose, onEdit }) {
+  const [showPhoto, setShowPhoto] = useState(false);
+  const built = useMemo(() => cardBarcode(card.code, card.format), [card.code, card.format]);
+
+  useEffect(() => {
+    const handler = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  // Экран не должен гаснуть, пока кассир ищет сканер (там, где браузер умеет).
+  useEffect(() => {
+    let lock = null;
+    let cancelled = false;
+    if (navigator.wakeLock?.request) {
+      navigator.wakeLock.request('screen')
+        .then(l => { if (cancelled) l.release().catch(() => {}); else lock = l; })
+        .catch(() => {});
+    }
+    return () => { cancelled = true; if (lock) lock.release().catch(() => {}); };
+  }, []);
+
+  return ReactDOM.createPortal(
+    <div className="fixed inset-0 z-50 bg-white text-black overflow-y-auto fade-in">
+      <div className="min-h-full flex flex-col">
+        <div className="flex items-center justify-between gap-3 px-4 py-4 border-b border-black/10">
+          <div className="min-w-0">
+            <div className="font-display text-xl truncate">{card.name || 'Без названия'}</div>
+            {card.category && <div className="text-xs text-black/50 truncate">{card.category}</div>}
+          </div>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button onClick={onEdit} className="p-2.5 rounded-lg hover:bg-black/5 text-black/60" title="Изменить">
+              <Icon name="edit" size={18} />
+            </button>
+            <button onClick={onClose} className="p-2.5 rounded-lg hover:bg-black/5 text-black/60" title="Закрыть">
+              <Icon name="x" size={20} />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 flex flex-col items-center justify-center gap-5 px-4 py-8">
+          {built.error ? (
+            <div className="text-center max-w-sm">
+              <div className="text-black/60 text-sm mb-3">{built.error}</div>
+              {card.code && (
+                <div className="font-mono text-2xl tracking-[0.15em] break-all">{card.code}</div>
+              )}
+            </div>
+          ) : built.kind === 'qr' ? (
+            <QrSquares matrix={built.matrix} size={280} />
+          ) : (
+            <div className="w-full max-w-xl bg-white px-3">
+              <BarcodeStripes bits={built.bits} height={150} />
+            </div>
+          )}
+
+          {card.code && (
+            <div className="font-mono text-xl tracking-[0.2em] text-center break-all px-4">{card.code}</div>
+          )}
+
+          {!built.error && (
+            <div className="text-[11px] text-black/40 text-center">
+              Поднимите яркость экрана, если сканер не считывает
+            </div>
+          )}
+
+          {card.note && (
+            <div className="text-sm text-black/60 text-center max-w-md whitespace-pre-wrap break-words">{card.note}</div>
+          )}
+
+          {card.photo && (
+            showPhoto ? (
+              <img src={`/api/photos/${card.photo}`} alt="" className="max-w-full max-h-[50vh] rounded-2xl border border-black/10" />
+            ) : (
+              <button onClick={() => setShowPhoto(true)} className="text-sm text-black/50 underline">
+                Показать фото карты
+              </button>
+            )
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function LoyaltyCardModal({ initial, existingCategories, onSave, onDelete, onClose }) {
+  const [f, setF] = useState({ ...initial });
+  const [uploading, setUploading] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const set = (patch) => setF(prev => ({ ...prev, ...patch }));
+
+  const preview = useMemo(
+    () => f.code.trim() ? cardBarcode(f.code, f.format) : null,
+    [f.code, f.format]);
+  const autoFmt = f.format === 'auto' && f.code.trim() ? cardAutoFormat(f.code) : null;
+
+  const pickPhoto = async (file) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      set({ photo: await uploadPhoto(file) });
+    } catch {
+      alert('Не удалось загрузить фото');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const submit = () => {
+    if (!f.name.trim()) return alert('Введите название карты');
+    if (!f.code.trim()) return alert('Введите номер карты');
+    // Как и в хотелках: прежний файл удаляем в момент сохранения, а не замены.
+    if (initial.photo && initial.photo !== f.photo) deletePhoto(initial.photo);
+    onSave({
+      ...f,
+      name: f.name.trim(),
+      category: (f.category || '').trim(),
+      code: f.code.trim(),
+      note: (f.note || '').trim(),
+    });
+  };
+
+  const categoryOptions = [...new Set([...CARD_CATEGORIES, ...existingCategories])];
+
+  return (
+    <Modal onClose={onClose} title={initial.name ? 'Карта' : 'Новая карта'}>
+      <div className="space-y-4">
+        <div>
+          <label>Название</label>
+          <input
+            value={f.name}
+            onChange={e => set({ name: e.target.value })}
+            placeholder="Пятёрочка, Лента, Спортмастер…"
+            autoFocus={!initial.name}
+          />
+        </div>
+
+        <div>
+          <label>Категория</label>
+          <input
+            value={f.category}
+            onChange={e => set({ category: e.target.value })}
+            placeholder="Продукты"
+            list="loyalty-card-categories"
+          />
+          <datalist id="loyalty-card-categories">
+            {categoryOptions.map(c => <option key={c} value={c} />)}
+          </datalist>
+          <div className="flex gap-1.5 mt-2 flex-wrap">
+            {CARD_CATEGORIES.slice(0, 6).map(c => (
+              <button
+                key={c}
+                onClick={() => set({ category: c })}
+                className={`text-xs px-2.5 py-1 rounded-lg border transition-all ${
+                  f.category === c
+                    ? 'border-[var(--text)] bg-[var(--surface)] text-[var(--text)]'
+                    : 'border-[var(--border)] text-[var(--text-muted)]'
+                }`}
+              >{c}</button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label>Номер карты</label>
+          <div className="flex gap-2">
+            <input
+              value={f.code}
+              onChange={e => set({ code: e.target.value })}
+              placeholder="Цифры под штрихкодом"
+              inputMode="text"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {typeof window !== 'undefined' && 'BarcodeDetector' in window && (
+              <button
+                onClick={() => setScanning(true)}
+                className="btn-secondary flex-shrink-0 px-4"
+                title="Сканировать камерой"
+              >
+                <Icon name="camera" size={16} />
+              </button>
+            )}
+          </div>
+          <div className="text-[11px] text-[var(--text-subtle)] mt-1.5">
+            Перепишите цифры, напечатанные под штрихкодом на карте — по ним он и рисуется.
+          </div>
+        </div>
+
+        <div>
+          <label>Формат</label>
+          <select value={f.format} onChange={e => set({ format: e.target.value })}>
+            {CARD_FORMATS.map(fmt => <option key={fmt.id} value={fmt.id}>{fmt.label}</option>)}
+          </select>
+          {autoFmt && (
+            <div className="text-[11px] text-[var(--text-subtle)] mt-1.5">
+              Определён как {CARD_FORMATS.find(x => x.id === autoFmt)?.label || autoFmt}.
+              Если сканер не читает — выберите формат вручную.
+            </div>
+          )}
+        </div>
+
+        {preview && (
+          <div className="bg-white rounded-2xl border border-[var(--border)] p-3 flex justify-center">
+            {preview.error ? (
+              <div className="text-sm text-red-600 py-4 text-center">{preview.error}</div>
+            ) : preview.kind === 'qr' ? (
+              <QrSquares matrix={preview.matrix} size={150} />
+            ) : (
+              <div className="w-full"><BarcodeStripes bits={preview.bits} height={70} /></div>
+            )}
+          </div>
+        )}
+
+        <div>
+          <label>Цвет</label>
+          <div className="flex gap-2 flex-wrap">
+            {CARD_COLORS.map(color => (
+              <button
+                key={color}
+                onClick={() => set({ color })}
+                className={`w-8 h-8 rounded-full transition-all ${f.color === color ? 'ring-2 ring-offset-2 ring-[var(--text)]' : ''}`}
+                style={{ background: color }}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label>Заметка</label>
+          <textarea
+            value={f.note}
+            onChange={e => set({ note: e.target.value })}
+            rows={2}
+            placeholder="Скидка 10%, чей аккаунт, что даёт"
+          />
+        </div>
+
+        <div>
+          <label>Фото карты</label>
+          <div className="flex items-center gap-3">
+            {f.photo ? (
+              <div className="relative">
+                <img src={`/api/photos/${f.photo}`} alt="" className="w-24 h-16 object-cover rounded-xl border border-[var(--border)]" />
+                <button
+                  onClick={() => set({ photo: '' })}
+                  className="absolute -top-2 -right-2 bg-[var(--surface)] border border-[var(--border)] rounded-full p-1 text-[var(--text-muted)] hover:text-red-500"
+                >
+                  <Icon name="x" size={12} />
+                </button>
+              </div>
+            ) : (
+              <div className="w-24 h-16 rounded-xl border border-dashed border-[var(--border-strong)] flex items-center justify-center text-[var(--text-subtle)]">
+                <Icon name="creditCard" size={18} />
+              </div>
+            )}
+            <label className="btn-secondary text-sm cursor-pointer">
+              {uploading ? 'Загрузка…' : 'Выбрать файл'}
+              <input type="file" accept="image/*" className="hidden" onChange={e => pickPhoto(e.target.files?.[0])} />
+            </label>
+          </div>
+          <div className="text-[11px] text-[var(--text-subtle)] mt-1.5">
+            Запасной вариант: если штрихкод не считывается с экрана, покажете фото.
+          </div>
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          {initial.name && (
+            <button onClick={onDelete} className="btn-secondary px-4 text-red-500">
+              <Icon name="trash" size={16} />
+            </button>
+          )}
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+
+      {scanning && (
+        <BarcodeScanModal
+          onClose={() => setScanning(false)}
+          onDetected={(code, fmt) => { set({ code, format: fmt || 'auto' }); setScanning(false); }}
+        />
+      )}
+    </Modal>
+  );
+}
+
+// Сканирование камерой — через встроенный в браузер BarcodeDetector (есть в
+// Chrome на Android). Кнопка показывается только когда API реально доступен,
+// поэтому отдельного «не поддерживается» пользователь не увидит.
+const SCAN_FORMAT_MAP = {
+  ean_13: 'ean13', ean_8: 'ean8', upc_a: 'upca', upc_e: 'code128',
+  code_128: 'code128', code_39: 'code39', itf: 'itf', codabar: 'code128',
+  qr_code: 'qr', data_matrix: 'qr',
+};
+
+function BarcodeScanModal({ onClose, onDetected }) {
+  const videoRef = useRef(null);
+  const [error, setError] = useState('');
+  // Колбэк приходит новой функцией на каждый рендер родителя. Держим его в
+  // ref, иначе эффект пересоздавался бы и камера перезапускалась на ходу.
+  const onDetectedRef = useRef(onDetected);
+  onDetectedRef.current = onDetected;
+
+  useEffect(() => {
+    let stream = null, timer = null, stopped = false;
+    const start = async () => {
+      try {
+        const Detector = window.BarcodeDetector;
+        const supported = await Detector.getSupportedFormats();
+        const detector = new Detector({ formats: supported });
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' },
+        });
+        if (stopped) { stream.getTracks().forEach(t => t.stop()); return; }
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play().catch(() => {});
+        }
+        const tick = async () => {
+          if (stopped || !videoRef.current) return;
+          try {
+            const found = await detector.detect(videoRef.current);
+            if (found && found.length) {
+              const hit = found[0];
+              onDetectedRef.current(hit.rawValue, SCAN_FORMAT_MAP[hit.format] || 'auto');
+              return;
+            }
+          } catch (_) {}
+          timer = setTimeout(tick, 350);
+        };
+        timer = setTimeout(tick, 500);
+      } catch (e) {
+        setError('Камера недоступна — введите номер вручную');
+      }
+    };
+    start();
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      if (stream) stream.getTracks().forEach(t => t.stop());
+    };
+  }, []);
+
+  return ReactDOM.createPortal(
+    <div className="fixed inset-0 z-[60] bg-black flex flex-col fade-in">
+      <div className="flex items-center justify-between px-4 py-4 text-white">
+        <span className="text-sm">Наведите на штрихкод карты</span>
+        <button onClick={onClose} className="p-2 rounded-lg hover:bg-white/10">
+          <Icon name="x" size={20} />
+        </button>
+      </div>
+      <div className="flex-1 flex items-center justify-center p-4">
+        {error
+          ? <div className="text-white/70 text-sm text-center">{error}</div>
+          : <video ref={videoRef} playsInline muted className="max-w-full max-h-full rounded-2xl" />}
+      </div>
+    </div>,
+    document.body
   );
 }
 
