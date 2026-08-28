@@ -20515,6 +20515,7 @@ function WishlistView({ data, setData }) {
           key={editing.id}
           initial={editing}
           categories={cats}
+          settings={data.settings}
           onSave={saveItem}
           onClose={() => setEditing(null)}
         />
@@ -20601,7 +20602,128 @@ function WishlistCard({ item, category, showCategory, onEdit, onDelete, onToggle
   );
 }
 
-function WishlistItemModal({ initial, categories, onSave, onClose }) {
+// ── Хотелки: скриншот товара → ИИ ───────────────────────────────────────────
+// Сервер не всегда может прочитать страницу магазина (WB/Ozon/Маркет и другие
+// закрывают такие запросы антибот-защитой), а на скриншоте, снятом самим
+// человеком в браузере, эта защита уже пройдена. Модель распознаёт название,
+// цену и рамку именно фотографии товара — без цены, кнопок, бейджей и шапки
+// сайта; саму вырезку рамки делаем сами через canvas, а не просим модель
+// прислать картинку целиком (она этого и не умеет).
+// Ключ и провайдер — те же, что уже настроены для голосового помощника
+// (Настройки → Голосовой помощник): заводить для этого отдельный ключ незачем.
+const WISHLIST_SCREENSHOT_PROMPT = `Определи товар на скриншоте страницы интернет-магазина. Ответь СТРОГО одним JSON-объектом, без markdown и пояснений, в таком формате:
+{"title": "название товара или null", "price": "число без пробелов и знака валюты, например 1299.90, или null", "currency": "RUB / USD / ... или null", "photo": {"x":0.12,"y":0.30,"width":0.5,"height":0.4} или null}
+Поля x/y/width/height внутри "photo" — доли ширины и высоты ВСЕГО скриншота (числа от 0 до 1), задающие рамку ИМЕННО фотографии товара — без цены, кнопок, бейджей, шапки сайта и прочего интерфейса. Если на скриншоте нет отдельной фотографии товара — верни "photo": null.`;
+
+const wishlistParseAIResponse = (text) => {
+  let s = (text || '').trim();
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) s = fence[1].trim();
+  const start = s.indexOf('{'), end = s.lastIndexOf('}');
+  if (start === -1 || end === -1 || end < start) throw new Error('ИИ ответил не JSON-ом');
+  return JSON.parse(s.slice(start, end + 1));
+};
+
+async function wishlistParseScreenshot(base64, mediaType, settings) {
+  const provider = settings.voiceProvider || 'claude';
+  const key = (settings.voiceApiKey || '').trim();
+  if (!key) throw new Error('no_key');
+  const model = (settings.voiceModel || '').trim() || (provider === 'claude' ? 'claude-sonnet-4-6' : 'gpt-4o');
+
+  let text;
+  if (provider === 'claude') {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 500,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+            { type: 'text', text: WISHLIST_SCREENSHOT_PROMPT },
+          ],
+        }],
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || `Claude API ${res.status}`);
+    }
+    const resp = await res.json();
+    text = resp.content?.[0]?.text || '';
+  } else if (provider === 'openai') {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+      body: JSON.stringify({
+        model,
+        max_tokens: 500,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: WISHLIST_SCREENSHOT_PROMPT },
+            { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } },
+          ],
+        }],
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || `OpenAI API ${res.status}`);
+    }
+    const resp = await res.json();
+    text = resp.choices?.[0]?.message?.content || '';
+  } else {
+    throw new Error('Скриншот распознаётся только с Claude или OpenAI — выберите провайдера в Настройках');
+  }
+
+  return wishlistParseAIResponse(text);
+}
+
+const blobToBase64 = (blob) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+  reader.onerror = () => reject(new Error('не удалось прочитать файл'));
+  reader.readAsDataURL(blob);
+});
+
+const loadImageFromBlob = (blob) => new Promise((resolve, reject) => {
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+  img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('не удалось открыть изображение')); };
+  img.src = url;
+});
+
+// Вырезает часть картинки по рамке в долях (0..1) её ширины/высоты — именно
+// так, а не в пикселях, потому что рамку от ИИ применяем к тому же
+// сжатому изображению, что ему показывали, независимо от его точных размеров.
+async function wishlistCropPhoto(blob, box) {
+  const img = await loadImageFromBlob(blob);
+  const clamp01 = (v) => Math.max(0, Math.min(1, Number(v) || 0));
+  const x = clamp01(box.x), y = clamp01(box.y);
+  const width = Math.max(0.02, Math.min(1 - x, clamp01(box.width) || 0.3));
+  const height = Math.max(0.02, Math.min(1 - y, clamp01(box.height) || 0.3));
+  const sx = Math.round(x * img.naturalWidth);
+  const sy = Math.round(y * img.naturalHeight);
+  const sw = Math.max(1, Math.round(width * img.naturalWidth));
+  const sh = Math.max(1, Math.round(height * img.naturalHeight));
+  const canvas = document.createElement('canvas');
+  canvas.width = sw; canvas.height = sh;
+  canvas.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(b => b ? resolve(b) : reject(new Error('не удалось вырезать фото')), 'image/jpeg', 0.9);
+  });
+}
+
+function WishlistItemModal({ initial, categories, settings, onSave, onClose }) {
   const [f, setF] = useState({
     ...initial,
     categoryId: initial.categoryId || categories[0]?.id || '',
@@ -20614,7 +20736,63 @@ function WishlistItemModal({ initial, categories, onSave, onClose }) {
   const [parseLog, setParseLog] = useState([]);
   const [showParseLog, setShowParseLog] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [screenshotFile, setScreenshotFile] = useState(null);
+  const [screenshotPreview, setScreenshotPreview] = useState('');
+  const [aiParsing, setAiParsing] = useState(false);
+  const [aiMsg, setAiMsg] = useState('');
   const set = (patch) => setF(prev => ({ ...prev, ...patch }));
+
+  // Превью — локальный blob-URL, живёт только пока выбран этот файл.
+  useEffect(() => () => { if (screenshotPreview) URL.revokeObjectURL(screenshotPreview); }, [screenshotPreview]);
+
+  const pickScreenshot = (file) => {
+    if (!file) return;
+    setScreenshotFile(file);
+    setScreenshotPreview(prev => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(file); });
+    setAiMsg('');
+  };
+
+  const parseScreenshot = async () => {
+    if (!screenshotFile) return;
+    setAiParsing(true);
+    setAiMsg('');
+    try {
+      const resized = await compressImage(screenshotFile, 1400, 0.85);
+      const base64 = await blobToBase64(resized);
+      const parsed = await wishlistParseScreenshot(base64, 'image/jpeg', settings || {});
+
+      const patch = {};
+      const got = [], missed = [];
+      if (parsed.title && !f.title.trim()) { patch.title = parsed.title; got.push('название'); }
+      if (parsed.price && !String(f.price).trim()) { patch.price = String(parsed.price); got.push('цену'); }
+      if (!parsed.price) missed.push('цену');
+
+      if (parsed.photo && !f.image) {
+        try {
+          const cropped = await wishlistCropPhoto(resized, parsed.photo);
+          patch.image = await uploadPhoto(cropped);
+          patch.imageUrl = '';
+          got.push('фото');
+        } catch (e) {
+          missed.push(`фото (${e.message})`);
+        }
+      } else if (!parsed.photo) {
+        missed.push('фото — не нашёл его на скриншоте');
+      }
+
+      set(patch);
+      setAiMsg([
+        got.length ? `Подставлено: ${got.join(', ')}` : 'Всё, что нашлось, уже заполнено',
+        missed.length ? `не хватило: ${missed.join(', ')}` : '',
+      ].filter(Boolean).join('; '));
+    } catch (e) {
+      setAiMsg(e.message === 'no_key'
+        ? 'Нет ключа ИИ — добавьте его в Настройках → Голосовой помощник'
+        : `Не получилось распознать: ${e.message}`);
+    } finally {
+      setAiParsing(false);
+    }
+  };
 
   // Разбор ссылки идёт на сервере: браузеру чужой сайт читать не даёт CORS.
   const fillFromLink = async () => {
@@ -20723,6 +20901,46 @@ function WishlistItemModal({ initial, categories, onSave, onClose }) {
             Ozon и Яндекс Маркет разбираются отдельно — у каждого свой источник.
             Маркетплейсы такие запросы периодически прикрывают, так что если поле
             осталось пустым — впишите руками, это нормально.
+          </div>
+        </div>
+
+        <div>
+          <label>Или скриншот товара</label>
+          <div className="flex items-center gap-3">
+            {screenshotPreview ? (
+              <img src={screenshotPreview} alt="" className="w-20 h-20 object-cover rounded-xl border border-[var(--border)]" />
+            ) : (
+              <div className="w-20 h-20 flex-shrink-0 rounded-xl border border-dashed border-[var(--border-strong)] flex items-center justify-center text-[var(--text-subtle)]">
+                <Icon name="camera" size={20} />
+              </div>
+            )}
+            <div className="flex-1 min-w-0 space-y-2">
+              <label className="btn-secondary text-sm cursor-pointer inline-block">
+                Выбрать скриншот
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={e => pickScreenshot(e.target.files?.[0])}
+                />
+              </label>
+              {screenshotFile && (
+                <button
+                  onClick={parseScreenshot}
+                  disabled={aiParsing}
+                  className="btn-secondary text-sm flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <Icon name="download" size={14} />
+                  {aiParsing ? 'Смотрю скриншот…' : 'Разобрать скриншот (ИИ)'}
+                </button>
+              )}
+            </div>
+          </div>
+          {aiMsg && <div className="text-[11px] text-[var(--text-muted)] mt-1.5">{aiMsg}</div>}
+          <div className="text-[11px] text-[var(--text-subtle)] mt-1.5">
+            Снимите экран страницы товара и загрузите сюда — ИИ прочитает название
+            и цену, а фото товара сам вырежет из скриншота. Нужен ключ Anthropic
+            или OpenAI — тот же, что в Настройках → Голосовой помощник.
           </div>
         </div>
 
