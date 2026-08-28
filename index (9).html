@@ -1180,14 +1180,14 @@ const PATH_TAB_MAP = {
   // он открывает раздел сразу на этой вкладке (см. PLANNER_SUB_BY_PATH).
   '/holidays': 'planner',
   '/planner': 'planner',
-  // Приложения «Прочего» — тоже адреса: /wishlist, /cards и /cars открывают
-  // раздел сразу на нужном (см. MISC_SUB_BY_PATH), '/misc' идёт последним и
-  // потому остаётся адресом раздела (домашний экран с иконками).
+  // Приложения «Прочего» — тоже адреса: /wishlist, /cards, /cars и /settings
+  // открывают раздел сразу на нужном (см. MISC_SUB_BY_PATH), '/misc' идёт
+  // последним и потому остаётся адресом раздела (домашний экран с иконками).
   '/wishlist': 'misc',
   '/cards': 'misc',
   '/cars': 'misc',
+  '/settings': 'misc',
   '/misc': 'misc',
-  '/settings': 'settings',
 };
 // Порядок важен: '/planner' идёт последним, поэтому обратная карта ведёт
 // планировщик на '/planner', а не на '/holidays'.
@@ -1196,8 +1196,8 @@ const TAB_PATH_MAP = Object.fromEntries(Object.entries(PATH_TAB_MAP).map(([p, t]
 const PLANNER_SUB_BY_PATH = { '/holidays': 'holidays' };
 const PLANNER_PATH_BY_SUB = { holidays: '/holidays' };
 
-const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/cars': 'cars' };
-const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', cars: '/cars' };
+const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/cars': 'cars', '/settings': 'settings' };
+const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', cars: '/cars', settings: '/settings' };
 
 const currentPathname = () => {
   try {
@@ -1482,12 +1482,11 @@ function App() {
             <PlannerView data={data} setData={setData} sub={plannerTab} setSub={setPlannerTab} />
           )}
           {tab === 'misc' && (
-            <MiscView data={data} setData={setData} sub={miscTab} setSub={setMiscTab} />
-          )}
-          {tab === 'settings' && (
-            <SettingsView
+            <MiscView
               data={data}
               setData={setData}
+              sub={miscTab}
+              setSub={setMiscTab}
               settingsTab={settingsTab}
               setSettingsTab={setSettingsTab}
             />
@@ -1519,7 +1518,6 @@ function Header({ tab, setTab }) {
     { id: 'planner',  icon: 'calendar',   label: 'Планировщик'   },
     { id: 'budget',   icon: 'wallet',     label: 'Бюджет'        },
     { id: 'misc',     icon: 'grid',       label: 'Прочее'        },
-    { id: 'settings', icon: 'settings',   label: 'Настройки'     },
   ];
 
   const moreActive = moreItems.some(i => i.id === tab);
@@ -1606,7 +1604,6 @@ function BottomNav({ tab, setTab }) {
     { id: 'planner',  icon: 'calendar',   label: 'Планировщик'   },
     { id: 'budget',   icon: 'wallet',     label: 'Бюджет'        },
     { id: 'misc',     icon: 'grid',       label: 'Прочее'        },
-    { id: 'settings', icon: 'settings',   label: 'Настройки'     },
   ];
 
   const moreActive = moreItems.some(i => i.id === tab);
@@ -20245,7 +20242,7 @@ function CampingPackingEditor({ catalogItems, categories, initial, onSave, onClo
 // ============== ПРОЧЕЕ ==============
 // Раздел-«сборник» для того, что не тянет на собственный пункт меню.
 // Домашний экран — сетка иконок-приложений (как на телефоне), а не вкладки:
-// пунктов уже четыре и дальше могут добавляться ещё, вкладки в ряд быстро
+// пунктов уже пять и дальше могут добавляться ещё, вкладки в ряд быстро
 // перестали бы помещаться. Тап по иконке открывает раздел на весь экран
 // с кнопкой «Прочее» назад — к сетке.
 const MISC_APPS = [
@@ -20253,9 +20250,10 @@ const MISC_APPS = [
   { id: 'cards',    label: 'Карты',      icon: 'creditCard', color: '#1d4ed8' },
   { id: 'english',  label: 'English',    icon: 'book',       color: '#0f766e' },
   { id: 'cars',     label: 'Автомобиль', icon: 'car',        color: '#6d28d9' },
+  { id: 'settings', label: 'Настройки',  icon: 'settings',   color: '#4b5563' },
 ];
 
-function MiscView({ data, setData, sub, setSub }) {
+function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab }) {
   const app = MISC_APPS.find(a => a.id === sub);
 
   if (!app) {
@@ -20299,6 +20297,14 @@ function MiscView({ data, setData, sub, setSub }) {
       {sub === 'cards' && <LoyaltyCardsView data={data} setData={setData} />}
       {sub === 'english' && <EngErrorBoundary><EnglishView data={data} setData={setData} embedded /></EngErrorBoundary>}
       {sub === 'cars' && <CarsView data={data} setData={setData} />}
+      {sub === 'settings' && (
+        <SettingsView
+          data={data}
+          setData={setData}
+          settingsTab={settingsTab}
+          setSettingsTab={setSettingsTab}
+        />
+      )}
       {sub === 'wishlist' && <WishlistView data={data} setData={setData} />}
     </div>
   );
