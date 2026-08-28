@@ -1174,16 +1174,17 @@ const PATH_TAB_MAP = {
   '/meals': 'meals',
   '/weather': 'weather',
   '/house': 'house',
-  '/cars': 'cars',
   '/health': 'health',
   // Праздники переехали вкладкой внутрь планировщика, но старый адрес живой:
   // он открывает раздел сразу на этой вкладке (см. PLANNER_SUB_BY_PATH).
   '/holidays': 'planner',
   '/planner': 'planner',
-  // Вкладки «Прочего» — тоже адреса: /wishlist и /cards открывают раздел сразу
-  // на нужной вкладке, '/misc' идёт последним и потому остаётся адресом раздела.
+  // Приложения «Прочего» — тоже адреса: /wishlist, /cards и /cars открывают
+  // раздел сразу на нужном (см. MISC_SUB_BY_PATH), '/misc' идёт последним и
+  // потому остаётся адресом раздела (домашний экран с иконками).
   '/wishlist': 'misc',
   '/cards': 'misc',
+  '/cars': 'misc',
   '/misc': 'misc',
   '/settings': 'settings',
 };
@@ -1194,8 +1195,8 @@ const TAB_PATH_MAP = Object.fromEntries(Object.entries(PATH_TAB_MAP).map(([p, t]
 const PLANNER_SUB_BY_PATH = { '/holidays': 'holidays' };
 const PLANNER_PATH_BY_SUB = { holidays: '/holidays' };
 
-const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards' };
-const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards' };
+const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/cars': 'cars' };
+const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', cars: '/cars' };
 
 const currentPathname = () => {
   try {
@@ -1207,7 +1208,8 @@ const getTabFromPath = () => PATH_TAB_MAP[currentPathname()] || 'home';
 
 const getPlannerSubFromPath = () => PLANNER_SUB_BY_PATH[currentPathname()] || 'plans';
 
-const getMiscSubFromPath = () => MISC_SUB_BY_PATH[currentPathname()] || 'wishlist';
+// '' — домашний экран «Прочего» с иконками; открывается по умолчанию на /misc.
+const getMiscSubFromPath = () => MISC_SUB_BY_PATH[currentPathname()] || '';
 
 function App() {
   const [data, setRawData] = useState(loadData());
@@ -1221,7 +1223,7 @@ function App() {
   }, []);
   const [tab, setTab] = useState(getTabFromPath); // home | supplements | meals | weather | house | settings
   const [plannerTab, setPlannerTab] = useState(getPlannerSubFromPath); // plans | holidays | events | camping
-  const [miscTab, setMiscTab] = useState(getMiscSubFromPath); // wishlist | cards
+  const [miscTab, setMiscTab] = useState(getMiscSubFromPath); // '' (домашний экран) | wishlist | cards | english | cars
   const [settingsTab, setSettingsTab] = useState('general');
   const [houseTab, setHouseTab] = useState('boss');
   const [mealTab, setMealTab] = useState('plan');
@@ -1475,7 +1477,6 @@ function App() {
           {tab === 'weather' && <WeatherView settings={data.settings} />}
           {tab === 'body' && <BodyView data={data} setData={setData} />}
           {tab === 'health' && <HealthView data={data} setData={setData} />}
-          {tab === 'cars' && <CarsView data={data} setData={setData} />}
           {tab === 'planner' && (
             <PlannerView data={data} setData={setData} sub={plannerTab} setSub={setPlannerTab} />
           )}
@@ -1513,7 +1514,6 @@ function Header({ tab, setTab }) {
   const moreItems = [
     { id: 'body',     icon: 'user',       label: 'Моё тело'      },
     { id: 'health',   icon: 'heartPulse', label: 'Здоровье'      },
-    { id: 'cars',     icon: 'car',        label: 'Автомобили'    },
     // «Праздники» отдельным разделом больше нет — это вкладка планировщика.
     { id: 'planner',  icon: 'calendar',   label: 'Планировщик'   },
     { id: 'budget',   icon: 'wallet',     label: 'Бюджет'        },
@@ -1601,7 +1601,6 @@ function BottomNav({ tab, setTab }) {
   const moreItems = [
     { id: 'body',     icon: 'user',       label: 'Моё тело'      },
     { id: 'health',   icon: 'heartPulse', label: 'Здоровье'      },
-    { id: 'cars',     icon: 'car',        label: 'Автомобили'    },
     // «Праздники» отдельным разделом больше нет — это вкладка планировщика.
     { id: 'planner',  icon: 'calendar',   label: 'Планировщик'   },
     { id: 'budget',   icon: 'wallet',     label: 'Бюджет'        },
@@ -19903,47 +19902,63 @@ function CampingPackingEditor({ catalogItems, categories, initial, onSave, onClo
 }
 
 // ============== ПРОЧЕЕ ==============
-// Раздел-«сборник» для того, что не тянет на собственный пункт меню:
-// хотелки (что хотим купить) и карты лояльности.
+// Раздел-«сборник» для того, что не тянет на собственный пункт меню.
+// Домашний экран — сетка иконок-приложений (как на телефоне), а не вкладки:
+// пунктов уже четыре и дальше могут добавляться ещё, вкладки в ряд быстро
+// перестали бы помещаться. Тап по иконке открывает раздел на весь экран
+// с кнопкой «Прочее» назад — к сетке.
+const MISC_APPS = [
+  { id: 'wishlist', label: 'Хотелки',    icon: 'heart',      color: '#be185d' },
+  { id: 'cards',    label: 'Карты',      icon: 'creditCard', color: '#1d4ed8' },
+  { id: 'english',  label: 'English',    icon: 'book',       color: '#0f766e' },
+  { id: 'cars',     label: 'Автомобиль', icon: 'car',        color: '#6d28d9' },
+];
 
 function MiscView({ data, setData, sub, setSub }) {
-  const TABS = [
-    { id: 'wishlist', label: 'Хотелки', icon: 'heart'      },
-    { id: 'cards',    label: 'Карты',   icon: 'creditCard' },
-    { id: 'english',  label: 'English', icon: 'book'       },
-  ];
+  const app = MISC_APPS.find(a => a.id === sub);
+
+  if (!app) {
+    return (
+      <div className="fade-in">
+        <div className="mb-6 font-display text-2xl">Прочее</div>
+        <div className="grid grid-cols-4 gap-4">
+          {MISC_APPS.map(a => (
+            <button
+              key={a.id}
+              onClick={() => setSub(a.id)}
+              className="flex flex-col items-center gap-2 text-center"
+            >
+              <div
+                className="w-16 h-16 rounded-2xl flex items-center justify-center text-white shadow-sm transition-transform active:scale-95"
+                style={{ background: a.color }}
+              >
+                <Icon name={a.icon} size={28} />
+              </div>
+              <span className="text-xs font-medium text-[var(--text-muted)] leading-tight">{a.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fade-in">
-      <div className="mb-5 flex items-baseline justify-between gap-4">
-        <div className="font-display text-2xl">Прочее</div>
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">
-          {sub === 'cards' ? 'Карты' : sub === 'english' ? 'English' : 'Покупки'}
-        </div>
+      <div className="mb-5 flex items-center justify-between gap-4">
+        <button
+          onClick={() => setSub('')}
+          className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)]"
+        >
+          <Icon name="chevronLeft" size={16} />
+          Прочее
+        </button>
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">{app.label}</div>
       </div>
 
-      <div className="flex gap-1.5 mb-5 flex-wrap">
-        {TABS.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setSub(t.id)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-              sub === t.id
-                ? 'bg-[var(--text)] text-white'
-                : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'
-            }`}
-          >
-            <Icon name={t.icon} size={16} />
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {sub === 'cards'
-        ? <LoyaltyCardsView data={data} setData={setData} />
-        : sub === 'english'
-        ? <EngErrorBoundary><EnglishView data={data} setData={setData} embedded /></EngErrorBoundary>
-        : <WishlistView data={data} setData={setData} />}
+      {sub === 'cards' && <LoyaltyCardsView data={data} setData={setData} />}
+      {sub === 'english' && <EngErrorBoundary><EnglishView data={data} setData={setData} embedded /></EngErrorBoundary>}
+      {sub === 'cars' && <CarsView data={data} setData={setData} />}
+      {sub === 'wishlist' && <WishlistView data={data} setData={setData} />}
     </div>
   );
 }
