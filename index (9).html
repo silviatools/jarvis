@@ -1463,9 +1463,7 @@ function App() {
   return (
     <div className="min-h-screen pb-24 md:pb-8">
       <Header tab={tab} setTab={setTab} />
-      {tab === 'english' ? (
-        <EngErrorBoundary><EnglishView data={data} setData={setData} /></EngErrorBoundary>
-      ) : tab === 'house' ? (
+      {tab === 'house' ? (
         <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />
       ) : tab === 'budget' ? (
         <BudgetView data={data} setData={setData} />
@@ -1519,7 +1517,6 @@ function Header({ tab, setTab }) {
     // «Праздники» отдельным разделом больше нет — это вкладка планировщика.
     { id: 'planner',  icon: 'calendar',   label: 'Планировщик'   },
     { id: 'budget',   icon: 'wallet',     label: 'Бюджет'        },
-    { id: 'english',  icon: 'book',       label: 'English'       },
     { id: 'misc',     icon: 'grid',       label: 'Прочее'        },
     { id: 'settings', icon: 'settings',   label: 'Настройки'     },
   ];
@@ -1608,7 +1605,6 @@ function BottomNav({ tab, setTab }) {
     // «Праздники» отдельным разделом больше нет — это вкладка планировщика.
     { id: 'planner',  icon: 'calendar',   label: 'Планировщик'   },
     { id: 'budget',   icon: 'wallet',     label: 'Бюджет'        },
-    { id: 'english',  icon: 'book',       label: 'English'       },
     { id: 'misc',     icon: 'grid',       label: 'Прочее'        },
     { id: 'settings', icon: 'settings',   label: 'Настройки'     },
   ];
@@ -7847,7 +7843,7 @@ const engLegacyAI = () => ({
   ollamaModel: localStorage.getItem('ai_ollama_model') || 'llama3',
 });
 
-function EnglishView({ data, setData }){
+function EnglishView({ data, setData, embedded }){
   // Источник правды — синхронизируемая БД (data.engConfig / data.engAI), как
   // у всех остальных настроек: переживает чистку localStorage и доступна со
   // всех устройств. localStorage остаётся только как источник миграции.
@@ -7901,9 +7897,11 @@ function EnglishView({ data, setData }){
 
   useEffect(()=>{if(!cfg.apiKey)setTimeout(()=>setShowCfg(true),400);},[]);
 
+  // embedded: вложен в «Прочее» — там уже своя ширина/отступы/нижний зазор
+  // (см. HolidaysView с тем же пропом), дублировать их здесь не нужно.
   return(
-    <div className="pb-24 md:pb-8">
-      <div className="max-w-4xl mx-auto px-4 sm:px-6">
+    <div className={embedded ? '' : 'pb-24 md:pb-8'}>
+      <div className={embedded ? '' : 'max-w-4xl mx-auto px-4 sm:px-6'}>
         <div className="pt-5 pb-4 border-b border-[var(--border)] flex items-center justify-between gap-3 flex-wrap">
           <div>
             <h1 className="font-display text-2xl">English Cards</h1>
@@ -19912,6 +19910,7 @@ function MiscView({ data, setData, sub, setSub }) {
   const TABS = [
     { id: 'wishlist', label: 'Хотелки', icon: 'heart'      },
     { id: 'cards',    label: 'Карты',   icon: 'creditCard' },
+    { id: 'english',  label: 'English', icon: 'book'       },
   ];
 
   return (
@@ -19919,7 +19918,7 @@ function MiscView({ data, setData, sub, setSub }) {
       <div className="mb-5 flex items-baseline justify-between gap-4">
         <div className="font-display text-2xl">Прочее</div>
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">
-          {sub === 'cards' ? 'Карты' : 'Покупки'}
+          {sub === 'cards' ? 'Карты' : sub === 'english' ? 'English' : 'Покупки'}
         </div>
       </div>
 
@@ -19942,6 +19941,8 @@ function MiscView({ data, setData, sub, setSub }) {
 
       {sub === 'cards'
         ? <LoyaltyCardsView data={data} setData={setData} />
+        : sub === 'english'
+        ? <EngErrorBoundary><EnglishView data={data} setData={setData} embedded /></EngErrorBoundary>
         : <WishlistView data={data} setData={setData} />}
     </div>
   );
