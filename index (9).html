@@ -20734,15 +20734,7 @@ function WishlistItemModal({ initial, categories, settings, onSave, onClose }) {
     ...initial,
     categoryId: initial.categoryId || categories[0]?.id || '',
   });
-  const [parsing, setParsing] = useState(false);
-  const [parseMsg, setParseMsg] = useState('');
-  // Что именно сервер пробовал и чем это кончилось. Маркетплейсы меняют свои
-  // источники без предупреждения, и без этого списка «не заполнилось» —
-  // необъяснимо: непонятно, сломался разбор или магазин просто закрылся.
-  const [parseLog, setParseLog] = useState([]);
-  const [showParseLog, setShowParseLog] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [screenshotFile, setScreenshotFile] = useState(null);
   const [screenshotPreview, setScreenshotPreview] = useState('');
   const [aiParsing, setAiParsing] = useState(false);
   const [aiMsg, setAiMsg] = useState('');
@@ -20751,19 +20743,18 @@ function WishlistItemModal({ initial, categories, settings, onSave, onClose }) {
   // Превью — локальный blob-URL, живёт только пока выбран этот файл.
   useEffect(() => () => { if (screenshotPreview) URL.revokeObjectURL(screenshotPreview); }, [screenshotPreview]);
 
+  // Выбор файла сразу запускает разбор — отдельной кнопки-подтверждения нет.
   const pickScreenshot = (file) => {
     if (!file) return;
-    setScreenshotFile(file);
     setScreenshotPreview(prev => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(file); });
-    setAiMsg('');
+    parseScreenshot(file);
   };
 
-  const parseScreenshot = async () => {
-    if (!screenshotFile) return;
+  const parseScreenshot = async (file) => {
     setAiParsing(true);
     setAiMsg('');
     try {
-      const resized = await compressImage(screenshotFile, 1400, 0.85);
+      const resized = await compressImage(file, 1400, 0.85);
       const base64 = await blobToBase64(resized);
       const parsed = await wishlistParseScreenshot(base64, 'image/jpeg', settings || {});
 
@@ -20793,49 +20784,10 @@ function WishlistItemModal({ initial, categories, settings, onSave, onClose }) {
       ].filter(Boolean).join('; '));
     } catch (e) {
       setAiMsg(e.message === 'no_key'
-        ? 'Нет ключа ИИ — добавьте его в Настройках → Голосовой помощник'
+        ? 'Нет ключа ИИ — добавьте его в Настройках → Ассистент'
         : `Не получилось распознать: ${e.message}`);
     } finally {
       setAiParsing(false);
-    }
-  };
-
-  // Разбор ссылки идёт на сервере: браузеру чужой сайт читать не даёт CORS.
-  const fillFromLink = async () => {
-    const url = (f.url || '').trim();
-    if (!url) { setParseMsg('Сначала вставьте ссылку'); return; }
-    setParsing(true);
-    setParseMsg('');
-    setParseLog([]);
-    try {
-      const res = await fetch('/api/link-preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j.error || `ошибка ${res.status}`);
-      setParseLog(j.tried || []);
-      if (j.empty) {
-        setParseMsg('Магазин не отдал данные о товаре — заполните вручную');
-        return;
-      }
-      const patch = {};
-      const got = [], missed = [];
-      if (j.title && !f.title.trim()) { patch.title = j.title; got.push('название'); }
-      if (j.price && !String(f.price).trim()) { patch.price = j.price; got.push('цену'); }
-      if (j.image && !f.image) { patch.image = j.image; patch.imageUrl = j.imageUrl || ''; got.push('фото'); }
-      if (!j.price) missed.push('цену');
-      if (!j.image) missed.push('фото');
-      set(patch);
-      setParseMsg([
-        got.length ? `Подставлено: ${got.join(', ')}` : 'Всё, что нашлось, уже заполнено',
-        missed.length ? `магазин не отдал ${missed.join(' и ')}` : '',
-      ].filter(Boolean).join('; '));
-    } catch (e) {
-      setParseMsg(`Не получилось прочитать ссылку: ${e.message}`);
-    } finally {
-      setParsing(false);
     }
   };
 
@@ -20869,6 +20821,27 @@ function WishlistItemModal({ initial, categories, settings, onSave, onClose }) {
     <Modal onClose={onClose} title={initial.title ? 'Хотелка' : 'Новая хотелка'}>
       <div className="space-y-4">
         <div>
+          <label>Скриншот товара</label>
+          <div className="flex items-center gap-3">
+            <label className={`btn-secondary text-sm flex items-center gap-1.5 flex-shrink-0 ${aiParsing ? 'opacity-50' : 'cursor-pointer'}`}>
+              <Icon name="camera" size={14} />
+              {aiParsing ? 'Смотрю скриншот…' : screenshotPreview ? 'Заменить' : 'Выбрать скриншот'}
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                disabled={aiParsing}
+                onChange={e => pickScreenshot(e.target.files?.[0])}
+              />
+            </label>
+            {screenshotPreview && (
+              <img src={screenshotPreview} alt="" className="w-10 h-10 object-cover rounded-lg border border-[var(--border)] flex-shrink-0" />
+            )}
+            {aiMsg && <span className="text-[11px] text-[var(--text-muted)] min-w-0">{aiMsg}</span>}
+          </div>
+        </div>
+
+        <div>
           <label>Ссылка</label>
           <input
             value={f.url}
@@ -20876,78 +20849,6 @@ function WishlistItemModal({ initial, categories, settings, onSave, onClose }) {
             placeholder="https://…"
             inputMode="url"
           />
-          <div className="flex items-center gap-2 mt-2 flex-wrap">
-            <button
-              onClick={fillFromLink}
-              disabled={parsing}
-              className="btn-secondary text-sm flex items-center gap-1.5 disabled:opacity-50"
-            >
-              <Icon name="download" size={14} />
-              {parsing ? 'Читаю страницу…' : 'Заполнить по ссылке'}
-            </button>
-            {parseMsg && <span className="text-[11px] text-[var(--text-muted)]">{parseMsg}</span>}
-          </div>
-
-          {parseLog.length > 0 && (
-            <div className="mt-1.5">
-              <button
-                onClick={() => setShowParseLog(v => !v)}
-                className="text-[11px] text-[var(--text-subtle)] underline"
-              >{showParseLog ? 'скрыть подробности' : 'почему так?'}</button>
-              {showParseLog && (
-                <ul className="mt-1 space-y-0.5 text-[11px] text-[var(--text-subtle)] font-mono break-words">
-                  {parseLog.map((line, i) => <li key={i}>· {line}</li>)}
-                </ul>
-              )}
-            </div>
-          )}
-
-          <div className="text-[11px] text-[var(--text-subtle)] mt-1.5">
-            Сайт сам читает страницу и достаёт название, цену и фото. Wildberries,
-            Ozon и Яндекс Маркет разбираются отдельно — у каждого свой источник.
-            Маркетплейсы такие запросы периодически прикрывают, так что если поле
-            осталось пустым — впишите руками, это нормально.
-          </div>
-        </div>
-
-        <div>
-          <label>Или скриншот товара</label>
-          <div className="flex items-center gap-3">
-            {screenshotPreview ? (
-              <img src={screenshotPreview} alt="" className="w-20 h-20 object-cover rounded-xl border border-[var(--border)]" />
-            ) : (
-              <div className="w-20 h-20 flex-shrink-0 rounded-xl border border-dashed border-[var(--border-strong)] flex items-center justify-center text-[var(--text-subtle)]">
-                <Icon name="camera" size={20} />
-              </div>
-            )}
-            <div className="flex-1 min-w-0 space-y-2">
-              <label className="btn-secondary text-sm cursor-pointer inline-block">
-                Выбрать скриншот
-                <input
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={e => pickScreenshot(e.target.files?.[0])}
-                />
-              </label>
-              {screenshotFile && (
-                <button
-                  onClick={parseScreenshot}
-                  disabled={aiParsing}
-                  className="btn-secondary text-sm flex items-center gap-1.5 disabled:opacity-50"
-                >
-                  <Icon name="download" size={14} />
-                  {aiParsing ? 'Смотрю скриншот…' : 'Разобрать скриншот (ИИ)'}
-                </button>
-              )}
-            </div>
-          </div>
-          {aiMsg && <div className="text-[11px] text-[var(--text-muted)] mt-1.5">{aiMsg}</div>}
-          <div className="text-[11px] text-[var(--text-subtle)] mt-1.5">
-            Снимите экран страницы товара и загрузите сюда — ИИ прочитает название
-            и цену, а фото товара сам вырежет из скриншота. Нужен ключ Anthropic
-            или OpenAI — тот же, что в Настройках → Голосовой помощник.
-          </div>
         </div>
 
         <div>
