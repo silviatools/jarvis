@@ -1825,6 +1825,16 @@ def pf_route(route: str):
     return token, action
 
 
+def pf_operation_id_from_action(action: str):
+    """id операции из action вида 'operations/<id>' (PUT/DELETE одной записи),
+    иначе None — в том числе для голого 'operations' (список/создание)."""
+    prefix = "operations/"
+    if not action.startswith(prefix):
+        return None
+    op_id = action[len(prefix):]
+    return op_id if op_id and "/" not in op_id else None
+
+
 PF_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -2665,6 +2675,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(200, {"ok": True})
             else:
                 self._json(404, {"error": "not found"})
+        elif route.startswith("/api/pf/"):
+            self._pf_delete(route)
         else:
             self.send_response(404)
             self.end_headers()
@@ -3616,23 +3628,106 @@ class JarvisHandler(SimpleHTTPRequestHandler):
 
     def _pf_put(self, route: str):
         token, action = pf_route(route)
-        if not token or action != "settings":
+        if not token:
             self._json(404, {"error": "not found"})
             return
+        if action == "settings":
+            payload = self._pf_body()
+            if payload is None:
+                return
+            account_id = str(payload.get("quick_expense_account_id") or "")[:64]
+
+            def apply(app, uid, sl):
+                accounts = {a["id"] for a in pf_accounts(sl)}
+                if account_id and account_id not in accounts:
+                    return 400, {"error": "unknown account"}
+                settings = sl.get("budgetCashflowSettings")
+                settings = dict(settings) if isinstance(settings, dict) else {}
+                settings["quickAccountId"] = account_id
+                settings["updatedAt"] = int(time.time() * 1000)
+                sl["budgetCashflowSettings"] = settings
+                return None
+
+            code, body = pf_write(token, apply)
+            self._json(code, body)
+            return
+
+        op_id = pf_operation_id_from_action(action)
+        if op_id:
+            self._pf_put_operation(token, op_id)
+            return
+        self._json(404, {"error": "not found"})
+
+    def _pf_put_operation(self, token: str, op_id: str):
+        """Правка уже сохранённой операции: сумма/дата/направление/счёт/статья/
+        назначение — прямо из приложения, чтобы не лезть на сайт ради опечатки
+        в сумме или неверно выбранной статьи."""
         payload = self._pf_body()
         if payload is None:
             return
-        account_id = str(payload.get("quick_expense_account_id") or "")[:64]
+
+        cents = money_to_cents(payload.get("amount"))
+        if cents is None or cents <= 0 or cents > MAX_PF_AMOUNT_CENTS:
+            self._json(400, {"error": "invalid amount"})
+            return
+        amount = cents / 100
+        direction = payload.get("direction")
+        if direction not in PF_DIRECTIONS:
+            self._json(400, {"error": "invalid direction"})
+            return
+        account_id = str(payload.get("account_id") or "")[:64]
+        category_id = str(payload.get("category_id") or "")[:64]
+        purpose = str(payload.get("purpose") or payload.get("comment") or "").strip()[:MAX_PF_PURPOSE]
+        op_date = pf_parse_date(payload.get("date") or payload.get("payment_date"),
+                                today_msk().isoformat())
 
         def apply(app, uid, sl):
+            ops = _pf_list(sl, "budgetCashflowOps")
+            idx = next((i for i, o in enumerate(ops)
+                        if isinstance(o, dict) and str(o.get("id") or "") == op_id), None)
+            if idx is None:
+                return 404, {"error": "operation not found"}
             accounts = {a["id"] for a in pf_accounts(sl)}
-            if account_id and account_id not in accounts:
+            if account_id not in accounts:
                 return 400, {"error": "unknown account"}
-            settings = sl.get("budgetCashflowSettings")
-            settings = dict(settings) if isinstance(settings, dict) else {}
-            settings["quickAccountId"] = account_id
-            settings["updatedAt"] = int(time.time() * 1000)
-            sl["budgetCashflowSettings"] = settings
+            article = next((c for c in pf_articles(sl)
+                            if c["id"] == category_id and c["direction"] == direction), None)
+            if article is None:
+                return 400, {"error": "unknown category"}
+            updated = dict(ops[idx])
+            updated.update({
+                "date": op_date,
+                "direction": direction,
+                "amount": amount,
+                "accountId": account_id,
+                "categoryId": category_id,
+                "purpose": purpose,
+                "updatedAt": int(time.time() * 1000),
+            })
+            ops = list(ops)
+            ops[idx] = updated
+            sl["budgetCashflowOps"] = ops
+            return None
+
+        code, body = pf_write(token, apply)
+        self._json(code, body)
+
+    def _pf_delete(self, route: str):
+        token, action = pf_route(route)
+        op_id = pf_operation_id_from_action(action) if token else None
+        if not op_id:
+            self._json(404, {"error": "not found"})
+            return
+
+        def apply(app, uid, sl):
+            ops = _pf_list(sl, "budgetCashflowOps")
+            idx = next((i for i, o in enumerate(ops)
+                        if isinstance(o, dict) and str(o.get("id") or "") == op_id), None)
+            if idx is None:
+                return 404, {"error": "operation not found"}
+            ops = list(ops)
+            del ops[idx]
+            sl["budgetCashflowOps"] = ops
             return None
 
         code, body = pf_write(token, apply)
