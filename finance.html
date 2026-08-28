@@ -214,12 +214,41 @@ body { padding-top: var(--safe-t); }
 
 .search-clear.show { display: inline-flex; }
 
-.cats-block {
-  flex: 0 1 auto;
-  max-height: 36%;
+/* Частые статьи / Недавние операции делят одну и ту же область: раньше обе
+   были видны одновременно (36% + остаток), и на невысоких экранах недавние
+   операции почти целиком уходили под клавиатуру суммы. Теперь показывается
+   только одна из них, переключение — двумя кнопками-пилюлями, и активная
+   получает всю свободную высоту. */
+.view-toggle {
+  flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+  padding: 4px 14px 6px;
+}
+
+.vt-btn {
+  flex: 1;
+  height: 34px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.vt-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.list-block {
+  flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 4px 14px 4px;
+  padding: 4px 14px 8px;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -238,7 +267,7 @@ body { padding-top: var(--safe-t); }
   gap: 8px;
 }
 
-.cat-chip, .recent-chip {
+.cat-chip {
   border: 1px solid var(--line);
   background: var(--surface);
   border-radius: 14px;
@@ -256,14 +285,14 @@ body { padding-top: var(--safe-t); }
   width: 100%;
 }
 
-.cat-chip:active, .recent-chip:active { transform: scale(0.985); background: var(--accent-soft); }
-.cat-chip:disabled, .recent-chip:disabled { opacity: .55; pointer-events: none; }
+.cat-chip:active { transform: scale(0.985); background: var(--accent-soft); }
+.cat-chip:disabled { opacity: .55; pointer-events: none; }
 .cat-chip .dot {
   width: 10px; height: 10px; border-radius: 50%;
   background: var(--accent-2); flex-shrink: 0;
 }
 .cat-chip .dot.in { background: var(--income); }
-.cat-chip .meta, .recent-chip .meta {
+.cat-chip .meta {
   font-size: 12px; font-weight: 500; color: var(--muted); margin-left: auto;
   flex-shrink: 0;
 }
@@ -275,19 +304,20 @@ body { padding-top: var(--safe-t); }
   white-space: nowrap;
 }
 
-.recent-block {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 6px 14px 8px;
-  border-top: 1px solid var(--line);
-  -webkit-overflow-scrolling: touch;
-}
-
+/* recent-chip — обёртка-div (не button: внутри два самостоятельных button —
+   «повторить» на всё тело карточки и «изменить» отдельной иконкой, а кнопку
+   в кнопку вкладывать нельзя). */
 .recent-chip {
-  align-items: flex-start;
-  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 14px;
+  padding: 8px 8px 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 1px 2px rgba(27,28,51,.04);
 }
+.recent-chip.disabled { opacity: .55; pointer-events: none; }
 
 .recent-chip .rc-body {
   flex: 1;
@@ -295,7 +325,31 @@ body { padding-top: var(--safe-t); }
   display: flex;
   flex-direction: column;
   gap: 2px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  padding: 4px 6px;
+  transition: background .12s ease;
 }
+.recent-chip .rc-body:active { background: var(--accent-soft); }
+
+.recent-chip .rc-edit {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  color: var(--muted);
+  font-size: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.recent-chip .rc-edit:active { background: var(--accent-soft); color: var(--accent); }
 
 .recent-chip .rc-top {
   display: flex;
@@ -433,7 +487,7 @@ body { padding-top: var(--safe-t); }
   margin-bottom: 8px;
 }
 
-.field input {
+.field input, .field select {
   width: 100%;
   height: 48px;
   border-radius: 14px;
@@ -446,10 +500,13 @@ body { padding-top: var(--safe-t); }
   outline: none;
 }
 
-.field input:focus {
+.field input:focus, .field select:focus {
   border-color: var(--accent-2);
   box-shadow: 0 0 0 3px rgba(99,102,241,.18);
 }
+
+.field { margin-bottom: 14px; }
+.field:last-child { margin-bottom: 0; }
 
 .save-btn {
   margin-top: auto;
@@ -559,6 +616,20 @@ body { padding-top: var(--safe-t); }
   box-shadow: 0 8px 20px rgba(67,56,202,.24);
 }
 .sheet-btn:active { transform: scale(0.98); }
+.sheet-btn.danger {
+  margin-top: 8px;
+  background: none;
+  box-shadow: none;
+  color: var(--danger);
+  border: 1px solid var(--line);
+}
+.sheet-btn.ghost {
+  margin-top: 8px;
+  background: none;
+  box-shadow: none;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
 .sheet-item {
   width: 100%;
   text-align: left;
@@ -654,20 +725,26 @@ body { padding-top: var(--safe-t); }
       <div class="amount empty" id="amountView">0<span class="cur">₽</span></div>
     </div>
 
-    <div class="search-wrap">
+    <div class="view-toggle" id="viewToggle">
+      <button type="button" class="vt-btn active" data-view="cats">Частые статьи</button>
+      <button type="button" class="vt-btn" data-view="recent">Недавние операции</button>
+    </div>
+
+    <div class="search-wrap" id="searchWrap">
       <input type="search" id="catSearch" placeholder="Поиск статьи…" autocomplete="off" enterkeyhint="search"
              oninput="onSearchInput()">
       <button type="button" class="search-clear" id="searchClear" onclick="clearSearch()" aria-label="Очистить">×</button>
     </div>
 
-    <div class="cats-block">
-      <div class="cats-title" id="catsTitle">Частые статьи</div>
-      <div class="cat-list" id="catList"></div>
-    </div>
-
-    <div class="recent-block" id="recentBlock">
-      <div class="cats-title">Недавние операции</div>
-      <div class="recent-list" id="recentList"></div>
+    <div class="list-block">
+      <div id="catsSection">
+        <div class="cats-title" id="catsTitle">Частые статьи</div>
+        <div class="cat-list" id="catList"></div>
+      </div>
+      <div id="recentSection" style="display:none">
+        <div class="cats-title">Недавние операции</div>
+        <div class="recent-list" id="recentList"></div>
+      </div>
     </div>
 
     <div class="pad" id="pad" aria-label="Клавиатура суммы">
@@ -725,6 +802,51 @@ body { padding-top: var(--safe-t); }
   </div>
 </div>
 
+<!-- Правка/удаление уже сохранённой операции — прямо из приложения, без
+     захода на сайт. Открывается иконкой «✎» на карточке недавней операции. -->
+<div class="overlay" id="editOverlay" onclick="if(event.target===this)closeEdit()">
+  <div class="sheet">
+    <h3>Операция</h3>
+
+    <div class="field">
+      <label for="editDirection">Тип</label>
+      <select id="editDirection" onchange="onEditDirectionChange()">
+        <option value="out">Расход</option>
+        <option value="in">Доход</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="editAmount">Сумма</label>
+      <input type="text" id="editAmount" inputmode="decimal" placeholder="0">
+    </div>
+
+    <div class="field">
+      <label for="editDate">Дата</label>
+      <input type="date" id="editDate">
+    </div>
+
+    <div class="field">
+      <label for="editCategory">Статья</label>
+      <select id="editCategory"></select>
+    </div>
+
+    <div class="field">
+      <label for="editAccount">Счёт</label>
+      <select id="editAccount"></select>
+    </div>
+
+    <div class="field">
+      <label for="editPurpose">Назначение платежа</label>
+      <input type="text" id="editPurpose" placeholder="Необязательно" autocomplete="off" enterkeyhint="done">
+    </div>
+
+    <button type="button" class="sheet-btn" id="editSaveBtn" onclick="saveEditOp()">Сохранить</button>
+    <button type="button" class="sheet-btn danger" id="editDeleteBtn" onclick="deleteEditOp()">Удалить операцию</button>
+    <button type="button" class="sheet-btn ghost" onclick="closeEdit()">Отмена</button>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -744,6 +866,7 @@ body { padding-top: var(--safe-t); }
 
   const MONTH_NAMES = ['Январь','Февраль','Март','Апрель','Май','Июнь',
                        'Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+  const PF_DATE_RE_CLIENT = /^\d{4}-\d{2}-\d{2}$/;
 
   let accounts = [];
   let categories = [];
@@ -756,6 +879,8 @@ body { padding-top: var(--safe-t); }
   let selectedCat = null;
   let searchQ = '';
   let copyingRecent = false;
+  let viewMode = 'cats'; // 'cats' | 'recent' — какая из двух панелей видна
+  let editingOp = null;  // операция, открытая в форме правки, или null
 
   const $ = (id) => document.getElementById(id);
 
@@ -933,6 +1058,21 @@ body { padding-top: var(--safe-t); }
     renderCats();
   }
 
+  // Частые статьи и недавние операции делят одну область экрана (иначе на
+  // невысоких экранах недавние операции почти целиком уходят под клавиатуру
+  // суммы) — переключаем, какая из двух видна, вместо того чтобы показывать
+  // обе одновременно урезанными.
+  function setViewMode(mode) {
+    if (mode !== 'cats' && mode !== 'recent') return;
+    viewMode = mode;
+    $('viewToggle').querySelectorAll('.vt-btn').forEach(b => {
+      b.classList.toggle('active', b.getAttribute('data-view') === mode);
+    });
+    $('searchWrap').style.display = mode === 'cats' ? '' : 'none';
+    $('catsSection').style.display = mode === 'cats' ? '' : 'none';
+    $('recentSection').style.display = mode === 'recent' ? '' : 'none';
+  }
+
   function selectCategory(id) {
     const amount = parseAmount(amountRaw);
     if (!(amount > 0)) {
@@ -1030,16 +1170,17 @@ body { padding-top: var(--safe-t); }
       const purpose = (op.purpose || op.comment || '').trim();
       const date = op.payment_date || op.date || '';
       const isIn = op.direction === 'in';
-      return `<button type="button" class="recent-chip" data-oid="${escAttr(op.id)}" title="Повторить на сегодня">
-        <div class="rc-body">
+      return `<div class="recent-chip" data-oid="${escAttr(op.id)}">
+        <button type="button" class="rc-body" data-oid="${escAttr(op.id)}" title="Повторить на сегодня">
           <div class="rc-top">
             <span class="rc-amount${isIn ? ' in' : ''}">${isIn ? '+' : ''}${esc(formatMoney(op.amount))}</span>
             <span class="rc-date">${esc(formatRuDate(date))}</span>
           </div>
           <div class="rc-cat">${esc(categoryName(op.category_id))}</div>
           ${purpose ? `<div class="rc-sub">${esc(purpose)}</div>` : ''}
-        </div>
-      </button>`;
+        </button>
+        <button type="button" class="rc-edit" data-edit-oid="${escAttr(op.id)}" title="Изменить" aria-label="Изменить">✎</button>
+      </div>`;
     }).join('');
   }
 
@@ -1125,7 +1266,7 @@ body { padding-top: var(--safe-t); }
     if (!(Number(op.amount) > 0)) { toast('У операции нет суммы', 'error'); return; }
 
     copyingRecent = true;
-    const btns = $('recentList').querySelectorAll('.recent-chip');
+    const btns = $('recentList').querySelectorAll('.rc-body, .rc-edit');
     btns.forEach(b => { b.disabled = true; });
     try {
       const date = todayISO();
@@ -1157,6 +1298,118 @@ body { padding-top: var(--safe-t); }
       btns.forEach(b => { b.disabled = false; });
     } finally {
       copyingRecent = false;
+    }
+  }
+
+  // ── Правка / удаление операции ──────────────────────────────────────────
+  // Иконка «✎» на карточке недавней операции — можно поправить сумму, дату,
+  // счёт, статью и назначение или удалить операцию совсем, не заходя на сайт.
+
+  function editOptionsHtml(items, selectedId) {
+    if (!items.length) return '<option value="">Нет вариантов</option>';
+    return items.map(it =>
+      `<option value="${escAttr(it.id)}"${it.id === selectedId ? ' selected' : ''}>${esc(it.name)}</option>`
+    ).join('');
+  }
+
+  function renderEditCategoryOptions(selectedId) {
+    const dir = $('editDirection').value === 'in' ? 'in' : 'out';
+    const opts = categories.filter(c => c.direction === dir);
+    // Статья операции могла исчезнуть из справочника — не даём выбору
+    // молча съехать на первую попавшуюся статью.
+    const items = (selectedId && !opts.some(c => c.id === selectedId) && categoryName(selectedId) !== 'Без статьи')
+      ? [{ id: selectedId, name: categoryName(selectedId) }, ...opts]
+      : opts;
+    $('editCategory').innerHTML = editOptionsHtml(items, selectedId);
+  }
+
+  function renderEditAccountOptions(selectedId) {
+    $('editAccount').innerHTML = editOptionsHtml(accounts, selectedId);
+  }
+
+  function onEditDirectionChange() {
+    // Статьи расхода и дохода — разные списки: при смене типа операции
+    // выбранную статью не переносим, пользователь выбирает заново.
+    renderEditCategoryOptions('');
+  }
+
+  function openEdit(oid) {
+    const op = recentOps.find(o => o.id === oid);
+    if (!op) { toast('Операция не найдена', 'error'); return; }
+    editingOp = op;
+    $('editDirection').value = op.direction === 'in' ? 'in' : 'out';
+    $('editAmount').value = String(op.amount ?? '').replace('.', ',');
+    $('editDate').value = (op.payment_date || op.date || todayISO()).slice(0, 10);
+    renderEditCategoryOptions(op.category_id || '');
+    renderEditAccountOptions(op.account_id || accountId);
+    $('editPurpose').value = op.purpose || op.comment || '';
+    $('editOverlay').classList.add('show');
+  }
+
+  function closeEdit() {
+    $('editOverlay').classList.remove('show');
+    editingOp = null;
+  }
+
+  async function saveEditOp() {
+    if (!editingOp) return;
+    const amount = parseAmount(($('editAmount').value || '').trim().replace('.', ','));
+    if (!(amount > 0)) { toast('Введите сумму', 'error'); return; }
+    if (!PF_DATE_RE_CLIENT.test($('editDate').value || '')) { toast('Введите дату', 'error'); return; }
+    const categoryId = $('editCategory').value;
+    const accountIdSel = $('editAccount').value;
+    if (!categoryId) { toast('Выберите статью', 'error'); return; }
+    if (!accountIdSel) { toast('Выберите счёт', 'error'); return; }
+
+    const payload = {
+      date: $('editDate').value,
+      payment_date: $('editDate').value,
+      direction: $('editDirection').value === 'in' ? 'in' : 'out',
+      amount,
+      account_id: accountIdSel,
+      category_id: categoryId,
+      currency: (settings && settings.default_currency) || 'руб.',
+      payment_status: 'paid',
+      purpose: ($('editPurpose').value || '').trim(),
+      comment: ($('editPurpose').value || '').trim(),
+    };
+
+    const btn = $('editSaveBtn');
+    btn.disabled = true;
+    try {
+      await api(API + '/operations/' + encodeURIComponent(editingOp.id), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      toast('Изменено', 'ok');
+      closeEdit();
+      await loadRecent();
+      await reloadAccounts();
+      try { await loadPopular(); renderCats(); } catch (_) {}
+    } catch (e) {
+      toast(e.message || 'Ошибка сохранения', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function deleteEditOp() {
+    if (!editingOp) return;
+    if (!confirm('Удалить операцию? Это действие нельзя отменить.')) return;
+
+    const btn = $('editDeleteBtn');
+    btn.disabled = true;
+    try {
+      await api(API + '/operations/' + encodeURIComponent(editingOp.id), { method: 'DELETE' });
+      toast('Удалено', 'ok');
+      closeEdit();
+      await loadRecent();
+      await reloadAccounts();
+      try { await loadPopular(); renderCats(); } catch (_) {}
+    } catch (e) {
+      toast(e.message || 'Ошибка удаления', 'error');
+      btn.disabled = false;
     }
   }
 
@@ -1259,9 +1512,17 @@ body { padding-top: var(--safe-t); }
   });
 
   $('recentList').addEventListener('click', (e) => {
+    const editBtn = e.target.closest('[data-edit-oid]');
+    if (editBtn) { openEdit(editBtn.getAttribute('data-edit-oid')); return; }
     const btn = e.target.closest('[data-oid]');
     if (!btn) return;
     repeatRecent(btn.getAttribute('data-oid'));
+  });
+
+  $('viewToggle').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-view]');
+    if (!btn) return;
+    setViewMode(btn.getAttribute('data-view'));
   });
 
   $('accSheetList').addEventListener('click', (e) => {
@@ -1288,6 +1549,10 @@ body { padding-top: var(--safe-t); }
   window.saveOperation = saveOperation;
   window.openNotes = openNotes;
   window.closeNotes = closeNotes;
+  window.closeEdit = closeEdit;
+  window.saveEditOp = saveEditOp;
+  window.deleteEditOp = deleteEditOp;
+  window.onEditDirectionChange = onEditDirectionChange;
 
   init();
 })();
