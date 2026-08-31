@@ -11808,6 +11808,24 @@ const monthsLeftFor = (exp, asOfMonth) => {
   return monthsBetweenStr(periodStart, exp.targetDate);
 };
 
+// Накопления (в отличие от calcMonthly выше): план на месяц пересчитывается
+// от того, сколько реально осталось накопить и сколько месяцев до цели
+// осталось — а не от исходной суммы и исходной длины графика. Значит, если
+// в какие-то месяцы вносили больше нормы, к последнему месяцу план сам
+// уменьшится ровно до недостающего остатка (а не продолжит показывать
+// исходный «ровный» взнос). Долгов это не касается — там calcMonthly
+// используется как есть, план/мес остаётся фиксированным ориентиром.
+const calcSavingsMonthly = (exp, balance, asOfMonth) => {
+  if (!exp || !(exp.amount > 0) || !exp.startDate || !exp.targetDate) return 0;
+  if (exp.startDate > exp.targetDate) return 0;
+  const remaining = Math.max((exp.amount || 0) - (balance || 0), 0);
+  if (remaining <= 0) return 0;
+  const monthsLeft = monthsLeftFor(exp, asOfMonth);
+  // Просрочено или последний месяц графика — доплатить нужно весь остаток.
+  if (monthsLeft <= 0) return Math.ceil(remaining);
+  return Math.ceil(remaining / monthsLeft);
+};
+
 // Debt payments: payment reduces remaining; increase adds to principal.
 // Plan /мес = effectiveAmount / months in schedule (payments do not change it).
 const getDebtTxTotals = (debtId, transactions) => {
@@ -12366,11 +12384,19 @@ function BudgetMonthlyView({ data, setData }) {
       .filter(t => t.expenseId === expId && t.type === 'income' && monthKey(t.date) === month)
       .reduce((s, t) => s + (t.amount || 0), 0);
 
-  // Накопления: фиксированный план = сумма ÷ месяцы графика (платежи не меняют).
+  // Накопления: динамический план = остаток ÷ оставшиеся месяцы (см.
+  // calcSavingsMonthly) — пересчитывается от текущего накопленного, а не от
+  // исходной суммы и длины графика. Один и тот же план виден во всех
+  // активных месяцах строки (он всегда «от сегодня», а не «от колонки»).
+  const getExpBalance = (expId) =>
+    savTx
+      .filter(t => t.expenseId === expId)
+      .reduce((s, t) => s + (t.type === 'income' ? (t.amount || 0) : -(t.amount || 0)), 0);
+
   const getExpCatVal = (catId, month) =>
     activeExp
       .filter(e => e.category === catId && e.startDate <= month && e.targetDate >= month)
-      .reduce((s, e) => s + calcMonthly(e), 0);
+      .reduce((s, e) => s + calcSavingsMonthly(e, getExpBalance(e.id)), 0);
 
   const getExpCatFact = (catId, month) =>
     activeExp
@@ -14693,7 +14719,7 @@ function SavingsListView({ data, setData }) {
       category:   [(cats.find(c => c.id === a.category) || {}).label || 'Я', (cats.find(c => c.id === b.category) || {}).label || 'Я'],
       amount:     [a.amount || 0,   b.amount || 0],
       saved:      [getItemBalance(a).balance, getItemBalance(b).balance],
-      monthly:    [calcMonthly(a),  calcMonthly(b)],
+      monthly:    [calcSavingsMonthly(a, getItemBalance(a).balance), calcSavingsMonthly(b, getItemBalance(b).balance)],
       startDate:  [a.startDate,     b.startDate],
       targetDate: [a.targetDate,    b.targetDate],
       months:     [monthsLeftFor(a), monthsLeftFor(b)],
@@ -14790,7 +14816,7 @@ function SavingsListView({ data, setData }) {
                   {sorted.map((e, i) => {
                     const cat      = cats.find(c => c.id === e.category) || { emoji: '💡', label: e.category };
                     const bal      = getItemBalance(e);
-                    const monthly  = calcMonthly(e);
+                    const monthly  = calcSavingsMonthly(e, bal.balance);
                     const mLeft    = monthsLeftFor(e);
                     const isOver   = e.targetDate < curMonth;
                     const pct      = e.amount > 0 ? Math.min(100, Math.round((bal.balance / e.amount) * 100)) : 0;
@@ -14851,7 +14877,7 @@ function SavingsListView({ data, setData }) {
               <div className="text-right flex gap-4 items-baseline">
                 <span className="text-xs text-[var(--text-subtle)]">Накоплено: <b className="text-green-600">{formatRub(sorted.reduce((s, e) => s + getItemBalance(e).balance, 0))} ₽</b></span>
                 <span className="font-display text-base">{formatRub(totalTarget)} ₽</span>
-                <span className="text-xs text-[var(--text-subtle)]">{formatRub(sorted.reduce((s, e) => s + calcMonthly(e), 0))} ₽/мес</span>
+                <span className="text-xs text-[var(--text-subtle)]">{formatRub(sorted.reduce((s, e) => s + calcSavingsMonthly(e, getItemBalance(e).balance), 0))} ₽/мес</span>
               </div>
             </div>
           </div>
@@ -15159,7 +15185,7 @@ function SavingsTransactionModal({ expenses, transactions = [], preselectedId, p
 
   const selectedExp = expenses.find(e => e.id === expenseId);
   const expBalance = selectedExp ? transactions.filter(t => t.expenseId === selectedExp.id).reduce((s, t) => s + (t.type === 'income' ? 1 : -1) * (t.amount || 0), 0) : 0;
-  const planMonthly = selectedExp ? calcMonthly(selectedExp) : 0;
+  const planMonthly = selectedExp ? calcSavingsMonthly(selectedExp, expBalance) : 0;
 
   const submit = () => {
     const val = Number(amount);
@@ -15228,10 +15254,8 @@ function BudgetExpenseModal({ expense, cats, balance = 0, onSave, onClose }) {
   const monthsTotal = form.startDate && form.targetDate ? monthsBetweenStr(form.startDate, form.targetDate) : 0;
   const monthsLeft  = form.targetDate ? monthsLeftFor(formExp) : 0;
   const remaining   = Math.max(formExp.amount - (balance || 0), 0);
-  // Фиксированный план: цель ÷ месяцы графика (платежи план не меняют)
-  const monthly = (form.targetDate && formExp.amount > 0)
-    ? calcMonthly(formExp)
-    : 0;
+  // Динамический план: остаток ÷ оставшиеся месяцы (см. calcSavingsMonthly)
+  const monthly = calcSavingsMonthly(formExp, balance);
 
   const submit = () => {
     if (!form.name.trim()) return;
