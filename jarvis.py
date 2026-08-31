@@ -1762,6 +1762,98 @@ def pf_articles(sl: dict) -> list:
     return arts
 
 
+def pf_dds_fact_by_category(sl: dict, month: str) -> dict:
+    """{categoryId: сумма расходных операций ДДС за месяц}. Складывается с
+    ручным фактом / фактом из выписки в ячейке ФАКТ на сайте — см.
+    cashflowFactMaps() в index (9).html; здесь то же самое для приложения."""
+    out = {}
+    for op in _pf_list(sl, "budgetCashflowOps"):
+        if not isinstance(op, dict) or op.get("direction") == "in":
+            continue
+        if str(op.get("date") or "")[:7] != month:
+            continue
+        cid = str(op.get("categoryId") or "")
+        amount = op.get("amount")
+        if not cid or not isinstance(amount, (int, float)):
+            continue
+        out[cid] = out.get(cid, 0.0) + float(amount)
+    return out
+
+
+def pf_budget_rows(sl: dict, month: str) -> list:
+    """План / факт / остаток по статьям месяца — ручные категории и
+    «Постоянные», вкладка «Бюджет» приложения. Те же id и та же формула
+    факта (ручной факт/факт из выписки + факт из ДДС), что и pf_articles()
+    и «По месяцу» на сайте. Накопления и Долги сюда не входят — у них не
+    «план минус потрачено», а другая механика (цель/остаток долга)."""
+    plan_vals = sl.get("budgetPlanValues")
+    plan_vals = plan_vals if isinstance(plan_vals, dict) else {}
+    fact_vals = sl.get("budgetFactValues")
+    fact_vals = fact_vals if isinstance(fact_vals, dict) else {}
+    dds_fact = pf_dds_fact_by_category(sl, month)
+
+    rows = []
+    for cat in _pf_list(sl, "budgetPlanCategories"):
+        if not isinstance(cat, dict):
+            continue
+        group_name = str(cat.get("label") or "")
+        group_emoji = str(cat.get("emoji") or "")
+        for it in (cat.get("items") if isinstance(cat.get("items"), list) else []):
+            if not isinstance(it, dict) or not it.get("id"):
+                continue
+            item_id = str(it["id"])
+            key = f"{item_id}_{month}"
+            plan = plan_vals.get(key)
+            plan = float(plan) if isinstance(plan, (int, float)) else 0.0
+            fact = float(fact_vals.get(key) or 0) + dds_fact.get(item_id, 0.0)
+            rows.append({
+                "id": item_id,
+                "name": str(it.get("label") or "Статья"),
+                "emoji": str(it.get("emoji") or group_emoji or "📌"),
+                "group_name": group_name,
+                "plan": round(plan, 2),
+                "fact": round(fact, 2),
+                "remaining": round(plan - fact, 2),
+            })
+
+    try:
+        month_num = int(month.split("-")[1])
+    except (IndexError, ValueError):
+        month_num = 0
+    rec_cats = _pf_list(sl, "budgetRecurringCategories") or PF_DEFAULT_RECURRING_CATS
+    rec_by_id = {str(c.get("id")): c for c in rec_cats if isinstance(c, dict) and c.get("id")}
+    rec_plan_by_cat = {}
+    for r in _pf_list(sl, "budgetRecurring"):
+        if not isinstance(r, dict) or r.get("archived"):
+            continue
+        cid = str(r.get("category") or "")
+        if not cid:
+            continue
+        skip = r.get("skipMonths")
+        if isinstance(skip, list) and month_num in skip:
+            continue
+        amount = r.get("amount")
+        amount = float(amount) if isinstance(amount, (int, float)) else 0.0
+        rec_plan_by_cat[cid] = rec_plan_by_cat.get(cid, 0.0) + amount
+
+    for cid, plan in rec_plan_by_cat.items():
+        item_id = f"__rec_{cid}"
+        c = rec_by_id.get(cid) or {}
+        key = f"{item_id}_{month}"
+        fact = float(fact_vals.get(key) or 0) + dds_fact.get(item_id, 0.0)
+        rows.append({
+            "id": item_id,
+            "name": str(c.get("label") or cid),
+            "emoji": str(c.get("emoji") or "🔄"),
+            "group_name": "Постоянные",
+            "plan": round(plan, 2),
+            "fact": round(fact, 2),
+            "remaining": round(plan - fact, 2),
+        })
+
+    return rows
+
+
 def pf_reminders(sl: dict, month: str) -> list:
     """«Выводы по месяцу» — пункты, которые пользователь себе задал на этот
     месяц во вкладке «ДДС». Приложение показывает их напоминанием.
@@ -3544,6 +3636,20 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             if not re.match(r"^\d{4}-\d{2}$", month):
                 month = today_msk().strftime("%Y-%m")
             self._json(200, {"month": month, "items": pf_reminders(sl, month)})
+        elif action == "budget":
+            month = one("month")
+            if not re.match(r"^\d{4}-\d{2}$", month):
+                month = today_msk().strftime("%Y-%m")
+            rows = pf_budget_rows(sl, month)
+            total_plan = round(sum(r["plan"] for r in rows), 2)
+            total_fact = round(sum(r["fact"] for r in rows), 2)
+            self._json(200, {
+                "month": month,
+                "items": rows,
+                "total_plan": total_plan,
+                "total_fact": total_fact,
+                "total_remaining": round(total_plan - total_fact, 2),
+            })
         elif action == "operations":
             date_from = one("date_from")
             date_to = one("date_to")
