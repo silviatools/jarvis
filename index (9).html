@@ -748,6 +748,26 @@ const mergeDateLogEntries = (localArr, serverArr, preferLocal, deletedForKey) =>
   return result.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 };
 
+// budgetStatementRows не имеют своего id, поэтому mergeIdArrays сравнивает их
+// по ПОЛНОМУ содержимому объекта («plain-value array» ветка). Одна и та же
+// строка выписки, попавшая на два устройства в чуть РАЗНОЙ форме (например,
+// когда в код добавили новое поле вроде note, а старая сохранённая копия его
+// ещё не содержит), перестаёт совпадать по этому сравнению — и обе версии
+// остаются в массиве, задваивая сумму. Дедуплицируем отдельно, по смысловому
+// ключу с нормализованным note, — а не полагаемся на точное совпадение формы.
+const dedupeStatementRows = (rows) => {
+  const seen = new Set();
+  const out = [];
+  (rows || []).forEach(r => {
+    if (!r) return;
+    const key = [r.date, r.month, r.amount, r.account, r.category, r.note || ''].join(' ');
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(r);
+  });
+  return out;
+};
+
 const mergeBudgetSlice = (localSlice, serverSlice, preferLocal, mergedDeletedIds) => {
   const ls = localSlice || {};
   const ss = serverSlice || {};
@@ -759,6 +779,7 @@ const mergeBudgetSlice = (localSlice, serverSlice, preferLocal, mergedDeletedIds
     if (lv === undefined) { out[sk] = sv; return; }
     if (Array.isArray(lv) || Array.isArray(sv)) {
       out[sk] = mergeIdArrays(lv, sv, preferLocal, mergedDeletedIds[sk]);
+      if (sk === 'budgetStatementRows') out[sk] = dedupeStatementRows(out[sk]);
     } else if (isPlainObject(lv) && isPlainObject(sv)) {
       out[sk] = preferLocal ? { ...sv, ...lv } : { ...lv, ...sv };
     } else {
@@ -13570,11 +13591,16 @@ function BudgetStatementImportModal({ rows, fileName, editMode, data, setData, a
   const applyImport = () => {
     if (unmappedExpenseStats.length > 0) return;
 
-    const monthsInFile = new Set(rows.filter(r => r.account === account).map(r => r.month));
+    // На случай, если сама выписка содержит буквально повторяющиеся строки
+    // (склеенные файлы, повторная выгрузка того же периода) — иначе такие
+    // строки задвоили бы и посчитанный факт, и сохранённые строки разом.
+    const dedupedRows = dedupeStatementRows(rows);
+
+    const monthsInFile = new Set(dedupedRows.filter(r => r.account === account).map(r => r.month));
     const rebuiltFact = {};
     const rebuiltInc = {};
 
-    rows.filter(r => r.account === account).forEach(r => {
+    dedupedRows.filter(r => r.account === account).forEach(r => {
       const target = mappings[r.category];
       if (!target || target === 'skip') return;
       if (target.startsWith('item:')) {
@@ -13618,7 +13644,7 @@ function BudgetStatementImportModal({ rows, fileName, editMode, data, setData, a
     // Persist compact rows so mapping can be re-edited without re-uploading.
     // note — назначение платежа из выписки, если банк его экспортирует:
     // показывается в разборе ячейки Факт, чтобы понять «за что платил».
-    const compactRows = rows.map(r => ({
+    const compactRows = dedupedRows.map(r => ({
       date: r.date,
       month: r.month,
       amount: r.amount,
