@@ -404,7 +404,7 @@ body { padding-top: var(--safe-t); }
   flex-shrink: 0;
   background: var(--bg-elev);
   border-top: 1px solid var(--line);
-  padding: 8px 10px calc(10px + var(--safe-b));
+  padding: 8px 10px 10px;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
@@ -427,6 +427,158 @@ body { padding-top: var(--safe-t); }
 .key:active { transform: scale(0.96); background: #eceefb; }
 .key.wide { font-size: 22px; }
 .key.back { font-size: 22px; color: var(--muted); }
+
+/* ── Нижние вкладки «Учёт» / «Бюджет» — под клавиатурой суммы, всегда видны ── */
+.tabbar {
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  padding-bottom: var(--safe-b);
+}
+
+.tab-btn {
+  height: 52px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.tab-btn .tab-ico { font-size: 17px; line-height: 1; }
+.tab-btn.active { color: var(--accent); }
+
+/* ── Вкладка «Бюджет»: план / факт / остаток по статьям месяца ── */
+.budget-month-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 14px 16px 8px;
+}
+
+.bm-nav {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+.bm-nav:active { background: var(--accent-soft); }
+
+.bm-label {
+  font-size: 15px;
+  font-weight: 750;
+  min-width: 140px;
+  text-align: center;
+  text-transform: capitalize;
+}
+
+.budget-summary {
+  flex-shrink: 0;
+  margin: 2px 16px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 8px;
+  display: flex;
+  box-shadow: 0 1px 2px rgba(27,28,51,.04);
+}
+
+.bs-item { text-align: center; flex: 1; }
+.bs-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+.bs-value {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-weight: 700;
+  font-size: 14px;
+  margin-top: 3px;
+}
+.bs-value.over { color: var(--danger); }
+
+.budget-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 16px 12px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.budget-group-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin: 14px 2px 8px;
+}
+.budget-group-title:first-child { margin-top: 2px; }
+
+.budget-row {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 14px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  box-shadow: 0 1px 2px rgba(27,28,51,.04);
+}
+
+.br-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.br-name {
+  font-size: 14px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.br-remaining {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-weight: 700;
+  font-size: 14px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.br-remaining.over { color: var(--danger); }
+
+.br-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg);
+  margin-top: 8px;
+  overflow: hidden;
+}
+.br-bar-fill { height: 100%; border-radius: 3px; background: var(--accent-2); }
+.br-bar-fill.over { background: var(--danger); }
+
+.br-sub {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+}
 
 /* ── Purpose step ── */
 .purpose-screen {
@@ -718,6 +870,8 @@ body { padding-top: var(--safe-t); }
     </button>
   </div>
 
+  <!-- Вкладка «Учёт»: два шага (сумма+статья → назначение), как и раньше -->
+  <div class="screen active" id="logFlow">
   <!-- Шаг 1: сумма + статьи + клавиатура -->
   <section class="screen active" id="screenAmount">
     <div class="amount-wrap">
@@ -783,6 +937,27 @@ body { padding-top: var(--safe-t); }
 
     <button type="button" class="save-btn" id="saveBtn" onclick="saveOperation()">Сохранить</button>
   </section>
+  </div>
+
+  <!-- Вкладка «Бюджет»: план / факт / остаток по статьям выбранного месяца -->
+  <section class="screen" id="screenBudget">
+    <div class="budget-month-bar">
+      <button type="button" class="bm-nav" id="budgetPrevMonth" aria-label="Предыдущий месяц">‹</button>
+      <div class="bm-label" id="budgetMonthLabel">—</div>
+      <button type="button" class="bm-nav" id="budgetNextMonth" aria-label="Следующий месяц">›</button>
+    </div>
+    <div class="budget-summary" id="budgetSummary"></div>
+    <div class="budget-list" id="budgetList"></div>
+  </section>
+
+  <div class="tabbar" id="tabbar">
+    <button type="button" class="tab-btn active" data-tab="log">
+      <span class="tab-ico">✏️</span>Учёт
+    </button>
+    <button type="button" class="tab-btn" data-tab="budget">
+      <span class="tab-ico">📊</span>Бюджет
+    </button>
+  </div>
 </div>
 
 <div class="overlay" id="accOverlay" onclick="if(event.target===this)closeAccountSheet()">
@@ -881,6 +1056,9 @@ body { padding-top: var(--safe-t); }
   let copyingRecent = false;
   let viewMode = 'cats'; // 'cats' | 'recent' — какая из двух панелей видна
   let editingOp = null;  // операция, открытая в форме правки, или null
+  let activeTab = 'log'; // 'log' | 'budget' — нижняя вкладка
+  let budgetMonth = todayISO().slice(0, 7);
+  let budgetLoadSeq = 0; // отбрасываем ответ, если за это время уже переключили месяц
 
   const $ = (id) => document.getElementById(id);
 
@@ -1259,6 +1437,85 @@ body { padding-top: var(--safe-t); }
     } catch (_) {}
   }
 
+  // ── Вкладка «Бюджет»: план / факт / остаток по статьям месяца ──────────────
+
+  function setTab(tab) {
+    if (tab !== 'log' && tab !== 'budget') return;
+    activeTab = tab;
+    $('logFlow').classList.toggle('active', tab === 'log');
+    $('screenBudget').classList.toggle('active', tab === 'budget');
+    $('tabbar').querySelectorAll('.tab-btn').forEach(b => {
+      b.classList.toggle('active', b.getAttribute('data-tab') === tab);
+    });
+    if (tab === 'budget') loadBudget();
+  }
+
+  function shiftMonth(ym, delta) {
+    const m = /^(\d{4})-(\d{2})$/.exec(ym || '');
+    if (!m) return ym;
+    const d = new Date(Number(m[1]), Number(m[2]) - 1 + delta, 1);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+  }
+
+  function renderBudget(payload) {
+    $('budgetMonthLabel').textContent = monthLabel(budgetMonth) || budgetMonth;
+    const items = payload.items || [];
+    const totalRemaining = Number(payload.total_remaining) || 0;
+    $('budgetSummary').innerHTML = `
+      <div class="bs-item"><div class="bs-label">План</div><div class="bs-value">${esc(formatMoney(payload.total_plan))}</div></div>
+      <div class="bs-item"><div class="bs-label">Потрачено</div><div class="bs-value">${esc(formatMoney(payload.total_fact))}</div></div>
+      <div class="bs-item"><div class="bs-label">Осталось</div><div class="bs-value${totalRemaining < 0 ? ' over' : ''}">${esc(formatMoney(totalRemaining))}</div></div>
+    `;
+
+    if (!items.length) {
+      $('budgetList').innerHTML = '<div class="empty-hint">На этот месяц нет статей с планом — задайте план в «По месяцу» на сайте</div>';
+      return;
+    }
+
+    // Группируем по group_name, сохраняя порядок появления статей с сервера.
+    const order = [];
+    const byGroup = {};
+    items.forEach(it => {
+      const g = it.group_name || 'Статьи';
+      if (!byGroup[g]) { byGroup[g] = []; order.push(g); }
+      byGroup[g].push(it);
+    });
+
+    $('budgetList').innerHTML = order.map(g => {
+      const rows = byGroup[g].map(it => {
+        const plan = Number(it.plan) || 0;
+        const fact = Number(it.fact) || 0;
+        const remaining = Number(it.remaining) || 0;
+        const over = remaining < 0;
+        const pct = plan > 0 ? Math.min(100, Math.round((fact / plan) * 100)) : (fact > 0 ? 100 : 0);
+        return `<div class="budget-row">
+          <div class="br-top">
+            <span class="br-name">${it.emoji ? esc(it.emoji) + ' ' : ''}${esc(it.name)}</span>
+            <span class="br-remaining${over ? ' over' : ''}">${esc(formatMoney(remaining))}</span>
+          </div>
+          <div class="br-bar"><div class="br-bar-fill${over ? ' over' : ''}" style="width:${pct}%"></div></div>
+          <div class="br-sub"><span>${esc(formatMoney(fact))} потрачено</span><span>план ${esc(formatMoney(plan))}</span></div>
+        </div>`;
+      }).join('');
+      return `<div class="budget-group-title">${esc(g)}</div>${rows}`;
+    }).join('');
+  }
+
+  async function loadBudget() {
+    $('budgetMonthLabel').textContent = monthLabel(budgetMonth) || budgetMonth;
+    const seq = ++budgetLoadSeq;
+    $('budgetList').innerHTML = '<div class="empty-hint">Загрузка…</div>';
+    $('budgetSummary').innerHTML = '';
+    try {
+      const payload = await api(API + '/budget?month=' + encodeURIComponent(budgetMonth));
+      if (seq !== budgetLoadSeq) return; // месяц уже переключили — этот ответ устарел
+      renderBudget(payload);
+    } catch (e) {
+      if (seq !== budgetLoadSeq) return;
+      $('budgetList').innerHTML = '<div class="empty-hint">Не удалось загрузить</div>';
+    }
+  }
+
   async function repeatRecent(oid) {
     if (copyingRecent) return;
     const op = recentOps.find(o => o.id === oid);
@@ -1531,8 +1788,24 @@ body { padding-top: var(--safe-t); }
     setAccount(btn.getAttribute('data-id'));
   });
 
+  $('tabbar').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-tab]');
+    if (!btn) return;
+    setTab(btn.getAttribute('data-tab'));
+  });
+
+  $('budgetPrevMonth').addEventListener('click', () => {
+    budgetMonth = shiftMonth(budgetMonth, -1);
+    loadBudget();
+  });
+  $('budgetNextMonth').addEventListener('click', () => {
+    budgetMonth = shiftMonth(budgetMonth, 1);
+    loadBudget();
+  });
+
   // Физическая клавиатура (десктоп / bluetooth)
   window.addEventListener('keydown', (e) => {
+    if (!$('logFlow').classList.contains('active')) return;
     if (!$('screenAmount').classList.contains('active')) return;
     if (document.activeElement === $('catSearch')) return;
     if (e.key >= '0' && e.key <= '9') { pressKey(e.key); e.preventDefault(); }
