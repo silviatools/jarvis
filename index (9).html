@@ -12139,6 +12139,66 @@ function BudgetMonthlyView({ data, setData }) {
     return 'text-amber-700 font-medium';
   };
 
+  // ── Разбор ячейки «Факт»: какие именно операции сложились в показанную
+  // сумму, и комментарии/назначения к ним («за что платил»). Источники —
+  // ровно те, из которых сама сумма и складывается (см. getItemFact выше):
+  // операции ДДС/приложения, строки загруженной выписки, а для Накоплений
+  // и Долгов — их собственные транзакции.
+  const opsFromCashflow = (itemId, direction, month) =>
+    cashflowOpsOf(data)
+      .filter(op => op.categoryId === itemId && op.direction === direction && monthKey(op.date) === month)
+      .map(op => ({
+        date: op.date, amount: Number(op.amount) || 0,
+        note: (op.purpose || op.comment || '').trim(), source: 'Приложение',
+      }));
+
+  const opsFromStatement = (itemId, direction, month) => {
+    const account = data.budgetStatementAccount;
+    const mappings = data.budgetStatementMappings || {};
+    const target = direction === 'in' ? `inc:${itemId}` : `item:${itemId}`;
+    return (data.budgetStatementRows || [])
+      .filter(r => r.account === account && r.month === month && mappings[r.category] === target)
+      .filter(r => direction === 'in' ? r.amount > 0 : r.amount < 0)
+      .map(r => ({
+        date: r.date, amount: Math.abs(Number(r.amount) || 0),
+        note: r.note || r.category || '', source: 'Выписка',
+      }));
+  };
+
+  const getItemFactOps = (item, month) => {
+    if (item.id.startsWith('__debt_')) {
+      const debtId = item.id.slice(7);
+      return debtTx
+        .filter(t => t.debtId === debtId && t.type !== 'increase' && monthKey(t.date) === month)
+        .map(t => ({ date: t.date, amount: Number(t.amount) || 0, note: (t.comment || '').trim(), source: 'Долг' }));
+    }
+    if (item.id.startsWith('__sav_')) {
+      const catId = item.id.slice(6);
+      const goals = activeExp.filter(e => e.category === catId);
+      return savTx
+        .filter(t => t.type === 'income' && monthKey(t.date) === month && goals.some(g => g.id === t.expenseId))
+        .map(t => {
+          const goal = goals.find(g => g.id === t.expenseId);
+          return { date: t.date, amount: Number(t.amount) || 0, note: goal ? goal.name : '', source: 'Накопление' };
+        });
+    }
+    return [...opsFromCashflow(item.id, 'out', month), ...opsFromStatement(item.id, 'out', month)];
+  };
+
+  const getIncomeFactOps = (srcId, month) =>
+    [...opsFromCashflow(srcId, 'in', month), ...opsFromStatement(srcId, 'in', month)];
+
+  const getCategoryFactOps = (cat, month) =>
+    (cat.items || []).flatMap(it => getItemFactOps(it, month).map(op => ({ ...op, itemLabel: it.label })));
+
+  const getGrandFactOps = (month) => allCats.flatMap(cat => getCategoryFactOps(cat, month));
+
+  const getIncomeTotalFactOps = (month) =>
+    incomeSources.flatMap(src => getIncomeFactOps(src.id, month).map(op => ({ ...op, itemLabel: src.label })));
+
+  const [factDetails, setFactDetails] = useState(null); // { title, month, ops }
+  const openFactDetails = (title, month, ops) => setFactDetails({ title, month, ops });
+
   const onStatementFile = async (e) => {
     const file = e.target.files && e.target.files[0];
     e.target.value = '';
@@ -12315,7 +12375,12 @@ function BudgetMonthlyView({ data, setData }) {
                             </td>
                             {showFact && (
                               <td className={`px-1 py-2 text-center text-xs border-b border-[var(--border)] whitespace-nowrap ${ft > 0 ? 'text-emerald-700 font-semibold' : 'text-gray-300 text-[10px]'}`}>
-                                {ft > 0 ? formatRub(ft) : '—'}
+                                {ft > 0 ? (
+                                  <button onClick={() => openFactDetails('Приход', m, getIncomeTotalFactOps(m))}
+                                    className="hover:underline decoration-dotted underline-offset-2" title="Показать операции">
+                                    {formatRub(ft)}
+                                  </button>
+                                ) : '—'}
                               </td>
                             )}
                           </React.Fragment>
@@ -12354,7 +12419,12 @@ function BudgetMonthlyView({ data, setData }) {
                               </td>
                               {showFact && (
                                 <td className={`px-1 py-1 text-center text-xs w-[54px] whitespace-nowrap ${fv > 0 ? 'text-emerald-700 font-medium' : 'text-gray-300 text-[10px]'}`}>
-                                  {fv > 0 ? formatRub(fv) : '—'}
+                                  {fv > 0 ? (
+                                    <button onClick={() => openFactDetails(src.label, m, getIncomeFactOps(src.id, m))}
+                                      className="hover:underline decoration-dotted underline-offset-2" title="Показать операции">
+                                      {formatRub(fv)}
+                                    </button>
+                                  ) : '—'}
                                 </td>
                               )}
                             </React.Fragment>
@@ -12389,7 +12459,12 @@ function BudgetMonthlyView({ data, setData }) {
                               </td>
                               {showFact && (
                                 <td className={`px-1 py-2 text-center text-xs border-b border-[var(--border)] whitespace-nowrap ${factCellCls(ft, t)}`}>
-                                  {ft > 0 ? formatRub(ft) : '—'}
+                                  {ft > 0 ? (
+                                    <button onClick={() => openFactDetails(cat.label, m, getCategoryFactOps(cat, m))}
+                                      className="hover:underline decoration-dotted underline-offset-2" title="Показать операции">
+                                      {formatRub(ft)}
+                                    </button>
+                                  ) : '—'}
                                 </td>
                               )}
                             </React.Fragment>
@@ -12439,7 +12514,12 @@ function BudgetMonthlyView({ data, setData }) {
                                 </td>
                                 {showFact && (
                                   <td className={`px-1 py-1 text-center text-xs w-[54px] whitespace-nowrap ${factCellCls(fv, v)}`}>
-                                    {fv > 0 ? formatRub(fv) : '—'}
+                                    {fv > 0 ? (
+                                      <button onClick={() => openFactDetails(item.label, m, getItemFactOps(item, m))}
+                                        className="hover:underline decoration-dotted underline-offset-2" title="Показать операции">
+                                        {formatRub(fv)}
+                                      </button>
+                                    ) : '—'}
                                   </td>
                                 )}
                               </React.Fragment>
@@ -12466,7 +12546,12 @@ function BudgetMonthlyView({ data, setData }) {
                         </td>
                         {showFact && (
                           <td className={`px-1 py-3 text-center text-xs font-bold whitespace-nowrap ${factCellCls(ft, t)}`}>
-                            {ft > 0 ? formatRub(ft) : '—'}
+                            {ft > 0 ? (
+                              <button onClick={() => openFactDetails('Итого расходы', m, getGrandFactOps(m))}
+                                className="hover:underline decoration-dotted underline-offset-2" title="Показать операции">
+                                {formatRub(ft)}
+                              </button>
+                            ) : '—'}
                           </td>
                         )}
                       </React.Fragment>
@@ -12537,7 +12622,63 @@ function BudgetMonthlyView({ data, setData }) {
           onClose={() => setImportState(null)}
         />
       )}
+
+      {factDetails && (
+        <FactDetailsModal
+          title={factDetails.title}
+          month={factDetails.month}
+          ops={factDetails.ops}
+          onClose={() => setFactDetails(null)}
+        />
+      )}
     </div>
+  );
+}
+
+// Разбор ячейки «Факт» на вкладке «По месяцу»: список операций, из которых
+// сложилась показанная сумма, с датой, суммой и комментарием/назначением —
+// чтобы можно было вспомнить, за что был платёж.
+function FactDetailsModal({ title, month, ops, onClose }) {
+  const MONTH_NAMES_FULL = ['январь','февраль','март','апрель','май','июнь',
+                            'июль','август','сентябрь','октябрь','ноябрь','декабрь'];
+  const m = /^(\d{4})-(\d{2})$/.exec(month || '');
+  const monthLabel = m ? `${MONTH_NAMES_FULL[Number(m[2]) - 1] || ''} ${m[1]}` : (month || '');
+  const fmtDate = (s) => {
+    if (!s) return '—';
+    const [y, mo, dd] = String(s).split('-');
+    return (dd && mo) ? `${dd}.${mo}` : s;
+  };
+  const sorted = [...(ops || [])].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  const total = sorted.reduce((s, o) => s + (o.amount || 0), 0);
+
+  return (
+    <Modal title={title} onClose={onClose}>
+      <div className="space-y-3">
+        <div className="flex items-center justify-between text-sm text-[var(--text-muted)] pb-2 border-b border-[var(--border)]">
+          <span className="capitalize">{monthLabel}</span>
+          <span className="font-display text-lg text-[var(--text)]">{formatRub(total)} ₽</span>
+        </div>
+        {!sorted.length ? (
+          <div className="text-center py-8 text-[var(--text-subtle)] text-sm">Операции не найдены</div>
+        ) : (
+          <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+            {sorted.map((op, i) => (
+              <div key={i} className="flex items-start justify-between gap-3 border border-[var(--border)] rounded-xl px-3 py-2.5 bg-[var(--bg)]">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium truncate">{op.note || 'Без комментария'}</div>
+                  <div className="text-xs text-[var(--text-subtle)] mt-0.5">
+                    {fmtDate(op.date)}
+                    {op.itemLabel && <span> · {op.itemLabel}</span>}
+                    {op.source && <span> · {op.source}</span>}
+                  </div>
+                </div>
+                <div className="font-medium text-sm whitespace-nowrap flex-shrink-0">{formatRub(op.amount)} ₽</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -13437,13 +13578,16 @@ function BudgetStatementImportModal({ rows, fileName, editMode, data, setData, a
     const nextMappings = { ...savedMappings, ...mappings };
     Object.keys(nextMappings).forEach(k => { if (!nextMappings[k]) delete nextMappings[k]; });
 
-    // Persist compact rows so mapping can be re-edited without re-uploading
+    // Persist compact rows so mapping can be re-edited without re-uploading.
+    // note — назначение платежа из выписки, если банк его экспортирует:
+    // показывается в разборе ячейки Факт, чтобы понять «за что платил».
     const compactRows = rows.map(r => ({
       date: r.date,
       month: r.month,
       amount: r.amount,
       account: r.account,
       category: r.category,
+      note: r.note || '',
     }));
 
     setData(d => ({
