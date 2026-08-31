@@ -16037,26 +16037,41 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
     startDate: debt.startDate || getCurrentMonthStr(),
     targetDate: debt.targetDate || (debt.returnDate ? debt.returnDate.slice(0, 7) : addMonthsStr(getCurrentMonthStr(), 6)),
   }));
+  // Долг без даты начала/окончания уже не попадает в план «По месяцу» —
+  // это ровно то, что фильтрует planDebts. Переключатель просто даёт этому
+  // управляемый интерфейс вместо ручной очистки обеих дат.
+  const [noSchedule, setNoSchedule] = useState(() => !debt.startDate && !debt.targetDate);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const toggleNoSchedule = (v) => {
+    setNoSchedule(v);
+    if (!v) {
+      setForm(f => ({
+        ...f,
+        startDate: f.startDate || getCurrentMonthStr(),
+        targetDate: f.targetDate || addMonthsStr(getCurrentMonthStr(), 6),
+      }));
+    }
+  };
 
   const effective = (Number(form.amount) || 0) + (increased || 0);
   const remaining = Math.max(effective - (paid || 0), 0);
-  const months = form.startDate && form.targetDate ? monthsBetweenStr(form.startDate, form.targetDate) : 0;
-  const monthsLeft = monthsLeftFor({ ...form, amount: effective });
-  const monthly = (form.targetDate && effective > 0)
+  const months = !noSchedule && form.startDate && form.targetDate ? monthsBetweenStr(form.startDate, form.targetDate) : 0;
+  const monthsLeft = noSchedule ? 0 : monthsLeftFor({ ...form, amount: effective });
+  const monthly = (!noSchedule && form.targetDate && effective > 0)
     ? calcMonthly({ ...form, amount: effective })
     : 0;
 
   const submit = () => {
     if (!form.amount || Number(form.amount) <= 0) return;
     if (!form.debtor.trim()) return;
-    if (form.startDate && form.targetDate && form.startDate > form.targetDate) {
+    if (!noSchedule && form.startDate && form.targetDate && form.startDate > form.targetDate) {
       alert('Дата начала выплат должна быть раньше или равна дате окончания');
       return;
     }
     // Keep returnDate in sync with end of schedule when schedule is set
     let returnDate = form.returnDate || '';
-    if (form.targetDate && !returnDate) {
+    if (!noSchedule && form.targetDate && !returnDate) {
       const [y, m] = form.targetDate.split('-');
       returnDate = `${y}-${m}-${new Date(Number(y), Number(m), 0).getDate()}`;
     }
@@ -16065,6 +16080,8 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
       amount: Number(form.amount),
       debtor: form.debtor.trim(),
       comment: (form.comment || '').trim(),
+      startDate: noSchedule ? '' : form.startDate,
+      targetDate: noSchedule ? '' : form.targetDate,
       returnDate,
       notify: !!(form.notify && form.notifyDate),
     });
@@ -16095,18 +16112,30 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
           </select>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label>Начать выплаты</label>
-            <input type="month" value={form.startDate || ''} onChange={e => set('startDate', e.target.value)} />
-          </div>
-          <div>
-            <label>Выплатить к</label>
-            <input type="month" value={form.targetDate || ''} onChange={e => set('targetDate', e.target.value)} />
+        <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium">Просто суммой, без плана по месяцам</div>
+              <div className="text-xs text-[var(--text-subtle)] mt-0.5">Не делится на месяцы и не попадает во вкладку «По месяцу» — платежи и довнесения отмечаются как обычно</div>
+            </div>
+            <Toggle checked={noSchedule} onChange={toggleNoSchedule} />
           </div>
         </div>
 
-        {monthly > 0 && (
+        {!noSchedule && (
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label>Начать выплаты</label>
+              <input type="month" value={form.startDate || ''} onChange={e => set('startDate', e.target.value)} />
+            </div>
+            <div>
+              <label>Выплатить к</label>
+              <input type="month" value={form.targetDate || ''} onChange={e => set('targetDate', e.target.value)} />
+            </div>
+          </div>
+        )}
+
+        {!noSchedule && monthly > 0 && (
           <div className="bg-[var(--bg)] border border-[var(--border)] rounded-2xl p-4 fade-in">
             <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-3">План выплат</div>
             <div className="flex items-baseline gap-2 mb-1">
