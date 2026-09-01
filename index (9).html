@@ -306,7 +306,7 @@ const BUDGET_SLICE_KEYS = [
   'budgetStatementMappings', 'budgetStatementAccount',
   'budgetStatementRows', 'budgetStatementFileName',
   'budgetCashflowAccounts', 'budgetCashflowOps', 'budgetCashflowSettings',
-  'budgetMonthlyNotes',
+  'budgetMonthlyNotes', 'budgetPlans',
 ];
 
 const emptyBudgetSlice = () => ({
@@ -341,6 +341,9 @@ const emptyBudgetSlice = () => ({
   // Плоский список (а не объект по месяцам) — чтобы правки с телефона и с
   // компьютера сливались по id, а прошлые месяцы оставались в истории.
   budgetMonthlyNotes: [],
+  // Вкладка «Планы»: именованные бюджеты под конкретное мероприятие/поездку,
+  // со своими группами и статьями (только ручные, без авто-категорий).
+  budgetPlans: [],
 });
 
 const extractBudgetSlice = (data) => {
@@ -12200,7 +12203,7 @@ function BudgetView({ data, setData }) {
 
         <div className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-6">
           <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
-            {[['monthly','По месяцу'],['cashflow','ДДС'],['expenses','Накопления'],['recurring','Постоянные'],['supplements','Спортпит'],['debts','Долги']].map(([id, label]) => (
+            {[['monthly','По месяцу'],['cashflow','ДДС'],['expenses','Накопления'],['recurring','Постоянные'],['supplements','Спортпит'],['debts','Долги'],['plans','Планы']].map(([id, label]) => (
               <button key={id} onClick={() => setBudgetTab(id)}
                 className={`px-3 sm:px-4 py-2.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${budgetTab === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
                 {label}
@@ -12218,6 +12221,7 @@ function BudgetView({ data, setData }) {
         {budgetTab === 'recurring' && <BudgetRecurringView key={activeId} data={scopedData} setData={scopedSetData} />}
         {budgetTab === 'supplements' && <BudgetSupplementsView key={activeId} data={scopedData} setData={scopedSetData} />}
         {budgetTab === 'debts' && <BudgetDebtsView key={activeId} data={scopedData} setData={scopedSetData} />}
+        {budgetTab === 'plans' && <BudgetPlansView key={activeId} data={scopedData} setData={scopedSetData} />}
       </div>
 
       {showUsers && (
@@ -16407,6 +16411,510 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
   );
 }
 
+
+// ============== BUDGET PLANS (Планы) ==============
+// Именованные планы бюджета под конкретное мероприятие, поездку или
+// путешествие. В отличие от «По месяцу» здесь нет авто-категорий (Постоянные,
+// Накопления, Долги) и нет месяцев — только одна колонка «План», а группы и
+// статьи в них создаются полностью вручную, отдельно для каждого плана.
+// Правки живут в локальном состоянии редактора и попадают в data.budgetPlans
+// только по кнопке «Сохранить план бюджета» — черновик не засоряет список,
+// пока пользователь не подтвердит его явно.
+
+function BudgetPlansView({ data, setData }) {
+  const [editing, setEditing] = useState(null); // { plan, isNew } | null
+  const plans = data.budgetPlans || [];
+
+  const openNew = () => setEditing({
+    plan: { id: crypto.randomUUID(), name: '', createdAt: Date.now(), updatedAt: Date.now(), groups: [], values: {}, breakdowns: {} },
+    isNew: true,
+  });
+  const openExisting = (p) => setEditing({ plan: JSON.parse(JSON.stringify(p)), isNew: false });
+
+  const savePlan = (plan) => {
+    setData(d => {
+      const list = d.budgetPlans || [];
+      const exists = list.find(x => x.id === plan.id);
+      return { ...d, budgetPlans: exists ? list.map(x => x.id === plan.id ? plan : x) : [...list, plan] };
+    });
+    setEditing(null);
+  };
+
+  const removePlan = (id) => {
+    if (!confirm('Удалить план бюджета?')) return;
+    setData(d => ({
+      ...d,
+      budgetPlans: (d.budgetPlans || []).filter(p => p.id !== id),
+      deletedIds: withDeletedId(d, 'budgetPlans', id),
+    }));
+  };
+
+  if (editing) {
+    return (
+      <BudgetPlanEditor
+        plan={editing.plan}
+        isNew={editing.isNew}
+        onSave={savePlan}
+        onCancel={() => setEditing(null)}
+      />
+    );
+  }
+
+  const planTotal = (p) => (p.groups || []).flatMap(g => g.items || [])
+    .reduce((s, it) => s + ((p.values || {})[it.id] || 0), 0);
+  const sorted = [...plans].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 flex-wrap mb-6">
+        <button onClick={openNew} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
+          <Icon name="plus" size={16} />Создать план бюджета
+        </button>
+      </div>
+
+      {!plans.length ? (
+        <EmptyState title="Нет планов бюджета" text="Создайте план для мероприятия, поездки или путешествия — добавьте группы статей и суммы вручную" />
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {sorted.map(p => {
+            const itemsCount = (p.groups || []).reduce((s, g) => s + (g.items || []).length, 0);
+            const total = planTotal(p);
+            return (
+              <div key={p.id} onClick={() => openExisting(p)}
+                className="text-left bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 hover:border-[var(--text)] transition-colors cursor-pointer group">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="font-semibold text-sm truncate">{p.name || 'Без названия'}</div>
+                  <button onClick={e => { e.stopPropagation(); removePlan(p.id); }}
+                    className="p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-red-50 text-[var(--text-subtle)] hover:text-red-500 transition-all shrink-0">
+                    <Icon name="trash" size={14} />
+                  </button>
+                </div>
+                <div className="text-xs text-[var(--text-subtle)] mt-1">
+                  {(p.groups || []).length} {pluralRu((p.groups || []).length, ['группа', 'группы', 'групп'])} · {itemsCount} {pluralRu(itemsCount, ['статья', 'статьи', 'статей'])}
+                </div>
+                <div className="font-display text-xl mt-2">{formatRub(total)} <span className="text-sm text-[var(--text-subtle)]">₽</span></div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel }) {
+  const [plan, setPlan] = useState(initialPlan);
+  const [showStructure, setShowStructure] = useState(isNew);
+  const [cellEdit, setCellEdit] = useState(null); // { item } | null
+  const initialRef = useRef(JSON.stringify(initialPlan));
+
+  const groups = plan.groups || [];
+  const values = plan.values || {};
+  const breakdowns = plan.breakdowns || {};
+
+  const getItemVal = (itemId) => values[itemId] || 0;
+  const groupTotal = (g) => (g.items || []).reduce((s, it) => s + getItemVal(it.id), 0);
+  const grandTotal = () => groups.flatMap(g => g.items || []).reduce((s, it) => s + getItemVal(it.id), 0);
+
+  const applyStructure = (newGroups) => {
+    const validIds = new Set(newGroups.flatMap(g => (g.items || []).map(it => it.id)));
+    setPlan(p => ({
+      ...p,
+      groups: newGroups,
+      values: Object.fromEntries(Object.entries(p.values || {}).filter(([id]) => validIds.has(id))),
+      breakdowns: Object.fromEntries(Object.entries(p.breakdowns || {}).filter(([id]) => validIds.has(id))),
+    }));
+  };
+
+  const saveCell = (itemId, rows) => {
+    const cleanRows = rows.filter(r => r.amount > 0 || r.label.trim());
+    const total = cleanRows.reduce((s, r) => s + r.amount, 0);
+    setPlan(p => {
+      const nextBreakdowns = { ...(p.breakdowns || {}) };
+      if (cleanRows.length > 1) nextBreakdowns[itemId] = cleanRows;
+      else delete nextBreakdowns[itemId];
+      return { ...p, values: { ...(p.values || {}), [itemId]: total }, breakdowns: nextBreakdowns };
+    });
+    setCellEdit(null);
+  };
+
+  const isDirty = () => JSON.stringify(plan) !== initialRef.current;
+  const requestCancel = () => {
+    if (isDirty() && !confirm(isNew ? 'Отменить создание плана? Введённые данные будут потеряны.' : 'Отменить изменения плана?')) return;
+    onCancel();
+  };
+  const doSave = () => {
+    if (!plan.name.trim()) { alert('Введите название плана'); return; }
+    onSave({ ...plan, name: plan.name.trim(), updatedAt: Date.now() });
+  };
+
+  const planHeaderCls = "px-1 py-1.5 text-center text-xs font-semibold tracking-wide border-b border-l-2 border-[var(--border)] w-[110px] bg-blue-50 text-blue-600";
+  const planDivCls = "border-l-2 border-[var(--border)]";
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 sm:gap-3 mb-4 flex-wrap">
+        <button onClick={requestCancel}
+          className="p-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">
+          <Icon name="chevronLeft" size={16} />
+        </button>
+        <input
+          value={plan.name}
+          onChange={e => setPlan(p => ({ ...p, name: e.target.value }))}
+          placeholder="Название плана (например, «Поездка в Сочи»)"
+          className="flex-1 min-w-[180px] bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm font-medium focus:outline-none focus:border-[var(--text)]"
+        />
+        <button onClick={() => setShowStructure(true)}
+          className="p-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
+          title="Группы и статьи плана">
+          <Icon name="settings" size={16} />
+        </button>
+      </div>
+
+      {!groups.length ? (
+        <div className="text-center py-16 text-[var(--text-subtle)]">
+          <div className="text-4xl mb-3">🧳</div>
+          <div className="font-medium mb-1">В плане пока нет статей</div>
+          <div className="text-sm mb-4">Добавьте группы и статьи расходов — например, «Билеты», «Проживание», «Питание»</div>
+          <button onClick={() => setShowStructure(true)} className="btn-primary inline-flex items-center gap-2">
+            <Icon name="settings" size={16} />Добавить группы и статьи
+          </button>
+        </div>
+      ) : (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="text-sm border-collapse w-full" style={{minWidth:'420px'}}>
+              <thead>
+                <tr>
+                  <th className="sticky left-0 z-20 bg-[var(--bg)] px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] border-b border-r border-[var(--border)]">
+                    Статья
+                  </th>
+                  <th className={planHeaderCls}>План</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups.map(g => (
+                  <React.Fragment key={g.id}>
+                    <tr className="bg-gray-100">
+                      <td className="sticky left-0 z-10 bg-gray-100 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs">
+                        {g.emoji && <span className="mr-1.5">{g.emoji}</span>}
+                        <span className="uppercase tracking-wide text-[var(--text)]">{g.label}</span>
+                      </td>
+                      <td className={`px-1 py-2 text-center text-xs font-semibold border-b border-[var(--border)] whitespace-nowrap ${planDivCls} ${groupTotal(g) > 0 ? 'text-blue-600' : 'text-[var(--border)]'}`}>
+                        {groupTotal(g) > 0 ? formatRub(groupTotal(g)) : '—'}
+                      </td>
+                    </tr>
+                    {(g.items || []).map(item => {
+                      const v = getItemVal(item.id);
+                      const rows = breakdowns[item.id];
+                      return (
+                        <tr key={item.id} className="border-b border-[var(--border)] transition-colors hover:bg-blue-50/20 bg-white">
+                          <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
+                            <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{item.label}</span>
+                          </td>
+                          <td className={`px-1 py-1 w-[110px] ${planDivCls}`}>
+                            <button
+                              onClick={() => setCellEdit({ item })}
+                              className={`w-full text-center text-xs px-1 py-1.5 rounded hover:bg-blue-50 transition-colors whitespace-nowrap font-medium ${v > 0 ? 'text-blue-600' : ''}`}
+                              title={rows && rows.length > 1 ? rows.map(r => `${r.label || 'Без названия'}: ${formatRub(r.amount)} ₽`).join(', ') : 'Нажмите, чтобы указать сумму'}>
+                              {v > 0 ? formatRub(v) : <span className="text-gray-300 text-[10px]">·</span>}
+                              {rows && rows.length > 1 && <span className="ml-1 text-[9px] text-blue-400">({rows.length})</span>}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </React.Fragment>
+                ))}
+
+                <tr className="border-t-2 border-[var(--border-strong)] bg-gray-200">
+                  <td className="sticky left-0 z-10 bg-gray-200 px-4 py-3 border-r border-[var(--border)] font-bold text-xs uppercase tracking-wide text-[var(--text)]">
+                    Итого
+                  </td>
+                  <td className={`px-1 py-3 text-center text-xs font-bold whitespace-nowrap ${planDivCls} ${grandTotal() > 0 ? 'text-blue-700' : 'text-gray-300'}`}>
+                    {grandTotal() > 0 ? formatRub(grandTotal()) : '—'}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <div className="flex gap-3 mt-5">
+        <button onClick={requestCancel} className="btn-secondary">Отмена</button>
+        <button onClick={doSave} className="btn-primary flex-1">Сохранить план бюджета</button>
+      </div>
+
+      {showStructure && (
+        <BudgetPlanStructureModal
+          groups={groups}
+          onSave={(newGroups) => { applyStructure(newGroups); setShowStructure(false); }}
+          onClose={() => setShowStructure(false)}
+        />
+      )}
+
+      {cellEdit && (
+        <BudgetPlanCellModal
+          item={cellEdit.item}
+          total={getItemVal(cellEdit.item.id)}
+          rows={breakdowns[cellEdit.item.id]}
+          onSave={(rows) => saveCell(cellEdit.item.id, rows)}
+          onClose={() => setCellEdit(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Группы и статьи одного плана — тот же визуальный паттерн, что и
+// «Структура бюджета» на вкладке «По месяцу», но без авто-категорий и без
+// источников дохода: здесь всё создаётся вручную и хранится внутри плана.
+function BudgetPlanStructureModal({ groups: initialGroups, onSave, onClose }) {
+  const [groups, setGroups] = useState(() => JSON.parse(JSON.stringify(initialGroups || [])));
+  const [expanded, setExpanded] = useState(() => Object.fromEntries((initialGroups || []).map(g => [g.id, true])));
+  const [editGroup, setEditGroup] = useState(null);
+  const [editItem, setEditItem] = useState(null);
+  const [newGroupEmoji, setNewGroupEmoji] = useState('');
+  const [newGroupLabel, setNewGroupLabel] = useState('');
+  const [newItemLbls, setNewItemLbls] = useState({});
+
+  const addGroup = () => {
+    if (!newGroupLabel.trim()) return;
+    const ng = { id: crypto.randomUUID(), emoji: newGroupEmoji.trim() || '📁', label: newGroupLabel.trim(), items: [] };
+    setGroups(g => [...g, ng]);
+    setExpanded(e => ({ ...e, [ng.id]: true }));
+    setNewGroupEmoji(''); setNewGroupLabel('');
+  };
+  const removeGroup = (id) => {
+    if (!confirm('Удалить группу со всеми статьями?')) return;
+    setGroups(g => g.filter(x => x.id !== id));
+  };
+  const saveGroupEdit = () => {
+    if (!editGroup?.label?.trim()) return;
+    setGroups(g => g.map(x => x.id === editGroup.id ? { ...x, emoji: editGroup.emoji.trim() || '📁', label: editGroup.label.trim() } : x));
+    setEditGroup(null);
+  };
+  const moveGroup = (id, dir) => {
+    setGroups(g => {
+      const idx = g.findIndex(x => x.id === id);
+      if (idx + dir < 0 || idx + dir >= g.length) return g;
+      const n = [...g]; [n[idx], n[idx + dir]] = [n[idx + dir], n[idx]]; return n;
+    });
+  };
+
+  const addItem = (groupId) => {
+    const lbl = (newItemLbls[groupId] || '').trim();
+    if (!lbl) return;
+    setGroups(g => g.map(x => x.id === groupId ? { ...x, items: [...(x.items || []), { id: crypto.randomUUID(), label: lbl }] } : x));
+    setNewItemLbls(n => ({ ...n, [groupId]: '' }));
+  };
+  const removeItem = (groupId, itemId) => {
+    setGroups(g => g.map(x => x.id === groupId ? { ...x, items: (x.items || []).filter(it => it.id !== itemId) } : x));
+  };
+  const moveItem = (groupId, itemId, dir) => {
+    setGroups(g => g.map(x => {
+      if (x.id !== groupId) return x;
+      const items = [...(x.items || [])];
+      const idx = items.findIndex(it => it.id === itemId);
+      if (idx + dir < 0 || idx + dir >= items.length) return x;
+      [items[idx], items[idx + dir]] = [items[idx + dir], items[idx]];
+      return { ...x, items };
+    }));
+  };
+  const saveItemEdit = () => {
+    if (!editItem?.label?.trim()) return;
+    setGroups(g => g.map(x => x.id === editItem.groupId
+      ? { ...x, items: (x.items || []).map(it => it.id === editItem.id ? { ...it, label: editItem.label.trim() } : it) } : x));
+    setEditItem(null);
+  };
+
+  return (
+    <Modal title="Группы и статьи плана" onClose={onClose}>
+      <div className="max-h-[62vh] overflow-y-auto space-y-2 pr-0.5">
+        {!groups.length && (
+          <div className="text-center py-6 text-[var(--text-subtle)] text-sm">Добавьте первую группу ниже</div>
+        )}
+        {groups.map((g, gi) => (
+          <div key={g.id} className="border border-[var(--border)] rounded-xl overflow-hidden">
+            <div className="flex items-center gap-1.5 px-3 py-2.5 bg-[var(--bg)]">
+              {editGroup?.id === g.id ? (
+                <div className="flex items-center gap-1.5 flex-1">
+                  <input className="w-10 text-center text-base border border-[var(--border)] rounded-lg p-1 bg-[var(--surface)]"
+                    value={editGroup.emoji} onChange={e => setEditGroup(eg => ({ ...eg, emoji: e.target.value }))} placeholder="📁" />
+                  <input className="flex-1 text-sm font-semibold border border-[var(--border)] rounded-lg p-1.5 bg-[var(--surface)]"
+                    value={editGroup.label} onChange={e => setEditGroup(eg => ({ ...eg, label: e.target.value }))}
+                    onKeyDown={e => e.key === 'Enter' && saveGroupEdit()} autoFocus />
+                  <button onClick={saveGroupEdit} className="p-1.5 rounded-lg bg-[var(--text)] text-white shrink-0"><Icon name="check" size={13} /></button>
+                  <button onClick={() => setEditGroup(null)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0"><Icon name="x" size={13} /></button>
+                </div>
+              ) : (
+                <>
+                  <button onClick={() => setExpanded(e => ({ ...e, [g.id]: !e[g.id] }))}
+                    className="flex-1 flex items-center gap-2 text-left min-w-0">
+                    <span className="text-lg shrink-0">{g.emoji || '📁'}</span>
+                    <span className="font-semibold text-sm truncate">{g.label}</span>
+                    <span className="text-xs text-[var(--text-subtle)] shrink-0">({(g.items || []).length})</span>
+                    <Icon name="chevronDown" size={14}
+                      style={{ transform: expanded[g.id] ? 'rotate(180deg)' : 'none', transition: 'transform .2s', color: 'var(--text-subtle)', marginLeft: 'auto', flexShrink: 0 }} />
+                  </button>
+                  <button onClick={() => moveGroup(g.id, -1)} disabled={gi === 0}
+                    className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
+                    <Icon name="chevronDown" size={13} style={{transform:'rotate(180deg)'}} />
+                  </button>
+                  <button onClick={() => moveGroup(g.id, 1)} disabled={gi === groups.length - 1}
+                    className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
+                    <Icon name="chevronDown" size={13} />
+                  </button>
+                  <button onClick={() => setEditGroup({ id: g.id, emoji: g.emoji || '', label: g.label })}
+                    className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0"><Icon name="edit" size={13} /></button>
+                  <button onClick={() => removeGroup(g.id)}
+                    className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0"><Icon name="trash" size={13} /></button>
+                </>
+              )}
+            </div>
+
+            {expanded[g.id] && (
+              <div className="border-t border-[var(--border)] px-3 py-2 space-y-1">
+                {(g.items || []).length === 0 && (
+                  <div className="text-xs text-[var(--text-subtle)] pl-5 py-1">Нет статей — добавьте ниже</div>
+                )}
+                {(g.items || []).map((item, ii) => (
+                  <div key={item.id} className="flex items-center gap-1.5 pl-4">
+                    {editItem?.id === item.id ? (
+                      <div className="flex items-center gap-1.5 flex-1">
+                        <input className="flex-1 text-sm border border-[var(--border)] rounded-lg p-1.5 bg-[var(--surface)]"
+                          value={editItem.label} onChange={e => setEditItem(ei => ({ ...ei, label: e.target.value }))}
+                          onKeyDown={e => e.key === 'Enter' && saveItemEdit()} autoFocus />
+                        <button onClick={saveItemEdit} className="p-1.5 rounded-lg bg-[var(--text)] text-white shrink-0"><Icon name="check" size={12} /></button>
+                        <button onClick={() => setEditItem(null)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0"><Icon name="x" size={12} /></button>
+                      </div>
+                    ) : (
+                      <>
+                        <span className="w-1 h-1 rounded-full bg-blue-400 shrink-0 ml-1" />
+                        <span className="flex-1 text-sm text-[var(--text-muted)] truncate">{item.label}</span>
+                        <button onClick={() => moveItem(g.id, item.id, -1)} disabled={ii === 0}
+                          className="p-1 rounded hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
+                          <Icon name="chevronDown" size={12} style={{transform:'rotate(180deg)'}} />
+                        </button>
+                        <button onClick={() => moveItem(g.id, item.id, 1)} disabled={ii === (g.items || []).length - 1}
+                          className="p-1 rounded hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
+                          <Icon name="chevronDown" size={12} />
+                        </button>
+                        <button onClick={() => setEditItem({ id: item.id, groupId: g.id, label: item.label })}
+                          className="p-1 rounded hover:bg-black/5 text-[var(--text-muted)] shrink-0"><Icon name="edit" size={12} /></button>
+                        <button onClick={() => removeItem(g.id, item.id)}
+                          className="p-1 rounded hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0"><Icon name="trash" size={12} /></button>
+                      </>
+                    )}
+                  </div>
+                ))}
+                <div className="flex items-center gap-1.5 pl-4 pt-1">
+                  <span className="w-1 h-1 shrink-0 ml-1" />
+                  <input className="flex-1 text-sm border border-dashed border-[var(--border-strong)] rounded-lg p-1.5 bg-transparent"
+                    value={newItemLbls[g.id] || ''}
+                    onChange={e => setNewItemLbls(n => ({ ...n, [g.id]: e.target.value }))}
+                    placeholder="Название статьи..."
+                    onKeyDown={e => e.key === 'Enter' && addItem(g.id)} />
+                  <button onClick={() => addItem(g.id)} className="p-1.5 rounded-lg bg-[var(--text)] text-white hover:opacity-90 shrink-0"><Icon name="plus" size={13} /></button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+
+        <div className="border border-dashed border-[var(--border-strong)] rounded-xl p-3">
+          <div className="text-xs uppercase tracking-wide text-[var(--text-subtle)] font-medium mb-2">Новая группа</div>
+          <div className="flex gap-2">
+            <input className="w-12 text-center text-base border border-[var(--border)] rounded-lg p-1.5 bg-[var(--surface)]"
+              value={newGroupEmoji} onChange={e => setNewGroupEmoji(e.target.value)} placeholder="📁" />
+            <input className="flex-1 border border-[var(--border)] rounded-lg p-1.5 text-sm bg-[var(--surface)]"
+              value={newGroupLabel} onChange={e => setNewGroupLabel(e.target.value)}
+              placeholder="Билеты, проживание, питание..."
+              onKeyDown={e => e.key === 'Enter' && addGroup()} />
+            <button onClick={addGroup} className="btn-primary text-sm px-4 flex items-center gap-1.5 shrink-0">
+              <Icon name="plus" size={14} />Добавить
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
+        <button onClick={onClose} className="btn-secondary">Отмена</button>
+        <button onClick={() => onSave(groups)} className="btn-primary flex-1">Готово</button>
+      </div>
+    </Modal>
+  );
+}
+
+// Попап ячейки плана: сумму можно вписать целиком или разбить на несколько
+// частей (например, «бензин» + «ресторан»), которые складываются сами.
+function BudgetPlanCellModal({ item, total, rows: initialRows, onSave, onClose }) {
+  const [rows, setRows] = useState(() => {
+    if (initialRows && initialRows.length) {
+      return initialRows.map(r => ({ id: r.id || crypto.randomUUID(), label: r.label || '', amount: r.amount ? String(r.amount) : '' }));
+    }
+    return [{ id: crypto.randomUUID(), label: '', amount: total ? String(total) : '' }];
+  });
+
+  const addRow = () => setRows(r => [...r, { id: crypto.randomUUID(), label: '', amount: '' }]);
+  const removeRow = (id) => setRows(r => r.length > 1 ? r.filter(x => x.id !== id) : r);
+  const updateRow = (id, field, value) => setRows(r => r.map(x => x.id === id ? { ...x, [field]: value } : x));
+
+  const parseAmount = (v) => parseInt(String(v).replace(/\s/g, ''), 10) || 0;
+  const sum = rows.reduce((s, r) => s + parseAmount(r.amount), 0);
+
+  const submit = () => {
+    const cleaned = rows.map(r => ({ id: r.id, label: r.label.trim(), amount: parseAmount(r.amount) }));
+    onSave(cleaned);
+  };
+
+  return (
+    <Modal title={item.label} onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-xs text-[var(--text-subtle)]">
+          Впишите сумму целиком или разбейте её на несколько частей — они сложатся автоматически.
+        </p>
+        <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-0.5">
+          {rows.map((r, i) => (
+            <div key={r.id} className="flex items-center gap-2">
+              <input
+                className="flex-1 text-sm border border-[var(--border)] rounded-lg p-2 bg-[var(--surface)]"
+                value={r.label}
+                onChange={e => updateRow(r.id, 'label', e.target.value)}
+                placeholder={rows.length > 1 ? `Часть ${i + 1} (например, бензин)` : 'Комментарий (необязательно)'}
+              />
+              <input
+                type="number" inputMode="numeric"
+                className="w-28 text-sm border border-[var(--border)] rounded-lg p-2 bg-[var(--surface)] text-right"
+                value={r.amount}
+                onChange={e => updateRow(r.id, 'amount', e.target.value)}
+                placeholder="0"
+              />
+              <button onClick={() => removeRow(r.id)} disabled={rows.length === 1}
+                className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 disabled:opacity-25 shrink-0">
+                <Icon name="trash" size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <button onClick={addRow} className="inline-flex items-center gap-1.5 text-sm text-[var(--text-muted)] hover:text-[var(--text)]">
+          <Icon name="plus" size={14} />Добавить сумму
+        </button>
+
+        <div className="flex items-center justify-between pt-3 border-t border-[var(--border)]">
+          <span className="text-sm text-[var(--text-muted)]">Итого</span>
+          <span className="font-display text-xl">{formatRub(sum)} ₽</span>
+        </div>
+      </div>
+
+      <div className="flex gap-3 mt-5">
+        <button onClick={onClose} className="btn-secondary">Отмена</button>
+        <button onClick={submit} className="btn-primary flex-1">Сохранить сумму</button>
+      </div>
+    </Modal>
+  );
+}
 
 // ============== SUPPLEMENTS ==============
 
