@@ -531,53 +531,60 @@ body { padding-top: var(--safe-t); }
 }
 .budget-group-title:first-child { margin-top: 2px; }
 
-.budget-row {
-  border: 1px solid var(--line);
-  background: var(--surface);
-  border-radius: 14px;
-  padding: 10px 12px;
-  margin-bottom: 8px;
-  box-shadow: 0 1px 2px rgba(27,28,51,.04);
+.budget-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px 6px;
+  margin-bottom: 4px;
 }
 
-.br-top {
+.budget-card { text-align: center; min-width: 0; }
+
+.bc-top {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
-  gap: 8px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 2px;
 }
-.br-name {
-  font-size: 14px;
+.bc-fact { color: var(--danger); }
+.bc-plan { color: var(--income); }
+
+.bc-ring-wrap {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  margin: 4px auto 0;
+  border-radius: 50%;
+}
+.bc-ring-hole {
+  position: absolute;
+  inset: 5px;
+  background: var(--surface);
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+.bc-icon { font-size: 18px; line-height: 1; }
+.bc-pct { font-size: 9px; font-weight: 700; color: var(--muted); }
+
+.bc-name {
+  margin-top: 6px;
+  font-size: 12px;
   font-weight: 650;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.br-remaining {
+.bc-amount {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
-  font-weight: 700;
-  font-size: 14px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.br-remaining.over { color: var(--danger); }
-
-.br-bar {
-  height: 6px;
-  border-radius: 3px;
-  background: var(--bg);
-  margin-top: 8px;
-  overflow: hidden;
-}
-.br-bar-fill { height: 100%; border-radius: 3px; background: var(--accent-2); }
-.br-bar-fill.over { background: var(--danger); }
-
-.br-sub {
-  display: flex;
-  justify-content: space-between;
   font-size: 11px;
   color: var(--muted);
-  margin-top: 4px;
+  margin-top: 1px;
 }
 
 /* ── Purpose step ── */
@@ -1050,6 +1057,9 @@ body { padding-top: var(--safe-t); }
   let settings = {};
   let notes = { month: '', items: [] };
   let accountId = '';
+  // Цвет кольца прогресса на вкладке «Бюджет» — свой на каждую группу статей,
+  // по кругу; при перерасходе кольцо перекрашивается в var(--danger).
+  const BUDGET_RING_COLORS = ['#4338ca', '#0f9d6e', '#e0468e', '#f59e0b', '#0ea5e9', '#8b5cf6', '#f97316', '#14b8a6'];
   let amountRaw = ''; // цифры и, возможно, запятая: «1234,56»
   let selectedCat = null;
   let searchQ = '';
@@ -1481,23 +1491,28 @@ body { padding-top: var(--safe-t); }
       byGroup[g].push(it);
     });
 
-    $('budgetList').innerHTML = order.map(g => {
-      const rows = byGroup[g].map(it => {
+    $('budgetList').innerHTML = order.map((g, gi) => {
+      const ringColor = BUDGET_RING_COLORS[gi % BUDGET_RING_COLORS.length];
+      const cards = byGroup[g].map(it => {
         const plan = Number(it.plan) || 0;
         const fact = Number(it.fact) || 0;
         const remaining = Number(it.remaining) || 0;
         const over = remaining < 0;
         const pct = plan > 0 ? Math.min(100, Math.round((fact / plan) * 100)) : (fact > 0 ? 100 : 0);
-        return `<div class="budget-row">
-          <div class="br-top">
-            <span class="br-name">${it.emoji ? esc(it.emoji) + ' ' : ''}${esc(it.name)}</span>
-            <span class="br-remaining${over ? ' over' : ''}">${esc(formatMoney(remaining))}</span>
+        const color = over ? 'var(--danger)' : ringColor;
+        return `<div class="budget-card">
+          <div class="bc-top"><span class="bc-fact">${esc(formatMoney(fact))}</span><span class="bc-plan">${esc(formatMoney(plan))}</span></div>
+          <div class="bc-ring-wrap" style="background:conic-gradient(${color} ${pct * 3.6}deg, var(--bg) 0)">
+            <div class="bc-ring-hole">
+              <span class="bc-icon">${esc(it.emoji || '📌')}</span>
+              <span class="bc-pct">${pct}%</span>
+            </div>
           </div>
-          <div class="br-bar"><div class="br-bar-fill${over ? ' over' : ''}" style="width:${pct}%"></div></div>
-          <div class="br-sub"><span>${esc(formatMoney(fact))} потрачено</span><span>план ${esc(formatMoney(plan))}</span></div>
+          <div class="bc-name">${esc(it.name)}</div>
+          <div class="bc-amount">${esc(formatMoney(plan))}</div>
         </div>`;
       }).join('');
-      return `<div class="budget-group-title">${esc(g)}</div>${rows}`;
+      return `<div class="budget-group-title">${esc(g)}</div><div class="budget-cards">${cards}</div>`;
     }).join('');
   }
 
