@@ -292,6 +292,18 @@ body { padding-top: var(--safe-t); }
   background: var(--accent-2); flex-shrink: 0;
 }
 .cat-chip .dot.in { background: var(--income); }
+.cat-chip .cc-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cat-chip .cc-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
 .cat-chip .meta {
   font-size: 12px; font-weight: 500; color: var(--muted); margin-left: auto;
   flex-shrink: 0;
@@ -299,6 +311,14 @@ body { padding-top: var(--safe-t); }
 .cat-chip .name {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cat-chip .cc-items {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1192,8 +1212,14 @@ body { padding-top: var(--safe-t); }
     const q = searchQ.trim().toLowerCase();
     if (!q) return null; // null = показываем частые
     return categories.filter(c => {
+      // «Постоянные» — одна статья на всю категорию (её сумма посчитана как
+      // и в «По месяцу»), а не на каждый платёж внутри. Названия платежей
+      // внутри (например, «Стрижка» в категории «Другое») складываются
+      // сервером в c.items — ищем и по ним, иначе такой платёж вообще
+      // никак не найти в поиске.
       const hay = (
-        (c.code || '') + ' ' + (c.name || '') + ' ' + (c.group_name || '') + ' ' + dirLabel(c)
+        (c.code || '') + ' ' + (c.name || '') + ' ' + (c.group_name || '') + ' ' +
+        dirLabel(c) + ' ' + (c.items || []).join(' ')
       ).toLowerCase();
       return hay.includes(q);
     });
@@ -1218,10 +1244,16 @@ body { padding-top: var(--safe-t); }
 
     list.innerHTML = items.map(c => {
       const isIn = c.direction === 'in';
+      const itemsList = (c.items || []).join(', ');
       return `<button type="button" class="cat-chip" data-id="${escAttr(c.id)}">
         <span class="dot${isIn ? ' in' : ''}"></span>
-        <span class="name">${esc(c.name)}</span>
-        <span class="meta">${esc(dirLabel(c))}</span>
+        <span class="cc-body">
+          <span class="cc-top">
+            <span class="name">${esc(c.name)}</span>
+            <span class="meta">${esc(dirLabel(c))}</span>
+          </span>
+          ${itemsList ? `<span class="cc-items">${esc(itemsList)}</span>` : ''}
+        </span>
       </button>`;
     }).join('');
   }

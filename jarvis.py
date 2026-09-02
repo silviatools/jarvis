@@ -1734,13 +1734,24 @@ def pf_articles(sl: dict) -> list:
 
     rec_cats = _pf_list(sl, "budgetRecurringCategories") or PF_DEFAULT_RECURRING_CATS
     rec_by_id = {str(c.get("id")): c for c in rec_cats if isinstance(c, dict) and c.get("id")}
+    # «Постоянные» — одна статья на всю категорию (её общая сумма, как и в
+    # «По месяцу»), а не на каждый платёж внутри. Поэтому по имени отдельного
+    # платежа (например, «Стрижка» в категории «Другое») сама статья не
+    # находится обычным поиском по name/group_name — сюда же складываем
+    # названия платежей внутри категории, чтобы искать можно было и по ним.
     seen_rec = []
+    rec_items_by_cat = {}
     for r in _pf_list(sl, "budgetRecurring"):
         if not isinstance(r, dict) or r.get("archived"):
             continue
         cid = str(r.get("category") or "")
-        if cid and cid not in seen_rec:
+        if not cid:
+            continue
+        if cid not in seen_rec:
             seen_rec.append(cid)
+        name = str(r.get("name") or "").strip()
+        if name:
+            rec_items_by_cat.setdefault(cid, []).append(name)
     for cid in seen_rec:
         c = rec_by_id.get(cid) or {}
         arts.append({
@@ -1749,6 +1760,7 @@ def pf_articles(sl: dict) -> list:
             "direction": "out",
             "group_name": "Постоянные",
             "emoji": str(c.get("emoji") or "🔄"),
+            "items": rec_items_by_cat.get(cid, []),
         })
 
     counts = {}
@@ -1759,6 +1771,7 @@ def pf_articles(sl: dict) -> list:
     for a in arts:
         a["use_count"] = counts.get(a["id"], 0)
         a["code"] = ""
+        a.setdefault("items", [])
     return arts
 
 

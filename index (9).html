@@ -12055,13 +12055,16 @@ const cashflowArticles = (data) => {
     });
   });
   const recCats = getRecurringCats(data);
-  const usedRec = [...new Set((data.budgetRecurring || [])
-    .filter(r => r && !r.archived).map(r => r.category).filter(Boolean))];
+  const activeRecItems = (data.budgetRecurring || []).filter(r => r && !r.archived);
+  const usedRec = [...new Set(activeRecItems.map(r => r.category).filter(Boolean))];
   usedRec.forEach(cid => {
     const c = recCats.find(x => x.id === cid) || {};
     out.push({
       id: `__rec_${cid}`, label: c.label || cid, direction: 'out',
       group: 'Постоянные', emoji: c.emoji || '🔄',
+      // Статья одна на всю категорию — имена платежей внутри неё (например,
+      // «Стрижка» в «Другое») складываем сюда же, чтобы их можно было найти.
+      items: activeRecItems.filter(r => r.category === cid).map(r => String(r.name || '').trim()).filter(Boolean),
     });
   });
   return out;
