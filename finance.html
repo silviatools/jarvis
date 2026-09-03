@@ -396,6 +396,11 @@ body { padding-top: var(--safe-t); }
   white-space: nowrap;
 }
 
+.recent-chip .rc-kind {
+  font-weight: 500;
+  color: var(--muted);
+}
+
 .recent-chip .rc-sub {
   font-size: 12px;
   font-weight: 500;
@@ -1003,7 +1008,12 @@ body { padding-top: var(--safe-t); }
   <div class="sheet">
     <h3>Операция</h3>
 
-    <div class="field">
+    <!-- Отмеченное пополнение Накопления или платёж/пополнение Долга —
+         тип и статья привязаны к конкретной цели/долгу и правятся только
+         на вкладке «Накопления»/«Долги» на сайте, здесь — только показываем. -->
+    <div class="field" id="editLockedInfo" style="display:none"></div>
+
+    <div class="field" id="editDirectionField">
       <label for="editDirection">Тип</label>
       <select id="editDirection" onchange="onEditDirectionChange()">
         <option value="out">Расход</option>
@@ -1021,7 +1031,7 @@ body { padding-top: var(--safe-t); }
       <input type="date" id="editDate">
     </div>
 
-    <div class="field">
+    <div class="field" id="editCategoryField">
       <label for="editCategory">Статья</label>
       <select id="editCategory"></select>
     </div>
@@ -1380,13 +1390,18 @@ body { padding-top: var(--safe-t); }
       const purpose = (op.purpose || op.comment || '').trim();
       const date = op.payment_date || op.date || '';
       const isIn = op.direction === 'in';
+      // Отмеченные пополнения Накоплений и платежи/пополнения Долгов попадают
+      // сюда же (та же карта) — подписываем их, откуда они, раз статья у них
+      // не из обычного справочника.
+      const catName = op.category_name || categoryName(op.category_id);
+      const kindLabel = op.kind === 'savings' ? 'Накопление' : op.kind === 'debt' ? 'Долг' : '';
       return `<div class="recent-chip" data-oid="${escAttr(op.id)}">
-        <button type="button" class="rc-body" data-oid="${escAttr(op.id)}" title="Повторить на сегодня">
+        <button type="button" class="rc-body" data-oid="${escAttr(op.id)}" title="${kindLabel ? 'Изменить' : 'Повторить на сегодня'}">
           <div class="rc-top">
             <span class="rc-amount${isIn ? ' in' : ''}">${isIn ? '+' : ''}${esc(formatMoney(op.amount))}</span>
             <span class="rc-date">${esc(formatRuDate(date))}</span>
           </div>
-          <div class="rc-cat">${esc(categoryName(op.category_id))}</div>
+          <div class="rc-cat">${esc(catName)}${kindLabel ? `<span class="rc-kind"> · ${esc(kindLabel)}</span>` : ''}</div>
           ${purpose ? `<div class="rc-sub">${esc(purpose)}</div>` : ''}
         </button>
         <button type="button" class="rc-edit" data-edit-oid="${escAttr(op.id)}" title="Изменить" aria-label="Изменить">✎</button>
@@ -1552,6 +1567,10 @@ body { padding-top: var(--safe-t); }
     if (copyingRecent) return;
     const op = recentOps.find(o => o.id === oid);
     if (!op) { toast('Операция не найдена', 'error'); return; }
+    // Пополнение Накопления или платёж/пополнение Долга — не обычная статья
+    // ДДС, «повторить» для них не имеет смысла (нет такой статьи в
+    // справочнике). Тап по такой карточке сразу открывает правку.
+    if (op.kind && op.kind !== 'cashflow') { openEdit(oid); return; }
     if (!(Number(op.amount) > 0)) { toast('У операции нет суммы', 'error'); return; }
 
     copyingRecent = true;
@@ -1626,12 +1645,24 @@ body { padding-top: var(--safe-t); }
     const op = recentOps.find(o => o.id === oid);
     if (!op) { toast('Операция не найдена', 'error'); return; }
     editingOp = op;
+    const locked = !!op.kind && op.kind !== 'cashflow';
     $('editDirection').value = op.direction === 'in' ? 'in' : 'out';
     $('editAmount').value = String(op.amount ?? '').replace('.', ',');
     $('editDate').value = (op.payment_date || op.date || todayISO()).slice(0, 10);
-    renderEditCategoryOptions(op.category_id || '');
+    if (!locked) renderEditCategoryOptions(op.category_id || '');
     renderEditAccountOptions(op.account_id || accountId);
     $('editPurpose').value = op.purpose || op.comment || '';
+    $('editDirectionField').style.display = locked ? 'none' : '';
+    $('editCategoryField').style.display = locked ? 'none' : '';
+    const lockedInfo = $('editLockedInfo');
+    if (locked) {
+      const kindLabel = op.kind === 'savings' ? 'Накопление' : 'Долг';
+      const dirLabel = op.direction === 'in' ? 'Пополнение счёта' : 'Списание со счёта';
+      lockedInfo.textContent = `${kindLabel} · ${op.category_name || ''} · ${dirLabel}`;
+      lockedInfo.style.display = '';
+    } else {
+      lockedInfo.style.display = 'none';
+    }
     $('editOverlay').classList.add('show');
   }
 
@@ -1642,18 +1673,19 @@ body { padding-top: var(--safe-t); }
 
   async function saveEditOp() {
     if (!editingOp) return;
+    const locked = !!editingOp.kind && editingOp.kind !== 'cashflow';
     const amount = parseAmount(($('editAmount').value || '').trim().replace('.', ','));
     if (!(amount > 0)) { toast('Введите сумму', 'error'); return; }
     if (!PF_DATE_RE_CLIENT.test($('editDate').value || '')) { toast('Введите дату', 'error'); return; }
-    const categoryId = $('editCategory').value;
+    const categoryId = locked ? (editingOp.category_id || '') : $('editCategory').value;
     const accountIdSel = $('editAccount').value;
-    if (!categoryId) { toast('Выберите статью', 'error'); return; }
-    if (!accountIdSel) { toast('Выберите счёт', 'error'); return; }
+    if (!locked && !categoryId) { toast('Выберите статью', 'error'); return; }
+    if (!locked && !accountIdSel) { toast('Выберите счёт', 'error'); return; }
 
     const payload = {
       date: $('editDate').value,
       payment_date: $('editDate').value,
-      direction: $('editDirection').value === 'in' ? 'in' : 'out',
+      direction: locked ? editingOp.direction : ($('editDirection').value === 'in' ? 'in' : 'out'),
       amount,
       account_id: accountIdSel,
       category_id: categoryId,
