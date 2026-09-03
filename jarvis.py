@@ -1689,8 +1689,14 @@ def pf_accounts(sl: dict) -> list:
     for t in _pf_list(sl, "debtTransactions"):
         if not isinstance(t, dict):
             continue
-        # increase = дали в долг ещё (деньги ушли со счёта); payment = должник вернул.
-        add(str(t.get("accountId") or ""), -1 if t.get("type") == "increase" else 1, t.get("amount"))
+        # Долг бывает в обе стороны (дали в долг / сами заняли) — направление
+        # денег на счёте не выводится из типа, а хранится явно (выбирается
+        # пользователем при отметке платежа). Без него транзакция не привязана
+        # к счёту, даже если accountId почему-то заполнен.
+        cf_dir = t.get("cashflowDirection")
+        if cf_dir not in ("in", "out"):
+            continue
+        add(str(t.get("accountId") or ""), 1 if cf_dir == "in" else -1, t.get("amount"))
 
     out = []
     for a in _pf_list(sl, "budgetCashflowAccounts"):
@@ -1960,16 +1966,21 @@ def pf_savings_tx_public(t: dict, exp_by_id: dict) -> dict:
 
 
 def pf_debt_tx_public(t: dict, debt_by_id: dict) -> dict:
-    """Отмеченный платёж/пополнение Долга — аналогично pf_savings_tx_public."""
+    """Отмеченный платёж/пополнение Долга — аналогично pf_savings_tx_public.
+    В отличие от Накоплений, у Долга нет одного фиксированного направления
+    денег (можно и давать в долг, и брать самому) — направление на счёте
+    выбирается явно на сайте и хранится в cashflowDirection, а не выводится
+    из типа операции (payment/increase)."""
     date = str(t.get("date") or "")
     debt = debt_by_id.get(str(t.get("debtId") or "")) or {}
     name = str(debt.get("debtor") or "Долг")
-    is_increase = t.get("type") == "increase"  # increase = дали ещё в долг = расход со счёта
+    cf_dir = t.get("cashflowDirection")
+    direction = cf_dir if cf_dir in ("in", "out") else "in"
     return {
         "id": str(t.get("id") or ""),
         "date": date,
         "payment_date": date,
-        "direction": "out" if is_increase else "in",
+        "direction": direction,
         "amount": float(t.get("amount") or 0),
         "account_id": str(t.get("accountId") or ""),
         "category_id": f"__debt_{t.get('debtId') or ''}",
@@ -3757,7 +3768,11 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                     ts = t.get("updatedAt") if isinstance(t.get("updatedAt"), (int, float)) else 0
                     combined.append((pf_savings_tx_public(t, exp_by_id), ts))
             for t in _pf_list(sl, "debtTransactions"):
-                if isinstance(t, dict) and t.get("id"):
+                # Только явно привязанные к счёту (см. DebtCashflowModal на
+                # сайте) — обычная отметка платежа по долгу (кнопки «+»/«₽»)
+                # никак не связана со счётом и в приложение не попадает.
+                if (isinstance(t, dict) and t.get("id") and t.get("accountId")
+                        and t.get("cashflowDirection") in ("in", "out")):
                     ts = t.get("updatedAt") if isinstance(t.get("updatedAt"), (int, float)) else 0
                     combined.append((pf_debt_tx_public(t, debt_by_id), ts))
 

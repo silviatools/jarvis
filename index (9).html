@@ -11748,9 +11748,12 @@ const cashflowAccountBalance = (acc, ops, savTx = [], debtTx = []) => {
   });
   debtTx.forEach(t => {
     if (!t || t.accountId !== acc.id) return;
+    // Долг бывает в обе стороны (дали в долг / сами заняли), поэтому
+    // направление денег на счёте не выводится из типа — оно выбирается
+    // явно при отметке платежа (см. DebtCashflowModal) и хранится тут же.
+    if (t.cashflowDirection !== 'in' && t.cashflowDirection !== 'out') return;
     const amt = Number(t.amount) || 0;
-    // increase = дали в долг ещё (деньги ушли со счёта); payment = должник вернул (деньги пришли).
-    sum += t.type === 'increase' ? -amt : amt;
+    sum += t.cashflowDirection === 'in' ? amt : -amt;
   });
   return sum;
 };
@@ -15450,6 +15453,7 @@ function BudgetDebtsView({ data, setData }) {
 function DebtsListView({ data, setData }) {
   const [editing, setEditing] = useState(null);
   const [payModal, setPayModal] = useState(null); // debt | null — custom payment
+  const [cashflowModal, setCashflowModal] = useState(null); // debt | null — платёж с привязкой к ДДС
   const [showClosed, setShowClosed] = useState(false);
 
   const debts = data.budgetDebts || [];
@@ -15458,6 +15462,27 @@ function DebtsListView({ data, setData }) {
   const closed = debts.filter(d => d.closed);
   const curMonth = getCurrentMonthStr();
   const today = getTodayKey();
+
+  // Разовая миграция: раньше счёт подставлялся автоматически на КАЖДЫЙ
+  // платёж/пополнение (кнопки «+» и «₽»), а направление денег угадывалось
+  // по типу — «должник вернул» всегда считалось приходом. Но долг может
+  // быть и в обратную сторону (я занял у кого-то) — тогда платёж на самом
+  // деле расход, и знак получался неверным. Теперь счёт указывается только
+  // через отдельную кнопку с явным выбором направления, а старые записи,
+  // подхватившие счёт автоматически (без явного cashflowDirection), просто
+  // отвязываем от счёта — они не должны портить баланс карты.
+  useEffect(() => {
+    const list = data.debtTransactions || [];
+    if (!list.some(t => t && t.accountId && t.cashflowDirection === undefined)) return;
+    setData(d => ({
+      ...d,
+      debtTransactions: (d.debtTransactions || []).map(t =>
+        (t && t.accountId && t.cashflowDirection === undefined)
+          ? { ...t, accountId: '', cashflowDirection: '', updatedAt: Date.now() }
+          : t
+      ),
+    }));
+  }, [data.debtTransactions, setData]);
 
   const save = (debt) => {
     debt = { ...debt, updatedAt: Date.now() };
@@ -15489,21 +15514,26 @@ function DebtsListView({ data, setData }) {
     setData(d => ({ ...d, budgetDebts: (d.budgetDebts || []).map(x => x.id === id ? { ...x, closed: !x.closed, updatedAt: Date.now() } : x) }));
   };
 
-  // Быстрая кнопка «+» в таблице — без модалки, поэтому счёт берём тот же,
-  // что и для быстрого ввода в приложении учёта трат (иначе деньги улетают
-  // «в никуда», баланс карты не сходится).
+  // Долги бывают в обе стороны (дали в долг / сами заняли), поэтому счёт
+  // и направление денег на нём отмечаются только явно — отдельной кнопкой
+  // (см. DebtCashflowModal). Быстрая «+» и обычная «₽» — это просто
+  // отметка платёжа/довнесения по самому долгу, без связи со счётом.
   const defaultAccountId = (() => {
     const accs = data.budgetCashflowAccounts || [];
     const quick = (data.budgetCashflowSettings || {}).quickAccountId || '';
     return accs.some(a => a.id === quick) ? quick : (accs[0]?.id || '');
   })();
 
-  const addTx = (debtId, type, amount, date, comment, accountId) => {
+  const addTx = (debtId, type, amount, date, comment, accountId = '', cashflowDirection = '') => {
+    const linked = accountId && (cashflowDirection === 'in' || cashflowDirection === 'out');
     setData(d => ({
       ...d,
       debtTransactions: [...(d.debtTransactions || []), {
         id: crypto.randomUUID(), debtId, type, amount, date,
-        comment: (comment || '').trim(), accountId: accountId || '', updatedAt: Date.now(),
+        comment: (comment || '').trim(),
+        accountId: linked ? accountId : '',
+        cashflowDirection: linked ? cashflowDirection : '',
+        updatedAt: Date.now(),
       }],
     }));
   };
@@ -15609,7 +15639,7 @@ function DebtsListView({ data, setData }) {
                             <div className="flex gap-0.5 justify-end">
                               <button
                                 onClick={() => {
-                                  if (monthly > 0) addTx(d.id, 'payment', monthly, today, '', defaultAccountId);
+                                  if (monthly > 0) addTx(d.id, 'payment', monthly, today, '');
                                   else setPayModal(d);
                                 }}
                                 title={monthly > 0
@@ -15619,6 +15649,11 @@ function DebtsListView({ data, setData }) {
                               <button onClick={() => setPayModal(d)}
                                 title="Внести платёж или пополнить долг"
                                 className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] text-xs font-medium px-1.5">₽</button>
+                              <button onClick={() => setCashflowModal(d)}
+                                title="Отметить платёж и записать в личный учёт трат"
+                                className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-500 hover:text-blue-700">
+                                <Icon name="creditCard" size={14} />
+                              </button>
                               <button onClick={() => toggleClosed(d.id)} title="Отметить закрытым"
                                 className="p-1.5 rounded-lg hover:bg-black/5 text-green-500 hover:text-green-700">
                                 <Icon name="check" size={14} />
@@ -15693,13 +15728,24 @@ function DebtsListView({ data, setData }) {
         <DebtPaymentModal
           debt={payModal}
           transactions={transactions}
-          accounts={data.budgetCashflowAccounts || []}
-          defaultAccountId={defaultAccountId}
-          onSave={(type, amount, date, comment, accountId) => {
-            addTx(payModal.id, type, amount, date, comment, accountId);
+          onSave={(type, amount, date, comment) => {
+            addTx(payModal.id, type, amount, date, comment);
             setPayModal(null);
           }}
           onClose={() => setPayModal(null)}
+        />
+      )}
+      {cashflowModal && (
+        <DebtCashflowModal
+          debt={cashflowModal}
+          transactions={transactions}
+          accounts={data.budgetCashflowAccounts || []}
+          defaultAccountId={defaultAccountId}
+          onSave={(type, amount, date, comment, accountId, cashflowDirection) => {
+            addTx(cashflowModal.id, type, amount, date, comment, accountId, cashflowDirection);
+            setCashflowModal(null);
+          }}
+          onClose={() => setCashflowModal(null)}
         />
       )}
     </div>
@@ -15837,14 +15883,12 @@ function DebtsPaymentsView({ data, setData }) {
         <DebtPaymentModal
           debts={debts}
           transactions={transactions}
-          accounts={data.budgetCashflowAccounts || []}
-          defaultAccountId={(data.budgetCashflowSettings || {}).quickAccountId || ''}
-          onSave={(debtId, type, amount, date, comment, accountId) => {
+          onSave={(debtId, type, amount, date, comment) => {
             setData(d => ({
               ...d,
               debtTransactions: [...(d.debtTransactions || []), {
                 id: crypto.randomUUID(), debtId, type, amount, date,
-                comment: (comment || '').trim(), accountId: accountId || '', updatedAt: Date.now(),
+                comment: (comment || '').trim(), accountId: '', cashflowDirection: '', updatedAt: Date.now(),
               }],
             }));
             setShowAdd(false);
@@ -15856,7 +15900,7 @@ function DebtsPaymentsView({ data, setData }) {
   );
 }
 
-function DebtPaymentModal({ debt, debts, transactions = [], accounts = [], defaultAccountId = '', onSave, onClose }) {
+function DebtPaymentModal({ debt, debts, transactions = [], onSave, onClose }) {
   const today = getTodayKey();
   const list = debt ? [debt] : (debts || []);
   const [debtId, setDebtId] = useState(debt?.id || (list.find(d => !d.closed)?.id || list[0]?.id || ''));
@@ -15864,11 +15908,6 @@ function DebtPaymentModal({ debt, debts, transactions = [], accounts = [], defau
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(today);
   const [comment, setComment] = useState('');
-  // Деньги реально уходят/приходят на этот счёт — без него баланс карты
-  // не сходится с тем, что отмечено в Долгах (см. приложение учёта трат).
-  const [accountId, setAccountId] = useState(
-    accounts.some(a => a.id === defaultAccountId) ? defaultAccountId : (accounts[0]?.id || '')
-  );
 
   const selected = list.find(d => d.id === debtId) || debt;
   const rem = selected ? getDebtRemaining(selected, transactions) : 0;
@@ -15878,8 +15917,8 @@ function DebtPaymentModal({ debt, debts, transactions = [], accounts = [], defau
     const val = Number(amount);
     if (!val || val <= 0) return;
     if (!debtId) return;
-    if (debt) onSave(type, val, date || today, comment, accountId);
-    else onSave(debtId, type, val, date || today, comment, accountId);
+    if (debt) onSave(type, val, date || today, comment);
+    else onSave(debtId, type, val, date || today, comment);
   };
 
   return (
@@ -15943,16 +15982,6 @@ function DebtPaymentModal({ debt, debts, transactions = [], accounts = [], defau
           <input type="date" value={date} onChange={e => setDate(e.target.value)} />
         </div>
 
-        {accounts.length > 0 && (
-          <div>
-            <label>Счёт <span className="text-[var(--text-subtle)] font-normal text-sm">— спишется/зачислится, чтобы попасть в учёт трат</span></label>
-            <select value={accountId} onChange={e => setAccountId(e.target.value)}>
-              <option value="">Без счёта</option>
-              {accounts.map(a => <option key={a.id} value={a.id}>{a.name || 'Счёт'}</option>)}
-            </select>
-          </div>
-        )}
-
         <div>
           <label>Комментарий (необязательно)</label>
           <input value={comment} onChange={e => setComment(e.target.value)} placeholder="Внеплановый платёж..." />
@@ -15963,6 +15992,130 @@ function DebtPaymentModal({ debt, debts, transactions = [], accounts = [], defau
           <button onClick={submit}
             className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-white transition-all hover:opacity-90 ${type === 'payment' ? 'bg-green-600' : 'bg-amber-600'}`}>
             {type === 'payment' ? 'Внести платёж' : 'Пополнить долг'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Долг может быть в обе стороны — вы дали в долг (обычно) или сами заняли
+// (например, перевели себе с бизнес-карты на личную). Поэтому, в отличие
+// от обычного платежа выше, здесь счёт указывается явно, а направление
+// денег на нём выбирается вручную — не угадывается по типу операции.
+function DebtCashflowModal({ debt, transactions = [], accounts = [], defaultAccountId = '', onSave, onClose }) {
+  const today = getTodayKey();
+  const [type, setType] = useState('payment');
+  const [amount, setAmount] = useState('');
+  const [date, setDate] = useState(today);
+  const [comment, setComment] = useState('');
+  const [accountId, setAccountId] = useState(
+    accounts.some(a => a.id === defaultAccountId) ? defaultAccountId : (accounts[0]?.id || '')
+  );
+  const [flowDir, setFlowDir] = useState('in'); // 'in' | 'out' — что произошло на выбранном счёте
+
+  const onTypeChange = (t) => {
+    setType(t);
+    // Разумный дефолт: обычно должник платит вам (приход), а довнесение —
+    // это вы дали ещё (расход). Но это только подсказка — переключатель
+    // ниже можно поменять на обратное.
+    setFlowDir(t === 'payment' ? 'in' : 'out');
+  };
+
+  const rem = debt ? getDebtRemaining(debt, transactions) : 0;
+  const planMonthly = debt ? calcDebtMonthly(debt, transactions) : 0;
+
+  const submit = () => {
+    const val = Number(amount);
+    if (!val || val <= 0) return;
+    if (!accountId) return;
+    onSave(type, val, date || today, comment, accountId, flowDir);
+  };
+
+  return (
+    <Modal title="Платёж по долгу — с учётом трат" onClose={onClose}>
+      <div className="space-y-4">
+        <div className="text-sm text-[var(--text-muted)]">
+          {debt?.debtor || 'Долг'}
+          {rem > 0 && <span className="text-[var(--text-subtle)]"> · осталось {formatRub(rem)} ₽</span>}
+        </div>
+
+        <div>
+          <label>Тип</label>
+          <div className="flex gap-2">
+            <button onClick={() => onTypeChange('payment')}
+              className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${type === 'payment' ? 'bg-green-50 border-green-300 text-green-700' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
+              ↓ Платёж
+            </button>
+            <button onClick={() => onTypeChange('increase')}
+              className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${type === 'increase' ? 'bg-amber-50 border-amber-300 text-amber-700' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
+              ↑ Пополнение долга
+            </button>
+          </div>
+          <div className="text-xs text-[var(--text-subtle)] mt-1.5">
+            {type === 'payment'
+              ? 'Уменьшает остаток и пересчитывает план в «По месяцу»'
+              : 'Увеличивает сумму долга (доп. выдача) — остаток и /мес пересчитаются'}
+          </div>
+        </div>
+
+        <div>
+          <label>Сумма (₽)</label>
+          <input type="number" inputMode="numeric" min="1" value={amount}
+            onChange={e => setAmount(e.target.value)} placeholder="5 000" autoFocus />
+          {type === 'payment' && planMonthly > 0 && (
+            <button type="button" onClick={() => setAmount(String(planMonthly))}
+              className="text-xs text-blue-600 hover:underline mt-1">
+              По плану: {formatRub(planMonthly)} ₽/мес
+            </button>
+          )}
+          {type === 'payment' && rem > 0 && (
+            <button type="button" onClick={() => setAmount(String(rem))}
+              className="block text-xs text-[var(--text-subtle)] hover:text-[var(--text)] mt-0.5">
+              Весь остаток: {formatRub(rem)} ₽
+            </button>
+          )}
+        </div>
+
+        <div>
+          <label>Дата</label>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)} />
+        </div>
+
+        <div>
+          <label>Счёт</label>
+          <select value={accountId} onChange={e => setAccountId(e.target.value)}>
+            {accounts.map(a => <option key={a.id} value={a.id}>{a.name || 'Счёт'}</option>)}
+          </select>
+        </div>
+
+        <div>
+          <label>Что произошло на счёте</label>
+          <div className="flex gap-2">
+            <button onClick={() => setFlowDir('in')}
+              className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${flowDir === 'in' ? 'bg-green-50 border-green-300 text-green-700' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
+              + Пришли деньги
+            </button>
+            <button onClick={() => setFlowDir('out')}
+              className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${flowDir === 'out' ? 'bg-rose-50 border-rose-300 text-rose-700' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
+              − Ушли деньги
+            </button>
+          </div>
+          <div className="text-xs text-[var(--text-subtle)] mt-1.5">
+            Если вы даёте в долг — платёж обычно приход, довнесение — расход. Если сами берёте в долг (например, с бизнес-карты себе) — наоборот. Выберите то, что реально произошло на счёте.
+          </div>
+        </div>
+
+        <div>
+          <label>Комментарий (необязательно)</label>
+          <input value={comment} onChange={e => setComment(e.target.value)} placeholder="Внеплановый платёж..." />
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit}
+            className="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-white transition-all hover:opacity-90 bg-blue-600">
+            Сохранить и записать в ДДС
           </button>
         </div>
       </div>
