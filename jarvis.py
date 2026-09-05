@@ -1664,20 +1664,39 @@ def _pf_list(sl: dict, key: str) -> list:
 
 
 def pf_accounts(sl: dict) -> list:
-    """Счета пользователя с балансом: первоначальный остаток + доходы − расходы."""
-    ops = _pf_list(sl, "budgetCashflowOps")
+    """Счета пользователя с балансом: первоначальный остаток + доходы − расходы
+    по операциям ДДС, а также по отмеченным пополнениям Накоплений и платежам/
+    пополнениям Долгов на этот же счёт — деньги на них реально уходят с той же
+    карты. ДЕРЖАТЬ В СИНХРОНЕ с cashflowAccountBalance() из index (9).html."""
     delta = {}
-    for op in ops:
+
+    def add(acc, sign, amount):
+        if not acc or not isinstance(amount, (int, float)):
+            return
+        delta[acc] = delta.get(acc, 0.0) + sign * float(amount)
+
+    for op in _pf_list(sl, "budgetCashflowOps"):
         if not isinstance(op, dict):
             continue
-        acc = str(op.get("accountId") or "")
-        if not acc:
+        add(str(op.get("accountId") or ""), 1 if op.get("direction") == "in" else -1, op.get("amount"))
+
+    for t in _pf_list(sl, "savingsTransactions"):
+        if not isinstance(t, dict):
             continue
-        amount = op.get("amount")
-        if not isinstance(amount, (int, float)):
+        # income = отложили на цель (деньги ушли со счёта); expense = сняли обратно на счёт.
+        add(str(t.get("accountId") or ""), -1 if t.get("type") == "income" else 1, t.get("amount"))
+
+    for t in _pf_list(sl, "debtTransactions"):
+        if not isinstance(t, dict):
             continue
-        sign = 1 if op.get("direction") == "in" else -1
-        delta[acc] = delta.get(acc, 0.0) + sign * float(amount)
+        # Долг бывает в обе стороны (дали в долг / сами заняли) — направление
+        # денег на счёте не выводится из типа, а хранится явно (выбирается
+        # пользователем при отметке платежа). Без него транзакция не привязана
+        # к счёту, даже если accountId почему-то заполнен.
+        cf_dir = t.get("cashflowDirection")
+        if cf_dir not in ("in", "out"):
+            continue
+        add(str(t.get("accountId") or ""), 1 if cf_dir == "in" else -1, t.get("amount"))
 
     out = []
     for a in _pf_list(sl, "budgetCashflowAccounts"):
@@ -1734,13 +1753,24 @@ def pf_articles(sl: dict) -> list:
 
     rec_cats = _pf_list(sl, "budgetRecurringCategories") or PF_DEFAULT_RECURRING_CATS
     rec_by_id = {str(c.get("id")): c for c in rec_cats if isinstance(c, dict) and c.get("id")}
+    # «Постоянные» — одна статья на всю категорию (её общая сумма, как и в
+    # «По месяцу»), а не на каждый платёж внутри. Поэтому по имени отдельного
+    # платежа (например, «Стрижка» в категории «Другое») сама статья не
+    # находится обычным поиском по name/group_name — сюда же складываем
+    # названия платежей внутри категории, чтобы искать можно было и по ним.
     seen_rec = []
+    rec_items_by_cat = {}
     for r in _pf_list(sl, "budgetRecurring"):
         if not isinstance(r, dict) or r.get("archived"):
             continue
         cid = str(r.get("category") or "")
-        if cid and cid not in seen_rec:
+        if not cid:
+            continue
+        if cid not in seen_rec:
             seen_rec.append(cid)
+        name = str(r.get("name") or "").strip()
+        if name:
+            rec_items_by_cat.setdefault(cid, []).append(name)
     for cid in seen_rec:
         c = rec_by_id.get(cid) or {}
         arts.append({
@@ -1749,6 +1779,7 @@ def pf_articles(sl: dict) -> list:
             "direction": "out",
             "group_name": "Постоянные",
             "emoji": str(c.get("emoji") or "🔄"),
+            "items": rec_items_by_cat.get(cid, []),
         })
 
     counts = {}
@@ -1759,6 +1790,7 @@ def pf_articles(sl: dict) -> list:
     for a in arts:
         a["use_count"] = counts.get(a["id"], 0)
         a["code"] = ""
+        a.setdefault("items", [])
     return arts
 
 
@@ -1896,11 +1928,69 @@ def pf_operation_public(op: dict) -> dict:
         "amount": float(op.get("amount") or 0),
         "account_id": str(op.get("accountId") or ""),
         "category_id": str(op.get("categoryId") or ""),
+        "category_name": "",
         "purpose": str(op.get("purpose") or ""),
         "comment": str(op.get("purpose") or ""),
         "currency": "руб.",
         "payment_status": "paid",
         "source": str(op.get("source") or ""),
+        "kind": "cashflow",
+    }
+
+
+def pf_savings_tx_public(t: dict, exp_by_id: dict) -> dict:
+    """Отмеченное пополнение/списание Накопления — в форме той же операции,
+    что и ДДС: те же деньги с того же счёта, должны быть видны и правиться
+    в приложении учёта трат так же. Статья/тип не редактируются отсюда — они
+    привязаны к конкретной цели, менять их — на вкладке «Накопления»."""
+    date = str(t.get("date") or "")
+    exp = exp_by_id.get(str(t.get("expenseId") or "")) or {}
+    name = str(exp.get("name") or "Накопление")
+    is_income = t.get("type") == "income"  # income = отложили на цель = расход со счёта
+    return {
+        "id": str(t.get("id") or ""),
+        "date": date,
+        "payment_date": date,
+        "direction": "out" if is_income else "in",
+        "amount": float(t.get("amount") or 0),
+        "account_id": str(t.get("accountId") or ""),
+        "category_id": f"__sav_{t.get('expenseId') or ''}",
+        "category_name": name,
+        "purpose": str(t.get("comment") or ""),
+        "comment": str(t.get("comment") or ""),
+        "currency": "руб.",
+        "payment_status": "paid",
+        "source": "",
+        "kind": "savings",
+    }
+
+
+def pf_debt_tx_public(t: dict, debt_by_id: dict) -> dict:
+    """Отмеченный платёж/пополнение Долга — аналогично pf_savings_tx_public.
+    В отличие от Накоплений, у Долга нет одного фиксированного направления
+    денег (можно и давать в долг, и брать самому) — направление на счёте
+    выбирается явно на сайте и хранится в cashflowDirection, а не выводится
+    из типа операции (payment/increase)."""
+    date = str(t.get("date") or "")
+    debt = debt_by_id.get(str(t.get("debtId") or "")) or {}
+    name = str(debt.get("debtor") or "Долг")
+    cf_dir = t.get("cashflowDirection")
+    direction = cf_dir if cf_dir in ("in", "out") else "in"
+    return {
+        "id": str(t.get("id") or ""),
+        "date": date,
+        "payment_date": date,
+        "direction": direction,
+        "amount": float(t.get("amount") or 0),
+        "account_id": str(t.get("accountId") or ""),
+        "category_id": f"__debt_{t.get('debtId') or ''}",
+        "category_name": name,
+        "purpose": str(t.get("comment") or ""),
+        "comment": str(t.get("comment") or ""),
+        "currency": "руб.",
+        "payment_status": "paid",
+        "source": "",
+        "kind": "debt",
     }
 
 
@@ -3659,24 +3749,48 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 limit = max(1, min(500, int(one("limit", "50"))))
             except ValueError:
                 limit = 50
-            ops = [o for o in _pf_list(sl, "budgetCashflowOps") if isinstance(o, dict)]
+
+            # ДДС + отмеченные пополнения Накоплений и платежи/пополнения
+            # Долгов — единым списком: те же деньги с того же счёта, должны
+            # быть видны (и править/удалять их можно) прямо из приложения.
+            exp_by_id = {str(e.get("id")): e for e in _pf_list(sl, "budgetExpenses")
+                        if isinstance(e, dict) and e.get("id")}
+            debt_by_id = {str(d.get("id")): d for d in _pf_list(sl, "budgetDebts")
+                         if isinstance(d, dict) and d.get("id")}
+
+            combined = []  # (публичная форма, метка времени для сортировки)
+            for op in _pf_list(sl, "budgetCashflowOps"):
+                if isinstance(op, dict) and op.get("id"):
+                    ts = op.get("createdAt") if isinstance(op.get("createdAt"), (int, float)) else 0
+                    combined.append((pf_operation_public(op), ts))
+            for t in _pf_list(sl, "savingsTransactions"):
+                if isinstance(t, dict) and t.get("id"):
+                    ts = t.get("updatedAt") if isinstance(t.get("updatedAt"), (int, float)) else 0
+                    combined.append((pf_savings_tx_public(t, exp_by_id), ts))
+            for t in _pf_list(sl, "debtTransactions"):
+                # Только явно привязанные к счёту (см. DebtCashflowModal на
+                # сайте) — обычная отметка платежа по долгу (кнопки «+»/«₽»)
+                # никак не связана со счётом и в приложение не попадает.
+                if (isinstance(t, dict) and t.get("id") and t.get("accountId")
+                        and t.get("cashflowDirection") in ("in", "out")):
+                    ts = t.get("updatedAt") if isinstance(t.get("updatedAt"), (int, float)) else 0
+                    combined.append((pf_debt_tx_public(t, debt_by_id), ts))
+
             picked = []
-            for op in ops:
-                d = str(op.get("date") or "")
+            for pub, ts in combined:
+                d = pub["date"]
                 if date_from and d < date_from:
                     continue
                 if date_to and d > date_to:
                     continue
-                if account_id and str(op.get("accountId") or "") != account_id:
+                if account_id and pub["account_id"] != account_id:
                     continue
-                if direction in PF_DIRECTIONS and op.get("direction") != direction:
+                if direction in PF_DIRECTIONS and pub["direction"] != direction:
                     continue
-                picked.append(op)
-            # Новые сверху: внутри одного дня — по времени создания.
-            picked.sort(key=lambda o: (str(o.get("date") or ""),
-                                       o.get("createdAt") if isinstance(o.get("createdAt"), (int, float)) else 0),
-                        reverse=True)
-            self._json(200, [pf_operation_public(o) for o in picked[:limit]])
+                picked.append((pub, ts))
+            # Новые сверху: внутри одного дня — по времени создания/правки.
+            picked.sort(key=lambda pair: (pair[0]["date"], pair[1]), reverse=True)
+            self._json(200, [p[0] for p in picked[:limit]])
         else:
             self._json(404, {"error": "not found"})
 
@@ -3765,9 +3879,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def _pf_put_operation(self, token: str, op_id: str):
-        """Правка уже сохранённой операции: сумма/дата/направление/счёт/статья/
-        назначение — прямо из приложения, чтобы не лезть на сайт ради опечатки
-        в сумме или неверно выбранной статьи."""
+        """Правка уже сохранённой операции: обычной ДДС — сумма/дата/
+        направление/счёт/статья/назначение; отмеченного пополнения Накопления
+        или платежа/пополнения Долга — сумма/дата/счёт/комментарий (статья и
+        тип у них привязаны к конкретной цели/долгу, их место — на вкладке
+        «Накопления»/«Долги»). Ищем по всем трём хранилищам по очереди, чтобы
+        не лезть на сайт ради опечатки в сумме."""
         payload = self._pf_body()
         if payload is None:
             return
@@ -3777,43 +3894,80 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(400, {"error": "invalid amount"})
             return
         amount = cents / 100
-        direction = payload.get("direction")
-        if direction not in PF_DIRECTIONS:
-            self._json(400, {"error": "invalid direction"})
-            return
         account_id = str(payload.get("account_id") or "")[:64]
-        category_id = str(payload.get("category_id") or "")[:64]
         purpose = str(payload.get("purpose") or payload.get("comment") or "").strip()[:MAX_PF_PURPOSE]
         op_date = pf_parse_date(payload.get("date") or payload.get("payment_date"),
                                 today_msk().isoformat())
 
         def apply(app, uid, sl):
+            accounts = {a["id"] for a in pf_accounts(sl)}
+            if account_id and account_id not in accounts:
+                return 400, {"error": "unknown account"}
+
             ops = _pf_list(sl, "budgetCashflowOps")
             idx = next((i for i, o in enumerate(ops)
                         if isinstance(o, dict) and str(o.get("id") or "") == op_id), None)
-            if idx is None:
-                return 404, {"error": "operation not found"}
-            accounts = {a["id"] for a in pf_accounts(sl)}
-            if account_id not in accounts:
-                return 400, {"error": "unknown account"}
-            article = next((c for c in pf_articles(sl)
-                            if c["id"] == category_id and c["direction"] == direction), None)
-            if article is None:
-                return 400, {"error": "unknown category"}
-            updated = dict(ops[idx])
-            updated.update({
-                "date": op_date,
-                "direction": direction,
-                "amount": amount,
-                "accountId": account_id,
-                "categoryId": category_id,
-                "purpose": purpose,
-                "updatedAt": int(time.time() * 1000),
-            })
-            ops = list(ops)
-            ops[idx] = updated
-            sl["budgetCashflowOps"] = ops
-            return None
+            if idx is not None:
+                direction = payload.get("direction")
+                if direction not in PF_DIRECTIONS:
+                    return 400, {"error": "invalid direction"}
+                if not account_id:
+                    return 400, {"error": "unknown account"}
+                category_id = str(payload.get("category_id") or "")[:64]
+                article = next((c for c in pf_articles(sl)
+                                if c["id"] == category_id and c["direction"] == direction), None)
+                if article is None:
+                    return 400, {"error": "unknown category"}
+                updated = dict(ops[idx])
+                updated.update({
+                    "date": op_date,
+                    "direction": direction,
+                    "amount": amount,
+                    "accountId": account_id,
+                    "categoryId": category_id,
+                    "purpose": purpose,
+                    "updatedAt": int(time.time() * 1000),
+                })
+                ops = list(ops)
+                ops[idx] = updated
+                sl["budgetCashflowOps"] = ops
+                return None
+
+            sav = _pf_list(sl, "savingsTransactions")
+            idx = next((i for i, t in enumerate(sav)
+                        if isinstance(t, dict) and str(t.get("id") or "") == op_id), None)
+            if idx is not None:
+                updated = dict(sav[idx])
+                updated.update({
+                    "date": op_date,
+                    "amount": amount,
+                    "accountId": account_id,
+                    "comment": purpose,
+                    "updatedAt": int(time.time() * 1000),
+                })
+                sav = list(sav)
+                sav[idx] = updated
+                sl["savingsTransactions"] = sav
+                return None
+
+            debt = _pf_list(sl, "debtTransactions")
+            idx = next((i for i, t in enumerate(debt)
+                        if isinstance(t, dict) and str(t.get("id") or "") == op_id), None)
+            if idx is not None:
+                updated = dict(debt[idx])
+                updated.update({
+                    "date": op_date,
+                    "amount": amount,
+                    "accountId": account_id,
+                    "comment": purpose,
+                    "updatedAt": int(time.time() * 1000),
+                })
+                debt = list(debt)
+                debt[idx] = updated
+                sl["debtTransactions"] = debt
+                return None
+
+            return 404, {"error": "operation not found"}
 
         code, body = pf_write(token, apply)
         self._json(code, body)
@@ -3829,12 +3983,31 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             ops = _pf_list(sl, "budgetCashflowOps")
             idx = next((i for i, o in enumerate(ops)
                         if isinstance(o, dict) and str(o.get("id") or "") == op_id), None)
-            if idx is None:
-                return 404, {"error": "operation not found"}
-            ops = list(ops)
-            del ops[idx]
-            sl["budgetCashflowOps"] = ops
-            return None
+            if idx is not None:
+                ops = list(ops)
+                del ops[idx]
+                sl["budgetCashflowOps"] = ops
+                return None
+
+            sav = _pf_list(sl, "savingsTransactions")
+            idx = next((i for i, t in enumerate(sav)
+                        if isinstance(t, dict) and str(t.get("id") or "") == op_id), None)
+            if idx is not None:
+                sav = list(sav)
+                del sav[idx]
+                sl["savingsTransactions"] = sav
+                return None
+
+            debt = _pf_list(sl, "debtTransactions")
+            idx = next((i for i, t in enumerate(debt)
+                        if isinstance(t, dict) and str(t.get("id") or "") == op_id), None)
+            if idx is not None:
+                debt = list(debt)
+                del debt[idx]
+                sl["debtTransactions"] = debt
+                return None
+
+            return 404, {"error": "operation not found"}
 
         code, body = pf_write(token, apply)
         self._json(code, body)
