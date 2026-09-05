@@ -12127,6 +12127,15 @@ const financeAppUrl = (user) =>
 function BudgetView({ data, setData }) {
   const [budgetTab, setBudgetTab] = useState('monthly');
   const [showUsers, setShowUsers] = useState(false);
+  // Открытый на редактирование план бюджета живёт черновиком, пока его не
+  // сохранят кнопкой «Сохранить план бюджета» — уход со вкладки «Планы» без
+  // сохранения молча стёр бы правки, поэтому переключение вкладки/пользователя
+  // здесь спрашивает подтверждение, пока в редакторе плана есть несохранённые
+  // изменения (см. onDirtyChange у BudgetPlansView).
+  const [plansDirty, setPlansDirty] = useState(false);
+  const confirmLeavePlans = () =>
+    !plansDirty || confirm('В открытом плане бюджета есть несохранённые изменения. Уйти без сохранения?');
+  const switchBudgetTab = (id) => { if (id !== budgetTab && confirmLeavePlans()) setBudgetTab(id); };
 
   const users = data.budgetUsers || [];
   const activeId = data.activeBudgetUserId || users[0]?.id || DEFAULT_BUDGET_USER_ID;
@@ -12166,7 +12175,7 @@ function BudgetView({ data, setData }) {
     });
   }, [setData]);
 
-  const setActiveUser = (id) => setData(d => ({ ...d, activeBudgetUserId: id }));
+  const setActiveUser = (id) => { if (confirmLeavePlans()) setData(d => ({ ...d, activeBudgetUserId: id })); };
 
   return (
     <main className="w-full mx-auto px-4 sm:px-6 pt-6 md:pt-8 pb-8 fade-in">
@@ -12188,7 +12197,7 @@ function BudgetView({ data, setData }) {
               </select>
               <button
                 type="button"
-                onClick={() => setShowUsers(true)}
+                onClick={() => { if (confirmLeavePlans()) setShowUsers(true); }}
                 className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors"
                 title="Управление пользователями"
               >
@@ -12204,7 +12213,7 @@ function BudgetView({ data, setData }) {
         <div className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-6">
           <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
             {[['monthly','По месяцу'],['cashflow','ДДС'],['expenses','Накопления'],['recurring','Постоянные'],['supplements','Спортпит'],['debts','Долги'],['plans','Планы']].map(([id, label]) => (
-              <button key={id} onClick={() => setBudgetTab(id)}
+              <button key={id} onClick={() => switchBudgetTab(id)}
                 className={`px-3 sm:px-4 py-2.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${budgetTab === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
                 {label}
               </button>
@@ -12221,7 +12230,7 @@ function BudgetView({ data, setData }) {
         {budgetTab === 'recurring' && <BudgetRecurringView key={activeId} data={scopedData} setData={scopedSetData} />}
         {budgetTab === 'supplements' && <BudgetSupplementsView key={activeId} data={scopedData} setData={scopedSetData} />}
         {budgetTab === 'debts' && <BudgetDebtsView key={activeId} data={scopedData} setData={scopedSetData} />}
-        {budgetTab === 'plans' && <BudgetPlansView key={activeId} data={scopedData} setData={scopedSetData} />}
+        {budgetTab === 'plans' && <BudgetPlansView key={activeId} data={scopedData} setData={scopedSetData} onDirtyChange={setPlansDirty} />}
       </div>
 
       {showUsers && (
@@ -16421,12 +16430,19 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
 // только по кнопке «Сохранить план бюджета» — черновик не засоряет список,
 // пока пользователь не подтвердит его явно.
 
-function BudgetPlansView({ data, setData }) {
+function BudgetPlansView({ data, setData, onDirtyChange }) {
   const [editing, setEditing] = useState(null); // { plan, isNew } | null
   const plans = data.budgetPlans || [];
 
+  // Пока открыт редактор плана, сообщаем наверх, есть ли несохранённые правки
+  // (BudgetView блокирует уход со вкладки/смену пользователя, пока это true).
+  // При возврате к списку — снимаем флаг: черновик закрыт, уходить безопасно.
+  useEffect(() => {
+    if (!editing) onDirtyChange && onDirtyChange(false);
+  }, [editing]);
+
   const openNew = () => setEditing({
-    plan: { id: crypto.randomUUID(), name: '', createdAt: Date.now(), updatedAt: Date.now(), groups: [], values: {}, breakdowns: {} },
+    plan: { id: crypto.randomUUID(), name: '', createdAt: Date.now(), updatedAt: Date.now(), groups: [], incomeSources: [], values: {}, breakdowns: {} },
     isNew: true,
   });
   const openExisting = (p) => setEditing({ plan: JSON.parse(JSON.stringify(p)), isNew: false });
@@ -16456,12 +16472,15 @@ function BudgetPlansView({ data, setData }) {
         isNew={editing.isNew}
         onSave={savePlan}
         onCancel={() => setEditing(null)}
+        onDirtyChange={onDirtyChange}
       />
     );
   }
 
-  const planTotal = (p) => (p.groups || []).flatMap(g => g.items || [])
+  const planExpenseTotal = (p) => (p.groups || []).flatMap(g => g.items || [])
     .reduce((s, it) => s + ((p.values || {})[it.id] || 0), 0);
+  const planIncomeTotal = (p) => (p.incomeSources || [])
+    .reduce((s, src) => s + ((p.values || {})[src.id] || 0), 0);
   const sorted = [...plans].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 
   return (
@@ -16478,7 +16497,10 @@ function BudgetPlansView({ data, setData }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {sorted.map(p => {
             const itemsCount = (p.groups || []).reduce((s, g) => s + (g.items || []).length, 0);
-            const total = planTotal(p);
+            const total = planExpenseTotal(p);
+            const incomeTotal = planIncomeTotal(p);
+            const hasIncome = (p.incomeSources || []).length > 0;
+            const delta = incomeTotal - total;
             return (
               <div key={p.id} onClick={() => openExisting(p)}
                 className="text-left bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 hover:border-[var(--text)] transition-colors cursor-pointer group">
@@ -16493,6 +16515,11 @@ function BudgetPlansView({ data, setData }) {
                   {(p.groups || []).length} {pluralRu((p.groups || []).length, ['группа', 'группы', 'групп'])} · {itemsCount} {pluralRu(itemsCount, ['статья', 'статьи', 'статей'])}
                 </div>
                 <div className="font-display text-xl mt-2">{formatRub(total)} <span className="text-sm text-[var(--text-subtle)]">₽</span></div>
+                {hasIncome && (
+                  <div className={`text-xs mt-1 font-medium ${delta >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                    Остаток: {delta >= 0 ? '+' : ''}{formatRub(delta)} ₽
+                  </div>
+                )}
               </div>
             );
           })}
@@ -16502,25 +16529,50 @@ function BudgetPlansView({ data, setData }) {
   );
 }
 
-function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel }) {
+function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel, onDirtyChange }) {
   const [plan, setPlan] = useState(initialPlan);
   const [showStructure, setShowStructure] = useState(isNew);
   const [cellEdit, setCellEdit] = useState(null); // { item } | null
   const initialRef = useRef(JSON.stringify(initialPlan));
 
   const groups = plan.groups || [];
+  const incomeSources = plan.incomeSources || [];
   const values = plan.values || {};
   const breakdowns = plan.breakdowns || {};
 
   const getItemVal = (itemId) => values[itemId] || 0;
   const groupTotal = (g) => (g.items || []).reduce((s, it) => s + getItemVal(it.id), 0);
   const grandTotal = () => groups.flatMap(g => g.items || []).reduce((s, it) => s + getItemVal(it.id), 0);
+  const incomeTotal = () => incomeSources.reduce((s, src) => s + getItemVal(src.id), 0);
 
-  const applyStructure = (newGroups) => {
-    const validIds = new Set(newGroups.flatMap(g => (g.items || []).map(it => it.id)));
+  const isDirty = () => JSON.stringify(plan) !== initialRef.current;
+
+  // Пока в редакторе есть несохранённые правки, сообщаем наверх (блокирует
+  // переключение вкладки/пользователя бюджета) и предупреждаем при попытке
+  // перезагрузить или закрыть страницу целиком — раньше правки без клика на
+  // «Сохранить план бюджета» терялись молча.
+  useEffect(() => {
+    onDirtyChange && onDirtyChange(isDirty());
+  }, [plan]);
+  useEffect(() => {
+    const handler = (e) => {
+      if (!isDirty()) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [plan]);
+
+  const applyStructure = (newGroups, newIncomeSources) => {
+    const validIds = new Set([
+      ...newGroups.flatMap(g => (g.items || []).map(it => it.id)),
+      ...newIncomeSources.map(src => src.id),
+    ]);
     setPlan(p => ({
       ...p,
       groups: newGroups,
+      incomeSources: newIncomeSources,
       values: Object.fromEntries(Object.entries(p.values || {}).filter(([id]) => validIds.has(id))),
       breakdowns: Object.fromEntries(Object.entries(p.breakdowns || {}).filter(([id]) => validIds.has(id))),
     }));
@@ -16538,7 +16590,6 @@ function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel }) {
     setCellEdit(null);
   };
 
-  const isDirty = () => JSON.stringify(plan) !== initialRef.current;
   const requestCancel = () => {
     if (isDirty() && !confirm(isNew ? 'Отменить создание плана? Введённые данные будут потеряны.' : 'Отменить изменения плана?')) return;
     onCancel();
@@ -16571,11 +16622,11 @@ function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel }) {
         </button>
       </div>
 
-      {!groups.length ? (
+      {!groups.length && !incomeSources.length ? (
         <div className="text-center py-16 text-[var(--text-subtle)]">
           <div className="text-4xl mb-3">🧳</div>
           <div className="font-medium mb-1">В плане пока нет статей</div>
-          <div className="text-sm mb-4">Добавьте группы и статьи расходов — например, «Билеты», «Проживание», «Питание»</div>
+          <div className="text-sm mb-4">Добавьте группы и статьи расходов, а также источники дохода — например, «Билеты», «Проживание», «Питание»</div>
           <button onClick={() => setShowStructure(true)} className="btn-primary inline-flex items-center gap-2">
             <Icon name="settings" size={16} />Добавить группы и статьи
           </button>
@@ -16593,6 +16644,40 @@ function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel }) {
                 </tr>
               </thead>
               <tbody>
+                {incomeSources.length > 0 && (
+                  <React.Fragment>
+                    <tr className="bg-emerald-50">
+                      <td className="sticky left-0 z-10 bg-emerald-50 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs">
+                        <span className="mr-1.5">💰</span>
+                        <span className="uppercase tracking-wide text-emerald-700">Приход</span>
+                      </td>
+                      <td className={`px-1 py-2 text-center text-xs font-semibold border-b border-[var(--border)] whitespace-nowrap ${planDivCls} ${incomeTotal() > 0 ? 'text-emerald-600' : 'text-[var(--border)]'}`}>
+                        {incomeTotal() > 0 ? formatRub(incomeTotal()) : '—'}
+                      </td>
+                    </tr>
+                    {incomeSources.map(src => {
+                      const v = getItemVal(src.id);
+                      const rows = breakdowns[src.id];
+                      return (
+                        <tr key={src.id} className="border-b border-[var(--border)] transition-colors hover:bg-emerald-50/30 bg-white">
+                          <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
+                            <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{src.label}</span>
+                          </td>
+                          <td className={`px-1 py-1 w-[110px] ${planDivCls}`}>
+                            <button
+                              onClick={() => setCellEdit({ item: src })}
+                              className={`w-full text-center text-xs px-1 py-1.5 rounded hover:bg-emerald-50 transition-colors whitespace-nowrap font-medium ${v > 0 ? 'text-emerald-600' : ''}`}
+                              title={rows && rows.length > 1 ? rows.map(r => `${r.label || 'Без названия'}: ${formatRub(r.amount)} ₽`).join(', ') : 'Нажмите, чтобы указать сумму'}>
+                              {v > 0 ? formatRub(v) : <span className="text-gray-300 text-[10px]">·</span>}
+                              {rows && rows.length > 1 && <span className="ml-1 text-[9px] text-emerald-400">({rows.length})</span>}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </React.Fragment>
+                )}
+
                 {groups.map(g => (
                   <React.Fragment key={g.id}>
                     <tr className="bg-gray-100">
@@ -16629,12 +16714,31 @@ function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel }) {
 
                 <tr className="border-t-2 border-[var(--border-strong)] bg-gray-200">
                   <td className="sticky left-0 z-10 bg-gray-200 px-4 py-3 border-r border-[var(--border)] font-bold text-xs uppercase tracking-wide text-[var(--text)]">
-                    Итого
+                    Итого расходы
                   </td>
                   <td className={`px-1 py-3 text-center text-xs font-bold whitespace-nowrap ${planDivCls} ${grandTotal() > 0 ? 'text-blue-700' : 'text-gray-300'}`}>
                     {grandTotal() > 0 ? formatRub(grandTotal()) : '—'}
                   </td>
                 </tr>
+
+                {incomeSources.length > 0 && (
+                  <tr className="bg-gray-100 border-t border-[var(--border)]">
+                    <td className="sticky left-0 z-10 bg-gray-100 px-4 py-3 border-r border-[var(--border)] font-bold text-xs uppercase tracking-wide text-[var(--text)]">
+                      Остаток
+                    </td>
+                    {(() => {
+                      const income = incomeTotal();
+                      const expense = grandTotal();
+                      const delta = income - expense;
+                      const hasData = income > 0 || expense > 0;
+                      return (
+                        <td className={`px-1 py-3 text-center text-xs font-bold whitespace-nowrap ${planDivCls} ${!hasData ? 'text-gray-300' : delta >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                          {!hasData ? '—' : (delta >= 0 ? '+' : '') + formatRub(delta)}
+                        </td>
+                      );
+                    })()}
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -16649,7 +16753,8 @@ function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel }) {
       {showStructure && (
         <BudgetPlanStructureModal
           groups={groups}
-          onSave={(newGroups) => { applyStructure(newGroups); setShowStructure(false); }}
+          incomeSources={incomeSources}
+          onSave={(newGroups, newIncomeSources) => { applyStructure(newGroups, newIncomeSources); setShowStructure(false); }}
           onClose={() => setShowStructure(false)}
         />
       )}
@@ -16668,16 +16773,39 @@ function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel }) {
 }
 
 // Группы и статьи одного плана — тот же визуальный паттерн, что и
-// «Структура бюджета» на вкладке «По месяцу», но без авто-категорий и без
-// источников дохода: здесь всё создаётся вручную и хранится внутри плана.
-function BudgetPlanStructureModal({ groups: initialGroups, onSave, onClose }) {
+// «Структура бюджета» на вкладке «По месяцу»: группы расходов создаются
+// вручную (без авто-категорий), и точно так же вручную можно завести
+// источники дохода — чтобы видеть остаток (доход − расход) внутри плана.
+function BudgetPlanStructureModal({ groups: initialGroups, incomeSources: initialIncomeSources, onSave, onClose }) {
   const [groups, setGroups] = useState(() => JSON.parse(JSON.stringify(initialGroups || [])));
+  const [incomeSrcs, setIncomeSrcs] = useState(() => JSON.parse(JSON.stringify(initialIncomeSources || [])));
   const [expanded, setExpanded] = useState(() => Object.fromEntries((initialGroups || []).map(g => [g.id, true])));
   const [editGroup, setEditGroup] = useState(null);
   const [editItem, setEditItem] = useState(null);
+  const [editIncome, setEditIncome] = useState(null);
   const [newGroupEmoji, setNewGroupEmoji] = useState('');
   const [newGroupLabel, setNewGroupLabel] = useState('');
   const [newItemLbls, setNewItemLbls] = useState({});
+  const [newIncLabel, setNewIncLabel] = useState('');
+
+  const addIncomeSrc = () => {
+    if (!newIncLabel.trim()) return;
+    setIncomeSrcs(s => [...s, { id: crypto.randomUUID(), label: newIncLabel.trim() }]);
+    setNewIncLabel('');
+  };
+  const removeIncomeSrc = (id) => setIncomeSrcs(s => s.filter(x => x.id !== id));
+  const moveIncomeSrc = (id, dir) => {
+    setIncomeSrcs(s => {
+      const idx = s.findIndex(x => x.id === id);
+      if (idx + dir < 0 || idx + dir >= s.length) return s;
+      const n = [...s]; [n[idx], n[idx + dir]] = [n[idx + dir], n[idx]]; return n;
+    });
+  };
+  const saveIncomeEdit = () => {
+    if (!editIncome?.label?.trim()) return;
+    setIncomeSrcs(s => s.map(x => x.id === editIncome.id ? { ...x, label: editIncome.label.trim() } : x));
+    setEditIncome(null);
+  };
 
   const addGroup = () => {
     if (!newGroupLabel.trim()) return;
@@ -16732,6 +16860,62 @@ function BudgetPlanStructureModal({ groups: initialGroups, onSave, onClose }) {
   return (
     <Modal title="Группы и статьи плана" onClose={onClose}>
       <div className="max-h-[62vh] overflow-y-auto space-y-2 pr-0.5">
+
+        {/* ── Income sources section ────────────────────────── */}
+        <div className="border border-emerald-200 rounded-xl overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2.5 bg-emerald-50">
+            <span className="text-lg">💰</span>
+            <span className="font-semibold text-sm text-emerald-700">Источники дохода</span>
+            <span className="text-xs text-emerald-500">({incomeSrcs.length})</span>
+          </div>
+          <div className="border-t border-emerald-100 px-3 py-2 space-y-1">
+            {incomeSrcs.length === 0 && (
+              <div className="text-xs text-[var(--text-subtle)] pl-5 py-1">Добавьте источники дохода ниже — чтобы видеть остаток</div>
+            )}
+            {incomeSrcs.map((src, si) => (
+              <div key={src.id} className="flex items-center gap-1.5 pl-4">
+                {editIncome?.id === src.id ? (
+                  <div className="flex items-center gap-1.5 flex-1">
+                    <input className="flex-1 text-sm border border-[var(--border)] rounded-lg p-1.5 bg-[var(--surface)]"
+                      value={editIncome.label} onChange={e => setEditIncome(ei => ({ ...ei, label: e.target.value }))}
+                      onKeyDown={e => e.key === 'Enter' && saveIncomeEdit()} autoFocus />
+                    <button onClick={saveIncomeEdit} className="p-1.5 rounded-lg bg-[var(--text)] text-white shrink-0"><Icon name="check" size={12} /></button>
+                    <button onClick={() => setEditIncome(null)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0"><Icon name="x" size={12} /></button>
+                  </div>
+                ) : (
+                  <>
+                    <span className="w-1 h-1 rounded-full bg-emerald-400 shrink-0 ml-1" />
+                    <span className="flex-1 text-sm text-[var(--text-muted)] truncate">{src.label}</span>
+                    <button onClick={() => moveIncomeSrc(src.id, -1)} disabled={si === 0}
+                      className="p-1 rounded hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
+                      <Icon name="chevronDown" size={12} style={{transform:'rotate(180deg)'}} />
+                    </button>
+                    <button onClick={() => moveIncomeSrc(src.id, 1)} disabled={si === incomeSrcs.length - 1}
+                      className="p-1 rounded hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-25 shrink-0">
+                      <Icon name="chevronDown" size={12} />
+                    </button>
+                    <button onClick={() => setEditIncome({ id: src.id, label: src.label })}
+                      className="p-1 rounded hover:bg-black/5 text-[var(--text-muted)] shrink-0"><Icon name="edit" size={12} /></button>
+                    <button onClick={() => removeIncomeSrc(src.id)}
+                      className="p-1 rounded hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0"><Icon name="trash" size={12} /></button>
+                  </>
+                )}
+              </div>
+            ))}
+            <div className="flex items-center gap-1.5 pl-4 pt-1">
+              <span className="w-1 h-1 shrink-0 ml-1" />
+              <input className="flex-1 text-sm border border-dashed border-emerald-200 rounded-lg p-1.5 bg-transparent"
+                value={newIncLabel}
+                onChange={e => setNewIncLabel(e.target.value)}
+                placeholder="Зарплата, подарок, возврат..."
+                onKeyDown={e => e.key === 'Enter' && addIncomeSrc()} />
+              <button onClick={addIncomeSrc} className="p-1.5 rounded-lg bg-emerald-600 text-white hover:opacity-90 shrink-0"><Icon name="plus" size={13} /></button>
+            </div>
+          </div>
+        </div>
+
+        <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide font-semibold px-1 pt-2">Группы расходов</div>
+
         {!groups.length && (
           <div className="text-center py-6 text-[var(--text-subtle)] text-sm">Добавьте первую группу ниже</div>
         )}
@@ -16841,7 +17025,7 @@ function BudgetPlanStructureModal({ groups: initialGroups, onSave, onClose }) {
 
       <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
         <button onClick={onClose} className="btn-secondary">Отмена</button>
-        <button onClick={() => onSave(groups)} className="btn-primary flex-1">Готово</button>
+        <button onClick={() => onSave(groups, incomeSrcs)} className="btn-primary flex-1">Готово</button>
       </div>
     </Modal>
   );
