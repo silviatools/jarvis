@@ -228,6 +228,7 @@ const DEFAULT_SETTINGS = {
   voiceTtsVoice: 'nova',
   gymVoice: true,        // озвучивание подходов и отдыха на тренировке
   gymBackgroundAudio: false, // звук с погашенным экраном (ценой чужой музыки)
+  gymHandsFree: false,   // голосовой ввод подходов на тренировке
   notifyRouting: {},
   backupReminder: { enabled: false, frequency: 'weekly', time: '03:00', dayOfWeek: 0, dayOfMonth: 1 },
   lastBackupSentAt: '',
@@ -22069,6 +22070,129 @@ const gymSound = (() => {
   };
 })();
 
+// ── Свободные руки: голосовой ввод подходов ────────────────────────────────
+// Распознавание — то же webkitSpeechRecognition, что и у голосового
+// ассистента. Разбирать «25 на 12» через ИИ незачем: это регулярка, она
+// отвечает мгновенно, работает без сети и не стоит денег.
+const GYM_NUM_WORDS = {
+  'ноль': 0, 'один': 1, 'одна': 1, 'два': 2, 'две': 2, 'три': 3, 'четыре': 4,
+  'пять': 5, 'шесть': 6, 'семь': 7, 'восемь': 8, 'девять': 9, 'десять': 10,
+  'одиннадцать': 11, 'двенадцать': 12, 'тринадцать': 13, 'четырнадцать': 14,
+  'пятнадцать': 15, 'шестнадцать': 16, 'семнадцать': 17, 'восемнадцать': 18,
+  'девятнадцать': 19, 'двадцать': 20, 'тридцать': 30, 'сорок': 40,
+  'пятьдесят': 50, 'шестьдесят': 60, 'семьдесят': 70, 'восемьдесят': 80,
+  'девяносто': 90, 'сто': 100, 'двести': 200, 'триста': 300,
+};
+
+// Safari отдаёт числа то цифрами, то словами — приводим к цифрам.
+// «сто двадцать пять» → «125», «двадцать пять на двенадцать» → «25 на 12».
+const gymNormalizeNumbers = (text) => {
+  const words = String(text || '').toLowerCase().replace(/[.,!?]/g, ' ').split(/\s+/).filter(Boolean);
+  const out = [];
+  let acc = null;
+  const flush = () => { if (acc !== null) { out.push(String(acc)); acc = null; } };
+  words.forEach(w => {
+    if (/^\d+(?:[.,]\d+)?$/.test(w)) { flush(); out.push(w.replace(',', '.')); return; }
+    if (GYM_NUM_WORDS[w] !== undefined) { acc = (acc || 0) + GYM_NUM_WORDS[w]; return; }
+    flush();
+    out.push(w);
+  });
+  flush();
+  return out.join(' ');
+};
+
+const gymParseVoicePhrase = (raw) => {
+  const t = gymNormalizeNumbers(raw);
+  if (!t) return null;
+  if (/отмен|удали|сотри/.test(t)) return { cmd: 'undo' };
+  if (/пропуст|дальше|поехали/.test(t)) return { cmd: 'skipRest' };
+  if (/заверш|закончи|финиш/.test(t)) return { cmd: 'finish' };
+  if (/(столько же|как в плане|по плану|как обычно|так же)/.test(t)) return { cmd: 'log' };
+
+  // Явные единицы надёжнее порядка слов: «12 повторений с 25 килограммами».
+  const byKg = t.match(/(\d+(?:\.\d+)?)\s*(?:кг|килог\w*)/);
+  const byReps = t.match(/(\d+)\s*(?:повтор\w*|раз\w*|полтор\w*)/);
+  if (byKg || byReps) {
+    return {
+      cmd: 'log',
+      weight: byKg ? parseFloat(byKg[1]) : undefined,
+      reps: byReps ? parseInt(byReps[1], 10) : undefined,
+    };
+  }
+
+  const nums = (t.match(/\d+(?:\.\d+)?/g) || []).map(Number);
+  if (nums.length >= 2) return { cmd: 'log', weight: nums[0], reps: nums[1] };
+  if (nums.length === 1) return { cmd: 'log', reps: Math.round(nums[0]) };
+  return null;
+};
+
+const gymListener = (() => {
+  const SR = () => window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null;
+  let wanted = false;
+  let handler = null;
+  let onState = null;
+  let onDenied = null;
+
+  const ensure = () => {
+    if (rec) return rec;
+    const C = SR();
+    if (!C) return null;
+    rec = new C();
+    rec.lang = 'ru-RU';
+    rec.interimResults = false;
+    rec.continuous = false;   // Safari непрерывный режим всё равно не держит
+    rec.maxAlternatives = 3;
+    rec.onstart = () => { if (onState) onState(true); };
+    rec.onresult = (e) => {
+      // Пока приложение говорит само, микрофон слышит именно его — такие
+      // фразы игнорируем, иначе тренировка запишет то, что сама продиктовала.
+      if (window.speechSynthesis && window.speechSynthesis.speaking) return;
+      const variants = [];
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        for (let j = 0; j < r.length; j++) variants.push(r[j].transcript);
+      }
+      if (handler && variants.length) handler(variants);
+    };
+    rec.onerror = (e) => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        wanted = false;
+        if (onDenied) onDenied();
+      }
+    };
+    rec.onend = () => {
+      if (onState) onState(false);
+      // Распознавание само выключается после паузы — поднимаем заново.
+      if (wanted) setTimeout(() => { if (wanted) { try { rec.start(); } catch (_) {} } }, 250);
+    };
+    return rec;
+  };
+
+  return {
+    supported: () => !!SR(),
+    start(h, state, denied) {
+      const r = ensure();
+      if (!r) return;
+      handler = h; onState = state; onDenied = denied;
+      wanted = true;
+      try { r.start(); } catch (_) {}
+    },
+    stop() {
+      wanted = false;
+      if (!rec) return;
+      try { rec.stop(); } catch (_) {}
+    },
+    // Разрешение на микрофон спрашиваем в жесте: позже старт молча провалится.
+    prime() {
+      const r = ensure();
+      if (!r) return;
+      try { r.start(); } catch (_) {}
+      setTimeout(() => { if (!wanted) { try { r.stop(); } catch (_) {} } }, 400);
+    },
+  };
+})();
+
 const gymPrimeVoice = (enabled, text) => {
   if (!enabled) return;
   // Прогреваем синтез внутри жеста: iOS запоминает разрешение на всю страницу.
@@ -22418,6 +22542,7 @@ function GymView({ data, setData }) {
         settings={data.settings}
         onToggleVoice={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymVoice: on } }))}
         onToggleBackgroundAudio={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymBackgroundAudio: on } }))}
+        onToggleHandsFree={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymHandsFree: on } }))}
         onSave={saveSession}
         onDelete={deleteSession}
         onExit={() => { setSessionId(''); setScreen('day'); }}
@@ -23419,11 +23544,18 @@ const gymPrevBest = (sessions, name, beforeMs) => {
   return { weight, orm };
 };
 
-function GymSessionView({ session, day, exercises, sessions, settings, onToggleVoice, onToggleBackgroundAudio, onSave, onDelete, onExit }) {
+function GymSessionView({ session, day, exercises, sessions, settings, onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onSave, onDelete, onExit }) {
   const voiceOn = (settings || {}).gymVoice !== false;
   // Режим «звук с погашенным экраном» забирает аудиовыход у чужого плеера,
   // поэтому включается только вручную.
   const bgAudio = !!(settings || {}).gymBackgroundAudio;
+  const handsFree = !!(settings || {}).gymHandsFree;
+  // «Применяется к следующему подходу»: включённый посреди подхода режим не
+  // перехватывает тот, что уже делаешь, — микрофон поднимется со следующего.
+  // Если режим был включён до старта тренировки, ждать нечего.
+  const [armed, setArmed] = useState(() => !!(settings || {}).gymHandsFree);
+  const [listening, setListening] = useState(false);
+  const voiceHandler = useRef(() => {});
   const say = (text) => gymSay(text, voiceOn);
   const [openId, setOpenId] = useState(exercises[0] ? exercises[0].id : '');
   // Упражнение, к которому только что перешли: подсвечиваем карточку и
@@ -23458,6 +23590,37 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   }, []);
 
   useEffect(() => () => gymSound.stop(), []);
+
+  // restLeft объявлен ниже по телу компонента — здесь считаем из того, что
+  // уже есть, иначе рендер падает на временной мёртвой зоне.
+  const resting = restUntil > now;
+  useEffect(() => {
+    if (!handsFree || !armed || resting || !gymListener.supported()) {
+      gymListener.stop();
+      setListening(false);
+      return;
+    }
+    // Пауза перед стартом: сначала приложение договаривает свою фразу, иначе
+    // микрофон услышит её же и запишет продиктованные им самим числа.
+    const t = setTimeout(() => {
+      gymListener.start(
+        (variants) => voiceHandler.current(variants),
+        setListening,
+        () => {
+          setListening(false);
+          onToggleHandsFree(false);
+          say('Нет доступа к микрофону');
+        },
+      );
+    }, 1200);
+    return () => {
+      clearTimeout(t);
+      gymListener.stop();
+      setListening(false);
+    };
+  }, [handsFree, armed, resting]);
+
+  useEffect(() => () => gymListener.stop(), []);
 
   // Экран доводим до первого подхода нового упражнения — по центру, чтобы
   // сразу видеть и план, и поля ввода. Ждём конца раскрытия: пока карточка
@@ -23528,10 +23691,14 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
 
   const setDraft = (ex, i, patch) => setDrafts(d => ({ ...d, [`${ex.id}:${i}`]: { ...draftRow(ex, i), ...patch } }));
 
-  const logSet = (ex, i) => {
-    const row = draftRow(ex, i);
+  const logSet = (ex, i, override) => {
+    const row = override || draftRow(ex, i);
     const reps = gymInt(row.reps, 0);
-    if (!reps) { alert('Укажите количество повторений'); return; }
+    if (!reps) {
+      if (override) return;   // голос расслышал мусор — молча ждём нормальной фразы
+      alert('Укажите количество повторений');
+      return;
+    }
     const plan = gymPlanRows(ex)[i] || {};
     const rec = {
       id: (loggedAt(ex.id, i) || {}).id || crypto.randomUUID(),
@@ -23571,13 +23738,16 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       const prevBest = gymPrevBest(sessions, ex.name, session.startedAt || Date.now());
       const isRecord = gymIsWorking(rec) && prevBest.weight > 0
         && (rec.weight > prevBest.weight || gymEpley(rec.weight, rec.reps) > prevBest.orm);
-      if (isRecord) say('Личный рекорд!');
+      const parts = [];
+      if (override && override.confirm) parts.push(override.confirm);
+      if (isRecord) parts.push('Личный рекорд!');
       if (rest) {
         // Отдых объявляем сразу, следующий подход — когда таймер закончится.
-        if (!isRecord) say(gymSayRest(rest));
+        parts.push(gymSayRest(rest));
+        if (parts.length) say(parts.join('. '));
         restSpoken.current = { ten: 0, zero: 0, total: rest };
       } else {
-        announceNext({ exId: ex.id, index: i }, ex.id);
+        announceNext({ exId: ex.id, index: i }, ex.id, parts.join('. '));
       }
     }
     if (rest) setRestUntil(restUntilMs);
@@ -23626,12 +23796,14 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     return null;
   };
 
-  const announceNext = (skip, prevExId) => {
+  const announceNext = (skip, prevExId, prefix) => {
+    const head = prefix ? [prefix] : [];
+    setArmed(true);
     const t = nextTarget(skip);
-    if (!t) { say('Все подходы записаны. Можно завершать.'); return; }
+    if (!t) { say([...head, 'Все подходы записаны. Можно завершать.'].join('. ')); return; }
     if (t.ex.id !== openId) setOpenId(t.ex.id);
     const changed = t.ex.id !== (prevExId || openId);
-    say(gymSaySet(t.row, gymPctBase(t.ex, sessions), changed ? t.ex.name : ''));
+    say([...head, gymSaySet(t.row, gymPctBase(t.ex, sessions), changed ? t.ex.name : '')].join('. '));
   };
 
   // Подход, который предстоит сделать: первый незаписанный в упражнении.
@@ -23686,6 +23858,53 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   const exitKeepOpen = () => {
     if (logged.length === 0) onDelete(session.id);
     onExit();
+  };
+
+  voiceHandler.current = (variants) => {
+    let parsed = null;
+    for (const v of variants) {
+      parsed = gymParseVoicePhrase(v);
+      if (parsed) break;
+    }
+    if (!parsed) return;   // не разобрали — молчим и слушаем дальше
+
+    if (parsed.cmd === 'undo') {
+      const last = [...logged].sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+      if (!last) return;
+      // Одним сохранением: два подряд ушли бы от одного и того же снимка
+      // тренировки, и второе вернуло бы удалённый подход обратно.
+      onSave({
+        ...session,
+        sets: logged.filter(x => x.id !== last.id),
+        restUntil: 0,
+        restTotal: 0,
+      });
+      setRestUntil(0);
+      say('Отменил последний подход');
+      return;
+    }
+    if (parsed.cmd === 'skipRest') { setRest(0); announceNext(); return; }
+    if (parsed.cmd === 'finish') { finish(); return; }
+
+    const ex = exercises.find(e => e.id === openId);
+    if (!ex) return;
+    const i = currentIndex(ex);
+    if (i < 0) return;
+
+    // Не названное голосом берём из плана — «столько же» и «12» работают
+    // именно за счёт этого.
+    const draft = draftRow(ex, i);
+    const weight = parsed.weight !== undefined ? parsed.weight : gymNum(draft.weight);
+    const reps = parsed.reps !== undefined ? parsed.reps : gymInt(draft.reps, 0);
+    if (!reps) return;
+
+    logSet(ex, i, {
+      weight,
+      reps,
+      confirm: weight
+        ? `Записал, ${gymRound1(weight)} на ${reps}`
+        : `Записал, ${reps} ${gymPlural(reps, 'повторение', 'повторения', 'повторений')}`,
+    });
   };
 
   return (
@@ -23748,6 +23967,46 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
           />
         </div>
       )}
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 mb-4 flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="text-[14px] flex items-center gap-2">
+            Свободные руки
+            {listening && (
+              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full text-white" style={{ background: GYM_ACCENT }}>
+                <Icon name="mic" size={11} /> слушаю
+              </span>
+            )}
+          </div>
+          <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">
+            {!gymListener.supported()
+              ? 'Браузер не поддерживает распознавание речи'
+              : !handsFree
+                ? 'Скажете «25 на 12» — подход запишется сам, руки не нужны'
+                : !armed
+                  ? 'Включится со следующего подхода'
+                  : resting
+                    ? 'Слушаю после отдыха. «Пропустить» — начать раньше'
+                    : 'Скажите «25 на 12», «столько же», «отмена» или «завершить»'}
+          </div>
+        </div>
+        <Toggle
+          checked={handsFree}
+          onChange={(on) => {
+            onToggleHandsFree(on);
+            if (on) {
+              // Разрешение на микрофон спрашиваем здесь: это жест, позже
+              // старт распознавания молча провалится.
+              gymListener.prime();
+              setArmed(false);
+              gymPrimeVoice(voiceOn, 'Свободные руки включатся со следующего подхода');
+            } else {
+              gymListener.stop();
+              setArmed(false);
+            }
+          }}
+        />
+      </div>
 
       {restLeft > 0 && (
         <div className="rounded-2xl px-4 py-3 mb-4 flex items-center gap-3 text-white" style={{ background: '#3f5372' }}>
