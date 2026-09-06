@@ -21891,6 +21891,110 @@ const gymSay = (text, enabled = true) => {
   } catch (_) { /* синтез недоступен — тренировке это не мешает */ }
 };
 
+// ── Звук тренировки с погашенным экраном ───────────────────────────────────
+// iOS усыпляет веб-приложение, как только гаснет экран: таймеры замирают, а
+// синтез речи молчит и потом вываливает накопленные фразы при возврате. Что
+// НЕ усыпляется — активное воспроизведение аудио. Поэтому на время тренировки
+// держим зацикленный неслышимый трек: он оставляет за страницей аудиосессию
+// (и жизнь), а сигналы отдыха играем обычным <audio> — такой звук проходит и
+// на заблокированном экране. Речь при этом остаётся как есть: включён экран —
+// слышно фразу, выключен — слышен сигнал.
+const gymWavDataUri = (samples, rate = 8000) => {
+  const n = samples.length;
+  const buf = new ArrayBuffer(44 + n * 2);
+  const view = new DataView(buf);
+  const str = (off, t) => { for (let i = 0; i < t.length; i++) view.setUint8(off + i, t.charCodeAt(i)); };
+  str(0, 'RIFF'); view.setUint32(4, 36 + n * 2, true); str(8, 'WAVE');
+  str(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  str(36, 'data'); view.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, samples[i])) * 32767, true);
+  }
+  let bin = '';
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return 'data:audio/wav;base64,' + btoa(bin);
+};
+
+// Не абсолютная тишина: нулевой поток iOS считает «звука нет» и всё равно
+// усыпляет страницу. 40 Гц на такой громкости не слышно даже в наушниках.
+const gymSilenceSamples = (rate = 8000, seconds = 2) =>
+  Array.from({ length: rate * seconds }, (_, i) => Math.sin(2 * Math.PI * 40 * i / rate) * 0.0004);
+
+const gymBeepSamples = (count = 1, rate = 8000) => {
+  const tone = 0.16;
+  const gap = 0.09;
+  const out = [];
+  for (let b = 0; b < count; b++) {
+    const len = Math.round(rate * tone);
+    for (let i = 0; i < len; i++) {
+      // Плавные края — иначе на старте и в конце слышен щелчок.
+      const env = Math.min(1, Math.min(i, len - i) / (rate * 0.01));
+      out.push(Math.sin(2 * Math.PI * 880 * i / rate) * 0.35 * env);
+    }
+    if (b < count - 1) out.push(...new Array(Math.round(rate * gap)).fill(0));
+  }
+  return out;
+};
+
+const gymSound = (() => {
+  let keepEl = null;
+  const cues = {};
+  const cueEl = (count) => {
+    if (!cues[count]) {
+      const el = new Audio(gymWavDataUri(gymBeepSamples(count)));
+      el.preload = 'auto';
+      el.setAttribute('playsinline', '');
+      cues[count] = el;
+    }
+    return cues[count];
+  };
+  return {
+    // Вызывать только из обработчика жеста: без него iOS не отдаёт аудиовыход.
+    start() {
+      try {
+        if (!keepEl) {
+          keepEl = new Audio(gymWavDataUri(gymSilenceSamples()));
+          keepEl.loop = true;
+          keepEl.preload = 'auto';
+          keepEl.setAttribute('playsinline', '');
+        }
+        keepEl.play().catch(() => {});
+        // Прогреваем сигналы заранее: в фоне декодировать может быть уже поздно.
+        [1, 2].forEach(c => { try { cueEl(c).load(); } catch (_) {} });
+        if (navigator.mediaSession) {
+          try {
+            navigator.mediaSession.metadata = new window.MediaMetadata({
+              title: 'Тренировка', artist: 'Jarvis GYM',
+            });
+            navigator.mediaSession.setActionHandler('play', () => keepEl.play().catch(() => {}));
+            navigator.mediaSession.setActionHandler('pause', () => keepEl.play().catch(() => {}));
+          } catch (_) {}
+        }
+      } catch (_) {}
+    },
+    stop() {
+      try { if (keepEl) keepEl.pause(); } catch (_) {}
+      if (navigator.mediaSession) {
+        try {
+          navigator.mediaSession.setActionHandler('play', null);
+          navigator.mediaSession.setActionHandler('pause', null);
+        } catch (_) {}
+      }
+    },
+    cue(count = 1, enabled = true) {
+      if (!enabled) return;
+      try {
+        const el = cueEl(count);
+        el.currentTime = 0;
+        el.play().catch(() => {});
+      } catch (_) {}
+    },
+  };
+})();
+
 const gymPrimeVoice = (enabled, text) => {
   if (!enabled) return;
   // Прогреваем синтез внутри жеста: iOS запоминает разрешение на всю страницу.
@@ -22320,6 +22424,7 @@ function GymView({ data, setData }) {
       days={allDays}
       exercises={allExercises}
       sessions={sessions}
+      settings={data.settings}
       onOpen={openProgram}
       onCreate={(name) => {
         const p = newGymProgram(name);
@@ -22334,11 +22439,16 @@ function GymView({ data, setData }) {
   );
 }
 
-function GymResumeBanner({ session, onResume }) {
+function GymResumeBanner({ session, settings, onResume }) {
   if (!session) return null;
   return (
     <button
-      onClick={() => onResume(session)}
+      onClick={() => {
+        // Возврат к тренировке — единственный жест на этом экране, другого
+        // шанса забрать аудиовыход у iOS не будет.
+        if ((settings || {}).gymVoice !== false) gymSound.start();
+        onResume(session);
+      }}
       className="w-full mb-4 rounded-2xl px-4 py-3 flex items-center gap-3 text-left text-white"
       style={{ background: GYM_ACCENT }}
     >
@@ -22352,7 +22462,7 @@ function GymResumeBanner({ session, onResume }) {
   );
 }
 
-function GymProgramsView({ programs, days, exercises, sessions, onOpen, onCreate, onAnalytics, activeSession, onResume }) {
+function GymProgramsView({ programs, days, exercises, sessions, settings, onOpen, onCreate, onAnalytics, activeSession, onResume }) {
   const [adding, setAdding] = useState(false);
 
   const doneCount = (pid) => sessions.filter(s => s.programId === pid && s.finishedAt).length;
@@ -22374,7 +22484,7 @@ function GymProgramsView({ programs, days, exercises, sessions, onOpen, onCreate
         </div>
       </div>
 
-      <GymResumeBanner session={activeSession} onResume={onResume} />
+      <GymResumeBanner session={activeSession} settings={settings} onResume={onResume} />
 
       {programs.length === 0 ? (
         <GymEmpty text="Пока нет ни одной тренировки" hint="Создайте программу — внутри неё будут тренировочные дни" />
@@ -22454,7 +22564,7 @@ function GymProgramView({ program, days, exercises, sessions, settings, onBack, 
         </div>
       </div>
 
-      <GymResumeBanner session={activeSession} onResume={onResume} />
+      <GymResumeBanner session={activeSession} settings={settings} onResume={onResume} />
 
       <div
         className="rounded-2xl p-5 text-white mb-6"
@@ -22590,7 +22700,7 @@ function GymDayView({ day, index, exercises, sessions, programName, settings, on
         </button>
       </div>
 
-      <GymResumeBanner session={activeSession && activeSession.dayId === day.id ? activeSession : null} onResume={onResume} />
+      <GymResumeBanner session={activeSession && activeSession.dayId === day.id ? activeSession : null} settings={settings} onResume={onResume} />
 
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 flex items-center gap-4 mb-6">
         <GymRing value={progress} size={60} stroke={5} />
@@ -22673,8 +22783,10 @@ function GymDayView({ day, index, exercises, sessions, programName, settings, on
           onClick={() => {
             const first = exercises[0];
             const row = first ? gymPlanRows(first)[0] : null;
+            const voice = (settings || {}).gymVoice !== false;
+            if (voice) gymSound.start();
             gymPrimeVoice(
-              (settings || {}).gymVoice !== false,
+              voice,
               row ? `Поехали. ${gymSaySet(row, gymPctBase(first, sessions), first.name)}` : 'Поехали',
             );
             onStart();
@@ -23250,6 +23362,24 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     return () => clearInterval(t);
   }, []);
 
+  useEffect(() => () => gymSound.stop(), []);
+
+  // Возврат к экрану: накопленные фразы уже неактуальны — гасим очередь и
+  // говорим то, что происходит сейчас, а не то, что было пять минут назад.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible' || !voiceOn) return;
+      window.speechSynthesis?.cancel();
+      const left = restUntil ? Math.ceil((restUntil - Date.now()) / 1000) : 0;
+      if (left > 0) say(`Отдых, осталось ${left} ${gymPlural(left, 'секунда', 'секунды', 'секунд')}`);
+      else announceNext();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  // logged объявлен ниже по телу компонента — в списке зависимостей берём
+  // сами подходы из пропса, иначе рендер падает на временной мёртвой зоне.
+  }, [voiceOn, restUntil, openId, session.sets]);
+
   // Экран во время тренировки гасить нельзя: с погасшим экраном iOS
   // останавливает и синтез речи, и таймер отдыха.
   useEffect(() => {
@@ -23350,11 +23480,13 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     const left = Math.ceil((restUntil - now) / 1000);
     if (restSpoken.current.total > 12 && left <= 10 && left > 0 && restSpoken.current.ten !== restUntil) {
       restSpoken.current.ten = restUntil;
+      gymSound.cue(1, voiceOn);
       say('Десять секунд');
     }
     if (left <= 0 && restSpoken.current.zero !== restUntil) {
       restSpoken.current.zero = restUntil;
       setRestUntil(0);
+      gymSound.cue(2, voiceOn);
       announceNext();
     }
   }, [now, restUntil]);
@@ -23449,8 +23581,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
               const next = !voiceOn;
               onToggleVoice(next);
               // Включение — это жест: заодно разблокируем синтез на iOS.
-              if (next) gymPrimeVoice(true, 'Озвучка включена');
-              else window.speechSynthesis?.cancel();
+              if (next) { gymSound.start(); gymPrimeVoice(true, 'Озвучка включена'); }
+              else { window.speechSynthesis?.cancel(); gymSound.stop(); }
             }}
             title={voiceOn ? 'Выключить озвучку' : 'Включить озвучку'}
             className="w-9 h-9 rounded-xl flex items-center justify-center"
