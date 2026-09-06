@@ -21445,6 +21445,10 @@ const GYM_EQUIPMENT = ['Штанга', 'Гантели', 'Тренажёр', 'С
 // Разминочные подходы — часть плана (их видно и отмечаешь на тренировке), но
 // в тоннаж, рекорды и графики прогресса они не идут: это подводка, а не работа.
 const GYM_KIND_LABEL = { warmup: 'Разминка', working: 'Рабочий' };
+const GYM_WARMUP = '#16a34a';
+const GYM_WARMUP_BG = '#f0fdf4';
+const GYM_WARMUP_BORDER = '#86efac';
+const gymKindColor = (kind) => (kind === 'warmup' ? GYM_WARMUP : GYM_ACCENT);
 const gymIsWorking = (s) => (s?.kind || 'working') !== 'warmup';
 
 // Средняя длительность одного повторения — только для оценки «~ 1 ч 49 мин»
@@ -21510,6 +21514,7 @@ const newGymExercise = (dayId, order) => ({
   order,
   mode: 'linear',        // linear | pyramid | groups («Подробно»)
   groups: [],            // режим groups: разминочные и рабочие подходы со своими настройками
+  warmupSets: [],        // linear/pyramid: номера подходов (с нуля), отмеченных разминочными
   sets: 3,
   reps: 10,              // линейное: одинаковые повторы во всех подходах
   weight: '',            // линейное: одинаковый вес
@@ -21570,6 +21575,8 @@ const gymRangeText = (v) => {
 
 const gymGroups = (ex) => (Array.isArray(ex?.groups) ? ex.groups : []);
 
+const gymWarmupSets = (ex) => (Array.isArray(ex?.warmupSets) ? ex.warmupSets.map(Number) : []);
+
 // План упражнения одной формой для всех трёх режимов. Каждая строка — один
 // подход: тип (разминочный/рабочий), вес, повторы, свой отдых и RIR.
 const gymPlanRows = (ex) => {
@@ -21598,17 +21605,26 @@ const gymPlanRows = (ex) => {
   }
   const n = gymPlainSetCount(ex);
   const rest = ex?.noRest ? 0 : Math.max(0, gymInt(ex?.restSec, 0));
+  const warm = gymWarmupSets(ex);
+  // Нумерация идёт внутри своего типа — «Разминка 1, Разминка 2, Рабочий 1…»,
+  // как в программе, а не сквозным номером подхода.
+  const counters = { warmup: 0, working: 0 };
+  const label = (i) => {
+    const kind = warm.includes(i) ? 'warmup' : 'working';
+    counters[kind] += 1;
+    return { kind, label: `${GYM_KIND_LABEL[kind]} ${counters[kind]}` };
+  };
   if (ex?.mode === 'pyramid') {
     const reps = gymResizeList(ex.repsList, n, '');
     const weights = gymResizeList(ex.weightList, n, '');
     return reps.map((r, i) => ({
-      kind: 'working', label: `Рабочий ${i + 1}`,
+      ...label(i),
       reps: r, weight: weights[i], unit: ex.weightUnit || 'kg',
       restSec: rest, rir: '', note: '',
     }));
   }
   return Array.from({ length: n }, (_, i) => ({
-    kind: 'working', label: `Рабочий ${i + 1}`,
+    ...label(i),
     reps: ex?.reps, weight: ex?.weight, unit: ex?.weightUnit || 'kg',
     restSec: rest, rir: '', note: '',
   }));
@@ -22663,7 +22679,7 @@ function GymGroupsEditor({ groups, base, onChange }) {
         const title = count > 1
           ? `${GYM_KIND_LABEL[kind]} ${from}-${counters[kind]}`
           : `${GYM_KIND_LABEL[kind]} ${counters[kind]}`;
-        const accent = kind === 'warmup' ? '#b45309' : GYM_ACCENT;
+        const accent = gymKindColor(kind);
         return (
           <div key={g.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 space-y-3">
             <div className="flex items-center gap-2">
@@ -22679,7 +22695,7 @@ function GymGroupsEditor({ groups, base, onChange }) {
                   key={k}
                   onClick={() => patch(g.id, { kind: k })}
                   className={`flex-1 py-1.5 rounded-lg text-[13px] font-medium ${kind === k ? 'text-white' : 'text-[var(--text-muted)]'}`}
-                  style={kind === k ? { background: k === 'warmup' ? '#b45309' : GYM_ACCENT } : {}}
+                  style={kind === k ? { background: gymKindColor(k) } : {}}
                 >
                   {k === 'warmup' ? 'Разминочный' : 'Рабочий'}
                 </button>
@@ -22771,6 +22787,14 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
     repsList: gymResizeList(f.repsList, count, f.repsList?.[f.repsList.length - 1] ?? f.reps ?? ''),
     weightList: gymResizeList(f.weightList, count, f.weightList?.[f.weightList.length - 1] ?? f.weight ?? ''),
   }));
+
+  const toggleWarmup = (i) => setForm(f => {
+    const cur = gymWarmupSets(f);
+    return {
+      ...f,
+      warmupSets: cur.includes(i) ? cur.filter(x => x !== i) : [...cur, i].sort((a, b) => a - b),
+    };
+  });
 
   const setListValue = (key, i, value) => setForm(f => {
     const list = gymResizeList(f[key], gymSetCount(f), '');
@@ -23018,13 +23042,37 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
             </div>
           </div>
           <div className="mt-2 space-y-1">
-            {gymPlanRows(form).map((r, i) => (
-              <div key={i} className="flex items-baseline gap-2 text-[14px]">
-                <span className="w-[92px] flex-shrink-0" style={{ color: r.kind === 'warmup' ? '#b45309' : GYM_ACCENT }}>{r.label}</span>
-                <span className="flex-1 min-w-0">{gymRowPlanText(r, pctBase) || '—'}</span>
-              </div>
-            ))}
+            {gymPlanRows(form).map((r, i) => {
+              const cells = (
+                <>
+                  <span className="w-[92px] flex-shrink-0 text-left" style={{ color: gymKindColor(r.kind) }}>{r.label}</span>
+                  <span className="flex-1 min-w-0 text-left">{gymRowPlanText(r, pctBase) || '—'}</span>
+                </>
+              );
+              // В «Подробно» тип задаётся у самой группы подходов и здесь только
+              // показывается; в линейном режиме и пирамиде строка — переключатель.
+              return form.mode === 'groups' ? (
+                <div key={i} className="flex items-baseline gap-2 text-[14px]">{cells}</div>
+              ) : (
+                <button
+                  key={i}
+                  onClick={() => toggleWarmup(i)}
+                  className="w-full flex items-baseline gap-2 text-[14px] rounded-lg px-1 -mx-1 py-0.5"
+                  style={r.kind === 'warmup' ? { background: GYM_WARMUP_BG } : {}}
+                >
+                  {cells}
+                  <span className="text-[11px] flex-shrink-0" style={{ color: gymKindColor(r.kind) }}>
+                    {r.kind === 'warmup' ? 'разминка' : 'сделать разминкой'}
+                  </span>
+                </button>
+              );
+            })}
           </div>
+          {form.mode !== 'groups' && (
+            <div className="text-[12px] text-[var(--text-subtle)] mt-2">
+              Нажмите на подход, чтобы отметить его разминочным — разминка не идёт в тоннаж, рекорды и графики прогресса.
+            </div>
+          )}
         </div>
       </div>
 
@@ -23042,7 +23090,7 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
                 <div className="px-3">
                   {group.sets.map(s => (
                     <div key={s.id} className="flex items-center gap-3 py-2 border-b border-[var(--border)] last:border-0 text-[15px]">
-                      <span style={{ color: gymIsWorking(s) ? GYM_ACCENT : '#b45309' }}>
+                      <span style={{ color: gymKindColor(gymIsWorking(s) ? 'working' : 'warmup') }}>
                         #{(s.setIndex || 0) + 1}{gymIsWorking(s) ? '' : ' р'}
                       </span>
                       <span className="flex-1">{gymFmtWeight(s.weight)} x {gymInt(s.reps, 0)} повт.</span>
@@ -23266,9 +23314,15 @@ function GymSessionView({ session, day, exercises, sessions, onSave, onDelete, o
                       && (gymNum(done.weight) > prev.weight || gymEpley(done.weight, done.reps) > prev.orm)
                       && prev.weight > 0;
                     return (
-                      <div key={i} className="rounded-xl border border-[var(--border)] px-3 py-2.5">
+                      <div
+                        key={i}
+                        className="rounded-xl border px-3 py-2.5"
+                        style={warm
+                          ? { background: GYM_WARMUP_BG, borderColor: GYM_WARMUP_BORDER }
+                          : { borderColor: 'var(--border)' }}
+                      >
                         <div className="flex items-center gap-2 mb-1.5">
-                          <span className="text-[13px] font-medium" style={{ color: warm ? '#b45309' : GYM_ACCENT }}>
+                          <span className="text-[13px] font-medium" style={{ color: gymKindColor(warm ? 'warmup' : 'working') }}>
                             {plan.label || `Подход ${i + 1}`}
                           </span>
                           {isPr && <span title="Личный рекорд" style={{ color: '#eab308' }}><Icon name="starFilled" size={14} /></span>}
@@ -23277,7 +23331,9 @@ function GymSessionView({ session, day, exercises, sessions, onSave, onDelete, o
                             <span
                               className="text-[12px] px-2 py-0.5 rounded-full"
                               style={badge.tone === 'ok'
-                                ? { background: '#dcfce7', color: '#15803d' }
+                                // Зелёный на тренировке занят разминкой, поэтому
+                                // «в плане» — бирюзовый, цвет самого раздела.
+                                ? { background: '#ccfbf1', color: '#0f766e' }
                                 : badge.tone === 'under'
                                   ? { background: '#fee2e2', color: '#b91c1c' }
                                   : { background: '#dbeafe', color: '#1d4ed8' }}
