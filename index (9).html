@@ -24008,7 +24008,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
                 : !armed
                   ? 'Включится со следующего подхода'
                   : resting
-                    ? 'Слушаю после отдыха. «Пропустить» — начать раньше'
+                    ? 'Микрофон включится после отдыха — или сразу, если нажать «Пропустить»'
                     : voiceHint}
           </div>
         </div>
@@ -24041,7 +24041,10 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
             onClick={() => setRest(restUntil + 15000, (restSpoken.current.total || 0) + 15)}
             className="px-3 py-1.5 rounded-lg bg-white/15 text-sm"
           >+15 с</button>
-          <button onClick={() => setRest(0)} className="px-3 py-1.5 rounded-lg bg-white/15 text-sm">Пропустить</button>
+          <button
+            onClick={() => { setRest(0); announceNext(); }}
+            className="px-3 py-1.5 rounded-lg bg-white/15 text-sm"
+          >Пропустить</button>
         </div>
       )}
 
