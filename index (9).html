@@ -21546,6 +21546,8 @@ const newGymSession = (programId, day) => ({
   finishedAt: 0,
   durationSec: 0,
   note: '',
+  restUntil: 0,   // абсолютное время окончания отдыха (мс)
+  restTotal: 0,   // длительность текущего отдыха, сек — для «десять секунд»
   sets: [],
   createdAt: Date.now(),
   updatedAt: Date.now(),
@@ -23398,11 +23400,25 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   const [drafts, setDrafts] = useState({});
   // Сколько строк показываем сверх плана (добавленные вручную подходы).
   const [extra, setExtra] = useState({});
-  const [restUntil, setRestUntil] = useState(0);
+  // Отдых восстанавливаем из самой тренировки. Если он успел закончиться,
+  // пока приложение было закрыто, поднимать таймер уже незачем.
+  const [restUntil, setRestUntil] = useState(
+    () => ((session.restUntil || 0) > Date.now() ? session.restUntil : 0));
   const [now, setNow] = useState(Date.now());
   // Какие фразы уже сказаны для текущего отдыха — чтобы «десять секунд» не
   // повторялось на каждом тике.
-  const restSpoken = useRef({ ten: 0, zero: 0, total: 0 });
+  const restSpoken = useRef({ ten: 0, zero: 0, total: session.restTotal || 0 });
+
+  // Таймер держится в сессии, поэтому любое его изменение туда и пишется.
+  const setRest = (untilMs, totalSec) => {
+    if (totalSec !== undefined) restSpoken.current.total = totalSec;
+    setRestUntil(untilMs);
+    onSave({
+      ...session,
+      restUntil: untilMs,
+      restTotal: untilMs ? (totalSec !== undefined ? totalSec : session.restTotal || 0) : 0,
+    });
+  };
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -23486,7 +23502,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     const rest = Math.max(0, gymInt(plan.restSec, 0));
     const exists = logged.some(s => s.id === rec.id);
     const nextSets = exists ? logged.map(s => s.id === rec.id ? rec : s) : [...logged, rec];
-    onSave({ ...session, sets: nextSets });
+    const restUntilMs = rest ? Date.now() + rest * 1000 : 0;
+    onSave({ ...session, sets: nextSets, restUntil: restUntilMs, restTotal: rest });
 
     const remaining = (e) => {
       const total = Math.max(planRowsOf(e).length, extra[e.id] || 0);
@@ -23517,7 +23534,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
         announceNext({ exId: ex.id, index: i }, ex.id);
       }
     }
-    if (rest) setRestUntil(Date.now() + rest * 1000);
+    if (rest) setRestUntil(restUntilMs);
   };
 
   // Голосовой отсчёт отдыха. Завязан на тот же тик, что и таймер на экране,
@@ -23532,7 +23549,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     }
     if (left <= 0 && restSpoken.current.zero !== restUntil) {
       restSpoken.current.zero = restUntil;
-      setRestUntil(0);
+      setRest(0);
       gymSound.cue(2, voiceOn, bgAudio);
       announceNext();
     }
@@ -23684,8 +23701,11 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
             <div className="text-[13px] opacity-80">Отдых</div>
             <div className="text-xl font-display">{gymFmtRest(restLeft)}</div>
           </div>
-          <button onClick={() => setRestUntil(v => v + 15000)} className="px-3 py-1.5 rounded-lg bg-white/15 text-sm">+15 с</button>
-          <button onClick={() => setRestUntil(0)} className="px-3 py-1.5 rounded-lg bg-white/15 text-sm">Пропустить</button>
+          <button
+            onClick={() => setRest(restUntil + 15000, (restSpoken.current.total || 0) + 15)}
+            className="px-3 py-1.5 rounded-lg bg-white/15 text-sm"
+          >+15 с</button>
+          <button onClick={() => setRest(0)} className="px-3 py-1.5 rounded-lg bg-white/15 text-sm">Пропустить</button>
         </div>
       )}
 
