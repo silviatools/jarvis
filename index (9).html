@@ -197,6 +197,7 @@ const DEFAULT_SETTINGS = {
   voiceApiKey: '',
   voiceModel: '',
   voiceTtsVoice: 'nova',
+  gymVoice: true,        // озвучивание подходов и отдыха на тренировке
   notifyRouting: {},
   backupReminder: { enabled: false, frequency: 'weekly', time: '03:00', dayOfWeek: 0, dayOfMonth: 1 },
   lastBackupSentAt: '',
@@ -1004,6 +1005,8 @@ const Icon = ({ name, size = 22 }) => {
     plus: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5v14"/></svg>,
     trash: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>,
     edit: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>,
+    volume: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>,
+    volumeOff: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="m16 9 5 6M21 9l-5 6"/></svg>,
     play: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 4.5v15l13-7.5z"/></svg>,
     timer: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/></svg>,
     barChart: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18M7 21V10M12 21V4M17 21v-7"/></svg>,
@@ -1452,8 +1455,11 @@ function App() {
 
   // Авто-переключение на Погоду при бездействии
   const { weatherAutoSwitch, weatherAutoSwitchMinutes } = data.settings || DEFAULT_SETTINGS;
+  // …кроме GYM: там между подходами по несколько минут не касаешься экрана,
+  // и уезжать на главную ровно в этот момент — худшее, что может случиться.
+  const inGym = tab === 'misc' && miscTab === 'gym';
   useEffect(() => {
-    if (!weatherAutoSwitch) return;
+    if (!weatherAutoSwitch || inGym) return;
     const intervalMs = Math.max(0.5, Number(weatherAutoSwitchMinutes) || 2) * 60 * 1000;
     let timerId = null;
 
@@ -1472,7 +1478,7 @@ function App() {
       if (timerId) clearTimeout(timerId);
       events.forEach(ev => window.removeEventListener(ev, reset));
     };
-  }, [weatherAutoSwitch, weatherAutoSwitchMinutes]);
+  }, [weatherAutoSwitch, weatherAutoSwitchMinutes, inGym]);
 
   // Авто-синхронизация конфига уведомлений с jarvis.py
   useEffect(() => {
@@ -21856,6 +21862,87 @@ const gymDayProgress = (exercises, sessions, sinceMs) => {
 
 const gymDayTitle = (day, index) => day.title || `${index + 1} день`;
 
+// ── Озвучивание тренировки ─────────────────────────────────────────────────
+// Намеренно НЕ через общий speak(): тот при заданном ключе ходит в OpenAI TTS
+// (а ключ у нас обычно от Anthropic — тогда он молчит), да и сетевой запрос на
+// каждую фразу между подходами лишний. Здесь нужен мгновенный офлайн-голос,
+// поэтому только встроенный синтез — он же работает в PWA с наушниками.
+//
+// iOS: первый speak() обязан случиться внутри пользовательского жеста, иначе
+// синтез останется заблокированным. Поэтому первую фразу говорим прямо в
+// обработчике «Начать тренировку» (gymPrimeVoice), а дальше уже можно из
+// таймеров.
+const gymSay = (text, enabled = true) => {
+  if (!enabled || !text) return;
+  const synth = window.speechSynthesis;
+  if (!synth) return;
+  try {
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(String(text));
+    u.lang = 'ru-RU';
+    u.rate = 1.05;
+    // Голос выбираем отдельным try: без русского голоса фраза всё равно должна
+    // прозвучать (u.lang её вытянет), а не потеряться из-за него целиком.
+    try {
+      const ru = (synth.getVoices() || []).find(v => v.lang && v.lang.toLowerCase().startsWith('ru'));
+      if (ru) u.voice = ru;
+    } catch (_) {}
+    synth.speak(u);
+  } catch (_) { /* синтез недоступен — тренировке это не мешает */ }
+};
+
+const gymPrimeVoice = (enabled, text) => {
+  if (!enabled) return;
+  // Прогреваем синтез внутри жеста: iOS запоминает разрешение на всю страницу.
+  gymSay(text, true);
+};
+
+const gymPlural = (n, one, few, many) => {
+  const abs = Math.abs(Math.round(n)) % 100;
+  const last = abs % 10;
+  if (abs > 10 && abs < 20) return many;
+  if (last === 1) return one;
+  if (last >= 2 && last <= 4) return few;
+  return many;
+};
+
+const gymSayWeight = (row, base) => {
+  const t = gymRowTarget(row, base);
+  if (t.body) return 'со своим весом';
+  if (t.empty || (!t.min && !t.max)) return '';
+  if (t.min === t.max) return `${gymRound1(t.min)} ${gymPlural(t.min, 'килограмм', 'килограмма', 'килограмм')}`;
+  return `от ${gymRound1(t.min)} до ${gymRound1(t.max)} килограмм`;
+};
+
+const gymSayReps = (row) => {
+  const r = gymRange(row?.reps);
+  if (r.empty) return '';
+  if (r.min === r.max) return `${r.min} ${gymPlural(r.min, 'повторение', 'повторения', 'повторений')}`;
+  return `от ${r.min} до ${r.max} повторений`;
+};
+
+const gymSayRest = (sec) => {
+  const s = Math.max(0, gymInt(sec, 0));
+  if (!s) return '';
+  if (s % 60 === 0) {
+    const m = s / 60;
+    return `Отдых ${m} ${gymPlural(m, 'минута', 'минуты', 'минут')}`;
+  }
+  return `Отдых ${s} ${gymPlural(s, 'секунда', 'секунды', 'секунд')}`;
+};
+
+// «Рабочий 2. 60 килограмм, 8 повторений» — то, что нужно услышать, не глядя
+// в телефон. Название упражнения добавляем только когда оно сменилось.
+const gymSaySet = (row, base, exerciseName) => {
+  const parts = [];
+  if (exerciseName) parts.push(exerciseName);
+  const head = [row?.label, [gymSayWeight(row, base), gymSayReps(row)].filter(Boolean).join(', ')]
+    .filter(Boolean).join('. ');
+  if (head) parts.push(head);
+  if (row?.rir) parts.push(`RIR ${row.rir}`);
+  return parts.join('. ');
+};
+
 // ── Мелкие общие компоненты ────────────────────────────────────────────────
 
 function GymRing({ value, size = 52, stroke = 4, label }) {
@@ -22149,6 +22236,8 @@ function GymView({ data, setData }) {
         day={allDays.find(x => x.id === s.dayId) || { id: s.dayId, title: s.dayTitle }}
         exercises={exercisesOf(s.dayId)}
         sessions={sessions}
+        settings={data.settings}
+        onToggleVoice={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymVoice: on } }))}
         onSave={saveSession}
         onDelete={deleteSession}
         onExit={() => { setSessionId(''); setScreen('day'); }}
@@ -22580,7 +22669,15 @@ function GymDayView({ day, index, exercises, sessions, programName, settings, on
       <div className="mt-6 space-y-2">
         <button onClick={resetProgress} className="btn-secondary w-full">Сбросить прогресс</button>
         <button
-          onClick={onStart}
+          onClick={() => {
+            const first = exercises[0];
+            const row = first ? gymPlanRows(first)[0] : null;
+            gymPrimeVoice(
+              (settings || {}).gymVoice !== false,
+              row ? `Поехали. ${gymSaySet(row, gymPctBase(first, sessions), first.name)}` : 'Поехали',
+            );
+            onStart();
+          }}
           disabled={exercises.length === 0}
           className="w-full py-3.5 rounded-xl text-white font-medium disabled:opacity-40 flex items-center justify-center gap-2"
           style={{ background: GYM_ACCENT }}
@@ -23134,17 +23231,43 @@ const gymPrevBest = (sessions, name, beforeMs) => {
   return { weight, orm };
 };
 
-function GymSessionView({ session, day, exercises, sessions, onSave, onDelete, onExit }) {
+function GymSessionView({ session, day, exercises, sessions, settings, onToggleVoice, onSave, onDelete, onExit }) {
+  const voiceOn = (settings || {}).gymVoice !== false;
+  const say = (text) => gymSay(text, voiceOn);
   const [openId, setOpenId] = useState(exercises[0] ? exercises[0].id : '');
   const [drafts, setDrafts] = useState({});
   // Сколько строк показываем сверх плана (добавленные вручную подходы).
   const [extra, setExtra] = useState({});
   const [restUntil, setRestUntil] = useState(0);
   const [now, setNow] = useState(Date.now());
+  // Какие фразы уже сказаны для текущего отдыха — чтобы «десять секунд» не
+  // повторялось на каждом тике.
+  const restSpoken = useRef({ ten: 0, zero: 0, total: 0 });
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
+  }, []);
+
+  // Экран во время тренировки гасить нельзя: с погасшим экраном iOS
+  // останавливает и синтез речи, и таймер отдыха.
+  useEffect(() => {
+    let lock = null;
+    let cancelled = false;
+    const request = () => {
+      if (!navigator.wakeLock || document.visibilityState !== 'visible') return;
+      navigator.wakeLock.request('screen')
+        .then(l => { if (cancelled) l.release().catch(() => {}); else lock = l; })
+        .catch(() => {});
+    };
+    request();
+    // После возврата из фона блокировка слетает — берём её заново.
+    document.addEventListener('visibilitychange', request);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', request);
+      if (lock) lock.release().catch(() => {});
+    };
   }, []);
 
   const logged = session.sets || [];
@@ -23188,8 +23311,38 @@ function GymSessionView({ session, day, exercises, sessions, onSave, onDelete, o
       ...session,
       sets: exists ? logged.map(s => s.id === rec.id ? rec : s) : [...logged, rec],
     });
+
+    if (!exists) {
+      const prevBest = gymPrevBest(sessions, ex.name, session.startedAt || Date.now());
+      const isRecord = gymIsWorking(rec) && prevBest.weight > 0
+        && (rec.weight > prevBest.weight || gymEpley(rec.weight, rec.reps) > prevBest.orm);
+      if (isRecord) say('Личный рекорд!');
+      if (rest) {
+        // Отдых объявляем сразу, следующий подход — когда таймер закончится.
+        if (!isRecord) say(gymSayRest(rest));
+        restSpoken.current = { ten: 0, zero: 0, total: rest };
+      } else {
+        announceNext({ exId: ex.id, index: i }, ex.id);
+      }
+    }
     if (rest) setRestUntil(Date.now() + rest * 1000);
   };
+
+  // Голосовой отсчёт отдыха. Завязан на тот же тик, что и таймер на экране,
+  // поэтому не нужен отдельный setTimeout, который iOS всё равно придушит.
+  useEffect(() => {
+    if (!restUntil) return;
+    const left = Math.ceil((restUntil - now) / 1000);
+    if (restSpoken.current.total > 12 && left <= 10 && left > 0 && restSpoken.current.ten !== restUntil) {
+      restSpoken.current.ten = restUntil;
+      say('Десять секунд');
+    }
+    if (left <= 0 && restSpoken.current.zero !== restUntil) {
+      restSpoken.current.zero = restUntil;
+      setRestUntil(0);
+      announceNext();
+    }
+  }, [now, restUntil]);
 
   const removeSet = (setId) => onSave({ ...session, sets: logged.filter(s => s.id !== setId) });
 
@@ -23202,6 +23355,27 @@ function GymSessionView({ session, day, exercises, sessions, onSave, onDelete, o
 
   const planCache = {};
   const planRowsOf = (ex) => (planCache[ex.id] = planCache[ex.id] || gymPlanRows(ex));
+
+  // Первый ещё не записанный подход по всей тренировке — его и объявляем
+  // после отдыха, попутно раскрывая нужное упражнение.
+  const nextTarget = (skip) => {
+    for (const ex of exercises) {
+      const rows = planRowsOf(ex);
+      for (let i = 0; i < rows.length; i++) {
+        if (skip && skip.exId === ex.id && skip.index === i) continue;
+        if (!loggedAt(ex.id, i)) return { ex, row: rows[i], index: i };
+      }
+    }
+    return null;
+  };
+
+  const announceNext = (skip, prevExId) => {
+    const t = nextTarget(skip);
+    if (!t) { say('Все подходы записаны. Можно завершать.'); return; }
+    if (t.ex.id !== openId) setOpenId(t.ex.id);
+    const changed = t.ex.id !== (prevExId || openId);
+    say(gymSaySet(t.row, gymPctBase(t.ex, sessions), changed ? t.ex.name : ''));
+  };
 
   const rowCount = (ex) => {
     const fromLog = Math.max(0, ...loggedFor(ex.id).map(s => (s.setIndex || 0) + 1));
@@ -23239,6 +23413,7 @@ function GymSessionView({ session, day, exercises, sessions, onSave, onDelete, o
       finishedAt,
       durationSec: Math.max(1, Math.round((finishedAt - (session.startedAt || finishedAt)) / 1000)),
     });
+    say(`Тренировка завершена. ${doneWorking} ${gymPlural(doneWorking, 'рабочий подход', 'рабочих подхода', 'рабочих подходов')}, тоннаж ${Math.round(tonnage)} килограмм.`);
     onExit();
   };
 
@@ -23253,9 +23428,25 @@ function GymSessionView({ session, day, exercises, sessions, onSave, onDelete, o
         <button onClick={exitKeepOpen} className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)]">
           <Icon name="chevronLeft" size={16} /> Выйти
         </button>
-        <button onClick={finish} className="px-4 py-2 rounded-xl text-white text-sm font-medium" style={{ background: GYM_ACCENT }}>
-          Завершить
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              const next = !voiceOn;
+              onToggleVoice(next);
+              // Включение — это жест: заодно разблокируем синтез на iOS.
+              if (next) gymPrimeVoice(true, 'Озвучка включена');
+              else window.speechSynthesis?.cancel();
+            }}
+            title={voiceOn ? 'Выключить озвучку' : 'Включить озвучку'}
+            className="w-9 h-9 rounded-xl flex items-center justify-center"
+            style={voiceOn ? { background: GYM_ACCENT, color: '#fff' } : { color: 'var(--text-subtle)', border: '1px solid var(--border)' }}
+          >
+            <Icon name={voiceOn ? 'volume' : 'volumeOff'} size={17} />
+          </button>
+          <button onClick={finish} className="px-4 py-2 rounded-xl text-white text-sm font-medium" style={{ background: GYM_ACCENT }}>
+            Завершить
+          </button>
+        </div>
       </div>
 
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 mb-4">
