@@ -168,6 +168,12 @@
   .gym-collapse > .gym-collapse-inner { overflow: hidden; min-height: 0; }
   .gym-collapse:not(.open) > .gym-collapse-inner { pointer-events: none; }
 
+  @keyframes gymCurrentPulse {
+    0%, 100% { box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.45); }
+    50%      { box-shadow: 0 0 0 5px rgba(13, 148, 136, 0.12); }
+  }
+  .gym-current { animation: gymCurrentPulse 2.4s ease-in-out infinite; }
+
   @keyframes gymFocusRing {
     from { box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.35); }
     to   { box-shadow: 0 0 0 3px rgba(13, 148, 136, 0); }
@@ -177,6 +183,7 @@
   @media (prefers-reduced-motion: reduce) {
     .gym-collapse { transition: none; }
     .gym-focus { animation: none; }
+    .gym-current { animation: none; box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.45); }
   }
 
   /* Voice button pulse animation */
@@ -23627,6 +23634,15 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     say(gymSaySet(t.row, gymPctBase(t.ex, sessions), changed ? t.ex.name : ''));
   };
 
+  // Подход, который предстоит сделать: первый незаписанный в упражнении.
+  // Считаем по упражнению, а не по всей тренировке, — если вернуться к
+  // пропущенному упражнению вручную, подсветка встанет там, где нужно.
+  const currentIndex = (ex) => {
+    const total = Math.max(planRowsOf(ex).length, extra[ex.id] || 0);
+    for (let i = 0; i < total; i++) if (!loggedAt(ex.id, i)) return i;
+    return -1;
+  };
+
   const rowCount = (ex) => {
     const fromLog = Math.max(0, ...loggedFor(ex.id).map(s => (s.setIndex || 0) + 1));
     return Math.max(planRowsOf(ex).length, fromLog, extra[ex.id] || 0);
@@ -23754,6 +23770,9 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
           const plannedN = gymSetCount(ex);
           const open = openId === ex.id;
           const prev = gymPrevBest(sessions, ex.name, session.startedAt || Date.now());
+          // Только у раскрытого упражнения: в свёрнутых «сейчас» не имеет
+          // смысла и лишним узлом висит в разметке.
+          const curIdx = open ? currentIndex(ex) : -1;
           return (
             <div
               key={ex.id}
@@ -23787,15 +23806,27 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
                       <div
                         key={i}
                         data-gym-first-row={i === 0 ? ex.id : undefined}
-                        className="rounded-xl border px-3 py-2.5"
-                        style={warm
-                          ? { background: GYM_WARMUP_BG, borderColor: GYM_WARMUP_BORDER }
-                          : { borderColor: 'var(--border)' }}
+                        data-gym-current={i === curIdx ? 'true' : undefined}
+                        className={`rounded-xl border px-3 py-2.5 ${i === curIdx ? 'gym-current' : ''}`}
+                        style={{
+                          ...(warm ? { background: GYM_WARMUP_BG } : {}),
+                          borderColor: i === curIdx
+                            ? GYM_ACCENT
+                            : (warm ? GYM_WARMUP_BORDER : 'var(--border)'),
+                        }}
                       >
                         <div className="flex items-center gap-2 mb-1.5">
                           <span className="text-[13px] font-medium" style={{ color: gymKindColor(warm ? 'warmup' : 'working') }}>
                             {plan.label || `Подход ${i + 1}`}
                           </span>
+                          {i === curIdx && (
+                            <span
+                              className="text-[11px] px-2 py-0.5 rounded-full text-white"
+                              style={{ background: GYM_ACCENT }}
+                            >
+                              сейчас
+                            </span>
+                          )}
                           {isPr && <span title="Личный рекорд" style={{ color: '#eab308' }}><Icon name="starFilled" size={14} /></span>}
                           <span className="flex-1" />
                           {badge && (
