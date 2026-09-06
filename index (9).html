@@ -8029,7 +8029,7 @@ ${bossLines}
 {"action":"clarify","question":"короткий вопрос"}`;
 }
 
-async function callAI(messages, settings, appData, systemPromptOverride) {
+async function callAI(messages, settings, appData, systemPromptOverride, maxTokens = 400) {
   const systemPrompt = systemPromptOverride || buildVoiceSystemPrompt(appData || {});
   const provider = settings.voiceProvider || 'claude';
   const key = (settings.voiceApiKey || '').trim();
@@ -8049,7 +8049,7 @@ async function callAI(messages, settings, appData, systemPromptOverride) {
       },
       body: JSON.stringify({
         model,
-        max_tokens: 400,
+        max_tokens: maxTokens,
         system: systemPrompt,
         messages,
       }),
@@ -8070,7 +8070,7 @@ async function callAI(messages, settings, appData, systemPromptOverride) {
       },
       body: JSON.stringify({
         model,
-        max_tokens: 400,
+        max_tokens: maxTokens,
         messages: [{ role: 'system', content: systemPrompt }, ...messages],
       }),
     });
@@ -21442,6 +21442,11 @@ const GYM_ACCENT = '#0d9488';
 const GYM_MUSCLES = ['Грудь', 'Спина', 'Плечи', 'Бицепс', 'Трицепс', 'Пресс', 'Ноги', 'Ягодицы', 'Икры', 'Предплечья', 'Кардио'];
 const GYM_EQUIPMENT = ['Штанга', 'Гантели', 'Тренажёр', 'Своё тело', 'Кроссовер', 'Резина', 'Другое'];
 
+// Разминочные подходы — часть плана (их видно и отмечаешь на тренировке), но
+// в тоннаж, рекорды и графики прогресса они не идут: это подводка, а не работа.
+const GYM_KIND_LABEL = { warmup: 'Разминка', working: 'Рабочий' };
+const gymIsWorking = (s) => (s?.kind || 'working') !== 'warmup';
+
 // Средняя длительность одного повторения — только для оценки «~ 1 ч 49 мин»
 // на карточке дня, в расчётах прогресса не участвует.
 const GYM_SEC_PER_REP = 3.5;
@@ -21481,14 +21486,30 @@ const newGymDay = (programId, order) => ({
   updatedAt: Date.now(),
 });
 
+// Группа подходов режима «Подробно» — строка программы вида
+// «Рабочий 1-3 | 55-65 кг (100%) | 8-10 | 2.5 мин | RIR 2».
+const newGymSetGroup = (kind = 'working') => ({
+  id: crypto.randomUUID(),
+  kind,                                   // warmup | working
+  count: kind === 'warmup' ? 1 : 3,
+  weight: '',
+  weightUnit: 'kg',                       // kg | pct (% от рабочего) | body (собственный вес)
+  reps: kind === 'warmup' ? '10-12' : '8-10',
+  restSec: kind === 'warmup' ? 60 : 120,
+  rir: kind === 'warmup' ? '' : '2',
+  note: '',
+});
+
 const newGymExercise = (dayId, order) => ({
   id: crypto.randomUUID(),
   dayId,
   name: '',
   muscles: [],
+  targetMuscle: '',      // как в программе: «Спина (толщина)», «Грудь (верх)»
   equipment: '',
   order,
-  mode: 'linear',        // linear | pyramid
+  mode: 'linear',        // linear | pyramid | groups («Подробно»)
+  groups: [],            // режим groups: разминочные и рабочие подходы со своими настройками
   sets: 3,
   reps: 10,              // линейное: одинаковые повторы во всех подходах
   weight: '',            // линейное: одинаковый вес
@@ -21518,24 +21539,89 @@ const newGymSession = (programId, day) => ({
   updatedAt: Date.now(),
 });
 
-// Число подходов — всегда ex.sets; списки пирамиды подгоняются под него,
-// чтобы «Количество подходов» и длина строк ввода не разъезжались.
-const gymSetCount = (ex) => Math.max(1, Math.min(20, gymInt(ex?.sets, 1) || 1));
+// Число подходов в линейном режиме и пирамиде — всегда ex.sets; списки
+// пирамиды подгоняются под него, чтобы «Количество подходов» и длина строк
+// ввода не разъезжались.
+const gymPlainSetCount = (ex) => Math.max(1, Math.min(30, gymInt(ex?.sets, 1) || 1));
 
 const gymResizeList = (list, n, fill) => {
   const out = Array.from({ length: n }, (_, i) => (Array.isArray(list) && list[i] !== undefined ? list[i] : fill));
   return out;
 };
 
-// План упражнения одной формой для обоих режимов: [{reps, weight, unit}, …]
+// Вес и повторы в программе почти всегда диапазон («55-65 кг», «8-10»), а не
+// одно число — так их и храним, строкой, а для расчётов разбираем на границы.
+const gymRange = (v) => {
+  const s = String(v ?? '').replace(',', '.').replace(/[~≈\s]/g, '');
+  const m = s.match(/^(\d+(?:\.\d+)?)(?:[-–—](\d+(?:\.\d+)?))?/);
+  if (!m) return { min: 0, max: 0, empty: true };
+  const a = parseFloat(m[1]);
+  const b = m[2] === undefined ? a : parseFloat(m[2]);
+  return { min: Math.min(a, b), max: Math.max(a, b), empty: false };
+};
+
+const gymRangeMid = (r) => (r.min + r.max) / 2;
+
+const gymRangeText = (v) => {
+  const r = gymRange(v);
+  if (r.empty) return '';
+  return r.min === r.max ? String(gymRound1(r.min)) : `${gymRound1(r.min)}-${gymRound1(r.max)}`;
+};
+
+const gymGroups = (ex) => (Array.isArray(ex?.groups) ? ex.groups : []);
+
+// План упражнения одной формой для всех трёх режимов. Каждая строка — один
+// подход: тип (разминочный/рабочий), вес, повторы, свой отдых и RIR.
 const gymPlanRows = (ex) => {
-  const n = gymSetCount(ex);
+  if (ex?.mode === 'groups') {
+    const rows = [];
+    const counters = { warmup: 0, working: 0 };
+    gymGroups(ex).forEach(g => {
+      const kind = g.kind === 'warmup' ? 'warmup' : 'working';
+      const n = Math.max(1, Math.min(20, gymInt(g.count, 1) || 1));
+      for (let i = 0; i < n; i++) {
+        counters[kind] += 1;
+        rows.push({
+          kind,
+          groupId: g.id,
+          label: `${GYM_KIND_LABEL[kind]} ${counters[kind]}`,
+          reps: g.reps,
+          weight: g.weight,
+          unit: g.weightUnit || 'kg',
+          restSec: Math.max(0, gymInt(g.restSec, 0)),
+          rir: g.rir || '',
+          note: g.note || '',
+        });
+      }
+    });
+    return rows;
+  }
+  const n = gymPlainSetCount(ex);
+  const rest = ex?.noRest ? 0 : Math.max(0, gymInt(ex?.restSec, 0));
   if (ex?.mode === 'pyramid') {
     const reps = gymResizeList(ex.repsList, n, '');
     const weights = gymResizeList(ex.weightList, n, '');
-    return reps.map((r, i) => ({ reps: r, weight: weights[i], unit: ex.weightUnit || 'kg' }));
+    return reps.map((r, i) => ({
+      kind: 'working', label: `Рабочий ${i + 1}`,
+      reps: r, weight: weights[i], unit: ex.weightUnit || 'kg',
+      restSec: rest, rir: '', note: '',
+    }));
   }
-  return Array.from({ length: n }, () => ({ reps: ex?.reps, weight: ex?.weight, unit: ex?.weightUnit || 'kg' }));
+  return Array.from({ length: n }, (_, i) => ({
+    kind: 'working', label: `Рабочий ${i + 1}`,
+    reps: ex?.reps, weight: ex?.weight, unit: ex?.weightUnit || 'kg',
+    restSec: rest, rir: '', note: '',
+  }));
+};
+
+const gymSetCount = (ex) => (ex?.mode === 'groups' ? Math.max(1, gymPlanRows(ex).length) : gymPlainSetCount(ex));
+
+const gymCountKinds = (ex) => {
+  const rows = gymPlanRows(ex);
+  return {
+    warmup: rows.filter(r => r.kind === 'warmup').length,
+    working: rows.filter(r => r.kind !== 'warmup').length,
+  };
 };
 
 // Все подходы всех тренировок — плоским списком, с датой и упражнением.
@@ -21550,11 +21636,15 @@ const gymAllSets = (sessions) => {
   return out;
 };
 
+// Только рабочие подходы: разминка не должна попадать в тоннаж, рекорды и
+// графики прогресса — иначе «объём» растёт от подводящих весов.
+const gymWorkingSets = (sessions) => gymAllSets(sessions).filter(gymIsWorking);
+
 // Лучший рабочий вес упражнения по истории (по имени, а не по строке дня).
 const gymBestLogged = (sessions, name) => {
   const key = gymKey(name);
   let best = 0;
-  gymAllSets(sessions).forEach(s => {
+  gymWorkingSets(sessions).forEach(s => {
     if (gymKey(s.exerciseName) === key) best = Math.max(best, gymNum(s.weight));
   });
   return best;
@@ -21568,39 +21658,112 @@ const gymMaxFor = (ex, sessions) => {
   return gymBestLogged(sessions, ex?.name);
 };
 
-// Плановый вес подхода в килограммах (для процентов — от макс. веса).
-const gymRowKg = (row, maxWeight) => {
-  const v = gymNum(row.weight);
-  if (!v) return 0;
-  if (row.unit === 'pct') return gymRound1(maxWeight * v / 100);
-  return v;
+// База для процентов. В режиме «Подробно» проценты в программе пишутся от
+// РАБОЧЕГО веса («разминка ~50% от рабочего»), поэтому базой берём середину
+// диапазона первой рабочей группы, заданной в кг. В остальных режимах — как и
+// было, макс. вес упражнения.
+const gymPctBase = (ex, sessions) => {
+  if (ex?.mode === 'groups') {
+    const g = gymGroups(ex).find(x => x.kind !== 'warmup' && (x.weightUnit || 'kg') === 'kg' && !gymRange(x.weight).empty);
+    if (g) return gymRangeMid(gymRange(g.weight));
+  }
+  return gymMaxFor(ex, sessions);
 };
 
-const gymRowWeightText = (row) => {
-  const v = gymNum(row.weight);
-  if (!v) return '';
-  return row.unit === 'pct' ? `${v}% от макс. вес` : `${v} кг`;
+// Плановый вес подхода в килограммах — диапазоном {min, max}.
+const gymRowTarget = (row, base) => {
+  const unit = row?.unit || 'kg';
+  if (unit === 'body') return { min: 0, max: 0, body: true, empty: false };
+  const r = gymRange(row?.weight);
+  if (r.empty) return { min: 0, max: 0, empty: true };
+  if (unit === 'pct') return { min: gymRound1(base * r.min / 100), max: gymRound1(base * r.max / 100), pct: r, empty: !base };
+  return { min: r.min, max: r.max, empty: false };
 };
 
-// Строка-схема под названием упражнения в списке дня — как в приложении:
-// «10x50% от макс. вес - 10x100% от макс. вес - …» / «3x10 · 70 кг».
-const gymSchemeText = (ex) => {
+const gymKgText = (t) => (t.min === t.max ? `${gymRound1(t.min)} кг` : `${gymRound1(t.min)}-${gymRound1(t.max)} кг`);
+
+const gymRowWeightText = (row, base = 0) => {
+  const unit = row?.unit || 'kg';
+  if (unit === 'body') return 'Собственный вес';
+  const r = gymRange(row?.weight);
+  if (r.empty) return '';
+  if (unit === 'pct') {
+    const t = gymRowTarget(row, base);
+    return base ? `${gymRangeText(row.weight)}% (≈ ${gymKgText(t)})` : `${gymRangeText(row.weight)}% от рабочего`;
+  }
+  return `${gymRangeText(row.weight)} кг`;
+};
+
+// Полная строка плана подхода для экрана тренировки:
+// «55-65 кг × 8-10 · RIR 2 · отдых 2:30».
+const gymRowPlanText = (row, base = 0) => {
+  const parts = [];
+  const w = gymRowWeightText(row, base);
+  const reps = gymRangeText(row?.reps);
+  if (w && reps) parts.push(`${w} × ${reps}`);
+  else if (w) parts.push(w);
+  else if (reps) parts.push(`${reps} повт.`);
+  if (row?.rir) parts.push(`RIR ${row.rir}`);
+  if (row?.restSec) parts.push(`отдых ${gymFmtRest(row.restSec)}`);
+  return parts.join(' · ');
+};
+
+// Строка-схема под названием упражнения в списке дня.
+const gymSchemeText = (ex, base = 0) => {
   const rows = gymPlanRows(ex);
+  if (ex.mode === 'groups') {
+    const { warmup, working } = gymCountKinds(ex);
+    const main = rows.find(r => r.kind !== 'warmup') || rows[0];
+    const head = [warmup ? `${warmup} разм.` : '', working ? `${working} раб.` : ''].filter(Boolean).join(' + ');
+    const tail = main ? gymRowPlanText({ ...main, restSec: 0 }, base) : '';
+    return [head, tail].filter(Boolean).join(' · ');
+  }
   if (ex.mode === 'pyramid') {
     return rows.map(r => {
-      const w = gymRowWeightText(r);
-      return `${gymInt(r.reps, 0)}x${w || '—'}`;
+      const w = gymRowWeightText(r, base);
+      return `${gymRangeText(r.reps) || 0}x${w || '—'}`;
     }).join(' - ');
   }
-  const w = gymRowWeightText(rows[0] || {});
-  const base = `${gymSetCount(ex)}x${gymInt(ex.reps, 0)}`;
-  return w ? `${base} · ${w}` : base;
+  const w = gymRowWeightText(rows[0] || {}, base);
+  const head = `${gymSetCount(ex)}x${gymRangeText(ex.reps) || 0}`;
+  return w ? `${head} · ${w}` : head;
 };
 
-const gymExerciseSec = (ex) => {
-  const rows = gymPlanRows(ex);
-  const rest = ex.noRest ? 0 : Math.max(0, gymInt(ex.restSec, 0));
-  return rows.reduce((acc, r) => acc + gymInt(r.reps, 0) * GYM_SEC_PER_REP + rest, 0);
+const gymExerciseSec = (ex) => gymPlanRows(ex).reduce(
+  (acc, r) => acc + gymRange(r.reps).max * GYM_SEC_PER_REP + (r.restSec || 0), 0);
+
+// План-факт одного подхода: насколько факт вышел за плановый диапазон.
+// 0 — попал в план (в том числе когда план не задан).
+const gymFactDiff = (targetRange, value) => {
+  if (!targetRange || targetRange.empty || targetRange.body) return 0;
+  if (!value) return 0;
+  if (value < targetRange.min) return gymRound1(value - targetRange.min);
+  if (value > targetRange.max) return gymRound1(value - targetRange.max);
+  return 0;
+};
+
+const gymFactBadge = (row, base, weight, reps) => {
+  const dw = gymFactDiff(gymRowTarget(row, base), gymNum(weight));
+  const dr = gymFactDiff(gymRange(row?.reps), gymInt(reps, 0));
+  if (!dw && !dr) return { text: 'в плане', tone: 'ok' };
+  const parts = [];
+  if (dw) parts.push(`${dw > 0 ? '+' : ''}${dw} кг`);
+  if (dr) parts.push(`${dr > 0 ? '+' : ''}${dr} повт.`);
+  return { text: parts.join(' · '), tone: (dw < 0 || dr < 0) ? 'under' : 'over' };
+};
+
+// Сводка дня — как в программе: «Разминочных: 6 · Рабочих: 20 · ~73 мин».
+const gymDaySummary = (exercises) => {
+  let warmup = 0;
+  let working = 0;
+  let sec = 0;
+  exercises.forEach(ex => {
+    const c = gymCountKinds(ex);
+    warmup += c.warmup;
+    working += c.working;
+    sec += gymExerciseSec(ex);
+  });
+  return { warmup, working, sec };
 };
 
 const gymFmtDuration = (sec) => {
@@ -21895,6 +22058,44 @@ function GymView({ data, setData }) {
     }));
   };
 
+  // Импорт из скриншота: дни и упражнения создаются одной пачкой, порядок
+  // сохраняется, id проставляются заново — распознанное приходит без них.
+  const importDays = (pid, imported) => {
+    const startOrder = daysOf(pid).length;
+    setData(d => {
+      const now = Date.now();
+      const newDays = [];
+      const newExercises = [];
+      imported.forEach((day, i) => {
+        const dayRec = { ...newGymDay(pid, startOrder + i), title: day.title || '', createdAt: now, updatedAt: now };
+        newDays.push(dayRec);
+        day.exercises.forEach((ex, j) => {
+          newExercises.push({ ...ex, id: crypto.randomUUID(), dayId: dayRec.id, order: j, createdAt: now, updatedAt: now });
+        });
+      });
+      return {
+        ...d,
+        gymDays: [...(d.gymDays || []), ...newDays],
+        gymExercises: [...(d.gymExercises || []), ...newExercises],
+      };
+    });
+  };
+
+  const importExercisesInto = (targetDayId, imported) => {
+    const startOrder = exercisesOf(targetDayId).length;
+    setData(d => {
+      const now = Date.now();
+      const flat = imported.flatMap(day => day.exercises);
+      return {
+        ...d,
+        gymExercises: [
+          ...(d.gymExercises || []),
+          ...flat.map((ex, i) => ({ ...ex, id: crypto.randomUUID(), dayId: targetDayId, order: startOrder + i, createdAt: now, updatedAt: now })),
+        ],
+      };
+    });
+  };
+
   const openDay = (dd) => { setDayId(dd.id); setProgramId(dd.programId); setScreen('day'); };
   const openProgram = (p) => { setProgramId(p.id); setScreen('program'); };
 
@@ -21964,6 +22165,8 @@ function GymView({ data, setData }) {
         onBack={() => setScreen('program')}
         onSaveDay={saveDay}
         onDeleteDay={() => deleteDay(day.id)}
+        settings={data.settings}
+        onImportExercises={(imported) => importExercisesInto(day.id, imported)}
         onOpenExercise={(ex) => { setExerciseId(ex ? ex.id : ''); setScreen('exercise'); }}
         onNewExercise={() => {
           const ex = newGymExercise(day.id, exercisesOf(day.id).length);
@@ -21991,10 +22194,12 @@ function GymView({ data, setData }) {
         onSaveProgram={saveProgram}
         onDeleteProgram={() => deleteProgram(program.id)}
         onOpenDay={openDay}
+        settings={data.settings}
         onAddDay={(title) => {
           const list = daysOf(program.id);
           saveDay({ ...newGymDay(program.id, list.length), title });
         }}
+        onImportDays={(imported) => importDays(program.id, imported)}
         onReorderDays={(list) => list.forEach((dd, i) => { if ((dd.order || 0) !== i) saveDay({ ...dd, order: i }); })}
         onAnalytics={() => setScreen('analytics')}
         activeSession={activeSession}
@@ -22109,11 +22314,12 @@ function GymProgramsView({ programs, days, exercises, sessions, onOpen, onCreate
   );
 }
 
-function GymProgramView({ program, days, exercises, sessions, onBack, onSaveProgram, onDeleteProgram,
-                         onOpenDay, onAddDay, onReorderDays, onAnalytics, activeSession, onResume }) {
+function GymProgramView({ program, days, exercises, sessions, settings, onBack, onSaveProgram, onDeleteProgram,
+                         onOpenDay, onAddDay, onReorderDays, onImportDays, onAnalytics, activeSession, onResume }) {
   const [adding, setAdding] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [editMode, setEditMode] = useState(false);
+  const [imported, setImported] = useState(null);
 
   const doneCount = sessions.filter(s => s.programId === program.id && s.finishedAt).length;
 
@@ -22158,11 +22364,14 @@ function GymProgramView({ program, days, exercises, sessions, onBack, onSaveProg
         <div className="text-[13px] opacity-80 mt-3">Выполнено занятий: {doneCount}</div>
       </div>
 
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-3 gap-2">
         <div className="text-[15px] font-medium" style={{ color: GYM_ACCENT }}>Тренировочные дни</div>
-        <button onClick={() => setAdding(true)} className="btn-ghost flex items-center gap-1.5 text-sm">
-          <Icon name="plus" size={16} /> День
-        </button>
+        <div className="flex items-center gap-1">
+          <GymImportButton settings={settings} onDraftReady={setImported} />
+          <button onClick={() => setAdding(true)} className="btn-ghost flex items-center gap-1.5 text-sm">
+            <Icon name="plus" size={16} /> День
+          </button>
+        </div>
       </div>
 
       {days.length === 0 ? (
@@ -22179,7 +22388,10 @@ function GymProgramView({ program, days, exercises, sessions, onBack, onSaveProg
                   <div className="text-[13px]" style={{ color: GYM_ACCENT }}>{i + 1} тренировка</div>
                   <div className="text-[16px] font-medium truncate">{gymDayTitle(d, i)}</div>
                   <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">
-                    {exs.length ? `${exs.length} упр. · ~ ${gymFmtDuration(exs.reduce((a, e) => a + gymExerciseSec(e), 0))}` : 'нет упражнений'}
+                    {exs.length ? (() => {
+                      const sum = gymDaySummary(exs);
+                      return `${exs.length} упр. · раб. ${sum.working}${sum.warmup ? ` + разм. ${sum.warmup}` : ''} · ~ ${gymFmtDuration(sum.sec)}`;
+                    })() : 'нет упражнений'}
                   </div>
                 </button>
                 {editMode ? (
@@ -22224,18 +22436,27 @@ function GymProgramView({ program, days, exercises, sessions, onBack, onSaveProg
           onClose={() => setRenaming(false)}
         />
       )}
+      {imported && (
+        <GymImportPreview
+          days={imported}
+          mode="days"
+          onApply={(chosen) => { onImportDays(chosen); setImported(null); }}
+          onClose={() => setImported(null)}
+        />
+      )}
     </div>
   );
 }
 
-function GymDayView({ day, index, exercises, sessions, programName, onBack, onSaveDay, onDeleteDay,
-                     onOpenExercise, onNewExercise, onReorder, onDeleteExercise, onStart,
+function GymDayView({ day, index, exercises, sessions, programName, settings, onBack, onSaveDay, onDeleteDay,
+                     onOpenExercise, onNewExercise, onReorder, onDeleteExercise, onImportExercises, onStart,
                      activeSession, onResume }) {
   const [editMode, setEditMode] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [imported, setImported] = useState(null);
 
   const progress = gymDayProgress(exercises, sessions, day.resetAt);
-  const estSec = exercises.reduce((a, e) => a + gymExerciseSec(e), 0);
+  const summary = gymDaySummary(exercises);
   const doneCount = sessions.filter(s => s.dayId === day.id && s.finishedAt).length;
 
   const move = (i, dir) => {
@@ -22270,13 +22491,15 @@ function GymDayView({ day, index, exercises, sessions, programName, onBack, onSa
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2">
             <div className="text-[13px]" style={{ color: GYM_ACCENT }}>{index + 1} тренировка</div>
-            <div className="text-[13px] text-[var(--text-muted)]">~ {gymFmtDuration(estSec)}</div>
+            <div className="text-[13px] text-[var(--text-muted)]">~ {gymFmtDuration(summary.sec)}</div>
           </div>
           <div className="flex items-center gap-2">
             <div className="text-[17px] font-medium truncate flex-1">{gymDayTitle(day, index)}</div>
             {editMode && <button onClick={() => setRenaming(true)}><Icon name="edit" size={16} /></button>}
           </div>
-          <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">Проведено: {doneCount}</div>
+          <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">
+            Разминочных: {summary.warmup} · Рабочих: {summary.working} · проведено: {doneCount}
+          </div>
         </div>
       </div>
 
@@ -22296,9 +22519,11 @@ function GymDayView({ day, index, exercises, sessions, programName, onBack, onSa
                 )}
                 <button onClick={() => onOpenExercise(ex)} className="flex-1 min-w-0 text-left">
                   <div className="text-[15px] font-medium leading-snug">{ex.name || 'Без названия'}</div>
-                  <div className="text-[13px] text-[var(--text-muted)] truncate mt-0.5">{gymSchemeText(ex)}</div>
-                  {(ex.muscles || []).length > 0 && (
-                    <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">{(ex.muscles || []).join(' · ')}</div>
+                  <div className="text-[13px] text-[var(--text-muted)] truncate mt-0.5">{gymSchemeText(ex, gymPctBase(ex, sessions))}</div>
+                  {(ex.targetMuscle || (ex.muscles || []).length > 0) && (
+                    <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">
+                      {ex.targetMuscle || (ex.muscles || []).join(' · ')}
+                    </div>
                   )}
                 </button>
                 {editMode ? (
@@ -22318,12 +22543,17 @@ function GymDayView({ day, index, exercises, sessions, programName, onBack, onSa
         </div>
       )}
 
-      <button
-        onClick={onNewExercise}
-        className="w-full mt-3 py-3 rounded-2xl border border-dashed border-[var(--border-strong)] text-[var(--text-muted)] text-sm flex items-center justify-center gap-2"
-      >
-        <Icon name="plus" size={16} /> Добавить упражнение
-      </button>
+      <div className="mt-3 flex gap-2">
+        <button
+          onClick={onNewExercise}
+          className="flex-1 py-3 rounded-2xl border border-dashed border-[var(--border-strong)] text-[var(--text-muted)] text-sm flex items-center justify-center gap-2"
+        >
+          <Icon name="plus" size={16} /> Добавить упражнение
+        </button>
+        <div className="flex-1 py-2 rounded-2xl border border-dashed border-[var(--border-strong)] flex items-center justify-center">
+          <GymImportButton settings={settings} onDraftReady={setImported} label="Из скриншота" />
+        </div>
+      </div>
 
       {editMode && (
         <button onClick={onDeleteDay} className="w-full mt-6 py-3 rounded-xl border border-dashed border-red-200 text-red-500 text-sm flex items-center justify-center gap-2">
@@ -22352,6 +22582,14 @@ function GymDayView({ day, index, exercises, sessions, programName, onBack, onSa
           onClose={() => setRenaming(false)}
         />
       )}
+      {imported && (
+        <GymImportPreview
+          days={imported}
+          mode="exercises"
+          onApply={(chosen) => { onImportExercises(chosen); setImported(null); }}
+          onClose={() => setImported(null)}
+        />
+      )}
     </div>
   );
 }
@@ -22377,6 +22615,144 @@ const gymExerciseHistory = (sessions, ex) => {
       sets: byDate[date].sort((a, b) => (b.at || 0) - (a.at || 0)),
     }));
 };
+
+function GymRestPicker({ value, onChange }) {
+  const min = Math.floor(Math.max(0, gymInt(value, 0)) / 60);
+  const sec = Math.max(0, gymInt(value, 0)) % 60;
+  return (
+    <div className="flex items-center gap-2">
+      <select value={min} onChange={e => onChange(gymInt(e.target.value, 0) * 60 + sec)} className="flex-1">
+        {Array.from({ length: 11 }).map((_, i) => <option key={i} value={i}>{i} мин</option>)}
+      </select>
+      <select value={sec} onChange={e => onChange(min * 60 + gymInt(e.target.value, 0))} className="flex-1">
+        {Array.from({ length: 12 }).map((_, i) => <option key={i} value={i * 5}>{i * 5} сек</option>)}
+      </select>
+    </div>
+  );
+}
+
+// Редактор режима «Подробно»: строки программы как есть — разминочные и
+// рабочие подходы, у каждого свой вес (диапазоном), повторы, отдых и RIR.
+function GymGroupsEditor({ groups, base, onChange }) {
+  const patch = (id, p) => onChange(groups.map(g => g.id === id ? { ...g, ...p } : g));
+  const remove = (id) => onChange(groups.filter(g => g.id !== id));
+  const move = (i, dir) => {
+    const next = [...groups];
+    const to = i + dir;
+    if (to < 0 || to >= next.length) return;
+    const [item] = next.splice(i, 1);
+    next.splice(to, 0, item);
+    onChange(next);
+  };
+
+  const counters = { warmup: 0, working: 0 };
+
+  return (
+    <div className="space-y-3">
+      {groups.length === 0 && (
+        <div className="text-[13px] text-[var(--text-subtle)]">
+          Добавьте подходы: сначала разминочные, потом рабочие — как в вашей программе.
+        </div>
+      )}
+
+      {groups.map((g, i) => {
+        const kind = g.kind === 'warmup' ? 'warmup' : 'working';
+        const count = Math.max(1, gymInt(g.count, 1) || 1);
+        counters[kind] += count;
+        const from = counters[kind] - count + 1;
+        const title = count > 1
+          ? `${GYM_KIND_LABEL[kind]} ${from}-${counters[kind]}`
+          : `${GYM_KIND_LABEL[kind]} ${counters[kind]}`;
+        const accent = kind === 'warmup' ? '#b45309' : GYM_ACCENT;
+        return (
+          <div key={g.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <div className="text-[15px] font-medium flex-1" style={{ color: accent }}>{title}</div>
+              <button onClick={() => move(i, -1)} disabled={i === 0} className="p-1 disabled:opacity-25 rotate-180 text-[var(--text-muted)]"><Icon name="chevronDown" size={15} /></button>
+              <button onClick={() => move(i, 1)} disabled={i === groups.length - 1} className="p-1 disabled:opacity-25 text-[var(--text-muted)]"><Icon name="chevronDown" size={15} /></button>
+              <button onClick={() => remove(g.id)} className="p-1 text-red-400"><Icon name="trash" size={15} /></button>
+            </div>
+
+            <div className="inline-flex w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl p-1">
+              {['warmup', 'working'].map(k => (
+                <button
+                  key={k}
+                  onClick={() => patch(g.id, { kind: k })}
+                  className={`flex-1 py-1.5 rounded-lg text-[13px] font-medium ${kind === k ? 'text-white' : 'text-[var(--text-muted)]'}`}
+                  style={kind === k ? { background: k === 'warmup' ? '#b45309' : GYM_ACCENT } : {}}
+                >
+                  {k === 'warmup' ? 'Разминочный' : 'Рабочий'}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-[14px] text-[var(--text-muted)]">Подходов подряд</span>
+              <GymStepper value={g.count} onChange={(v) => patch(g.id, { count: v })} min={1} max={10} />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label>Вес</label>
+                <input
+                  value={g.weight ?? ''}
+                  onChange={e => patch(g.id, { weight: e.target.value })}
+                  placeholder="55-65"
+                  disabled={(g.weightUnit || 'kg') === 'body'}
+                  className="disabled:opacity-40"
+                />
+              </div>
+              <div>
+                <label>Повторы</label>
+                <input value={g.reps ?? ''} onChange={e => patch(g.id, { reps: e.target.value })} placeholder="8-10" />
+              </div>
+            </div>
+
+            <div>
+              <label>Единица веса</label>
+              <select value={g.weightUnit || 'kg'} onChange={e => patch(g.id, { weightUnit: e.target.value })}>
+                <option value="kg">кг</option>
+                <option value="pct">% от рабочего веса</option>
+                <option value="body">Собственный вес</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label>Отдых</label>
+                <GymRestPicker value={g.restSec} onChange={(v) => patch(g.id, { restSec: v })} />
+              </div>
+              <div>
+                <label>RIR (в запасе)</label>
+                <input value={g.rir ?? ''} onChange={e => patch(g.id, { rir: e.target.value })} placeholder="2" />
+              </div>
+            </div>
+
+            <div className="text-[13px] text-[var(--text-subtle)]">
+              {gymRowPlanText({ ...g, unit: g.weightUnit || 'kg' }, base) || 'настройки не заданы'}
+            </div>
+          </div>
+        );
+      })}
+
+      <div className="flex gap-2">
+        <button
+          onClick={() => onChange([...groups, newGymSetGroup('warmup')])}
+          className="flex-1 py-2.5 rounded-xl border border-dashed border-[var(--border-strong)] text-[13px] text-[var(--text-muted)]"
+        >
+          + Разминочные
+        </button>
+        <button
+          onClick={() => onChange([...groups, newGymSetGroup('working')])}
+          className="flex-1 py-2.5 rounded-xl border border-dashed text-[13px]"
+          style={{ borderColor: GYM_ACCENT, color: GYM_ACCENT }}
+        >
+          + Рабочие
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) {
   const base = exercise || newGymExercise(day ? day.id : '', 0);
@@ -22406,12 +22782,14 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
   const restSec = gymInt(form.restSec, 0) % 60;
   const maxFromHistory = gymBestLogged(sessions, form.name);
   const effectiveMax = gymMaxFor(form, sessions);
+  const pctBase = gymPctBase(form, sessions);
+  const kinds = gymCountKinds(form);
   const history = gymExerciseHistory(sessions, form);
 
   const clear = () => {
     if (!confirm('Очистить настройки упражнения? Название и история сохранятся.')) return;
     const fresh = newGymExercise(form.dayId, form.order);
-    setForm(f => ({ ...fresh, id: f.id, dayId: f.dayId, order: f.order, name: f.name, muscles: f.muscles, equipment: f.equipment, createdAt: f.createdAt }));
+    setForm(f => ({ ...fresh, id: f.id, dayId: f.dayId, order: f.order, name: f.name, muscles: f.muscles, targetMuscle: f.targetMuscle, equipment: f.equipment, createdAt: f.createdAt }));
   };
 
   return (
@@ -22449,6 +22827,15 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
         </div>
 
         <div>
+          <label>Целевая мышца</label>
+          <input
+            value={form.targetMuscle || ''}
+            onChange={e => set({ targetMuscle: e.target.value })}
+            placeholder="Спина (толщина)"
+          />
+        </div>
+
+        <div>
           <label>Оборудование</label>
           <select value={form.equipment || ''} onChange={e => set({ equipment: e.target.value })}>
             <option value="">Не указано</option>
@@ -22456,12 +22843,17 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
           </select>
         </div>
 
-        {/* Режим: одинаковые подходы или пирамида с разными повторами и весом */}
+        {/* Режим: одинаковые подходы, пирамида или разбивка по типам подходов */}
         <div className="inline-flex w-full bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-1">
-          {[{ id: 'linear', label: 'Линейное' }, { id: 'pyramid', label: 'Пирамида' }].map(m => (
+          {[{ id: 'linear', label: 'Линейное' }, { id: 'pyramid', label: 'Пирамида' }, { id: 'groups', label: 'Подробно' }].map(m => (
             <button
               key={m.id}
-              onClick={() => set({ mode: m.id })}
+              onClick={() => set({
+                mode: m.id,
+                groups: (m.id === 'groups' && gymGroups(form).length === 0)
+                  ? [newGymSetGroup('warmup'), newGymSetGroup('working')]
+                  : form.groups,
+              })}
               className={`flex-1 py-2.5 rounded-xl text-[15px] font-medium transition-all ${form.mode === m.id ? 'text-white' : 'text-[var(--text-muted)]'}`}
               style={form.mode === m.id ? { background: '#3f5372' } : {}}
             >
@@ -22470,7 +22862,13 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
           ))}
         </div>
 
-        {form.mode === 'linear' ? (
+        {form.mode === 'groups' ? (
+          <GymGroupsEditor
+            groups={gymGroups(form)}
+            base={pctBase}
+            onChange={(groups) => set({ groups })}
+          />
+        ) : form.mode === 'linear' ? (
           <>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -22528,12 +22926,35 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
           </>
         )}
 
-        <div className="flex items-center gap-6">
-          <GymRadio checked={(form.weightUnit || 'kg') === 'kg'} onChange={() => set({ weightUnit: 'kg' })}>кг</GymRadio>
-          <GymRadio checked={form.weightUnit === 'pct'} onChange={() => set({ weightUnit: 'pct' })}>% от макс. веса</GymRadio>
-        </div>
+        {form.mode !== 'groups' && (
+          <div className="flex items-center gap-6">
+            <GymRadio checked={(form.weightUnit || 'kg') === 'kg'} onChange={() => set({ weightUnit: 'kg' })}>кг</GymRadio>
+            <GymRadio checked={form.weightUnit === 'pct'} onChange={() => set({ weightUnit: 'pct' })}>% от макс. веса</GymRadio>
+          </div>
+        )}
 
-        {form.weightUnit === 'pct' && (
+        {/* Если в «Подробно» есть проценты, но ни одна рабочая группа не задана
+            в килограммах, считать их не от чего — просим рабочий вес явно. */}
+        {form.mode === 'groups'
+          && gymGroups(form).some(g => (g.weightUnit || 'kg') === 'pct')
+          && !gymGroups(form).some(g => g.kind !== 'warmup' && (g.weightUnit || 'kg') === 'kg' && !gymRange(g.weight).empty) && (
+          <div>
+            <label>Рабочий вес, кг</label>
+            <input
+              inputMode="decimal"
+              value={form.maxWeight ?? ''}
+              onChange={e => set({ maxWeight: e.target.value })}
+              placeholder={maxFromHistory ? `из истории: ${gymRound1(maxFromHistory)}` : 'например 40'}
+            />
+            <div className="text-[12px] text-[var(--text-subtle)] mt-1.5">
+              {pctBase
+                ? `Проценты считаются от ${gymRound1(pctBase)} кг${gymNum(form.maxWeight) > 0 ? '' : ' — лучший результат из истории'}`
+                : 'Проценты пока не в чем показать: укажите рабочий вес или проведите тренировку'}
+            </div>
+          </div>
+        )}
+
+        {form.mode !== 'groups' && form.weightUnit === 'pct' && (
           <div>
             <label>Макс. вес, кг</label>
             <input
@@ -22550,6 +22971,7 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
           </div>
         )}
 
+        {form.mode !== 'groups' && (
         <div>
           <label>Время отдыха</label>
           <div className="flex items-center gap-3">
@@ -22576,6 +22998,7 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
             <Toggle checked={!!form.noRest} onChange={v => set({ noRest: v })} />
           </div>
         </div>
+        )}
 
         <div>
           <label>Комментарий</label>
@@ -22588,13 +23011,20 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
         </div>
 
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3">
-          <div className="text-[13px] text-[var(--text-muted)]">Схема подходов</div>
-          <div className="text-[15px] mt-1">{gymSchemeText(form)}</div>
-          {form.weightUnit === 'pct' && effectiveMax > 0 && (
-            <div className="text-[13px] text-[var(--text-subtle)] mt-1">
-              ≈ {gymPlanRows(form).map(r => `${gymInt(r.reps, 0)}x${gymRowKg(r, effectiveMax) || '—'} кг`).join(' - ')}
+          <div className="flex items-center justify-between">
+            <div className="text-[13px] text-[var(--text-muted)]">План упражнения</div>
+            <div className="text-[12px] text-[var(--text-subtle)]">
+              {kinds.warmup ? `разминочных ${kinds.warmup} · ` : ''}рабочих {kinds.working} · ~ {gymFmtDuration(gymExerciseSec(form))}
             </div>
-          )}
+          </div>
+          <div className="mt-2 space-y-1">
+            {gymPlanRows(form).map((r, i) => (
+              <div key={i} className="flex items-baseline gap-2 text-[14px]">
+                <span className="w-[92px] flex-shrink-0" style={{ color: r.kind === 'warmup' ? '#b45309' : GYM_ACCENT }}>{r.label}</span>
+                <span className="flex-1 min-w-0">{gymRowPlanText(r, pctBase) || '—'}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -22612,7 +23042,9 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
                 <div className="px-3">
                   {group.sets.map(s => (
                     <div key={s.id} className="flex items-center gap-3 py-2 border-b border-[var(--border)] last:border-0 text-[15px]">
-                      <span style={{ color: GYM_ACCENT }}>#{(s.setIndex || 0) + 1}</span>
+                      <span style={{ color: gymIsWorking(s) ? GYM_ACCENT : '#b45309' }}>
+                        #{(s.setIndex || 0) + 1}{gymIsWorking(s) ? '' : ' р'}
+                      </span>
                       <span className="flex-1">{gymFmtWeight(s.weight)} x {gymInt(s.reps, 0)} повт.</span>
                       <span className="text-[var(--text-subtle)] text-[13px]">{gymFmtTime(s.at)}</span>
                     </div>
@@ -22645,7 +23077,7 @@ const gymPrevBest = (sessions, name, beforeMs) => {
   const key = gymKey(name);
   let weight = 0;
   let orm = 0;
-  gymAllSets(sessions).forEach(s => {
+  gymWorkingSets(sessions).forEach(s => {
     if (gymKey(s.exerciseName) !== key) return;
     if ((s.at || 0) >= beforeMs) return;
     weight = Math.max(weight, gymNum(s.weight));
@@ -22678,8 +23110,10 @@ function GymSessionView({ session, day, exercises, sessions, onSave, onDelete, o
     const done = loggedAt(ex.id, i);
     if (done) return { weight: String(done.weight ?? ''), reps: String(done.reps ?? '') };
     const row = gymPlanRows(ex)[i] || {};
-    const kg = gymRowKg(row, gymMaxFor(ex, sessions));
-    return { weight: kg ? String(kg) : '', reps: row.reps === undefined || row.reps === '' ? '' : String(row.reps) };
+    const t = gymRowTarget(row, gymPctBase(ex, sessions));
+    const kg = (t.empty || t.body) ? 0 : gymRound1(gymRangeMid(t));
+    const reps = gymRange(row.reps);
+    return { weight: kg ? String(kg) : '', reps: reps.empty ? '' : String(reps.min) };
   };
 
   const setDraft = (ex, i, patch) => setDrafts(d => ({ ...d, [`${ex.id}:${i}`]: { ...draftRow(ex, i), ...patch } }));
@@ -22688,17 +23122,19 @@ function GymSessionView({ session, day, exercises, sessions, onSave, onDelete, o
     const row = draftRow(ex, i);
     const reps = gymInt(row.reps, 0);
     if (!reps) { alert('Укажите количество повторений'); return; }
+    const plan = gymPlanRows(ex)[i] || {};
     const rec = {
       id: (loggedAt(ex.id, i) || {}).id || crypto.randomUUID(),
       exerciseId: ex.id,
       exerciseName: ex.name || 'Без названия',
       muscles: ex.muscles || [],
+      kind: plan.kind || 'working',
       setIndex: i,
       weight: gymNum(row.weight),
       reps,
       at: Date.now(),
     };
-    const rest = ex.noRest ? 0 : Math.max(0, gymInt(ex.restSec, 0));
+    const rest = Math.max(0, gymInt(plan.restSec, 0));
     const exists = logged.some(s => s.id === rec.id);
     onSave({
       ...session,
@@ -22716,14 +23152,28 @@ function GymSessionView({ session, day, exercises, sessions, onSave, onDelete, o
     setExtra(e => ({ ...e, [ex.id]: Math.max(nextIdx + 1, e[ex.id] || 0) }));
   };
 
+  const planCache = {};
+  const planRowsOf = (ex) => (planCache[ex.id] = planCache[ex.id] || gymPlanRows(ex));
+
   const rowCount = (ex) => {
     const fromLog = Math.max(0, ...loggedFor(ex.id).map(s => (s.setIndex || 0) + 1));
-    return Math.max(gymSetCount(ex), fromLog, extra[ex.id] || 0);
+    return Math.max(planRowsOf(ex).length, fromLog, extra[ex.id] || 0);
   };
 
-  const totalPlanned = exercises.reduce((a, ex) => a + gymSetCount(ex), 0);
-  const totalDone = logged.length;
-  const tonnage = logged.reduce((a, s) => a + gymSetTonnage(s), 0);
+  const planRows = exercises.flatMap(ex => gymPlanRows(ex).map(r => ({ ...r, exId: ex.id })));
+  const plannedWorking = planRows.filter(r => r.kind !== 'warmup').length;
+  const plannedWarmup = planRows.length - plannedWorking;
+  const doneWorking = logged.filter(gymIsWorking).length;
+  const doneWarmup = logged.length - doneWorking;
+  const tonnage = logged.filter(gymIsWorking).reduce((a, s) => a + gymSetTonnage(s), 0);
+  // Сколько записанных подходов уложилось в плановые диапазоны веса и повторов.
+  const inPlan = logged.filter(s => {
+    const ex = exercises.find(e => e.id === s.exerciseId);
+    if (!ex) return false;
+    const row = gymPlanRows(ex)[s.setIndex || 0];
+    if (!row) return false;
+    return gymFactBadge(row, gymPctBase(ex, sessions), s.weight, s.reps).tone === 'ok';
+  }).length;
   const elapsed = Math.max(0, Math.floor((now - (session.startedAt || now)) / 1000));
   const restLeft = restUntil > now ? Math.ceil((restUntil - now) / 1000) : 0;
 
@@ -22765,8 +23215,10 @@ function GymSessionView({ session, day, exercises, sessions, onSave, onDelete, o
         <div className="text-[17px] font-medium">{day.title || session.dayTitle || 'Тренировка'}</div>
         <div className="flex flex-wrap gap-x-5 gap-y-1 text-[13px] text-[var(--text-muted)] mt-2">
           <span>Время: {gymFmtRest(elapsed)}</span>
-          <span>Подходы: {totalDone} / {totalPlanned}</span>
+          <span>Рабочих: {doneWorking} / {plannedWorking}</span>
+          {plannedWarmup > 0 && <span>Разминка: {doneWarmup} / {plannedWarmup}</span>}
           <span>Тоннаж: {Math.round(tonnage)} кг</span>
+          {logged.length > 0 && <span>В плане: {inPlan} / {logged.length}</span>}
         </div>
       </div>
 
@@ -22794,7 +23246,7 @@ function GymSessionView({ session, day, exercises, sessions, onSave, onDelete, o
                 <GymRing value={plannedN ? Math.min(1, doneN / plannedN) : 0} size={38} stroke={3} label={`${doneN}/${plannedN}`} />
                 <div className="flex-1 min-w-0">
                   <div className="text-[15px] font-medium leading-snug">{ex.name || 'Без названия'}</div>
-                  <div className="text-[13px] text-[var(--text-muted)] truncate">{gymSchemeText(ex)}</div>
+                  <div className="text-[13px] text-[var(--text-muted)] truncate">{gymSchemeText(ex, gymPctBase(ex, sessions))}</div>
                 </div>
                 <div className={open ? 'rotate-180' : ''}><Icon name="chevronDown" size={16} /></div>
               </button>
@@ -22807,36 +23259,63 @@ function GymSessionView({ session, day, exercises, sessions, onSave, onDelete, o
                   {Array.from({ length: rowCount(ex) }).map((_, i) => {
                     const done = loggedAt(ex.id, i);
                     const row = draftRow(ex, i);
-                    const isPr = done && (gymNum(done.weight) > prev.weight || gymEpley(done.weight, done.reps) > prev.orm) && prev.weight > 0;
+                    const plan = planRowsOf(ex)[i] || { kind: 'working', label: `Подход ${i + 1}` };
+                    const warm = plan.kind === 'warmup';
+                    const badge = done ? gymFactBadge(plan, gymPctBase(ex, sessions), done.weight, done.reps) : null;
+                    const isPr = done && gymIsWorking(done)
+                      && (gymNum(done.weight) > prev.weight || gymEpley(done.weight, done.reps) > prev.orm)
+                      && prev.weight > 0;
                     return (
-                      <div key={i} className="flex items-center gap-2">
-                        <span className="w-7 text-[13px] text-[var(--text-subtle)]">#{i + 1}</span>
-                        <input
-                          inputMode="decimal"
-                          value={row.weight}
-                          onChange={e => setDraft(ex, i, { weight: e.target.value })}
-                          className="flex-1 text-center"
-                          placeholder="кг"
-                        />
-                        <span className="text-[var(--text-subtle)] text-sm">×</span>
-                        <input
-                          inputMode="numeric"
-                          value={row.reps}
-                          onChange={e => setDraft(ex, i, { reps: e.target.value })}
-                          className="flex-1 text-center"
-                          placeholder="повт."
-                        />
-                        {isPr && <span title="Личный рекорд" style={{ color: '#eab308' }}><Icon name="starFilled" size={16} /></span>}
-                        <button
-                          onClick={() => logSet(ex, i)}
-                          className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-white"
-                          style={{ background: done ? GYM_ACCENT : 'var(--border-strong)' }}
-                        >
-                          <Icon name="check" size={18} />
-                        </button>
-                        {done && (
-                          <button onClick={() => removeSet(done.id)} className="text-red-300 flex-shrink-0"><Icon name="x" size={16} /></button>
-                        )}
+                      <div key={i} className="rounded-xl border border-[var(--border)] px-3 py-2.5">
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <span className="text-[13px] font-medium" style={{ color: warm ? '#b45309' : GYM_ACCENT }}>
+                            {plan.label || `Подход ${i + 1}`}
+                          </span>
+                          {isPr && <span title="Личный рекорд" style={{ color: '#eab308' }}><Icon name="starFilled" size={14} /></span>}
+                          <span className="flex-1" />
+                          {badge && (
+                            <span
+                              className="text-[12px] px-2 py-0.5 rounded-full"
+                              style={badge.tone === 'ok'
+                                ? { background: '#dcfce7', color: '#15803d' }
+                                : badge.tone === 'under'
+                                  ? { background: '#fee2e2', color: '#b91c1c' }
+                                  : { background: '#dbeafe', color: '#1d4ed8' }}
+                            >
+                              {badge.text}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[12px] text-[var(--text-subtle)] mb-2">
+                          План: {gymRowPlanText(plan, gymPctBase(ex, sessions)) || 'не задан'}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            inputMode="decimal"
+                            value={row.weight}
+                            onChange={e => setDraft(ex, i, { weight: e.target.value })}
+                            className="flex-1 text-center"
+                            placeholder="кг"
+                          />
+                          <span className="text-[var(--text-subtle)] text-sm">×</span>
+                          <input
+                            inputMode="numeric"
+                            value={row.reps}
+                            onChange={e => setDraft(ex, i, { reps: e.target.value })}
+                            className="flex-1 text-center"
+                            placeholder="повт."
+                          />
+                          <button
+                            onClick={() => logSet(ex, i)}
+                            className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-white"
+                            style={{ background: done ? GYM_ACCENT : 'var(--border-strong)' }}
+                          >
+                            <Icon name="check" size={18} />
+                          </button>
+                          {done && (
+                            <button onClick={() => removeSet(done.id)} className="text-red-300 flex-shrink-0"><Icon name="x" size={16} /></button>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
@@ -22999,7 +23478,7 @@ function GymAnalyticsView({ sessions, onBack, onDeleteSession }) {
 function GymProgressTab({ sessions }) {
   const names = [];
   const seen = new Set();
-  gymAllSets(sessions).forEach(s => {
+  gymWorkingSets(sessions).forEach(s => {
     const k = gymKey(s.exerciseName);
     if (k && !seen.has(k)) { seen.add(k); names.push(s.exerciseName); }
   });
@@ -23011,7 +23490,7 @@ function GymProgressTab({ sessions }) {
 
   // По одной точке на тренировку: лучший вес / лучший расчётный 1ПМ / тоннаж.
   const byDate = {};
-  gymAllSets(sessions).forEach(s => {
+  gymWorkingSets(sessions).forEach(s => {
     if (gymKey(s.exerciseName) !== key) return;
     const cur = byDate[s.date] || { weight: 0, orm: 0, tonnage: 0, sets: 0, best: null };
     cur.weight = Math.max(cur.weight, gymNum(s.weight));
@@ -23090,7 +23569,7 @@ function GymVolumeTab({ sessions }) {
   const [weeks, setWeeks] = useState(8);
   const since = gymDaysAgo(weeks * 7);
   const inRange = sessions.filter(s => (s.date || '') >= since);
-  const sets = gymAllSets(inRange);
+  const sets = gymWorkingSets(inRange);
 
   // Недельные столбики тоннажа: пустые недели тоже нужны, иначе график врёт.
   const buckets = [];
@@ -23184,7 +23663,8 @@ function GymHistoryTab({ sessions, onDelete }) {
     <div className="space-y-2">
       {list.map(s => {
         const sets = s.sets || [];
-        const tonnage = sets.reduce((a, x) => a + gymSetTonnage(x), 0);
+        const working = sets.filter(gymIsWorking);
+        const tonnage = working.reduce((a, x) => a + gymSetTonnage(x), 0);
         const byEx = {};
         sets.forEach(x => {
           (byEx[x.exerciseName] = byEx[x.exerciseName] || []).push(x);
@@ -23201,7 +23681,7 @@ function GymHistoryTab({ sessions, onDelete }) {
                 <div className={open ? 'rotate-180' : ''}><Icon name="chevronDown" size={16} /></div>
               </div>
               <div className="text-[12px] text-[var(--text-muted)] mt-1">
-                {sets.length} подх. · {Math.round(tonnage)} кг{s.durationSec ? ` · ${gymFmtDuration(s.durationSec)}` : ''}
+                {working.length} раб.{sets.length > working.length ? ` + ${sets.length - working.length} разм.` : ''} · {Math.round(tonnage)} кг{s.durationSec ? ` · ${gymFmtDuration(s.durationSec)}` : ''}
               </div>
             </button>
             {open && (
@@ -23211,7 +23691,7 @@ function GymHistoryTab({ sessions, onDelete }) {
                     <div className="text-[14px] font-medium">{nm}</div>
                     <div className="text-[13px] text-[var(--text-muted)] mt-0.5">
                       {byEx[nm].sort((a, b) => (a.setIndex || 0) - (b.setIndex || 0))
-                        .map(x => `${gymRound1(gymNum(x.weight)) || '—'}×${gymInt(x.reps, 0)}`).join(' · ')}
+                        .map(x => `${gymRound1(gymNum(x.weight)) || '—'}×${gymInt(x.reps, 0)}${gymIsWorking(x) ? '' : ' (р)'}`).join(' · ')}
                     </div>
                   </div>
                 ))}
@@ -23232,7 +23712,7 @@ function GymHistoryTab({ sessions, onDelete }) {
 
 function GymRecordsTab({ sessions }) {
   const recs = {};
-  gymAllSets(sessions).forEach(s => {
+  gymWorkingSets(sessions).forEach(s => {
     const k = gymKey(s.exerciseName);
     if (!k) return;
     const cur = recs[k] || { name: s.exerciseName, weight: 0, weightAt: '', reps: 0, repsAt: '', orm: 0, ormAt: '', sets: 0 };
@@ -23277,6 +23757,244 @@ function GymRecordsTab({ sessions }) {
         </div>
       ))}
     </div>
+  );
+}
+
+
+// ── Загрузка тренировочного дня по скриншоту ───────────────────────────────
+// Тот же механизм, что и распознавание документа в «Здоровье»: общий callAI
+// с ключом из Настроек → Ассистент, второй ключ заводить не нужно.
+
+const GYM_DAY_EXTRACT_SYSTEM_PROMPT = `Ты переносишь программу тренировок из присланных изображений (скриншот таблицы, фото листа, PDF) в приложение-дневник.
+Извлекай ТОЛЬКО то, что реально написано: ничего не додумывай, не добавляй упражнения и подходы «для полноты».
+Верни СТРОГО валидный JSON без markdown-разметки и без пояснений, ровно такой структуры:
+{"days":[{"title":"","exercises":[{"name":"","targetMuscle":"","muscles":[],"equipment":"","comment":"","groups":[{"kind":"working","count":1,"weight":"","weightUnit":"kg","reps":"","restSec":0,"rir":""}]}]}]}
+Правила:
+- days: по одному объекту на тренировочный день. Если на изображении виден только кусок следующего дня без упражнений — не включай его.
+- title: заголовок дня как в источнике, например "ДЕНЬ Б — Среда. Full Body: Pull акцент".
+- name: название упражнения как написано.
+- targetMuscle: колонка «Целевая мышца» как написано, например "Спина (толщина)".
+- muscles: 1-3 значения СТРОГО из списка [Грудь, Спина, Плечи, Бицепс, Трицепс, Пресс, Ноги, Ягодицы, Икры, Предплечья, Кардио] — это укрупнённая группа для аналитики.
+- equipment: одно из [Штанга, Гантели, Тренажёр, Своё тело, Кроссовер, Резина, Другое] или пустая строка.
+- groups: строки таблицы подходов этого упражнения ПО ПОРЯДКУ, каждая строка — один объект.
+- kind: "warmup" для разминочных подходов ("Разминка 1", "Разминочный"), "working" для рабочих ("Рабочий 1-3").
+- count: сколько подходов покрывает строка. "Рабочий 1-3" → 3, "Разминка 1" → 1, "Рабочий 1-2" → 2.
+- weight: вес строкой, диапазон сохраняй как есть: "55-65", "30", "26-30". Если веса нет — пустая строка.
+- weightUnit: "kg" если указан вес в килограммах (даже когда рядом в скобках стоит процент — тогда бери килограммы); "pct" если указан ТОЛЬКО процент ("~50% от рабочего", "100%") — тогда в weight положи само число процентов; "body" если написано "Собственный вес" (weight оставь пустым).
+- reps: повторы строкой, диапазон как есть: "8-10", "12-15", "5-6".
+- restSec: отдых в СЕКУНДАХ числом. "60 сек" → 60, "90 сек" → 90, "2 мин" → 120, "2.5 мин" → 150. Если не указан — 0.
+- rir: значение из колонки RIR как есть ("2", "1-2") или пустая строка. Это не отдельная строка подходов, а свойство рабочих подходов.
+- comment: примечание к упражнению, если оно есть в источнике, иначе пустая строка.`;
+
+const gymPickOne = (value, allowed) => (allowed.includes(String(value || '')) ? String(value) : '');
+
+const gymNormalizeImportedGroup = (g) => ({
+  ...newGymSetGroup(g?.kind === 'warmup' ? 'warmup' : 'working'),
+  kind: g?.kind === 'warmup' ? 'warmup' : 'working',
+  count: Math.max(1, Math.min(20, gymInt(g?.count, 1) || 1)),
+  weight: String(g?.weight ?? '').trim(),
+  weightUnit: ['kg', 'pct', 'body'].includes(g?.weightUnit) ? g.weightUnit : 'kg',
+  reps: String(g?.reps ?? '').trim(),
+  restSec: Math.max(0, Math.min(3600, gymInt(g?.restSec, 0))),
+  rir: String(g?.rir ?? '').trim(),
+  note: '',
+});
+
+const gymNormalizeImportedExercise = (e, dayId, order) => ({
+  ...newGymExercise(dayId, order),
+  name: String(e?.name ?? '').trim() || 'Без названия',
+  targetMuscle: String(e?.targetMuscle ?? '').trim(),
+  muscles: Array.isArray(e?.muscles) ? e.muscles.filter(m => GYM_MUSCLES.includes(m)).slice(0, 3) : [],
+  equipment: gymPickOne(e?.equipment, GYM_EQUIPMENT),
+  comment: String(e?.comment ?? '').trim(),
+  mode: 'groups',
+  groups: (Array.isArray(e?.groups) ? e.groups : []).map(gymNormalizeImportedGroup),
+});
+
+async function extractGymDaysFromImages(files, settings) {
+  const list = Array.isArray(files) ? files : [files];
+  const provider = settings?.voiceProvider || 'claude';
+  const hasPdf = list.some(isHealthDocPdf);
+  if (hasPdf && list.length > 1) {
+    throw new Error('PDF можно приложить только один за раз — несколько страниц сфотографируйте и загрузите картинками.');
+  }
+  if (hasPdf && provider !== 'claude') {
+    throw new Error('Распознавание PDF работает только с провайдером Claude — переключите его в Настройках → Ассистент или загрузите скриншот картинкой.');
+  }
+
+  const blocks = await Promise.all(list.map(async (file) => {
+    const base64 = await fileToBase64(file);
+    if (isHealthDocPdf(file)) {
+      return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } };
+    }
+    const mediaType = HEALTH_DOC_MEDIA_TYPES.includes(file.type) ? file.type : 'image/jpeg';
+    return provider === 'openai'
+      ? { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } }
+      : { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } };
+  }));
+
+  const messages = [{
+    role: 'user',
+    content: [...blocks, {
+      type: 'text',
+      text: list.length > 1
+        ? 'Это несколько изображений одной программы по порядку — прочитай их как единое целое и заполни один JSON по инструкции.'
+        : 'Перенеси тренировочный день с этого изображения в JSON по инструкции.',
+    }],
+  }];
+
+  let parsed;
+  try {
+    parsed = await callAI(messages, settings, null, GYM_DAY_EXTRACT_SYSTEM_PROMPT, 8000);
+  } catch (e) {
+    if (e.message === 'no_key') throw new Error('Сначала укажите API-ключ ИИ в Настройках → Ассистент');
+    throw new Error(e.message?.includes('JSON') ? 'ИИ вернул нераспознаваемый ответ, попробуйте ещё раз' : (e.message || 'Не удалось распознать изображение'));
+  }
+
+  const days = (Array.isArray(parsed?.days) ? parsed.days : [])
+    .map(d => ({
+      title: String(d?.title ?? '').trim(),
+      exercises: (Array.isArray(d?.exercises) ? d.exercises : [])
+        .map((e, i) => gymNormalizeImportedExercise(e, '', i))
+        .filter(e => e.name && e.name !== 'Без названия'),
+    }))
+    .filter(d => d.exercises.length > 0);
+
+  if (days.length === 0) throw new Error('На изображении не нашлось упражнений — попробуйте снимок покрупнее');
+  return days;
+}
+
+function GymImportButton({ settings, onDraftReady, label = 'Из скриншота' }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (files.length === 0) return;
+    setError('');
+    if (files.some(f => !isHealthDocPdf(f) && !f.type.startsWith('image/'))) {
+      setError('Поддерживаются изображения и PDF');
+      return;
+    }
+    if (files.length > MAX_HEALTH_DOC_FILES) {
+      setError(`Не больше ${MAX_HEALTH_DOC_FILES} изображений за раз`);
+      return;
+    }
+    setBusy(true);
+    try {
+      onDraftReady(await extractGymDaysFromImages(files, settings));
+    } catch (err) {
+      setError(err.message || 'Не удалось распознать изображение');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="text-right">
+      <label className={`btn-ghost inline-flex items-center gap-1.5 text-sm cursor-pointer ${busy ? 'opacity-60 pointer-events-none' : ''}`}>
+        <Icon name="upload" size={16} />
+        {busy ? 'Распознаю…' : label}
+        <input type="file" accept=".pdf,image/*" multiple className="hidden" onChange={handleFiles} disabled={busy} />
+      </label>
+      {error && <div className="text-[12px] text-red-500 mt-1 max-w-[260px] ml-auto">{error}</div>}
+    </div>
+  );
+}
+
+// Предпросмотр распознанного: ничего не сохраняем, пока человек не увидел,
+// что именно приехало из картинки, и не снял лишнее.
+function GymImportPreview({ days, mode, onApply, onClose }) {
+  const [state, setState] = useState(() => days.map((d, i) => ({
+    title: d.title,
+    include: i === 0 || mode === 'days',
+    exercises: d.exercises.map(e => ({ ex: e, include: true })),
+  })));
+
+  const patchDay = (i, p) => setState(s => s.map((d, j) => j === i ? { ...d, ...p } : d));
+  const toggleEx = (i, j) => setState(s => s.map((d, di) => di !== i ? d : {
+    ...d,
+    exercises: d.exercises.map((e, ej) => ej === j ? { ...e, include: !e.include } : e),
+  }));
+
+  const chosen = state
+    .filter(d => d.include)
+    .map(d => ({ title: d.title, exercises: d.exercises.filter(e => e.include).map(e => e.ex) }))
+    .filter(d => d.exercises.length > 0);
+  const total = chosen.reduce((a, d) => a + d.exercises.length, 0);
+
+  return ReactDOM.createPortal(
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm sm:p-4" onClick={onClose}>
+      <div
+        className="bg-[var(--bg)] w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl p-5 pb-safe fade-in max-h-[88vh] overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="font-display text-xl mb-1">Распознано</div>
+        <div className="text-[13px] text-[var(--text-muted)] mb-4">
+          Проверьте, что перенеслось верно — всё можно поправить и после добавления.
+        </div>
+
+        <div className="space-y-4">
+          {state.map((d, i) => (
+            <div key={i} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+              <div className="flex items-start gap-3">
+                {mode === 'days' && (
+                  <button onClick={() => patchDay(i, { include: !d.include })} className={`check-box mt-1 ${d.include ? 'checked' : ''}`}>
+                    <Icon name="check" size={16} />
+                  </button>
+                )}
+                <div className="flex-1 min-w-0">
+                  {mode === 'days' ? (
+                    <input value={d.title} onChange={e => patchDay(i, { title: e.target.value })} placeholder="Название дня" />
+                  ) : (
+                    <div className="text-[15px] font-medium">{d.title || 'Упражнения'}</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-3 space-y-2">
+                {d.exercises.map((e, j) => {
+                  const kinds = gymCountKinds(e.ex);
+                  return (
+                    <div key={j} className="flex items-start gap-3">
+                      <button onClick={() => toggleEx(i, j)} className={`check-box mt-0.5 ${e.include ? 'checked' : ''}`}>
+                        <Icon name="check" size={16} />
+                      </button>
+                      <div className={`flex-1 min-w-0 ${e.include ? '' : 'opacity-40'}`}>
+                        <div className="text-[15px] leading-snug">{e.ex.name}</div>
+                        <div className="text-[12px] text-[var(--text-muted)] mt-0.5">
+                          {kinds.warmup ? `разм. ${kinds.warmup} + ` : ''}раб. {kinds.working}
+                          {e.ex.targetMuscle ? ` · ${e.ex.targetMuscle}` : ''}
+                        </div>
+                        <div className="text-[12px] text-[var(--text-subtle)] mt-1 space-y-0.5">
+                          {gymPlanRows(e.ex).map((r, ri) => (
+                            <div key={ri}>{r.label}: {gymRowPlanText(r, gymPctBase(e.ex, [])) || '—'}</div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex gap-2 mt-5">
+          <button className="btn-secondary flex-1" onClick={onClose}>Отмена</button>
+          <button
+            className="flex-1 py-3.5 rounded-xl text-white font-medium disabled:opacity-40"
+            style={{ background: GYM_ACCENT }}
+            disabled={total === 0}
+            onClick={() => onApply(chosen)}
+          >
+            Добавить ({total})
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
