@@ -22109,9 +22109,16 @@ const gymParseVoicePhrase = (raw) => {
   if (/заверш|закончи|финиш/.test(t)) return { cmd: 'finish' };
   if (/(столько же|как в плане|по плану|как обычно|так же)/.test(t)) return { cmd: 'log' };
 
+  // Упражнения без веса (пресс, подтягивания, планка): «без веса 15»,
+  // «своим весом 15». Вес принудительно нулевой, даже если в плане он есть.
+  const nums = (t.match(/\d+(?:\.\d+)?/g) || []).map(Number);
+  if (/(без веса|без отягощ\w*|сво(?:им|ем|ём) весом|собственн\w+ вес\w*|на своём весе)/.test(t)) {
+    return { cmd: 'log', weight: 0, reps: nums.length ? Math.round(nums[nums.length - 1]) : undefined };
+  }
+
   // Явные единицы надёжнее порядка слов: «12 повторений с 25 килограммами».
   const byKg = t.match(/(\d+(?:\.\d+)?)\s*(?:кг|килог\w*)/);
-  const byReps = t.match(/(\d+)\s*(?:повтор\w*|раз\w*|полтор\w*)/);
+  const byReps = t.match(/(\d+)\s*(?:повтор\w*|раз\w*)/);
   if (byKg || byReps) {
     return {
       cmd: 'log',
@@ -22120,8 +22127,9 @@ const gymParseVoicePhrase = (raw) => {
     };
   }
 
-  const nums = (t.match(/\d+(?:\.\d+)?/g) || []).map(Number);
-  if (nums.length >= 2) return { cmd: 'log', weight: nums[0], reps: nums[1] };
+  // Два числа — это вес и повторы, одно — только повторы: для упражнений без
+  // веса достаточно сказать «15», вес подставится из плана (там ноль).
+  if (nums.length >= 2) return { cmd: 'log', weight: nums[0], reps: Math.round(nums[1]) };
   if (nums.length === 1) return { cmd: 'log', reps: Math.round(nums[0]) };
   return null;
 };
@@ -23594,6 +23602,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   // restLeft объявлен ниже по телу компонента — здесь считаем из того, что
   // уже есть, иначе рендер падает на временной мёртвой зоне.
   const resting = restUntil > now;
+
   useEffect(() => {
     if (!handsFree || !armed || resting || !gymListener.supported()) {
       gymListener.stop();
@@ -23815,6 +23824,19 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     return -1;
   };
 
+  // Что говорить — зависит от подхода: там, где веса нет, просить «25 на 12»
+  // бессмысленно.
+  const voiceHint = (() => {
+    const ex = exercises.find(e => e.id === openId);
+    const i = ex ? currentIndex(ex) : -1;
+    const row = (ex && i >= 0) ? planRowsOf(ex)[i] : null;
+    const t = row ? gymRowTarget(row, gymPctBase(ex, sessions)) : null;
+    const noWeight = !t || t.body || t.empty || (!t.min && !t.max);
+    return noWeight
+      ? 'Скажите «15» — вес не нужен. Ещё: «столько же», «отмена»'
+      : 'Скажите «25 на 12». Ещё: «столько же», «отмена», «завершить»';
+  })();
+
   const rowCount = (ex) => {
     const fromLog = Math.max(0, ...loggedFor(ex.id).map(s => (s.setIndex || 0) + 1));
     return Math.max(planRowsOf(ex).length, fromLog, extra[ex.id] || 0);
@@ -23987,7 +24009,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
                   ? 'Включится со следующего подхода'
                   : resting
                     ? 'Слушаю после отдыха. «Пропустить» — начать раньше'
-                    : 'Скажите «25 на 12», «столько же», «отмена» или «завершить»'}
+                    : voiceHint}
           </div>
         </div>
         <Toggle
