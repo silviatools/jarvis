@@ -69,7 +69,7 @@ FREQ_DAYS = {
 SPA_ROUTES = {
     "/mybody", "/budget", "/supplements", "/meals", "/weather",
     "/house", "/cars", "/holidays", "/settings", "/planner", "/health",
-    "/misc", "/wishlist", "/cards",
+    "/misc", "/wishlist", "/cards", "/gym",
 }
 
 # ── Парольный доступ на весь сайт ───────────────────────────────────────────

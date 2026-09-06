@@ -448,6 +448,13 @@ const DEFAULT_DATA = () => ({
   // Прочее → Карты: карты лояльности. code+format — то, из чего рисуется
   // штрихкод на экране; фото карты хранится отдельным файлом в /api/photos.
   loyaltyCards: [],
+  // GYM: программа → тренировочные дни → упражнения, плюс журнал проведённых
+  // тренировок с подходами внутри. Все четыре — обычные id-массивы, поэтому
+  // синхронизация и тумбстоны работают тем же кодом, что и везде.
+  gymPrograms: [],
+  gymDays: [],
+  gymExercises: [],
+  gymSessions: [],
   deletedIds: {},
   // План обучения English: произвольная заметка, LWW по updatedAt между устройствами
   engStudyPlan: { text: '', updatedAt: 0 },
@@ -997,6 +1004,9 @@ const Icon = ({ name, size = 22 }) => {
     plus: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M12 5v14"/></svg>,
     trash: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>,
     edit: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>,
+    play: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 4.5v15l13-7.5z"/></svg>,
+    timer: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/></svg>,
+    barChart: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18M7 21V10M12 21V4M17 21v-7"/></svg>,
     archive: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/></svg>,
     chevronDown: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>,
     chevronLeft: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>,
@@ -1210,6 +1220,7 @@ const PATH_TAB_MAP = {
   // последним и потому остаётся адресом раздела (домашний экран с иконками).
   '/wishlist': 'misc',
   '/cards': 'misc',
+  '/gym': 'misc',
   '/cars': 'misc',
   '/settings': 'misc',
   '/misc': 'misc',
@@ -1221,8 +1232,8 @@ const TAB_PATH_MAP = Object.fromEntries(Object.entries(PATH_TAB_MAP).map(([p, t]
 const PLANNER_SUB_BY_PATH = { '/holidays': 'holidays' };
 const PLANNER_PATH_BY_SUB = { holidays: '/holidays' };
 
-const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/cars': 'cars', '/settings': 'settings' };
-const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', cars: '/cars', settings: '/settings' };
+const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/cars': 'cars', '/settings': 'settings' };
+const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', cars: '/cars', settings: '/settings' };
 
 const currentPathname = () => {
   try {
@@ -21413,6 +21424,1862 @@ function CampingPackingEditor({ catalogItems, categories, initial, onSave, onClo
   );
 }
 
+// ============== GYM ==============
+// Тренировки: Программа → Тренировочные дни → Упражнения → настройки подходов.
+// Хранение — обычные top-level id-массивы (gymPrograms / gymDays /
+// gymExercises / gymSessions), поэтому раздел бесплатно получает всё, что
+// уже умеет приложение: localStorage, отправку на сервер (/api/data →
+// jarvis_app_data.json) и слияние между устройствами по updatedAt с
+// тумбстонами в deletedIds при удалении.
+//
+// Выполненные подходы лежат ВНУТРИ сессии (gymSessions[].sets), а не
+// отдельной коллекцией: тренировку в каждый момент пишет одно устройство,
+// так что LWW по всей сессии и проще, и безопаснее (удалил тренировку —
+// одна запись и один тумбстон, ничего не осиротело).
+
+const GYM_ACCENT = '#0d9488';
+
+const GYM_MUSCLES = ['Грудь', 'Спина', 'Плечи', 'Бицепс', 'Трицепс', 'Пресс', 'Ноги', 'Ягодицы', 'Икры', 'Предплечья', 'Кардио'];
+const GYM_EQUIPMENT = ['Штанга', 'Гантели', 'Тренажёр', 'Своё тело', 'Кроссовер', 'Резина', 'Другое'];
+
+// Средняя длительность одного повторения — только для оценки «~ 1 ч 49 мин»
+// на карточке дня, в расчётах прогресса не участвует.
+const GYM_SEC_PER_REP = 3.5;
+
+const gymNum = (v) => {
+  const n = parseFloat(String(v ?? '').replace(',', '.'));
+  return isNaN(n) ? 0 : n;
+};
+
+const gymInt = (v, fallback = 0) => {
+  const n = parseInt(String(v ?? '').replace(/[^\d]/g, ''), 10);
+  return isNaN(n) ? fallback : n;
+};
+
+const gymRound1 = (n) => Math.round(n * 10) / 10;
+
+// Ключ для сопоставления одного и того же упражнения в разных днях и
+// программах: аналитика считает прогресс по упражнению, а не по конкретной
+// строке в конкретном дне.
+const gymKey = (name) => String(name || '').trim().toLowerCase();
+
+const newGymProgram = (name = '') => ({
+  id: crypto.randomUUID(),
+  name,
+  note: '',
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+});
+
+const newGymDay = (programId, order) => ({
+  id: crypto.randomUUID(),
+  programId,
+  title: '',
+  order,
+  resetAt: 0,   // «Сбросить прогресс» — с этого момента считаются выполненные подходы
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+});
+
+const newGymExercise = (dayId, order) => ({
+  id: crypto.randomUUID(),
+  dayId,
+  name: '',
+  muscles: [],
+  equipment: '',
+  order,
+  mode: 'linear',        // linear | pyramid
+  sets: 3,
+  reps: 10,              // линейное: одинаковые повторы во всех подходах
+  weight: '',            // линейное: одинаковый вес
+  repsList: [10, 10, 10],   // пирамида: повторы по подходам
+  weightList: ['', '', ''], // пирамида: вес по подходам
+  weightUnit: 'kg',      // kg | pct (% от макс. веса)
+  maxWeight: '',         // макс. вес для режима «% от макс.»; пусто → берём лучший из истории
+  restSec: 120,
+  noRest: false,
+  comment: '',
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+});
+
+const newGymSession = (programId, day) => ({
+  id: crypto.randomUUID(),
+  programId,
+  dayId: day.id,
+  dayTitle: day.title || '',
+  date: dateToLocalStr(new Date()),
+  startedAt: Date.now(),
+  finishedAt: 0,
+  durationSec: 0,
+  note: '',
+  sets: [],
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+});
+
+// Число подходов — всегда ex.sets; списки пирамиды подгоняются под него,
+// чтобы «Количество подходов» и длина строк ввода не разъезжались.
+const gymSetCount = (ex) => Math.max(1, Math.min(20, gymInt(ex?.sets, 1) || 1));
+
+const gymResizeList = (list, n, fill) => {
+  const out = Array.from({ length: n }, (_, i) => (Array.isArray(list) && list[i] !== undefined ? list[i] : fill));
+  return out;
+};
+
+// План упражнения одной формой для обоих режимов: [{reps, weight, unit}, …]
+const gymPlanRows = (ex) => {
+  const n = gymSetCount(ex);
+  if (ex?.mode === 'pyramid') {
+    const reps = gymResizeList(ex.repsList, n, '');
+    const weights = gymResizeList(ex.weightList, n, '');
+    return reps.map((r, i) => ({ reps: r, weight: weights[i], unit: ex.weightUnit || 'kg' }));
+  }
+  return Array.from({ length: n }, () => ({ reps: ex?.reps, weight: ex?.weight, unit: ex?.weightUnit || 'kg' }));
+};
+
+// Все подходы всех тренировок — плоским списком, с датой и упражнением.
+// Основа и прогресса, и всей аналитики.
+const gymAllSets = (sessions) => {
+  const out = [];
+  (sessions || []).forEach(s => {
+    (s.sets || []).forEach(set => {
+      out.push({ ...set, sessionId: s.id, date: s.date, dayId: s.dayId, programId: s.programId });
+    });
+  });
+  return out;
+};
+
+// Лучший рабочий вес упражнения по истории (по имени, а не по строке дня).
+const gymBestLogged = (sessions, name) => {
+  const key = gymKey(name);
+  let best = 0;
+  gymAllSets(sessions).forEach(s => {
+    if (gymKey(s.exerciseName) === key) best = Math.max(best, gymNum(s.weight));
+  });
+  return best;
+};
+
+// «Макс. вес», от которого считаются проценты: указанный руками или, если не
+// указан, лучший поднятый вес из истории.
+const gymMaxFor = (ex, sessions) => {
+  const manual = gymNum(ex?.maxWeight);
+  if (manual > 0) return manual;
+  return gymBestLogged(sessions, ex?.name);
+};
+
+// Плановый вес подхода в килограммах (для процентов — от макс. веса).
+const gymRowKg = (row, maxWeight) => {
+  const v = gymNum(row.weight);
+  if (!v) return 0;
+  if (row.unit === 'pct') return gymRound1(maxWeight * v / 100);
+  return v;
+};
+
+const gymRowWeightText = (row) => {
+  const v = gymNum(row.weight);
+  if (!v) return '';
+  return row.unit === 'pct' ? `${v}% от макс. вес` : `${v} кг`;
+};
+
+// Строка-схема под названием упражнения в списке дня — как в приложении:
+// «10x50% от макс. вес - 10x100% от макс. вес - …» / «3x10 · 70 кг».
+const gymSchemeText = (ex) => {
+  const rows = gymPlanRows(ex);
+  if (ex.mode === 'pyramid') {
+    return rows.map(r => {
+      const w = gymRowWeightText(r);
+      return `${gymInt(r.reps, 0)}x${w || '—'}`;
+    }).join(' - ');
+  }
+  const w = gymRowWeightText(rows[0] || {});
+  const base = `${gymSetCount(ex)}x${gymInt(ex.reps, 0)}`;
+  return w ? `${base} · ${w}` : base;
+};
+
+const gymExerciseSec = (ex) => {
+  const rows = gymPlanRows(ex);
+  const rest = ex.noRest ? 0 : Math.max(0, gymInt(ex.restSec, 0));
+  return rows.reduce((acc, r) => acc + gymInt(r.reps, 0) * GYM_SEC_PER_REP + rest, 0);
+};
+
+const gymFmtDuration = (sec) => {
+  const total = Math.max(0, Math.round(sec / 60));
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (h && m) return `${h} ч ${m} мин`;
+  if (h) return `${h} ч`;
+  return `${m} мин`;
+};
+
+const gymFmtRest = (sec) => {
+  const s = Math.max(0, gymInt(sec, 0));
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+};
+
+const gymFmtDate = (iso) => {
+  if (!iso) return '';
+  const [y, m, d] = String(iso).split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  const dt = new Date(y, m - 1, d);
+  const wd = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'][dt.getDay()];
+  return `${wd}, ${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${y}`;
+};
+
+const gymFmtTime = (ms) => {
+  if (!ms) return '';
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+const gymFmtWeight = (w) => {
+  const n = gymNum(w);
+  if (!n) return 'без веса';
+  return `${gymRound1(n)} кг`;
+};
+
+// Расчётный одноповторный максимум (формула Эпли) — по нему аналитика видит
+// прогресс силы даже когда меняется число повторов.
+const gymEpley = (weight, reps) => {
+  const w = gymNum(weight);
+  const r = gymInt(reps, 0);
+  if (!w || !r) return 0;
+  return gymRound1(w * (1 + r / 30));
+};
+
+const gymSetTonnage = (s) => gymNum(s.weight) * gymInt(s.reps, 0);
+
+// Прогресс упражнения: сколько подходов записано после последнего сброса.
+const gymDoneSets = (sessions, exerciseId, sinceMs) => {
+  let n = 0;
+  gymAllSets(sessions).forEach(s => {
+    if (s.exerciseId === exerciseId && (s.at || 0) > (sinceMs || 0)) n += 1;
+  });
+  return n;
+};
+
+const gymExerciseProgress = (ex, sessions, sinceMs) => {
+  const planned = gymSetCount(ex);
+  const done = gymDoneSets(sessions, ex.id, sinceMs);
+  return planned ? Math.min(1, done / planned) : 0;
+};
+
+const gymDayProgress = (exercises, sessions, sinceMs) => {
+  let planned = 0;
+  let done = 0;
+  exercises.forEach(ex => {
+    const p = gymSetCount(ex);
+    planned += p;
+    done += Math.min(p, gymDoneSets(sessions, ex.id, sinceMs));
+  });
+  return planned ? done / planned : 0;
+};
+
+const gymDayTitle = (day, index) => day.title || `${index + 1} день`;
+
+// ── Мелкие общие компоненты ────────────────────────────────────────────────
+
+function GymRing({ value, size = 52, stroke = 4, label }) {
+  const pct = Math.max(0, Math.min(1, value || 0));
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  return (
+    <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--border)" strokeWidth={stroke} />
+        <circle
+          cx={size / 2} cy={size / 2} r={r} fill="none"
+          stroke={GYM_ACCENT} strokeWidth={stroke} strokeLinecap="round"
+          strokeDasharray={c} strokeDashoffset={c * (1 - pct)}
+          style={{ transition: 'stroke-dashoffset 0.4s ease' }}
+        />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center text-[11px] font-medium" style={{ color: GYM_ACCENT }}>
+        {label !== undefined ? label : `${Math.round(pct * 100)}%`}
+      </div>
+    </div>
+  );
+}
+
+function GymStepper({ value, onChange, min = 1, max = 20 }) {
+  const set = (v) => onChange(Math.max(min, Math.min(max, v)));
+  return (
+    <div className="flex items-center gap-4">
+      <button
+        type="button"
+        onClick={() => set(gymInt(value, min) - 1)}
+        className="w-9 h-9 rounded-full border border-red-300 text-red-500 flex items-center justify-center text-xl leading-none"
+      >−</button>
+      <div className="w-8 text-center text-lg font-medium">{gymInt(value, min)}</div>
+      <button
+        type="button"
+        onClick={() => set(gymInt(value, min) + 1)}
+        className="w-9 h-9 rounded-full border flex items-center justify-center text-xl leading-none"
+        style={{ borderColor: GYM_ACCENT, color: GYM_ACCENT }}
+      >+</button>
+    </div>
+  );
+}
+
+function GymRadio({ checked, onChange, children }) {
+  return (
+    <button type="button" onClick={onChange} className="flex items-center gap-2.5 text-[15px]">
+      <span
+        className="w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0"
+        style={{ borderColor: checked ? GYM_ACCENT : 'var(--border-strong)' }}
+      >
+        {checked && <span className="w-2.5 h-2.5 rounded-full" style={{ background: GYM_ACCENT }} />}
+      </span>
+      <span className={checked ? 'text-[var(--text)]' : 'text-[var(--text-muted)]'}>{children}</span>
+    </button>
+  );
+}
+
+function GymChips({ options, selected, onToggle }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {options.map(o => {
+        const on = (selected || []).includes(o);
+        return (
+          <button
+            key={o}
+            type="button"
+            onClick={() => onToggle(o)}
+            className={`px-3 py-1.5 rounded-full text-[13px] border transition-all ${on ? 'text-white' : 'text-[var(--text-muted)] border-[var(--border)]'}`}
+            style={on ? { background: GYM_ACCENT, borderColor: GYM_ACCENT } : {}}
+          >
+            {o}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function GymEmpty({ icon = 'dumbbell', text, hint }) {
+  return (
+    <div className="text-center py-12 text-[var(--text-subtle)]">
+      <div className="flex justify-center mb-3 opacity-40"><Icon name={icon} size={34} /></div>
+      <div className="text-[15px] text-[var(--text-muted)]">{text}</div>
+      {hint && <div className="text-[13px] mt-1">{hint}</div>}
+    </div>
+  );
+}
+// Тумбстоны для каскадных удалений (программа → дни → упражнения → тренировки):
+// withDeletedId умеет один id за вызов, а тут их всегда пачка.
+const gymWithDeleted = (all, key, ids) => {
+  const now = Date.now();
+  const map = { ...((all || {})[key] || {}) };
+  ids.forEach(id => { map[String(id)] = now; });
+  return { ...(all || {}), [key]: map };
+};
+
+function GymTextModal({ title, label, placeholder, initial = '', onSave, onClose }) {
+  const [value, setValue] = useState(initial);
+  return ReactDOM.createPortal(
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm p-0 sm:p-4" onClick={onClose}>
+      <div className="bg-[var(--bg)] w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-5 pb-safe fade-in" onClick={e => e.stopPropagation()}>
+        <div className="font-display text-xl mb-4">{title}</div>
+        <label>{label}</label>
+        <input
+          autoFocus
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          placeholder={placeholder}
+          onKeyDown={e => { if (e.key === 'Enter' && value.trim()) { onSave(value.trim()); } }}
+        />
+        <div className="flex gap-2 mt-5">
+          <button className="btn-secondary flex-1" onClick={onClose}>Отмена</button>
+          <button
+            className="btn-primary flex-1 disabled:opacity-40"
+            disabled={!value.trim()}
+            onClick={() => onSave(value.trim())}
+          >Сохранить</button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function GymView({ data, setData }) {
+  const programs = [...(data.gymPrograms || [])].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  const allDays = data.gymDays || [];
+  const allExercises = data.gymExercises || [];
+  const sessions = data.gymSessions || [];
+
+  const [screen, setScreen] = useState('programs'); // programs | program | day | exercise | session | analytics
+  const [programId, setProgramId] = useState('');
+  const [dayId, setDayId] = useState('');
+  const [exerciseId, setExerciseId] = useState(''); // '' → новое упражнение
+  const [sessionId, setSessionId] = useState('');
+
+  const program = programs.find(p => p.id === programId) || null;
+  const day = allDays.find(d => d.id === dayId) || null;
+
+  // Незавершённая тренировка переживает перезагрузку страницы и переход между
+  // устройствами — она лежит в тех же данных, что и всё остальное.
+  const activeSession = sessions.find(s => !s.finishedAt) || null;
+
+  const daysOf = (pid) => allDays.filter(d => d.programId === pid)
+    .sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0));
+  const exercisesOf = (did) => allExercises.filter(e => e.dayId === did)
+    .sort((a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0));
+
+  const upsert = (key, item) => setData(d => {
+    const list = d[key] || [];
+    const now = Date.now();
+    const rec = { ...item, updatedAt: now, createdAt: item.createdAt || now };
+    return { ...d, [key]: list.some(x => x.id === rec.id) ? list.map(x => x.id === rec.id ? rec : x) : [...list, rec] };
+  });
+
+  const saveProgram = (p) => upsert('gymPrograms', p);
+  const saveDay = (dd) => upsert('gymDays', dd);
+  const saveExercise = (ex) => upsert('gymExercises', ex);
+  const saveSession = (s) => upsert('gymSessions', s);
+
+  const deleteProgram = (id) => {
+    if (!confirm('Удалить тренировку со всеми днями, упражнениями и историей?')) return;
+    setData(d => {
+      const dayIds = (d.gymDays || []).filter(x => x.programId === id).map(x => x.id);
+      const exIds = (d.gymExercises || []).filter(x => dayIds.includes(x.dayId)).map(x => x.id);
+      const sesIds = (d.gymSessions || []).filter(x => x.programId === id).map(x => x.id);
+      let del = gymWithDeleted(d.deletedIds, 'gymPrograms', [id]);
+      del = gymWithDeleted(del, 'gymDays', dayIds);
+      del = gymWithDeleted(del, 'gymExercises', exIds);
+      del = gymWithDeleted(del, 'gymSessions', sesIds);
+      return {
+        ...d,
+        gymPrograms: (d.gymPrograms || []).filter(x => x.id !== id),
+        gymDays: (d.gymDays || []).filter(x => x.programId !== id),
+        gymExercises: (d.gymExercises || []).filter(x => !dayIds.includes(x.dayId)),
+        gymSessions: (d.gymSessions || []).filter(x => x.programId !== id),
+        deletedIds: del,
+      };
+    });
+    setScreen('programs');
+  };
+
+  // День удаляем вместе с упражнениями, но НЕ вместе с историей: проведённые
+  // тренировки — это факт, они остаются в аналитике (в них уже лежат имена
+  // упражнений, так что подписи не потеряются).
+  const deleteDay = (id) => {
+    if (!confirm('Удалить тренировочный день с упражнениями? История проведённых тренировок останется.')) return;
+    setData(d => {
+      const exIds = (d.gymExercises || []).filter(x => x.dayId === id).map(x => x.id);
+      let del = gymWithDeleted(d.deletedIds, 'gymDays', [id]);
+      del = gymWithDeleted(del, 'gymExercises', exIds);
+      return {
+        ...d,
+        gymDays: (d.gymDays || []).filter(x => x.id !== id),
+        gymExercises: (d.gymExercises || []).filter(x => x.dayId !== id),
+        deletedIds: del,
+      };
+    });
+    setScreen('program');
+  };
+
+  const deleteExercise = (id) => {
+    setData(d => ({
+      ...d,
+      gymExercises: (d.gymExercises || []).filter(x => x.id !== id),
+      deletedIds: withDeletedId(d, 'gymExercises', id),
+    }));
+  };
+
+  const deleteSession = (id) => {
+    setData(d => ({
+      ...d,
+      gymSessions: (d.gymSessions || []).filter(x => x.id !== id),
+      deletedIds: withDeletedId(d, 'gymSessions', id),
+    }));
+  };
+
+  const openDay = (dd) => { setDayId(dd.id); setProgramId(dd.programId); setScreen('day'); };
+  const openProgram = (p) => { setProgramId(p.id); setScreen('program'); };
+
+  const startSession = (dd) => {
+    const s = newGymSession(dd.programId, dd);
+    saveSession(s);
+    setSessionId(s.id);
+    setProgramId(dd.programId);
+    setDayId(dd.id);
+    setScreen('session');
+  };
+
+  const resumeSession = (s) => {
+    setSessionId(s.id);
+    setProgramId(s.programId);
+    setDayId(s.dayId);
+    setScreen('session');
+  };
+
+  // Тренировку могли удалить с другого устройства, пока экран открыт — тогда
+  // просто показываем день, а не пустой экран (менять state прямо в рендере
+  // ради этого нельзя).
+  const runningSession = screen === 'session' ? sessions.find(x => x.id === sessionId) : null;
+  const screenNow = (screen === 'session' && !runningSession) ? 'day' : screen;
+
+  if (screenNow === 'analytics') {
+    return <GymAnalyticsView sessions={sessions} onBack={() => setScreen(programId ? 'program' : 'programs')} onDeleteSession={deleteSession} />;
+  }
+
+  if (screenNow === 'session') {
+    const s = runningSession;
+    return (
+      <GymSessionView
+        session={s}
+        day={allDays.find(x => x.id === s.dayId) || { id: s.dayId, title: s.dayTitle }}
+        exercises={exercisesOf(s.dayId)}
+        sessions={sessions}
+        onSave={saveSession}
+        onDelete={deleteSession}
+        onExit={() => { setSessionId(''); setScreen('day'); }}
+      />
+    );
+  }
+
+  if (screenNow === 'exercise') {
+    const ex = allExercises.find(e => e.id === exerciseId);
+    return (
+      <GymExerciseForm
+        exercise={ex || null}
+        day={day}
+        sessions={sessions}
+        onSave={(next) => { saveExercise(next); setScreen('day'); }}
+        onDelete={ex ? () => { if (confirm('Удалить упражнение?')) { deleteExercise(ex.id); setScreen('day'); } } : null}
+        onBack={() => setScreen('day')}
+      />
+    );
+  }
+
+  if (screenNow === 'day' && day) {
+    return (
+      <GymDayView
+        day={day}
+        index={daysOf(day.programId).findIndex(x => x.id === day.id)}
+        exercises={exercisesOf(day.id)}
+        sessions={sessions}
+        programName={(programs.find(p => p.id === day.programId) || {}).name || ''}
+        onBack={() => setScreen('program')}
+        onSaveDay={saveDay}
+        onDeleteDay={() => deleteDay(day.id)}
+        onOpenExercise={(ex) => { setExerciseId(ex ? ex.id : ''); setScreen('exercise'); }}
+        onNewExercise={() => {
+          const ex = newGymExercise(day.id, exercisesOf(day.id).length);
+          saveExercise(ex);
+          setExerciseId(ex.id);
+          setScreen('exercise');
+        }}
+        onReorder={(list) => list.forEach((ex, i) => { if ((ex.order || 0) !== i) saveExercise({ ...ex, order: i }); })}
+        onDeleteExercise={deleteExercise}
+        onStart={() => startSession(day)}
+        activeSession={activeSession}
+        onResume={resumeSession}
+      />
+    );
+  }
+
+  if (screenNow === 'program' && program) {
+    return (
+      <GymProgramView
+        program={program}
+        days={daysOf(program.id)}
+        exercises={allExercises}
+        sessions={sessions}
+        onBack={() => setScreen('programs')}
+        onSaveProgram={saveProgram}
+        onDeleteProgram={() => deleteProgram(program.id)}
+        onOpenDay={openDay}
+        onAddDay={(title) => {
+          const list = daysOf(program.id);
+          saveDay({ ...newGymDay(program.id, list.length), title });
+        }}
+        onReorderDays={(list) => list.forEach((dd, i) => { if ((dd.order || 0) !== i) saveDay({ ...dd, order: i }); })}
+        onAnalytics={() => setScreen('analytics')}
+        activeSession={activeSession}
+        onResume={resumeSession}
+      />
+    );
+  }
+
+  return (
+    <GymProgramsView
+      programs={programs}
+      days={allDays}
+      exercises={allExercises}
+      sessions={sessions}
+      onOpen={openProgram}
+      onCreate={(name) => {
+        const p = newGymProgram(name);
+        saveProgram(p);
+        setProgramId(p.id);
+        setScreen('program');
+      }}
+      onAnalytics={() => setScreen('analytics')}
+      activeSession={activeSession}
+      onResume={resumeSession}
+    />
+  );
+}
+
+function GymResumeBanner({ session, onResume }) {
+  if (!session) return null;
+  return (
+    <button
+      onClick={() => onResume(session)}
+      className="w-full mb-4 rounded-2xl px-4 py-3 flex items-center gap-3 text-left text-white"
+      style={{ background: GYM_ACCENT }}
+    >
+      <Icon name="dumbbell" size={20} />
+      <div className="min-w-0 flex-1">
+        <div className="text-[15px] font-medium truncate">Идёт тренировка{session.dayTitle ? ` · ${session.dayTitle}` : ''}</div>
+        <div className="text-[12px] opacity-80">{(session.sets || []).length} подходов записано — продолжить</div>
+      </div>
+      <Icon name="chevronRight" size={18} />
+    </button>
+  );
+}
+
+function GymProgramsView({ programs, days, exercises, sessions, onOpen, onCreate, onAnalytics, activeSession, onResume }) {
+  const [adding, setAdding] = useState(false);
+
+  const doneCount = (pid) => sessions.filter(s => s.programId === pid && s.finishedAt).length;
+
+  return (
+    <div className="fade-in">
+      <div className="mb-6 flex items-end justify-between gap-3">
+        <div>
+          <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Раздел</div>
+          <h1 className="font-display text-3xl md:text-4xl">GYM</h1>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={onAnalytics} className="btn-secondary flex items-center gap-2 text-sm">
+            <Icon name="barChart" size={16} /> Аналитика
+          </button>
+          <button onClick={() => setAdding(true)} className="btn-primary flex items-center gap-2 text-sm">
+            <Icon name="plus" size={16} /> Тренировка
+          </button>
+        </div>
+      </div>
+
+      <GymResumeBanner session={activeSession} onResume={onResume} />
+
+      {programs.length === 0 ? (
+        <GymEmpty text="Пока нет ни одной тренировки" hint="Создайте программу — внутри неё будут тренировочные дни" />
+      ) : (
+        <div className="space-y-3">
+          {programs.map(p => {
+            const pDays = days.filter(d => d.programId === p.id);
+            const total = pDays.reduce((acc, d) => {
+              const exs = exercises.filter(e => e.dayId === d.id);
+              return acc + gymDayProgress(exs, sessions, d.resetAt) * (exs.length ? 1 : 0);
+            }, 0);
+            const withEx = pDays.filter(d => exercises.some(e => e.dayId === d.id)).length;
+            return (
+              <button
+                key={p.id}
+                onClick={() => onOpen(p)}
+                className="w-full text-left rounded-2xl p-5 text-white relative overflow-hidden"
+                style={{ background: 'linear-gradient(135deg, #1f2937 0%, #0f766e 100%)' }}
+              >
+                <div className="text-[13px] opacity-80">Моя тренировка</div>
+                <div className="font-display text-2xl mt-0.5">{p.name || 'Без названия'}</div>
+                <div className="text-[13px] opacity-80 mt-3">Выполнено занятий: {doneCount(p.id)}</div>
+                <div className="text-[13px] opacity-80">
+                  Дней: {pDays.length}
+                  {withEx > 0 && ` · прогресс ${Math.round(total / withEx * 100)}%`}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {adding && (
+        <GymTextModal
+          title="Новая тренировка"
+          label="Название"
+          placeholder="Например: Андрей"
+          onSave={(name) => { setAdding(false); onCreate(name); }}
+          onClose={() => setAdding(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function GymProgramView({ program, days, exercises, sessions, onBack, onSaveProgram, onDeleteProgram,
+                         onOpenDay, onAddDay, onReorderDays, onAnalytics, activeSession, onResume }) {
+  const [adding, setAdding] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+
+  const doneCount = sessions.filter(s => s.programId === program.id && s.finishedAt).length;
+
+  const move = (index, dir) => {
+    const next = [...days];
+    const to = index + dir;
+    if (to < 0 || to >= next.length) return;
+    const [item] = next.splice(index, 1);
+    next.splice(to, 0, item);
+    onReorderDays(next);
+  };
+
+  return (
+    <div className="fade-in">
+      <div className="mb-5 flex items-center justify-between gap-3">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)]">
+          <Icon name="chevronLeft" size={16} /> Тренировки
+        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={onAnalytics} className="btn-ghost flex items-center gap-1.5 text-sm">
+            <Icon name="barChart" size={16} /> Аналитика
+          </button>
+          <button onClick={() => setEditMode(v => !v)} className="btn-ghost flex items-center gap-1.5 text-sm">
+            <Icon name={editMode ? 'check' : 'edit'} size={16} /> {editMode ? 'Готово' : 'Правка'}
+          </button>
+        </div>
+      </div>
+
+      <GymResumeBanner session={activeSession} onResume={onResume} />
+
+      <div
+        className="rounded-2xl p-5 text-white mb-6"
+        style={{ background: 'linear-gradient(135deg, #1f2937 0%, #0f766e 100%)' }}
+      >
+        <div className="text-[13px] opacity-80">Моя тренировка</div>
+        <div className="flex items-center gap-2">
+          <div className="font-display text-2xl mt-0.5 flex-1 min-w-0 truncate">{program.name || 'Без названия'}</div>
+          {editMode && (
+            <button onClick={() => setRenaming(true)} className="opacity-80"><Icon name="edit" size={18} /></button>
+          )}
+        </div>
+        <div className="text-[13px] opacity-80 mt-3">Выполнено занятий: {doneCount}</div>
+      </div>
+
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-[15px] font-medium" style={{ color: GYM_ACCENT }}>Тренировочные дни</div>
+        <button onClick={() => setAdding(true)} className="btn-ghost flex items-center gap-1.5 text-sm">
+          <Icon name="plus" size={16} /> День
+        </button>
+      </div>
+
+      {days.length === 0 ? (
+        <GymEmpty text="Нет тренировочных дней" hint="Например: «1 день. Спина, бицепс»" />
+      ) : (
+        <div className="space-y-3">
+          {days.map((d, i) => {
+            const exs = exercises.filter(e => e.dayId === d.id).sort((a, b) => (a.order || 0) - (b.order || 0));
+            const progress = gymDayProgress(exs, sessions, d.resetAt);
+            return (
+              <div key={d.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 flex items-center gap-4">
+                <GymRing value={progress} />
+                <button onClick={() => onOpenDay(d)} className="flex-1 min-w-0 text-left">
+                  <div className="text-[13px]" style={{ color: GYM_ACCENT }}>{i + 1} тренировка</div>
+                  <div className="text-[16px] font-medium truncate">{gymDayTitle(d, i)}</div>
+                  <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">
+                    {exs.length ? `${exs.length} упр. · ~ ${gymFmtDuration(exs.reduce((a, e) => a + gymExerciseSec(e), 0))}` : 'нет упражнений'}
+                  </div>
+                </button>
+                {editMode ? (
+                  <div className="flex flex-col gap-1">
+                    <button onClick={() => move(i, -1)} disabled={i === 0} className="p-1 disabled:opacity-25 text-[var(--text-muted)] rotate-180">
+                      <Icon name="chevronDown" size={16} />
+                    </button>
+                    <button onClick={() => move(i, 1)} disabled={i === days.length - 1} className="p-1 disabled:opacity-25 text-[var(--text-muted)]">
+                      <Icon name="chevronDown" size={16} />
+                    </button>
+                  </div>
+                ) : (
+                  <Icon name="chevronRight" size={18} />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {editMode && (
+        <button onClick={onDeleteProgram} className="w-full mt-8 py-3 rounded-xl border border-dashed border-red-200 text-red-500 text-sm flex items-center justify-center gap-2">
+          <Icon name="trash" size={16} /> Удалить тренировку
+        </button>
+      )}
+
+      {adding && (
+        <GymTextModal
+          title="Новый тренировочный день"
+          label="Название дня"
+          placeholder="1 день. Спина, бицепс"
+          onSave={(title) => { setAdding(false); onAddDay(title); }}
+          onClose={() => setAdding(false)}
+        />
+      )}
+      {renaming && (
+        <GymTextModal
+          title="Название тренировки"
+          label="Название"
+          initial={program.name}
+          onSave={(name) => { setRenaming(false); onSaveProgram({ ...program, name }); }}
+          onClose={() => setRenaming(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function GymDayView({ day, index, exercises, sessions, programName, onBack, onSaveDay, onDeleteDay,
+                     onOpenExercise, onNewExercise, onReorder, onDeleteExercise, onStart,
+                     activeSession, onResume }) {
+  const [editMode, setEditMode] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+
+  const progress = gymDayProgress(exercises, sessions, day.resetAt);
+  const estSec = exercises.reduce((a, e) => a + gymExerciseSec(e), 0);
+  const doneCount = sessions.filter(s => s.dayId === day.id && s.finishedAt).length;
+
+  const move = (i, dir) => {
+    const next = [...exercises];
+    const to = i + dir;
+    if (to < 0 || to >= next.length) return;
+    const [item] = next.splice(i, 1);
+    next.splice(to, 0, item);
+    onReorder(next);
+  };
+
+  const resetProgress = () => {
+    if (!confirm('Сбросить прогресс дня? История проведённых тренировок сохранится.')) return;
+    onSaveDay({ ...day, resetAt: Date.now() });
+  };
+
+  return (
+    <div className="fade-in pb-28">
+      <div className="mb-5 flex items-center justify-between gap-3">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)] min-w-0">
+          <Icon name="chevronLeft" size={16} /> <span className="truncate">{programName || 'Программа'}</span>
+        </button>
+        <button onClick={() => setEditMode(v => !v)} className="btn-ghost flex items-center gap-1.5 text-sm flex-shrink-0">
+          <Icon name={editMode ? 'check' : 'edit'} size={16} /> {editMode ? 'Готово' : 'Правка'}
+        </button>
+      </div>
+
+      <GymResumeBanner session={activeSession && activeSession.dayId === day.id ? activeSession : null} onResume={onResume} />
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 flex items-center gap-4 mb-6">
+        <GymRing value={progress} size={60} stroke={5} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[13px]" style={{ color: GYM_ACCENT }}>{index + 1} тренировка</div>
+            <div className="text-[13px] text-[var(--text-muted)]">~ {gymFmtDuration(estSec)}</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="text-[17px] font-medium truncate flex-1">{gymDayTitle(day, index)}</div>
+            {editMode && <button onClick={() => setRenaming(true)}><Icon name="edit" size={16} /></button>}
+          </div>
+          <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">Проведено: {doneCount}</div>
+        </div>
+      </div>
+
+      {exercises.length === 0 ? (
+        <GymEmpty text="В этом дне пока нет упражнений" />
+      ) : (
+        <div className="space-y-2">
+          {exercises.map((ex, i) => {
+            const p = gymExerciseProgress(ex, sessions, day.resetAt);
+            return (
+              <div key={ex.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 flex items-center gap-3">
+                {editMode && (
+                  <div className="flex flex-col">
+                    <button onClick={() => move(i, -1)} disabled={i === 0} className="p-0.5 disabled:opacity-25 rotate-180 text-[var(--text-muted)]"><Icon name="chevronDown" size={14} /></button>
+                    <button onClick={() => move(i, 1)} disabled={i === exercises.length - 1} className="p-0.5 disabled:opacity-25 text-[var(--text-muted)]"><Icon name="chevronDown" size={14} /></button>
+                  </div>
+                )}
+                <button onClick={() => onOpenExercise(ex)} className="flex-1 min-w-0 text-left">
+                  <div className="text-[15px] font-medium leading-snug">{ex.name || 'Без названия'}</div>
+                  <div className="text-[13px] text-[var(--text-muted)] truncate mt-0.5">{gymSchemeText(ex)}</div>
+                  {(ex.muscles || []).length > 0 && (
+                    <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">{(ex.muscles || []).join(' · ')}</div>
+                  )}
+                </button>
+                {editMode ? (
+                  <button
+                    onClick={() => { if (confirm('Удалить упражнение?')) onDeleteExercise(ex.id); }}
+                    className="text-red-400 p-1"
+                  ><Icon name="trash" size={16} /></button>
+                ) : (
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <span className="text-[13px]" style={{ color: GYM_ACCENT }}>{Math.round(p * 100)}%</span>
+                    <Icon name="chevronRight" size={16} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <button
+        onClick={onNewExercise}
+        className="w-full mt-3 py-3 rounded-2xl border border-dashed border-[var(--border-strong)] text-[var(--text-muted)] text-sm flex items-center justify-center gap-2"
+      >
+        <Icon name="plus" size={16} /> Добавить упражнение
+      </button>
+
+      {editMode && (
+        <button onClick={onDeleteDay} className="w-full mt-6 py-3 rounded-xl border border-dashed border-red-200 text-red-500 text-sm flex items-center justify-center gap-2">
+          <Icon name="trash" size={16} /> Удалить тренировочный день
+        </button>
+      )}
+
+      <div className="mt-6 space-y-2">
+        <button onClick={resetProgress} className="btn-secondary w-full">Сбросить прогресс</button>
+        <button
+          onClick={onStart}
+          disabled={exercises.length === 0}
+          className="w-full py-3.5 rounded-xl text-white font-medium disabled:opacity-40 flex items-center justify-center gap-2"
+          style={{ background: GYM_ACCENT }}
+        >
+          <Icon name="play" size={18} /> Начать тренировку
+        </button>
+      </div>
+
+      {renaming && (
+        <GymTextModal
+          title="Название дня"
+          label="Название"
+          initial={day.title}
+          onSave={(title) => { setRenaming(false); onSaveDay({ ...day, title }); }}
+          onClose={() => setRenaming(false)}
+        />
+      )}
+    </div>
+  );
+}
+// Цвета подходов в пирамиде: от лёгкого к тяжёлому — как в приложении,
+// чтобы схема читалась одним взглядом.
+const GYM_SET_COLORS = ['#22c55e', '#15803d', '#eab308', '#f97316', '#ef4444', '#a855f7', '#0ea5e9', '#64748b'];
+const gymSetColor = (i) => GYM_SET_COLORS[i % GYM_SET_COLORS.length];
+
+// История выполнения упражнения: сначала по id (та же строка дня), а если
+// упражнение пересоздавали — по имени, иначе прогресс визуально «обнуляется».
+const gymExerciseHistory = (sessions, ex) => {
+  const key = gymKey(ex?.name);
+  const rows = gymAllSets(sessions).filter(s =>
+    s.exerciseId === ex?.id || (key && gymKey(s.exerciseName) === key));
+  const byDate = {};
+  rows.forEach(s => {
+    (byDate[s.date] = byDate[s.date] || []).push(s);
+  });
+  return Object.keys(byDate)
+    .sort((a, b) => b.localeCompare(a))
+    .map(date => ({
+      date,
+      sets: byDate[date].sort((a, b) => (b.at || 0) - (a.at || 0)),
+    }));
+};
+
+function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) {
+  const base = exercise || newGymExercise(day ? day.id : '', 0);
+  const [form, setForm] = useState(() => ({
+    ...base,
+    repsList: gymResizeList(base.repsList, gymSetCount(base), base.reps ?? ''),
+    weightList: gymResizeList(base.weightList, gymSetCount(base), base.weight ?? ''),
+  }));
+
+  const set = (patch) => setForm(f => ({ ...f, ...patch }));
+  const n = gymSetCount(form);
+
+  const setCount = (count) => setForm(f => ({
+    ...f,
+    sets: count,
+    repsList: gymResizeList(f.repsList, count, f.repsList?.[f.repsList.length - 1] ?? f.reps ?? ''),
+    weightList: gymResizeList(f.weightList, count, f.weightList?.[f.weightList.length - 1] ?? f.weight ?? ''),
+  }));
+
+  const setListValue = (key, i, value) => setForm(f => {
+    const list = gymResizeList(f[key], gymSetCount(f), '');
+    list[i] = value;
+    return { ...f, [key]: list };
+  });
+
+  const restMin = Math.floor(gymInt(form.restSec, 0) / 60);
+  const restSec = gymInt(form.restSec, 0) % 60;
+  const maxFromHistory = gymBestLogged(sessions, form.name);
+  const effectiveMax = gymMaxFor(form, sessions);
+  const history = gymExerciseHistory(sessions, form);
+
+  const clear = () => {
+    if (!confirm('Очистить настройки упражнения? Название и история сохранятся.')) return;
+    const fresh = newGymExercise(form.dayId, form.order);
+    setForm(f => ({ ...fresh, id: f.id, dayId: f.dayId, order: f.order, name: f.name, muscles: f.muscles, equipment: f.equipment, createdAt: f.createdAt }));
+  };
+
+  return (
+    <div className="fade-in pb-28">
+      <div className="mb-5 flex items-center justify-between gap-3">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)]">
+          <Icon name="chevronLeft" size={16} /> Упражнения
+        </button>
+        <button onClick={() => onSave(form)} className="flex items-center gap-1.5 text-sm font-medium" style={{ color: GYM_ACCENT }}>
+          <Icon name="check" size={18} /> Сохранить
+        </button>
+      </div>
+
+      <div className="space-y-5">
+        <div>
+          <label>Название упражнения</label>
+          <input
+            value={form.name}
+            onChange={e => set({ name: e.target.value })}
+            placeholder="Вертикальная тяга обратным хватом к груди"
+          />
+        </div>
+
+        <div>
+          <label>Мышцы</label>
+          <GymChips
+            options={GYM_MUSCLES}
+            selected={form.muscles}
+            onToggle={(m) => set({
+              muscles: (form.muscles || []).includes(m)
+                ? (form.muscles || []).filter(x => x !== m)
+                : [...(form.muscles || []), m],
+            })}
+          />
+        </div>
+
+        <div>
+          <label>Оборудование</label>
+          <select value={form.equipment || ''} onChange={e => set({ equipment: e.target.value })}>
+            <option value="">Не указано</option>
+            {GYM_EQUIPMENT.map(x => <option key={x} value={x}>{x}</option>)}
+          </select>
+        </div>
+
+        {/* Режим: одинаковые подходы или пирамида с разными повторами и весом */}
+        <div className="inline-flex w-full bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-1">
+          {[{ id: 'linear', label: 'Линейное' }, { id: 'pyramid', label: 'Пирамида' }].map(m => (
+            <button
+              key={m.id}
+              onClick={() => set({ mode: m.id })}
+              className={`flex-1 py-2.5 rounded-xl text-[15px] font-medium transition-all ${form.mode === m.id ? 'text-white' : 'text-[var(--text-muted)]'}`}
+              style={form.mode === m.id ? { background: '#3f5372' } : {}}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        {form.mode === 'linear' ? (
+          <>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label>Подходы</label>
+                <input inputMode="numeric" value={form.sets ?? ''} onChange={e => setCount(gymInt(e.target.value, 1) || 1)} />
+              </div>
+              <div>
+                <label>Повторы</label>
+                <input inputMode="numeric" value={form.reps ?? ''} onChange={e => set({ reps: e.target.value })} />
+              </div>
+            </div>
+            <div>
+              <label>При необходимости укажите вес</label>
+              <input inputMode="decimal" value={form.weight ?? ''} onChange={e => set({ weight: e.target.value })} placeholder="Вес" />
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center justify-between">
+              <div className="text-[17px] font-medium">Количество подходов</div>
+              <GymStepper value={form.sets} onChange={setCount} />
+            </div>
+
+            <div>
+              <div className="text-[15px] font-medium mb-2" style={{ color: '#3f5372' }}>Количество повторений</div>
+              <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${Math.min(n, 4)}, minmax(0, 1fr))` }}>
+                {Array.from({ length: n }).map((_, i) => (
+                  <input
+                    key={i}
+                    inputMode="numeric"
+                    value={gymResizeList(form.repsList, n, '')[i] ?? ''}
+                    onChange={e => setListValue('repsList', i, e.target.value)}
+                    className="text-center"
+                    style={{ color: gymSetColor(i), borderColor: gymSetColor(i) }}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[15px] font-medium mb-2" style={{ color: '#3f5372' }}>Вес</div>
+              <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${Math.min(n, 4)}, minmax(0, 1fr))` }}>
+                {Array.from({ length: n }).map((_, i) => (
+                  <input
+                    key={i}
+                    inputMode="decimal"
+                    value={gymResizeList(form.weightList, n, '')[i] ?? ''}
+                    onChange={e => setListValue('weightList', i, e.target.value)}
+                    className="text-center"
+                    style={{ color: gymSetColor(i), borderColor: gymSetColor(i) }}
+                  />
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+
+        <div className="flex items-center gap-6">
+          <GymRadio checked={(form.weightUnit || 'kg') === 'kg'} onChange={() => set({ weightUnit: 'kg' })}>кг</GymRadio>
+          <GymRadio checked={form.weightUnit === 'pct'} onChange={() => set({ weightUnit: 'pct' })}>% от макс. веса</GymRadio>
+        </div>
+
+        {form.weightUnit === 'pct' && (
+          <div>
+            <label>Макс. вес, кг</label>
+            <input
+              inputMode="decimal"
+              value={form.maxWeight ?? ''}
+              onChange={e => set({ maxWeight: e.target.value })}
+              placeholder={maxFromHistory ? `из истории: ${gymRound1(maxFromHistory)}` : 'например 80'}
+            />
+            <div className="text-[12px] text-[var(--text-subtle)] mt-1.5">
+              {effectiveMax
+                ? `Проценты считаются от ${gymRound1(effectiveMax)} кг${gymNum(form.maxWeight) > 0 ? '' : ' — лучший результат из истории'}`
+                : 'Пока не от чего считать: укажите макс. вес или проведите тренировку'}
+            </div>
+          </div>
+        )}
+
+        <div>
+          <label>Время отдыха</label>
+          <div className="flex items-center gap-3">
+            <select
+              value={restMin}
+              disabled={form.noRest}
+              onChange={e => set({ restSec: gymInt(e.target.value, 0) * 60 + restSec })}
+              className="flex-1 disabled:opacity-40"
+            >
+              {Array.from({ length: 11 }).map((_, i) => <option key={i} value={i}>{String(i).padStart(2, '0')} мин</option>)}
+            </select>
+            <span className="text-[var(--text-muted)]">:</span>
+            <select
+              value={restSec}
+              disabled={form.noRest}
+              onChange={e => set({ restSec: restMin * 60 + gymInt(e.target.value, 0) })}
+              className="flex-1 disabled:opacity-40"
+            >
+              {Array.from({ length: 12 }).map((_, i) => <option key={i} value={i * 5}>{String(i * 5).padStart(2, '0')} сек</option>)}
+            </select>
+          </div>
+          <div className="flex items-center justify-between mt-3">
+            <span className="text-[15px] text-[var(--text-muted)]">Без отдыха</span>
+            <Toggle checked={!!form.noRest} onChange={v => set({ noRest: v })} />
+          </div>
+        </div>
+
+        <div>
+          <label>Комментарий</label>
+          <textarea
+            rows={2}
+            value={form.comment || ''}
+            onChange={e => set({ comment: e.target.value })}
+            placeholder="Введите текст комментария"
+          />
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3">
+          <div className="text-[13px] text-[var(--text-muted)]">Схема подходов</div>
+          <div className="text-[15px] mt-1">{gymSchemeText(form)}</div>
+          {form.weightUnit === 'pct' && effectiveMax > 0 && (
+            <div className="text-[13px] text-[var(--text-subtle)] mt-1">
+              ≈ {gymPlanRows(form).map(r => `${gymInt(r.reps, 0)}x${gymRowKg(r, effectiveMax) || '—'} кг`).join(' - ')}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-8">
+        <div className="text-[15px] font-medium mb-3" style={{ color: GYM_ACCENT }}>История выполнения</div>
+        {history.length === 0 ? (
+          <div className="text-[14px] text-[var(--text-subtle)]">Упражнение ещё ни разу не выполнялось</div>
+        ) : (
+          <div className="space-y-4">
+            {history.slice(0, 12).map(group => (
+              <div key={group.date}>
+                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-[15px] font-medium">
+                  {gymFmtDate(group.date)}
+                </div>
+                <div className="px-3">
+                  {group.sets.map(s => (
+                    <div key={s.id} className="flex items-center gap-3 py-2 border-b border-[var(--border)] last:border-0 text-[15px]">
+                      <span style={{ color: GYM_ACCENT }}>#{(s.setIndex || 0) + 1}</span>
+                      <span className="flex-1">{gymFmtWeight(s.weight)} x {gymInt(s.reps, 0)} повт.</span>
+                      <span className="text-[var(--text-subtle)] text-[13px]">{gymFmtTime(s.at)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex gap-3 mt-8">
+        <button onClick={clear} className="btn-secondary flex-1">Очистить</button>
+        <button onClick={() => onSave(form)} className="flex-1 py-3.5 rounded-xl text-white font-medium" style={{ background: GYM_ACCENT }}>
+          Сохранить
+        </button>
+      </div>
+
+      {onDelete && (
+        <button onClick={onDelete} className="w-full mt-3 py-3 rounded-xl border border-dashed border-red-200 text-red-500 text-sm flex items-center justify-center gap-2">
+          <Icon name="trash" size={16} /> Удалить упражнение
+        </button>
+      )}
+    </div>
+  );
+}
+// Личные рекорды до этой тренировки — чтобы прямо во время подхода было
+// видно, что результат новый (сравниваем только с тем, что было раньше).
+const gymPrevBest = (sessions, name, beforeMs) => {
+  const key = gymKey(name);
+  let weight = 0;
+  let orm = 0;
+  gymAllSets(sessions).forEach(s => {
+    if (gymKey(s.exerciseName) !== key) return;
+    if ((s.at || 0) >= beforeMs) return;
+    weight = Math.max(weight, gymNum(s.weight));
+    orm = Math.max(orm, gymEpley(s.weight, s.reps));
+  });
+  return { weight, orm };
+};
+
+function GymSessionView({ session, day, exercises, sessions, onSave, onDelete, onExit }) {
+  const [openId, setOpenId] = useState(exercises[0] ? exercises[0].id : '');
+  const [drafts, setDrafts] = useState({});
+  // Сколько строк показываем сверх плана (добавленные вручную подходы).
+  const [extra, setExtra] = useState({});
+  const [restUntil, setRestUntil] = useState(0);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const logged = session.sets || [];
+  const loggedFor = (exId) => logged.filter(s => s.exerciseId === exId);
+  const loggedAt = (exId, idx) => loggedFor(exId).find(s => (s.setIndex || 0) === idx) || null;
+
+  // Черновик строки подхода: то, что уже записано → план → пусто.
+  const draftRow = (ex, i) => {
+    const key = `${ex.id}:${i}`;
+    if (drafts[key]) return drafts[key];
+    const done = loggedAt(ex.id, i);
+    if (done) return { weight: String(done.weight ?? ''), reps: String(done.reps ?? '') };
+    const row = gymPlanRows(ex)[i] || {};
+    const kg = gymRowKg(row, gymMaxFor(ex, sessions));
+    return { weight: kg ? String(kg) : '', reps: row.reps === undefined || row.reps === '' ? '' : String(row.reps) };
+  };
+
+  const setDraft = (ex, i, patch) => setDrafts(d => ({ ...d, [`${ex.id}:${i}`]: { ...draftRow(ex, i), ...patch } }));
+
+  const logSet = (ex, i) => {
+    const row = draftRow(ex, i);
+    const reps = gymInt(row.reps, 0);
+    if (!reps) { alert('Укажите количество повторений'); return; }
+    const rec = {
+      id: (loggedAt(ex.id, i) || {}).id || crypto.randomUUID(),
+      exerciseId: ex.id,
+      exerciseName: ex.name || 'Без названия',
+      muscles: ex.muscles || [],
+      setIndex: i,
+      weight: gymNum(row.weight),
+      reps,
+      at: Date.now(),
+    };
+    const rest = ex.noRest ? 0 : Math.max(0, gymInt(ex.restSec, 0));
+    const exists = logged.some(s => s.id === rec.id);
+    onSave({
+      ...session,
+      sets: exists ? logged.map(s => s.id === rec.id ? rec : s) : [...logged, rec],
+    });
+    if (rest) setRestUntil(Date.now() + rest * 1000);
+  };
+
+  const removeSet = (setId) => onSave({ ...session, sets: logged.filter(s => s.id !== setId) });
+
+  const addExtraSet = (ex) => {
+    const rows = loggedFor(ex.id);
+    const nextIdx = Math.max(gymSetCount(ex), ...rows.map(s => (s.setIndex || 0) + 1));
+    setDrafts(d => ({ ...d, [`${ex.id}:${nextIdx}`]: draftRow(ex, gymSetCount(ex) - 1) }));
+    setExtra(e => ({ ...e, [ex.id]: Math.max(nextIdx + 1, e[ex.id] || 0) }));
+  };
+
+  const rowCount = (ex) => {
+    const fromLog = Math.max(0, ...loggedFor(ex.id).map(s => (s.setIndex || 0) + 1));
+    return Math.max(gymSetCount(ex), fromLog, extra[ex.id] || 0);
+  };
+
+  const totalPlanned = exercises.reduce((a, ex) => a + gymSetCount(ex), 0);
+  const totalDone = logged.length;
+  const tonnage = logged.reduce((a, s) => a + gymSetTonnage(s), 0);
+  const elapsed = Math.max(0, Math.floor((now - (session.startedAt || now)) / 1000));
+  const restLeft = restUntil > now ? Math.ceil((restUntil - now) / 1000) : 0;
+
+  const finish = () => {
+    if (logged.length === 0) {
+      if (!confirm('Ни одного подхода не записано. Завершить и удалить тренировку?')) return;
+      onDelete(session.id);
+      onExit();
+      return;
+    }
+    if (!confirm('Завершить тренировку?')) return;
+    const finishedAt = Date.now();
+    onSave({
+      ...session,
+      finishedAt,
+      durationSec: Math.max(1, Math.round((finishedAt - (session.startedAt || finishedAt)) / 1000)),
+    });
+    onExit();
+  };
+
+  const exitKeepOpen = () => {
+    if (logged.length === 0) onDelete(session.id);
+    onExit();
+  };
+
+  return (
+    <div className="fade-in pb-28">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <button onClick={exitKeepOpen} className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)]">
+          <Icon name="chevronLeft" size={16} /> Выйти
+        </button>
+        <button onClick={finish} className="px-4 py-2 rounded-xl text-white text-sm font-medium" style={{ background: GYM_ACCENT }}>
+          Завершить
+        </button>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 mb-4">
+        <div className="text-[13px]" style={{ color: GYM_ACCENT }}>Идёт тренировка</div>
+        <div className="text-[17px] font-medium">{day.title || session.dayTitle || 'Тренировка'}</div>
+        <div className="flex flex-wrap gap-x-5 gap-y-1 text-[13px] text-[var(--text-muted)] mt-2">
+          <span>Время: {gymFmtRest(elapsed)}</span>
+          <span>Подходы: {totalDone} / {totalPlanned}</span>
+          <span>Тоннаж: {Math.round(tonnage)} кг</span>
+        </div>
+      </div>
+
+      {restLeft > 0 && (
+        <div className="rounded-2xl px-4 py-3 mb-4 flex items-center gap-3 text-white" style={{ background: '#3f5372' }}>
+          <Icon name="timer" size={20} />
+          <div className="flex-1">
+            <div className="text-[13px] opacity-80">Отдых</div>
+            <div className="text-xl font-display">{gymFmtRest(restLeft)}</div>
+          </div>
+          <button onClick={() => setRestUntil(v => v + 15000)} className="px-3 py-1.5 rounded-lg bg-white/15 text-sm">+15 с</button>
+          <button onClick={() => setRestUntil(0)} className="px-3 py-1.5 rounded-lg bg-white/15 text-sm">Пропустить</button>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {exercises.map(ex => {
+          const doneN = loggedFor(ex.id).length;
+          const plannedN = gymSetCount(ex);
+          const open = openId === ex.id;
+          const prev = gymPrevBest(sessions, ex.name, session.startedAt || Date.now());
+          return (
+            <div key={ex.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+              <button onClick={() => setOpenId(open ? '' : ex.id)} className="w-full px-4 py-3 flex items-center gap-3 text-left">
+                <GymRing value={plannedN ? Math.min(1, doneN / plannedN) : 0} size={38} stroke={3} label={`${doneN}/${plannedN}`} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-[15px] font-medium leading-snug">{ex.name || 'Без названия'}</div>
+                  <div className="text-[13px] text-[var(--text-muted)] truncate">{gymSchemeText(ex)}</div>
+                </div>
+                <div className={open ? 'rotate-180' : ''}><Icon name="chevronDown" size={16} /></div>
+              </button>
+
+              {open && (
+                <div className="px-4 pb-4 space-y-2">
+                  {ex.comment && (
+                    <div className="text-[13px] text-[var(--text-muted)] bg-[var(--bg)] rounded-xl px-3 py-2">{ex.comment}</div>
+                  )}
+                  {Array.from({ length: rowCount(ex) }).map((_, i) => {
+                    const done = loggedAt(ex.id, i);
+                    const row = draftRow(ex, i);
+                    const isPr = done && (gymNum(done.weight) > prev.weight || gymEpley(done.weight, done.reps) > prev.orm) && prev.weight > 0;
+                    return (
+                      <div key={i} className="flex items-center gap-2">
+                        <span className="w-7 text-[13px] text-[var(--text-subtle)]">#{i + 1}</span>
+                        <input
+                          inputMode="decimal"
+                          value={row.weight}
+                          onChange={e => setDraft(ex, i, { weight: e.target.value })}
+                          className="flex-1 text-center"
+                          placeholder="кг"
+                        />
+                        <span className="text-[var(--text-subtle)] text-sm">×</span>
+                        <input
+                          inputMode="numeric"
+                          value={row.reps}
+                          onChange={e => setDraft(ex, i, { reps: e.target.value })}
+                          className="flex-1 text-center"
+                          placeholder="повт."
+                        />
+                        {isPr && <span title="Личный рекорд" style={{ color: '#eab308' }}><Icon name="starFilled" size={16} /></span>}
+                        <button
+                          onClick={() => logSet(ex, i)}
+                          className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-white"
+                          style={{ background: done ? GYM_ACCENT : 'var(--border-strong)' }}
+                        >
+                          <Icon name="check" size={18} />
+                        </button>
+                        {done && (
+                          <button onClick={() => removeSet(done.id)} className="text-red-300 flex-shrink-0"><Icon name="x" size={16} /></button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <button
+                    onClick={() => addExtraSet(ex)}
+                    className="w-full py-2 rounded-xl border border-dashed border-[var(--border-strong)] text-[var(--text-muted)] text-[13px]"
+                  >
+                    + Ещё подход
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+// ── Аналитика ──────────────────────────────────────────────────────────────
+
+const gymParseDate = (iso) => {
+  const [y, m, d] = String(iso || '').split('-').map(Number);
+  return (y && m && d) ? new Date(y, m - 1, d) : null;
+};
+
+// Понедельник недели, в которую попадает дата — ключ для недельных столбиков.
+const gymWeekStart = (iso) => {
+  const d = gymParseDate(iso);
+  if (!d) return '';
+  const shift = (d.getDay() + 6) % 7;
+  d.setDate(d.getDate() - shift);
+  return dateToLocalStr(d);
+};
+
+const gymShortDate = (iso) => {
+  const d = gymParseDate(iso);
+  if (!d) return iso || '';
+  return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`;
+};
+
+const gymDaysAgo = (n) => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - n);
+  return dateToLocalStr(d);
+};
+
+function GymLineChart({ points, unit = '' }) {
+  if (!points || points.length === 0) return null;
+  const W = 320;
+  const H = 130;
+  const pad = { l: 6, r: 6, t: 12, b: 18 };
+  const values = points.map(p => p.value);
+  const max = Math.max(...values);
+  const min = Math.min(...values);
+  const span = max - min || Math.max(1, max || 1);
+  const x = (i) => points.length === 1
+    ? W / 2
+    : pad.l + i * (W - pad.l - pad.r) / (points.length - 1);
+  const y = (v) => pad.t + (1 - (v - min) / span) * (H - pad.t - pad.b);
+  const path = points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ');
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 150 }} preserveAspectRatio="none">
+        <path d={path} fill="none" stroke={GYM_ACCENT} strokeWidth="2" vectorEffect="non-scaling-stroke" />
+        {points.map((p, i) => (
+          <circle key={i} cx={x(i)} cy={y(p.value)} r="3" fill={GYM_ACCENT} />
+        ))}
+      </svg>
+      <div className="flex justify-between text-[11px] text-[var(--text-subtle)] mt-1">
+        <span>{points[0].label}</span>
+        <span>мин {gymRound1(min)}{unit} · макс {gymRound1(max)}{unit}</span>
+        <span>{points[points.length - 1].label}</span>
+      </div>
+    </div>
+  );
+}
+
+function GymBars({ bars, unit = '' }) {
+  if (!bars || bars.length === 0) return null;
+  const max = Math.max(...bars.map(b => b.value), 1);
+  return (
+    <div className="overflow-x-auto scrollbar-hide -mx-1 px-1">
+      <div className="flex items-end gap-2" style={{ minWidth: Math.max(bars.length * 40, 100) }}>
+        {bars.map((b, i) => (
+          <div key={i} className="flex flex-col items-center gap-1" style={{ width: 36 }}>
+            <div className="text-[10px] text-[var(--text-subtle)] h-3">{b.value ? Math.round(b.value) : ''}</div>
+            <div
+              className="w-full rounded-t-md"
+              style={{ height: Math.max(2, Math.round(b.value / max * 90)), background: b.value ? GYM_ACCENT : 'var(--border)' }}
+            />
+            <div className="text-[10px] text-[var(--text-subtle)] whitespace-nowrap">{b.label}</div>
+          </div>
+        ))}
+      </div>
+      {unit && <div className="text-[11px] text-[var(--text-subtle)] mt-1">{unit}</div>}
+    </div>
+  );
+}
+
+function GymStat({ label, value, sub }) {
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3">
+      <div className="text-[12px] text-[var(--text-muted)]">{label}</div>
+      <div className="font-display text-xl mt-0.5">{value}</div>
+      {sub && <div className="text-[11px] text-[var(--text-subtle)] mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
+function GymAnalyticsView({ sessions, onBack, onDeleteSession }) {
+  const [tab, setTab] = useState('progress');
+  const done = sessions.filter(s => s.finishedAt || (s.sets || []).length > 0);
+
+  const tabs = [
+    { id: 'progress', label: 'Прогресс'  },
+    { id: 'volume',   label: 'Объём'     },
+    { id: 'history',  label: 'История'   },
+    { id: 'records',  label: 'Рекорды'   },
+  ];
+
+  return (
+    <div className="fade-in pb-10">
+      <div className="mb-5 flex items-center justify-between gap-3">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)]">
+          <Icon name="chevronLeft" size={16} /> Назад
+        </button>
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest">Аналитика</div>
+      </div>
+
+      <div className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-5">
+        <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
+          {tabs.map(t => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap ${tab === t.id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {done.length === 0 ? (
+        <GymEmpty text="Пока нет проведённых тренировок" hint="Аналитика появится после первой записанной тренировки" />
+      ) : (
+        <>
+          {tab === 'progress' && <GymProgressTab sessions={done} />}
+          {tab === 'volume'   && <GymVolumeTab sessions={done} />}
+          {tab === 'history'  && <GymHistoryTab sessions={done} onDelete={onDeleteSession} />}
+          {tab === 'records'  && <GymRecordsTab sessions={done} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+function GymProgressTab({ sessions }) {
+  const names = [];
+  const seen = new Set();
+  gymAllSets(sessions).forEach(s => {
+    const k = gymKey(s.exerciseName);
+    if (k && !seen.has(k)) { seen.add(k); names.push(s.exerciseName); }
+  });
+  names.sort((a, b) => a.localeCompare(b, 'ru'));
+
+  const [name, setName] = useState(names[0] || '');
+  const [metric, setMetric] = useState('weight'); // weight | orm | tonnage
+  const key = gymKey(name);
+
+  // По одной точке на тренировку: лучший вес / лучший расчётный 1ПМ / тоннаж.
+  const byDate = {};
+  gymAllSets(sessions).forEach(s => {
+    if (gymKey(s.exerciseName) !== key) return;
+    const cur = byDate[s.date] || { weight: 0, orm: 0, tonnage: 0, sets: 0, best: null };
+    cur.weight = Math.max(cur.weight, gymNum(s.weight));
+    const orm = gymEpley(s.weight, s.reps);
+    if (orm > cur.orm) { cur.orm = orm; cur.best = s; }
+    cur.tonnage += gymSetTonnage(s);
+    cur.sets += 1;
+    byDate[s.date] = cur;
+  });
+  const dates = Object.keys(byDate).sort();
+  const points = dates.map(d => ({
+    label: gymShortDate(d),
+    value: metric === 'weight' ? byDate[d].weight : metric === 'orm' ? byDate[d].orm : byDate[d].tonnage,
+  })).filter(p => p.value > 0);
+
+  const first = points[0];
+  const last = points[points.length - 1];
+  const delta = first && last ? last.value - first.value : 0;
+
+  const metrics = [
+    { id: 'weight',  label: 'Рабочий вес' },
+    { id: 'orm',     label: '1ПМ (расч.)' },
+    { id: 'tonnage', label: 'Тоннаж' },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <label>Упражнение</label>
+        <select value={name} onChange={e => setName(e.target.value)}>
+          {names.map(x => <option key={x} value={x}>{x}</option>)}
+        </select>
+      </div>
+
+      <div className="inline-flex w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
+        {metrics.map(m => (
+          <button
+            key={m.id}
+            onClick={() => setMetric(m.id)}
+            className={`flex-1 py-2 rounded-lg text-[13px] font-medium ${metric === m.id ? 'text-white' : 'text-[var(--text-muted)]'}`}
+            style={metric === m.id ? { background: GYM_ACCENT } : {}}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      {points.length === 0 ? (
+        <GymEmpty text="Нет данных по этому упражнению" />
+      ) : (
+        <>
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+            <GymLineChart points={points} unit=" кг" />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <GymStat label="Сейчас" value={`${gymRound1(last.value)}`} sub={last.label} />
+            <GymStat label="Было" value={`${gymRound1(first.value)}`} sub={first.label} />
+            <GymStat label="Δ" value={`${delta >= 0 ? '+' : ''}${gymRound1(delta)}`} sub={first.value ? `${Math.round(delta / first.value * 100)}%` : ''} />
+          </div>
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl divide-y divide-[var(--border)]">
+            {dates.slice().reverse().slice(0, 15).map(d => (
+              <div key={d} className="px-4 py-2.5 flex items-center gap-3 text-[14px]">
+                <span className="text-[var(--text-muted)] w-24 flex-shrink-0">{gymShortDate(d)}</span>
+                <span className="flex-1">{gymRound1(byDate[d].weight)} кг · {byDate[d].sets} подх.</span>
+                <span className="text-[var(--text-subtle)] text-[12px]">1ПМ {gymRound1(byDate[d].orm)}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function GymVolumeTab({ sessions }) {
+  const [weeks, setWeeks] = useState(8);
+  const since = gymDaysAgo(weeks * 7);
+  const inRange = sessions.filter(s => (s.date || '') >= since);
+  const sets = gymAllSets(inRange);
+
+  // Недельные столбики тоннажа: пустые недели тоже нужны, иначе график врёт.
+  const buckets = [];
+  const startMonday = gymWeekStart(since);
+  const cursor = gymParseDate(startMonday) || new Date();
+  for (let i = 0; i < weeks; i++) {
+    const iso = dateToLocalStr(cursor);
+    buckets.push({ week: iso, label: gymShortDate(iso), value: 0, sets: 0 });
+    cursor.setDate(cursor.getDate() + 7);
+  }
+  const byWeek = {};
+  buckets.forEach(b => { byWeek[b.week] = b; });
+  sets.forEach(s => {
+    const b = byWeek[gymWeekStart(s.date)];
+    if (b) { b.value += gymSetTonnage(s); b.sets += 1; }
+  });
+
+  const byMuscle = {};
+  sets.forEach(s => {
+    const list = (s.muscles && s.muscles.length) ? s.muscles : ['Без группы'];
+    list.forEach(m => {
+      const cur = byMuscle[m] || { sets: 0, tonnage: 0 };
+      cur.sets += 1 / list.length;
+      cur.tonnage += gymSetTonnage(s) / list.length;
+      byMuscle[m] = cur;
+    });
+  });
+  const muscles = Object.entries(byMuscle).sort((a, b) => b[1].sets - a[1].sets);
+  const maxMuscleSets = Math.max(1, ...muscles.map(m => m[1].sets));
+
+  const totalTonnage = sets.reduce((a, s) => a + gymSetTonnage(s), 0);
+  const workouts = inRange.filter(s => s.finishedAt).length || inRange.length;
+  const avgWeek = weeks ? totalTonnage / weeks : 0;
+
+  return (
+    <div className="space-y-4">
+      <div className="inline-flex w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
+        {[{ w: 4, l: '4 нед' }, { w: 8, l: '8 нед' }, { w: 12, l: '12 нед' }, { w: 52, l: 'Год' }].map(o => (
+          <button
+            key={o.w}
+            onClick={() => setWeeks(o.w)}
+            className={`flex-1 py-2 rounded-lg text-[13px] font-medium ${weeks === o.w ? 'text-white' : 'text-[var(--text-muted)]'}`}
+            style={weeks === o.w ? { background: GYM_ACCENT } : {}}
+          >
+            {o.l}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <GymStat label="Тренировок" value={workouts} sub={`за ${weeks} нед.`} />
+        <GymStat label="Подходов" value={sets.length} />
+        <GymStat label="Тоннаж" value={`${Math.round(totalTonnage)} кг`} />
+        <GymStat label="В неделю" value={`${Math.round(avgWeek)} кг`} sub="в среднем" />
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+        <div className="text-[14px] font-medium mb-3">Тоннаж по неделям</div>
+        <GymBars bars={buckets.map(b => ({ label: b.label, value: b.value }))} unit="кг за неделю" />
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+        <div className="text-[14px] font-medium mb-3">Нагрузка по группам мышц</div>
+        {muscles.length === 0 ? (
+          <div className="text-[13px] text-[var(--text-subtle)]">Нет данных за период</div>
+        ) : (
+          <div className="space-y-2.5">
+            {muscles.map(([m, v]) => (
+              <div key={m}>
+                <div className="flex justify-between text-[13px] mb-1">
+                  <span>{m}</span>
+                  <span className="text-[var(--text-muted)]">{Math.round(v.sets)} подх. · {Math.round(v.tonnage)} кг</span>
+                </div>
+                <div className="h-2 rounded-full bg-[var(--border)] overflow-hidden">
+                  <div className="h-full rounded-full" style={{ width: `${Math.round(v.sets / maxMuscleSets * 100)}%`, background: GYM_ACCENT }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GymHistoryTab({ sessions, onDelete }) {
+  const [openId, setOpenId] = useState('');
+  const list = [...sessions].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+
+  return (
+    <div className="space-y-2">
+      {list.map(s => {
+        const sets = s.sets || [];
+        const tonnage = sets.reduce((a, x) => a + gymSetTonnage(x), 0);
+        const byEx = {};
+        sets.forEach(x => {
+          (byEx[x.exerciseName] = byEx[x.exerciseName] || []).push(x);
+        });
+        const open = openId === s.id;
+        return (
+          <div key={s.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+            <button onClick={() => setOpenId(open ? '' : s.id)} className="w-full px-4 py-3 text-left">
+              <div className="flex items-center gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13px]" style={{ color: GYM_ACCENT }}>{gymFmtDate(s.date)}{!s.finishedAt && ' · не завершена'}</div>
+                  <div className="text-[15px] font-medium truncate">{s.dayTitle || 'Тренировка'}</div>
+                </div>
+                <div className={open ? 'rotate-180' : ''}><Icon name="chevronDown" size={16} /></div>
+              </div>
+              <div className="text-[12px] text-[var(--text-muted)] mt-1">
+                {sets.length} подх. · {Math.round(tonnage)} кг{s.durationSec ? ` · ${gymFmtDuration(s.durationSec)}` : ''}
+              </div>
+            </button>
+            {open && (
+              <div className="px-4 pb-4">
+                {Object.keys(byEx).map(nm => (
+                  <div key={nm} className="py-2 border-t border-[var(--border)]">
+                    <div className="text-[14px] font-medium">{nm}</div>
+                    <div className="text-[13px] text-[var(--text-muted)] mt-0.5">
+                      {byEx[nm].sort((a, b) => (a.setIndex || 0) - (b.setIndex || 0))
+                        .map(x => `${gymRound1(gymNum(x.weight)) || '—'}×${gymInt(x.reps, 0)}`).join(' · ')}
+                    </div>
+                  </div>
+                ))}
+                <button
+                  onClick={() => { if (confirm('Удалить эту тренировку из истории?')) onDelete(s.id); }}
+                  className="mt-3 text-[13px] text-red-500 flex items-center gap-1.5"
+                >
+                  <Icon name="trash" size={14} /> Удалить тренировку
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function GymRecordsTab({ sessions }) {
+  const recs = {};
+  gymAllSets(sessions).forEach(s => {
+    const k = gymKey(s.exerciseName);
+    if (!k) return;
+    const cur = recs[k] || { name: s.exerciseName, weight: 0, weightAt: '', reps: 0, repsAt: '', orm: 0, ormAt: '', sets: 0 };
+    cur.sets += 1;
+    const w = gymNum(s.weight);
+    if (w > cur.weight) { cur.weight = w; cur.weightAt = s.date; }
+    const r = gymInt(s.reps, 0);
+    if (r > cur.reps) { cur.reps = r; cur.repsAt = s.date; }
+    const o = gymEpley(s.weight, s.reps);
+    if (o > cur.orm) { cur.orm = o; cur.ormAt = s.date; }
+    recs[k] = cur;
+  });
+  const list = Object.values(recs).sort((a, b) => b.orm - a.orm);
+
+  if (list.length === 0) return <GymEmpty text="Рекордов пока нет" />;
+
+  return (
+    <div className="space-y-2">
+      {list.map(r => (
+        <div key={r.name} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3">
+          <div className="flex items-center gap-2">
+            <span style={{ color: '#eab308' }}><Icon name="starFilled" size={16} /></span>
+            <div className="text-[15px] font-medium flex-1 min-w-0 truncate">{r.name}</div>
+          </div>
+          <div className="grid grid-cols-3 gap-2 mt-2 text-center">
+            <div>
+              <div className="text-[11px] text-[var(--text-muted)]">Макс. вес</div>
+              <div className="text-[15px] font-medium">{gymRound1(r.weight) || '—'} кг</div>
+              <div className="text-[11px] text-[var(--text-subtle)]">{gymShortDate(r.weightAt)}</div>
+            </div>
+            <div>
+              <div className="text-[11px] text-[var(--text-muted)]">Макс. повторы</div>
+              <div className="text-[15px] font-medium">{r.reps || '—'}</div>
+              <div className="text-[11px] text-[var(--text-subtle)]">{gymShortDate(r.repsAt)}</div>
+            </div>
+            <div>
+              <div className="text-[11px] text-[var(--text-muted)]">1ПМ (расч.)</div>
+              <div className="text-[15px] font-medium">{gymRound1(r.orm) || '—'} кг</div>
+              <div className="text-[11px] text-[var(--text-subtle)]">{gymShortDate(r.ormAt)}</div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ============== ПРОЧЕЕ ==============
 // Раздел-«сборник» для того, что не тянет на собственный пункт меню.
 // Домашний экран — сетка иконок-приложений (как на телефоне), а не вкладки:
@@ -21422,6 +23289,7 @@ function CampingPackingEditor({ catalogItems, categories, initial, onSave, onClo
 const MISC_APPS = [
   { id: 'wishlist', label: 'Хотелки',    icon: 'heart',      color: '#be185d' },
   { id: 'cards',    label: 'Карты',      icon: 'creditCard', color: '#1d4ed8' },
+  { id: 'gym',      label: 'GYM',        icon: 'dumbbell',   color: '#0d9488' },
   { id: 'english',  label: 'English',    icon: 'book',       color: '#0f766e' },
   { id: 'cars',     label: 'Автомобиль', icon: 'car',        color: '#6d28d9' },
   { id: 'settings', label: 'Настройки',  icon: 'settings',   color: '#4b5563' },
@@ -21480,6 +23348,7 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab }) {
         />
       )}
       {sub === 'wishlist' && <WishlistView data={data} setData={setData} />}
+      {sub === 'gym' && <GymView data={data} setData={setData} />}
     </div>
   );
 }
