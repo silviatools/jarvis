@@ -198,6 +198,7 @@ const DEFAULT_SETTINGS = {
   voiceModel: '',
   voiceTtsVoice: 'nova',
   gymVoice: true,        // озвучивание подходов и отдыха на тренировке
+  gymBackgroundAudio: false, // звук с погашенным экраном (ценой чужой музыки)
   notifyRouting: {},
   backupReminder: { enabled: false, frequency: 'weekly', time: '03:00', dayOfWeek: 0, dayOfMonth: 1 },
   lastBackupSentAt: '',
@@ -21891,14 +21892,20 @@ const gymSay = (text, enabled = true) => {
   } catch (_) { /* синтез недоступен — тренировке это не мешает */ }
 };
 
-// ── Звук тренировки с погашенным экраном ───────────────────────────────────
-// iOS усыпляет веб-приложение, как только гаснет экран: таймеры замирают, а
-// синтез речи молчит и потом вываливает накопленные фразы при возврате. Что
-// НЕ усыпляется — активное воспроизведение аудио. Поэтому на время тренировки
-// держим зацикленный неслышимый трек: он оставляет за страницей аудиосессию
-// (и жизнь), а сигналы отдыха играем обычным <audio> — такой звук проходит и
-// на заблокированном экране. Речь при этом остаётся как есть: включён экран —
-// слышно фразу, выключен — слышен сигнал.
+// ── Звук тренировки ────────────────────────────────────────────────────────
+// На iOS аудиосессия одна на всех, и выбрать можно только одно из двух:
+//
+//   Web Audio (по умолчанию) — звук подмешивается к чужому. Музыка в
+//     наушниках продолжает играть, сигналы слышны поверх неё. Но с погашенным
+//     экраном система глушит и его, и всё веб-приложение целиком.
+//
+//   <audio> (режим «звук с погашенным экраном») — страница забирает
+//     аудиосессию себе: сигналы и таймер переживают блокировку, но чужая
+//     музыка при этом останавливается. Держится это зацикленным неслышимым
+//     треком: без активного воспроизведения iOS усыпит страницу.
+//
+// Поэтому режим — осознанный выбор пользователя, а не умолчание. Речь в обоих
+// случаях идёт своим путём (синтез подмешивается к музыке, не прерывая её).
 const gymWavDataUri = (samples, rate = 8000) => {
   const n = samples.length;
   const buf = new ArrayBuffer(44 + n * 2);
@@ -21941,7 +21948,40 @@ const gymBeepSamples = (count = 1, rate = 8000) => {
 
 const gymSound = (() => {
   let keepEl = null;
+  let ctx = null;
   const cues = {};
+
+  const audioCtx = () => {
+    try {
+      const C = window.AudioContext || window.webkitAudioContext;
+      if (!C) return null;
+      if (!ctx) ctx = new C();
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      return ctx;
+    } catch (_) { return null; }
+  };
+
+  // Сигнал поверх музыки: короткие тона синтезируем на месте, ничего не
+  // воспроизводя как медиа — иначе iOS поставит чужой плеер на паузу.
+  const mixedBeep = (count) => {
+    const c = audioCtx();
+    if (!c) return;
+    let t = c.currentTime + 0.03;
+    for (let i = 0; i < count; i++) {
+      const osc = c.createOscillator();
+      const gain = c.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.4, t + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.16);
+      osc.connect(gain);
+      gain.connect(c.destination);
+      osc.start(t);
+      osc.stop(t + 0.18);
+      t += 0.25;
+    }
+  };
   const cueEl = (count) => {
     if (!cues[count]) {
       const el = new Audio(gymWavDataUri(gymBeepSamples(count)));
@@ -21953,7 +21993,9 @@ const gymSound = (() => {
   };
   return {
     // Вызывать только из обработчика жеста: без него iOS не отдаёт аудиовыход.
-    start() {
+    // background=false — просто прогреваем Web Audio, чужую музыку не трогаем.
+    start(background) {
+      if (!background) { audioCtx(); return; }
       try {
         if (!keepEl) {
           keepEl = new Audio(gymWavDataUri(gymSilenceSamples()));
@@ -21984,8 +22026,9 @@ const gymSound = (() => {
         } catch (_) {}
       }
     },
-    cue(count = 1, enabled = true) {
+    cue(count = 1, enabled = true, background = false) {
       if (!enabled) return;
+      if (!background) { mixedBeep(count); return; }
       try {
         const el = cueEl(count);
         el.currentTime = 0;
@@ -22343,6 +22386,7 @@ function GymView({ data, setData }) {
         sessions={sessions}
         settings={data.settings}
         onToggleVoice={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymVoice: on } }))}
+        onToggleBackgroundAudio={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymBackgroundAudio: on } }))}
         onSave={saveSession}
         onDelete={deleteSession}
         onExit={() => { setSessionId(''); setScreen('day'); }}
@@ -22446,7 +22490,7 @@ function GymResumeBanner({ session, settings, onResume }) {
       onClick={() => {
         // Возврат к тренировке — единственный жест на этом экране, другого
         // шанса забрать аудиовыход у iOS не будет.
-        if ((settings || {}).gymVoice !== false) gymSound.start();
+        if ((settings || {}).gymVoice !== false) gymSound.start(!!(settings || {}).gymBackgroundAudio);
         onResume(session);
       }}
       className="w-full mb-4 rounded-2xl px-4 py-3 flex items-center gap-3 text-left text-white"
@@ -22784,7 +22828,7 @@ function GymDayView({ day, index, exercises, sessions, programName, settings, on
             const first = exercises[0];
             const row = first ? gymPlanRows(first)[0] : null;
             const voice = (settings || {}).gymVoice !== false;
-            if (voice) gymSound.start();
+            if (voice) gymSound.start(!!(settings || {}).gymBackgroundAudio);
             gymPrimeVoice(
               voice,
               row ? `Поехали. ${gymSaySet(row, gymPctBase(first, sessions), first.name)}` : 'Поехали',
@@ -23344,8 +23388,11 @@ const gymPrevBest = (sessions, name, beforeMs) => {
   return { weight, orm };
 };
 
-function GymSessionView({ session, day, exercises, sessions, settings, onToggleVoice, onSave, onDelete, onExit }) {
+function GymSessionView({ session, day, exercises, sessions, settings, onToggleVoice, onToggleBackgroundAudio, onSave, onDelete, onExit }) {
   const voiceOn = (settings || {}).gymVoice !== false;
+  // Режим «звук с погашенным экраном» забирает аудиовыход у чужого плеера,
+  // поэтому включается только вручную.
+  const bgAudio = !!(settings || {}).gymBackgroundAudio;
   const say = (text) => gymSay(text, voiceOn);
   const [openId, setOpenId] = useState(exercises[0] ? exercises[0].id : '');
   const [drafts, setDrafts] = useState({});
@@ -23480,13 +23527,13 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     const left = Math.ceil((restUntil - now) / 1000);
     if (restSpoken.current.total > 12 && left <= 10 && left > 0 && restSpoken.current.ten !== restUntil) {
       restSpoken.current.ten = restUntil;
-      gymSound.cue(1, voiceOn);
+      gymSound.cue(1, voiceOn, bgAudio);
       say('Десять секунд');
     }
     if (left <= 0 && restSpoken.current.zero !== restUntil) {
       restSpoken.current.zero = restUntil;
       setRestUntil(0);
-      gymSound.cue(2, voiceOn);
+      gymSound.cue(2, voiceOn, bgAudio);
       announceNext();
     }
   }, [now, restUntil]);
@@ -23581,7 +23628,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
               const next = !voiceOn;
               onToggleVoice(next);
               // Включение — это жест: заодно разблокируем синтез на iOS.
-              if (next) { gymSound.start(); gymPrimeVoice(true, 'Озвучка включена'); }
+              if (next) { gymSound.start(bgAudio); gymPrimeVoice(true, 'Озвучка включена'); }
               else { window.speechSynthesis?.cancel(); gymSound.stop(); }
             }}
             title={voiceOn ? 'Выключить озвучку' : 'Включить озвучку'}
@@ -23607,6 +23654,28 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
           {logged.length > 0 && <span>В плане: {inPlan} / {logged.length}</span>}
         </div>
       </div>
+
+      {voiceOn && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 mb-4 flex items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="text-[14px]">Звук с погашенным экраном</div>
+            <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">
+              {bgAudio
+                ? 'Сигналы слышны при заблокированном экране, но музыка в других приложениях остановится'
+                : 'Музыка играет как обычно, сигналы звучат поверх неё — но только пока экран включён'}
+            </div>
+          </div>
+          <Toggle
+            checked={bgAudio}
+            onChange={(on) => {
+              onToggleBackgroundAudio(on);
+              // Переключение — жест: тут же занимаем или освобождаем выход.
+              if (on) gymSound.start(true);
+              else gymSound.stop();
+            }}
+          />
+        </div>
+      )}
 
       {restLeft > 0 && (
         <div className="rounded-2xl px-4 py-3 mb-4 flex items-center gap-3 text-white" style={{ background: '#3f5372' }}>
