@@ -22105,21 +22105,22 @@ function GymView({ data, setData }) {
   const saveSession = (s) => upsert('gymSessions', s);
 
   const deleteProgram = (id) => {
-    if (!confirm('Удалить тренировку со всеми днями, упражнениями и историей?')) return;
+    if (!confirm('Удалить тренировку со всеми днями и упражнениями? История проведённых тренировок сохранится.')) return;
     setData(d => {
       const dayIds = (d.gymDays || []).filter(x => x.programId === id).map(x => x.id);
       const exIds = (d.gymExercises || []).filter(x => dayIds.includes(x.dayId)).map(x => x.id);
-      const sesIds = (d.gymSessions || []).filter(x => x.programId === id).map(x => x.id);
       let del = gymWithDeleted(d.deletedIds, 'gymPrograms', [id]);
       del = gymWithDeleted(del, 'gymDays', dayIds);
       del = gymWithDeleted(del, 'gymExercises', exIds);
-      del = gymWithDeleted(del, 'gymSessions', sesIds);
       return {
         ...d,
         gymPrograms: (d.gymPrograms || []).filter(x => x.id !== id),
         gymDays: (d.gymDays || []).filter(x => x.programId !== id),
         gymExercises: (d.gymExercises || []).filter(x => !dayIds.includes(x.dayId)),
-        gymSessions: (d.gymSessions || []).filter(x => x.programId !== id),
+        // gymSessions намеренно не трогаем: сделанные подходы — отдельная
+        // коллекция и самостоятельный факт. В каждой записи уже лежат имена
+        // упражнения и дня, поэтому история и аналитика читаются и без
+        // программы, из которой её когда-то делали.
         deletedIds: del,
       };
     });
@@ -23307,10 +23308,24 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     };
     const rest = Math.max(0, gymInt(plan.restSec, 0));
     const exists = logged.some(s => s.id === rec.id);
-    onSave({
-      ...session,
-      sets: exists ? logged.map(s => s.id === rec.id ? rec : s) : [...logged, rec],
-    });
+    const nextSets = exists ? logged.map(s => s.id === rec.id ? rec : s) : [...logged, rec];
+    onSave({ ...session, sets: nextSets });
+
+    const remaining = (e) => {
+      const total = Math.max(planRowsOf(e).length, extra[e.id] || 0);
+      const done = new Set(nextSets.filter(x => x.exerciseId === e.id).map(x => x.setIndex || 0));
+      return Array.from({ length: total }, (_, idx) => idx).filter(idx => !done.has(idx));
+    };
+
+    if (remaining(ex).length === 0) {
+      // Следующее незакрытое упражнение ищем от текущего вниз по списку, а
+      // потом по кругу — так порядок совпадает с тем, как идёт тренировка,
+      // даже если упражнения выполнялись вразнобой.
+      const from = exercises.findIndex(e => e.id === ex.id);
+      const ordered = [...exercises.slice(from + 1), ...exercises.slice(0, Math.max(0, from))];
+      const nextEx = ordered.find(e => remaining(e).length > 0);
+      setOpenId(nextEx ? nextEx.id : '');
+    }
 
     if (!exists) {
       const prevBest = gymPrevBest(sessions, ex.name, session.startedAt || Date.now());
