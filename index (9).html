@@ -23994,11 +23994,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       reps,
       at: Date.now(),
     };
-    const rest = Math.max(0, gymInt(plan.restSec, 0));
     const exists = logged.some(s => s.id === rec.id);
     const nextSets = exists ? logged.map(s => s.id === rec.id ? rec : s) : [...logged, rec];
-    const restUntilMs = rest ? Date.now() + rest * 1000 : 0;
-    onSave({ ...session, sets: nextSets, restUntil: restUntilMs, restTotal: rest });
 
     const remaining = (e) => {
       const total = Math.max(planRowsOf(e).length, extra[e.id] || 0);
@@ -24019,6 +24016,23 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       setJustOpened(nextEx ? nextEx.id : '');
     }
 
+    // Записан последний запланированный подход — отдыхать больше не перед чем,
+    // тренировка на этом и заканчивается.
+    const workoutDone = exerciseDone && !nextEx;
+    const rest = workoutDone ? 0 : Math.max(0, gymInt(plan.restSec, 0));
+    const restUntilMs = rest ? Date.now() + rest * 1000 : 0;
+    const finishedAt = workoutDone ? Date.now() : 0;
+    onSave({
+      ...session,
+      sets: nextSets,
+      restUntil: restUntilMs,
+      restTotal: rest,
+      ...(workoutDone ? {
+        finishedAt,
+        durationSec: Math.max(1, Math.round((finishedAt - (session.startedAt || finishedAt)) / 1000)),
+      } : {}),
+    });
+
     if (!exists) {
       const prevBest = gymPrevBest(sessions, ex.name, session.startedAt || Date.now());
       const isRecord = gymIsWorking(rec) && prevBest.weight > 0
@@ -24026,7 +24040,12 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       const parts = [];
       if (override && override.confirm) parts.push(override.confirm);
       if (isRecord) parts.push('Личный рекорд!');
-      if (rest) {
+      if (workoutDone) {
+        const working = nextSets.filter(gymIsWorking);
+        const tonnage = working.reduce((a, x) => a + gymSetTonnage(x), 0);
+        parts.push(`Это был последний подход. Тренировка завершена. ${working.length} ${gymPlural(working.length, 'рабочий подход', 'рабочих подхода', 'рабочих подходов')}, тоннаж ${Math.round(tonnage)} килограмм`);
+        say(parts.join('. '));
+      } else if (rest) {
         // Закрыл упражнение — сразу говорим, что дальше и с чего начинать: за
         // время отдыха надо успеть дойти до нужного снаряда и занять его,
         // поэтому название идёт ДО длительности отдыха.
@@ -24057,6 +24076,9 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       }
     }
     if (rest) setRestUntil(restUntilMs);
+    else setRestUntil(0);
+    // Уходим с экрана тренировки сами: она закончена и уже сохранена.
+    if (workoutDone) onExit();
   };
 
   // Голосовой отсчёт отдыха. Завязан на тот же тик, что и таймер на экране,
