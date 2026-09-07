@@ -22637,6 +22637,7 @@ function GymView({ data, setData }) {
   const [dayId, setDayId] = useState('');
   const [exerciseId, setExerciseId] = useState(''); // '' → новое упражнение
   const [sessionId, setSessionId] = useState('');
+  const [summaryId, setSummaryId] = useState('');
 
   const program = programs.find(p => p.id === programId) || null;
   const day = allDays.find(d => d.id === dayId) || null;
@@ -22783,6 +22784,20 @@ function GymView({ data, setData }) {
   const runningSession = screen === 'session' ? sessions.find(x => x.id === sessionId) : null;
   const screenNow = (screen === 'session' && !runningSession) ? 'day' : screen;
 
+  if (screenNow === 'summary') {
+    const done = sessions.find(x => x.id === summaryId);
+    if (done) {
+      return (
+        <GymSessionSummary
+          session={done}
+          exercises={exercisesOf(done.dayId)}
+          sessions={sessions}
+          onClose={() => { setSummaryId(''); setScreen('day'); }}
+        />
+      );
+    }
+  }
+
   if (screenNow === 'analytics') {
     return <GymAnalyticsView sessions={sessions} onBack={() => setScreen(programId ? 'program' : 'programs')} onDeleteSession={deleteSession} />;
   }
@@ -22802,6 +22817,7 @@ function GymView({ data, setData }) {
         onSave={saveSession}
         onDelete={deleteSession}
         onExit={() => { setSessionId(''); setScreen('day'); }}
+        onFinished={(id) => { setSessionId(''); setSummaryId(id); setScreen('summary'); }}
       />
     );
   }
@@ -23801,16 +23817,157 @@ const gymPrevBest = (sessions, name, beforeMs) => {
   const key = gymKey(name);
   let weight = 0;
   let orm = 0;
+  let reps = 0;
+  let seen = false;
   gymEachSet(sessions, (s) => {
     if (!gymIsWorking(s) || gymKey(s.exerciseName) !== key) return;
     if ((s.at || 0) >= beforeMs) return;
+    seen = true;
     weight = Math.max(weight, gymNum(s.weight));
     orm = Math.max(orm, gymEpley(s.weight, s.reps));
+    reps = Math.max(reps, gymInt(s.reps, 0));
   });
-  return { weight, orm };
+  return { weight, orm, reps, seen };
 };
 
-function GymSessionView({ session, day, exercises, sessions, settings, onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onSave, onDelete, onExit }) {
+// Итог сразу после тренировки: что сделано, как это легло в план и не побит
+// ли рекорд. Считается из самой сессии, поэтому открывается и позже, из истории.
+function GymSessionSummary({ session, exercises, sessions, onClose }) {
+  const sets = session.sets || [];
+  const working = sets.filter(gymIsWorking);
+  const warmups = sets.length - working.length;
+  const tonnage = working.reduce((a, s) => a + gymSetTonnage(s), 0);
+  const totalReps = working.reduce((a, s) => a + gymInt(s.reps, 0), 0);
+
+  const exById = {};
+  (exercises || []).forEach(e => { exById[e.id] = e; });
+
+  // Группируем по упражнению в порядке выполнения
+  const groups = [];
+  const index = {};
+  sets.slice().sort((a, b) => (a.at || 0) - (b.at || 0)).forEach(s => {
+    const key = s.exerciseId || gymKey(s.exerciseName);
+    if (!index[key]) {
+      index[key] = { name: s.exerciseName || 'Без названия', exId: s.exerciseId, list: [] };
+      groups.push(index[key]);
+    }
+    index[key].list.push(s);
+  });
+
+  let inPlan = 0;
+  let planChecked = 0;
+  sets.forEach(s => {
+    const ex = exById[s.exerciseId];
+    if (!ex) return;
+    const row = gymPlanRows(ex)[s.setIndex || 0];
+    if (!row) return;
+    planChecked += 1;
+    if (gymFactBadge(row, gymPctBase(ex, sessions), s.weight, s.reps).tone === 'ok') inPlan += 1;
+  });
+
+  // Рекорды считаем относительно того, что было ДО этой тренировки
+  const records = [];
+  groups.forEach(g => {
+    const mine = g.list.filter(gymIsWorking);
+    if (mine.length === 0) return;
+    const prev = gymPrevBest(sessions, g.name, session.startedAt || Date.now());
+    if (!prev.seen) return;
+    const bestWeight = mine.reduce((a, s) => Math.max(a, gymNum(s.weight)), 0);
+    const bestOrm = mine.reduce((a, s) => Math.max(a, gymEpley(s.weight, s.reps)), 0);
+    const bestReps = mine.reduce((a, s) => Math.max(a, gymInt(s.reps, 0)), 0);
+    if (prev.weight > 0) {
+      if (bestWeight > prev.weight) records.push(`${g.name}: ${gymRound1(bestWeight)} кг (было ${gymRound1(prev.weight)})`);
+      else if (bestOrm > prev.orm) records.push(`${g.name}: 1ПМ ${gymRound1(bestOrm)} кг (было ${gymRound1(prev.orm)})`);
+    } else if (!bestWeight && bestReps > prev.reps) {
+      records.push(`${g.name}: ${bestReps} повт. своим весом (было ${prev.reps})`);
+    }
+  });
+
+  return (
+    <div className="fade-in pb-10">
+      <div className="mb-5 flex items-center justify-between gap-3">
+        <button onClick={onClose} className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)]">
+          <Icon name="chevronLeft" size={16} /> Готово
+        </button>
+        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest">Итог тренировки</div>
+      </div>
+
+      <div className="rounded-2xl p-5 text-white mb-4" style={{ background: 'linear-gradient(135deg, #1f2937 0%, #0f766e 100%)' }}>
+        <div className="text-[13px] opacity-80">{gymFmtDate(session.date)}</div>
+        <div className="font-display text-2xl mt-0.5">{session.dayTitle || 'Тренировка'}</div>
+        <div className="text-[13px] opacity-80 mt-3">
+          {session.durationSec ? gymFmtDuration(session.durationSec) : 'без учёта времени'}
+          {planChecked > 0 && ` · в плане ${inPlan} из ${planChecked}`}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 mb-4">
+        <GymStat label="Рабочих подходов" value={working.length} sub={warmups ? `+ ${warmups} разминочных` : ''} />
+        <GymStat label="Повторов" value={totalReps} />
+        <GymStat label="Тоннаж" value={`${Math.round(tonnage)} кг`} sub={tonnage ? '' : 'подходы со своим весом'} />
+        <GymStat label="Упражнений" value={groups.length} />
+      </div>
+
+      {records.length > 0 && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 mb-4">
+          <div className="text-[14px] font-medium mb-2 flex items-center gap-2">
+            <span style={{ color: '#eab308' }}><Icon name="starFilled" size={16} /></span> Личные рекорды
+          </div>
+          <div className="space-y-1">
+            {records.map((r, i) => <div key={i} className="text-[13px] text-[var(--text-muted)]">{r}</div>)}
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {groups.map((g, i) => {
+          const ex = exById[g.exId];
+          const base = ex ? gymPctBase(ex, sessions) : 0;
+          return (
+            <div key={i} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3">
+              <div className="text-[15px] font-medium">{g.name}</div>
+              <div className="mt-1.5 space-y-1">
+                {g.list.map((s, j) => {
+                  const row = ex ? gymPlanRows(ex)[s.setIndex || 0] : null;
+                  const badge = row ? gymFactBadge(row, base, s.weight, s.reps) : null;
+                  const warm = !gymIsWorking(s);
+                  return (
+                    <div key={j} className="flex items-center gap-2 text-[13px]">
+                      <span className="w-[86px] flex-shrink-0" style={{ color: gymKindColor(warm ? 'warmup' : 'working') }}>
+                        {row && row.label ? row.label : (warm ? 'Разминка' : 'Рабочий')}
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        {gymNum(s.weight) ? `${gymRound1(gymNum(s.weight))} кг × ${gymInt(s.reps, 0)}` : `${gymInt(s.reps, 0)} повт. своим весом`}
+                      </span>
+                      {badge && (
+                        <span
+                          className="text-[11px] px-2 py-0.5 rounded-full flex-shrink-0"
+                          style={badge.tone === 'ok'
+                            ? { background: '#ccfbf1', color: '#0f766e' }
+                            : badge.tone === 'under'
+                              ? { background: '#fee2e2', color: '#b91c1c' }
+                              : { background: '#dbeafe', color: '#1d4ed8' }}
+                        >
+                          {badge.text}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <button onClick={onClose} className="w-full mt-6 py-3.5 rounded-xl text-white font-medium" style={{ background: GYM_ACCENT }}>
+        Готово
+      </button>
+    </div>
+  );
+}
+
+function GymSessionView({ session, day, exercises, sessions, settings, onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onSave, onDelete, onExit, onFinished }) {
   const voiceOn = (settings || {}).gymVoice !== false;
   // Режим «звук с погашенным экраном» забирает аудиовыход у чужого плеера,
   // поэтому включается только вручную.
@@ -24035,8 +24192,12 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
 
     if (!exists) {
       const prevBest = gymPrevBest(sessions, ex.name, session.startedAt || Date.now());
-      const isRecord = gymIsWorking(rec) && prevBest.weight > 0
-        && (rec.weight > prevBest.weight || gymEpley(rec.weight, rec.reps) > prevBest.orm);
+      const isRecord = gymIsWorking(rec) && prevBest.seen && (
+        prevBest.weight > 0
+          ? (rec.weight > prevBest.weight || gymEpley(rec.weight, rec.reps) > prevBest.orm)
+          // Со своим весом расти можно только повторениями — их и считаем.
+          : (!rec.weight && rec.reps > prevBest.reps)
+      );
       const parts = [];
       if (override && override.confirm) parts.push(override.confirm);
       if (isRecord) parts.push('Личный рекорд!');
@@ -24077,8 +24238,9 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     }
     if (rest) setRestUntil(restUntilMs);
     else setRestUntil(0);
-    // Уходим с экрана тренировки сами: она закончена и уже сохранена.
-    if (workoutDone) onExit();
+    // Уходим с экрана тренировки сами: она закончена и уже сохранена, дальше
+    // показываем итог.
+    if (workoutDone) onFinished(session.id);
   };
 
   // Голосовой отсчёт отдыха. Завязан на тот же тик, что и таймер на экране,
@@ -24233,7 +24395,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       durationSec: Math.max(1, Math.round((finishedAt - (session.startedAt || finishedAt)) / 1000)),
     });
     say(`Тренировка завершена. ${doneWorking} ${gymPlural(doneWorking, 'рабочий подход', 'рабочих подхода', 'рабочих подходов')}, тоннаж ${Math.round(tonnage)} килограмм.`);
-    onExit();
+    onFinished(session.id);
   };
 
   const exitKeepOpen = () => {
@@ -24460,9 +24622,11 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
                     const plan = planRowsOf(ex)[i] || { kind: 'working', label: `Подход ${i + 1}` };
                     const warm = plan.kind === 'warmup';
                     const badge = done ? gymFactBadge(plan, pctBaseOf(ex), done.weight, done.reps) : null;
-                    const isPr = done && gymIsWorking(done)
-                      && (gymNum(done.weight) > prev.weight || gymEpley(done.weight, done.reps) > prev.orm)
-                      && prev.weight > 0;
+                    const isPr = done && gymIsWorking(done) && prev.seen && (
+                      prev.weight > 0
+                        ? (gymNum(done.weight) > prev.weight || gymEpley(done.weight, done.reps) > prev.orm)
+                        : (!gymNum(done.weight) && gymInt(done.reps, 0) > prev.reps)
+                    );
                     return (
                       <div
                         key={i}
@@ -24705,36 +24869,50 @@ function GymProgressTab({ sessions }) {
   names.sort((a, b) => a.localeCompare(b, 'ru'));
 
   const [name, setName] = useState(names[0] || '');
-  const [metric, setMetric] = useState('weight'); // weight | orm | tonnage
+  const [metric, setMetric] = useState('weight'); // weight | orm | tonnage | reps
   const key = gymKey(name);
 
   // По одной точке на тренировку: лучший вес / лучший расчётный 1ПМ / тоннаж.
   const byDate = {};
   gymWorkingSets(sessions).forEach(s => {
     if (gymKey(s.exerciseName) !== key) return;
-    const cur = byDate[s.date] || { weight: 0, orm: 0, tonnage: 0, sets: 0, best: null };
+    const cur = byDate[s.date] || { weight: 0, orm: 0, tonnage: 0, reps: 0, totalReps: 0, sets: 0, best: null };
     cur.weight = Math.max(cur.weight, gymNum(s.weight));
     const orm = gymEpley(s.weight, s.reps);
     if (orm > cur.orm) { cur.orm = orm; cur.best = s; }
     cur.tonnage += gymSetTonnage(s);
+    cur.reps = Math.max(cur.reps, gymInt(s.reps, 0));
+    cur.totalReps += gymInt(s.reps, 0);
     cur.sets += 1;
     byDate[s.date] = cur;
   });
   const dates = Object.keys(byDate).sort();
+  // Упражнение без веса (пресс, подтягивания, планка) существует в истории
+  // ровно так же, как любое другое — просто мерить его надо повторениями.
+  const hasWeight = dates.some(d => byDate[d].weight > 0);
+  const shown = (!hasWeight && metric !== 'reps') ? 'reps' : metric;
   const points = dates.map(d => ({
     label: gymShortDate(d),
-    value: metric === 'weight' ? byDate[d].weight : metric === 'orm' ? byDate[d].orm : byDate[d].tonnage,
+    value: shown === 'weight' ? byDate[d].weight
+      : shown === 'orm' ? byDate[d].orm
+      : shown === 'reps' ? byDate[d].reps
+      : shown === 'totalReps' ? byDate[d].totalReps
+      : byDate[d].tonnage,
   })).filter(p => p.value > 0);
 
   const first = points[0];
   const last = points[points.length - 1];
   const delta = first && last ? last.value - first.value : 0;
 
-  const metrics = [
-    { id: 'weight',  label: 'Рабочий вес' },
-    { id: 'orm',     label: '1ПМ (расч.)' },
-    { id: 'tonnage', label: 'Тоннаж' },
-  ];
+  const metrics = hasWeight
+    ? [
+        { id: 'weight',  label: 'Рабочий вес' },
+        { id: 'orm',     label: '1ПМ (расч.)' },
+        { id: 'tonnage', label: 'Тоннаж' },
+        { id: 'reps',    label: 'Повторы' },
+      ]
+    // Без веса остальные метрики всегда нулевые — не показываем их вовсе.
+    : [{ id: 'reps', label: 'Повторы в подходе' }, { id: 'totalReps', label: 'Всего повторов' }];
 
   return (
     <div className="space-y-4">
@@ -24750,8 +24928,8 @@ function GymProgressTab({ sessions }) {
           <button
             key={m.id}
             onClick={() => setMetric(m.id)}
-            className={`flex-1 py-2 rounded-lg text-[13px] font-medium ${metric === m.id ? 'text-white' : 'text-[var(--text-muted)]'}`}
-            style={metric === m.id ? { background: GYM_ACCENT } : {}}
+            className={`flex-1 py-2 rounded-lg text-[13px] font-medium ${shown === m.id ? 'text-white' : 'text-[var(--text-muted)]'}`}
+            style={shown === m.id ? { background: GYM_ACCENT } : {}}
           >
             {m.label}
           </button>
@@ -24763,7 +24941,7 @@ function GymProgressTab({ sessions }) {
       ) : (
         <>
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
-            <GymLineChart points={points} unit=" кг" />
+            <GymLineChart points={points} unit={(shown === 'reps' || shown === 'totalReps') ? ' повт.' : ' кг'} />
           </div>
           <div className="grid grid-cols-3 gap-2">
             <GymStat label="Сейчас" value={`${gymRound1(last.value)}`} sub={last.label} />
@@ -24774,8 +24952,14 @@ function GymProgressTab({ sessions }) {
             {dates.slice().reverse().slice(0, 15).map(d => (
               <div key={d} className="px-4 py-2.5 flex items-center gap-3 text-[14px]">
                 <span className="text-[var(--text-muted)] w-24 flex-shrink-0">{gymShortDate(d)}</span>
-                <span className="flex-1">{gymRound1(byDate[d].weight)} кг · {byDate[d].sets} подх.</span>
-                <span className="text-[var(--text-subtle)] text-[12px]">1ПМ {gymRound1(byDate[d].orm)}</span>
+                <span className="flex-1">
+                  {byDate[d].weight > 0
+                    ? `${gymRound1(byDate[d].weight)} кг · ${byDate[d].sets} подх.`
+                    : `своим весом · ${byDate[d].sets} подх.`}
+                </span>
+                <span className="text-[var(--text-subtle)] text-[12px]">
+                  {byDate[d].weight > 0 ? `1ПМ ${gymRound1(byDate[d].orm)}` : `${byDate[d].totalReps} повт.`}
+                </span>
               </div>
             ))}
           </div>
@@ -24811,9 +24995,10 @@ function GymVolumeTab({ sessions }) {
   sets.forEach(s => {
     const list = (s.muscles && s.muscles.length) ? s.muscles : ['Без группы'];
     list.forEach(m => {
-      const cur = byMuscle[m] || { sets: 0, tonnage: 0 };
+      const cur = byMuscle[m] || { sets: 0, tonnage: 0, reps: 0 };
       cur.sets += 1 / list.length;
       cur.tonnage += gymSetTonnage(s) / list.length;
+      cur.reps += gymInt(s.reps, 0) / list.length;
       byMuscle[m] = cur;
     });
   });
@@ -24821,6 +25006,7 @@ function GymVolumeTab({ sessions }) {
   const maxMuscleSets = Math.max(1, ...muscles.map(m => m[1].sets));
 
   const totalTonnage = sets.reduce((a, s) => a + gymSetTonnage(s), 0);
+  const totalReps = sets.reduce((a, s) => a + gymInt(s.reps, 0), 0);
   const workouts = inRange.filter(s => s.finishedAt).length || inRange.length;
   const avgWeek = weeks ? totalTonnage / weeks : 0;
 
@@ -24842,8 +25028,8 @@ function GymVolumeTab({ sessions }) {
       <div className="grid grid-cols-2 gap-2">
         <GymStat label="Тренировок" value={workouts} sub={`за ${weeks} нед.`} />
         <GymStat label="Подходов" value={sets.length} />
-        <GymStat label="Тоннаж" value={`${Math.round(totalTonnage)} кг`} />
-        <GymStat label="В неделю" value={`${Math.round(avgWeek)} кг`} sub="в среднем" />
+        <GymStat label="Повторов" value={totalReps} />
+        <GymStat label="Тоннаж" value={`${Math.round(totalTonnage)} кг`} sub={`в неделю ${Math.round(avgWeek)} кг`} />
       </div>
 
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
@@ -24861,7 +25047,9 @@ function GymVolumeTab({ sessions }) {
               <div key={m}>
                 <div className="flex justify-between text-[13px] mb-1">
                   <span>{m}</span>
-                  <span className="text-[var(--text-muted)]">{Math.round(v.sets)} подх. · {Math.round(v.tonnage)} кг</span>
+                  <span className="text-[var(--text-muted)]">
+                    {Math.round(v.sets)} подх. · {v.tonnage > 0 ? `${Math.round(v.tonnage)} кг` : `${Math.round(v.reps)} повт.`}
+                  </span>
                 </div>
                 <div className="h-2 rounded-full bg-[var(--border)] overflow-hidden">
                   <div className="h-full rounded-full" style={{ width: `${Math.round(v.sets / maxMuscleSets * 100)}%`, background: GYM_ACCENT }} />
@@ -24935,8 +25123,9 @@ function GymRecordsTab({ sessions }) {
   gymWorkingSets(sessions).forEach(s => {
     const k = gymKey(s.exerciseName);
     if (!k) return;
-    const cur = recs[k] || { name: s.exerciseName, weight: 0, weightAt: '', reps: 0, repsAt: '', orm: 0, ormAt: '', sets: 0 };
+    const cur = recs[k] || { name: s.exerciseName, weight: 0, weightAt: '', reps: 0, repsAt: '', orm: 0, ormAt: '', sets: 0, totalReps: 0 };
     cur.sets += 1;
+    cur.totalReps += gymInt(s.reps, 0);
     const w = gymNum(s.weight);
     if (w > cur.weight) { cur.weight = w; cur.weightAt = s.date; }
     const r = gymInt(s.reps, 0);
@@ -24945,7 +25134,9 @@ function GymRecordsTab({ sessions }) {
     if (o > cur.orm) { cur.orm = o; cur.ormAt = s.date; }
     recs[k] = cur;
   });
-  const list = Object.values(recs).sort((a, b) => b.orm - a.orm);
+  // Сортировка по одному 1ПМ уводила упражнения со своим весом в самый низ
+  // списка — сравниваем по числу подходов, это честно для обоих видов.
+  const list = Object.values(recs).sort((a, b) => b.sets - a.sets);
 
   if (list.length === 0) return <GymEmpty text="Рекордов пока нет" />;
 
@@ -24960,8 +25151,8 @@ function GymRecordsTab({ sessions }) {
           <div className="grid grid-cols-3 gap-2 mt-2 text-center">
             <div>
               <div className="text-[11px] text-[var(--text-muted)]">Макс. вес</div>
-              <div className="text-[15px] font-medium">{gymRound1(r.weight) || '—'} кг</div>
-              <div className="text-[11px] text-[var(--text-subtle)]">{gymShortDate(r.weightAt)}</div>
+              <div className="text-[15px] font-medium">{r.weight > 0 ? `${gymRound1(r.weight)} кг` : 'свой вес'}</div>
+              <div className="text-[11px] text-[var(--text-subtle)]">{r.weight > 0 ? gymShortDate(r.weightAt) : `${r.sets} подх.`}</div>
             </div>
             <div>
               <div className="text-[11px] text-[var(--text-muted)]">Макс. повторы</div>
@@ -24969,9 +25160,9 @@ function GymRecordsTab({ sessions }) {
               <div className="text-[11px] text-[var(--text-subtle)]">{gymShortDate(r.repsAt)}</div>
             </div>
             <div>
-              <div className="text-[11px] text-[var(--text-muted)]">1ПМ (расч.)</div>
-              <div className="text-[15px] font-medium">{gymRound1(r.orm) || '—'} кг</div>
-              <div className="text-[11px] text-[var(--text-subtle)]">{gymShortDate(r.ormAt)}</div>
+              <div className="text-[11px] text-[var(--text-muted)]">{r.weight > 0 ? '1ПМ (расч.)' : 'Всего повторов'}</div>
+              <div className="text-[15px] font-medium">{r.weight > 0 ? `${gymRound1(r.orm)} кг` : r.totalReps}</div>
+              <div className="text-[11px] text-[var(--text-subtle)]">{r.weight > 0 ? gymShortDate(r.ormAt) : 'за всю историю'}</div>
             </div>
           </div>
         </div>
