@@ -22339,11 +22339,21 @@ const gymListener = (() => {
   return {
     supported: () => !!SR(),
     start(h, state, denied) {
-      const r = ensure();
+      let r = ensure();
       if (!r) return;
       handler = h; onState = state; onDenied = denied;
       wanted = true;
-      try { r.start(); } catch (_) {}
+      try {
+        r.start();
+      } catch (_) {
+        // После возврата из фона объект распознавания часто остаётся в
+        // состоянии «уже запущено» и молча не слушает до перезагрузки
+        // страницы. Выбрасываем его и берём новый.
+        try { if (r.abort) r.abort(); else r.stop(); } catch (__) {}
+        rec = null;
+        r = ensure();
+        if (r) { try { r.start(); } catch (__) {} }
+      }
     },
     stop() {
       wanted = false;
@@ -22827,6 +22837,9 @@ function GymResumeBanner({ session, settings, onResume }) {
         // Возврат к тренировке — единственный жест на этом экране, другого
         // шанса забрать аудиовыход у iOS не будет.
         if ((settings || {}).gymVoice !== false) gymSound.start(!!(settings || {}).gymBackgroundAudio);
+        // Если приложение перезапускали, разрешение на микрофон надо снова
+        // спросить в жесте — другого шанса на этом экране не будет.
+        if ((settings || {}).gymHandsFree) gymListener.prime();
         onResume(session);
       }}
       className="w-full mb-4 rounded-2xl px-4 py-3 flex items-center gap-3 text-left text-white"
@@ -23742,6 +23755,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   // Если режим был включён до старта тренировки, ждать нечего.
   const [armed, setArmed] = useState(() => !!(settings || {}).gymHandsFree);
   const [listening, setListening] = useState(false);
+  // Метка последнего возврата к экрану — по ней перезапускается микрофон.
+  const [visibleAt, setVisibleAt] = useState(0);
   // Упражнение, которое озвучили последним: по нему решаем, называть ли имя.
   const announcedEx = useRef(exercises[0] ? exercises[0].id : '');
   const voiceHandler = useRef(() => {});
@@ -23808,7 +23823,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       gymListener.stop();
       setListening(false);
     };
-  }, [handsFree, armed, resting]);
+  }, [handsFree, armed, resting, visibleAt]);
 
   useEffect(() => () => gymListener.stop(), []);
 
@@ -23825,11 +23840,20 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     return () => { clearTimeout(scrollTimer); clearTimeout(clearTimer); };
   }, [justOpened]);
 
-  // Возврат к экрану: накопленные фразы уже неактуальны — гасим очередь и
-  // говорим то, что происходит сейчас, а не то, что было пять минут назад.
+  // Уход в фон и возврат. В фоне iOS всё равно усыпляет и микрофон, и речь,
+  // поэтому микрофон отпускаем сами, а по возвращении поднимаем заново —
+  // иначе распознавание остаётся выключенным до перезагрузки страницы.
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState !== 'visible' || !voiceOn) return;
+      if (document.visibilityState !== 'visible') {
+        gymListener.stop();
+        setListening(false);
+        return;
+      }
+      setVisibleAt(Date.now());
+      if (!voiceOn) return;
+      // Накопленные фразы уже неактуальны — гасим очередь и говорим то, что
+      // происходит сейчас, а не то, что было пять минут назад.
       window.speechSynthesis?.cancel();
       const left = restUntil ? Math.ceil((restUntil - Date.now()) / 1000) : 0;
       if (left > 0) say(`Отдых, осталось ${left} ${gymPlural(left, 'секунда', 'секунды', 'секунд')}`);
