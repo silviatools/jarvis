@@ -23755,7 +23755,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   const [now, setNow] = useState(Date.now());
   // Какие фразы уже сказаны для текущего отдыха — чтобы «десять секунд» не
   // повторялось на каждом тике.
-  const restSpoken = useRef({ ten: 0, zero: 0, total: session.restTotal || 0 });
+  const restSpoken = useRef({ thirty: 0, ten: 0, zero: 0, tick: '', total: session.restTotal || 0 });
 
   // Таймер держится в сессии, поэтому любое его изменение туда и пишется.
   const setRest = (untilMs, totalSec) => {
@@ -23930,7 +23930,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
         // Отдых объявляем сразу, следующий подход — когда таймер закончится.
         parts.push(gymSayRest(rest));
         if (parts.length) say(parts.join('. '));
-        restSpoken.current = { ten: 0, zero: 0, total: rest };
+        restSpoken.current = { thirty: 0, ten: 0, zero: 0, tick: '', total: rest };
       } else {
         announceNext({ exId: ex.id, index: i }, parts.join('. '));
       }
@@ -23943,10 +23943,22 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   useEffect(() => {
     if (!restUntil) return;
     const left = Math.ceil((restUntil - now) / 1000);
-    if (restSpoken.current.total > 12 && left <= 10 && left > 0 && restSpoken.current.ten !== restUntil) {
+    // Предупреждения имеют смысл только если отдых заметно длиннее их самих:
+    // на 30-секундном отдыхе «тридцать секунд» прозвучало бы сразу.
+    if (restSpoken.current.total > 35 && left <= 30 && left > 10 && restSpoken.current.thirty !== restUntil) {
+      restSpoken.current.thirty = restUntil;
+      say('Тридцать секунд');
+    }
+    if (restSpoken.current.total > 12 && left <= 10 && left > 3 && restSpoken.current.ten !== restUntil) {
       restSpoken.current.ten = restUntil;
       gymSound.cue(1, voiceOn, bgAudio);
       say('Десять секунд');
+    }
+    // Последние три секунды — по сигналу в секунду: обратный отсчёт слышно и с
+    // погашенным экраном, в отличие от речи.
+    if (left <= 3 && left > 0 && restSpoken.current.tick !== `${restUntil}:${left}`) {
+      restSpoken.current.tick = `${restUntil}:${left}`;
+      gymSound.cue(1, voiceOn, bgAudio);
     }
     if (left <= 0 && restSpoken.current.zero !== restUntil) {
       restSpoken.current.zero = restUntil;
