@@ -22236,6 +22236,7 @@ const GYM_NUM_WORDS = {
   'девятнадцать': 19, 'двадцать': 20, 'тридцать': 30, 'сорок': 40,
   'пятьдесят': 50, 'шестьдесят': 60, 'семьдесят': 70, 'восемьдесят': 80,
   'девяносто': 90, 'сто': 100, 'двести': 200, 'триста': 300,
+  'полтора': 1.5, 'полторы': 1.5,
 };
 
 // Safari отдаёт числа то цифрами, то словами — приводим к цифрам.
@@ -22252,7 +22253,11 @@ const gymNormalizeNumbers = (text) => {
     out.push(w);
   });
   flush();
-  return out.join(' ');
+  // «двенадцать с половиной» → 12.5. Гантели и блины часто половинчатые, а
+  // произносить «двенадцать точка пять» никто не станет.
+  return out.join(' ')
+    .replace(/(\d+(?:\.\d+)?)\s+с\s+половиной/g, (m, n) => String(parseFloat(n) + 0.5))
+    .replace(/(\d+(?:\.\d+)?)\s+половин\w*/g, (m, n) => String(parseFloat(n) + 0.5));
 };
 
 const gymParseVoicePhrase = (raw) => {
@@ -23929,10 +23934,9 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       if (override && override.confirm) parts.push(override.confirm);
       if (isRecord) parts.push('Личный рекорд!');
       if (rest) {
-        // Закрыл упражнение — сразу говорим, что дальше и с чего начинать:
-        // за время отдыха надо успеть дойти до нужного снаряда и занять его.
-        // Длительность отдыха при этом идёт последней, чтобы не потеряться
-        // между названием и весом.
+        // Закрыл упражнение — сразу говорим, что дальше и с чего начинать: за
+        // время отдыха надо успеть дойти до нужного снаряда и занять его,
+        // поэтому название идёт ДО длительности отдыха.
         if (exerciseDone && nextEx) {
           const idx = remaining(nextEx)[0];
           const row = planRowsOf(nextEx)[idx];
@@ -23946,6 +23950,13 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
           }
         }
         parts.push(gymSayRest(rest));
+        // Упражнение продолжается — называем следующий подход ПОСЛЕ отдыха:
+        // снаряд менять не надо, но вес на нём поменять, может быть, придётся.
+        // «В прошлый раз» тут не повторяем — это уже прозвучало в начале.
+        if (!exerciseDone) {
+          const row = planRowsOf(ex)[remaining(ex)[0]];
+          if (row) parts.push(`Дальше: ${gymSaySet(row, gymPctBase(ex, sessions), '')}`);
+        }
         if (parts.length) say(parts.join('. '));
         restSpoken.current = { thirty: 0, ten: 0, zero: 0, tick: '', total: rest };
       } else {
