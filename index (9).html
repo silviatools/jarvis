@@ -11858,7 +11858,7 @@ function HolidayForm({ initial, onSave, onClose }) {
           <input
             value={dateInput}
             onChange={e => handleDateChange(e.target.value)}
-            inputMode="numeric"
+            inputMode="decimal"
             placeholder={form.type === 'birthday' ? '20.04.2003' : '20.04'}
           />
           <p className="text-xs text-[var(--text-subtle)] mt-1">
