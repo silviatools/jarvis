@@ -21705,6 +21705,15 @@ const gymBestLogged = (sessions, name) => {
   return best;
 };
 
+const gymLastWorkingWeight = (sessions, name, beforeMs) => {
+  const key = gymKey(name);
+  const mine = gymWorkingSets(sessions).filter(s =>
+    gymKey(s.exerciseName) === key && s.date && !(beforeMs && (s.at || 0) >= beforeMs));
+  if (mine.length === 0) return 0;
+  const lastDate = mine.reduce((acc, s) => (s.date > acc ? s.date : acc), '');
+  return mine.reduce((acc, s) => (s.date === lastDate ? Math.max(acc, gymNum(s.weight)) : acc), 0);
+};
+
 // «Макс. вес», от которого считаются проценты: указанный руками или, если не
 // указан, лучший поднятый вес из истории.
 const gymMaxFor = (ex, sessions) => {
@@ -21721,6 +21730,13 @@ const gymPctBase = (ex, sessions) => {
   if (ex?.mode === 'groups') {
     const g = gymGroups(ex).find(x => x.kind !== 'warmup' && (x.weightUnit || 'kg') === 'kg' && !gymRange(x.weight).empty);
     if (g) return gymRangeMid(gymRange(g.weight));
+    const manual = gymNum(ex?.maxWeight);
+    if (manual > 0) return manual;
+    // Проценты здесь — «от рабочего», поэтому считаем от веса последней
+    // тренировки, а не от рекорда за всю историю: иначе разминка к рабочим
+    // 55-65 считалась бы от давнего максимума и вышла бы тяжелее нужного.
+    const last = gymLastWorkingWeight(sessions, ex?.name, 0);
+    if (last > 0) return last;
   }
   return gymMaxFor(ex, sessions);
 };
@@ -22216,12 +22232,20 @@ const gymPlural = (n, one, few, many) => {
   return many;
 };
 
+// Вес в плане задан в килограммах — называем килограммы. Задан процентами —
+// называем проценты: пересчёт в килограммы виден на экране, а на слух «сто
+// процентов» понятнее, чем «шестьдесят два с половиной».
 const gymSayWeight = (row, base) => {
-  const t = gymRowTarget(row, base);
-  if (t.body) return 'со своим весом';
-  if (t.empty || (!t.min && !t.max)) return '';
-  if (t.min === t.max) return `${gymRound1(t.min)} ${gymPlural(t.min, 'килограмм', 'килограмма', 'килограмм')}`;
-  return `от ${gymRound1(t.min)} до ${gymRound1(t.max)} килограмм`;
+  const unit = row?.unit || 'kg';
+  if (unit === 'body') return 'со своим весом';
+  const r = gymRange(row?.weight);
+  if (r.empty) return '';
+  if (unit === 'pct') {
+    const pct = r.min === r.max ? `${gymRound1(r.min)}` : `от ${gymRound1(r.min)} до ${gymRound1(r.max)}`;
+    return row?.kind === 'warmup' ? `${pct} процентов от рабочего` : `${pct} процентов`;
+  }
+  if (r.min === r.max) return `${gymRound1(r.min)} ${gymPlural(r.min, 'килограмм', 'килограмма', 'килограмм')}`;
+  return `от ${gymRound1(r.min)} до ${gymRound1(r.max)} килограмм`;
 };
 
 const gymSayReps = (row) => {
@@ -22243,13 +22267,18 @@ const gymSayRest = (sec) => {
 
 // «Рабочий 2. 60 килограмм, 8 повторений» — то, что нужно услышать, не глядя
 // в телефон. Название упражнения добавляем только когда оно сменилось.
-const gymSaySet = (row, base, exerciseName) => {
+const gymSaySet = (row, base, exerciseName, lastWeight) => {
   const parts = [];
   if (exerciseName) parts.push(exerciseName);
   const head = [row?.label, [gymSayWeight(row, base), gymSayReps(row)].filter(Boolean).join(', ')]
     .filter(Boolean).join('. ');
   if (head) parts.push(head);
   if (row?.rir) parts.push(`RIR ${row.rir}`);
+  // Рабочий подход в процентах: килограммы не названы, поэтому даём ориентир —
+  // с чем это упражнение делали в прошлый раз. На разминке это лишнее.
+  if ((row?.unit || 'kg') === 'pct' && row?.kind !== 'warmup' && lastWeight > 0) {
+    parts.push(`В прошлый раз ${gymRound1(lastWeight)} ${gymPlural(lastWeight, 'килограмм', 'килограмма', 'килограмм')}`);
+  }
   return parts.join('. ');
 };
 
@@ -22995,7 +23024,14 @@ function GymDayView({ day, index, exercises, sessions, programName, settings, on
             if (voice) gymSound.start(!!(settings || {}).gymBackgroundAudio);
             gymPrimeVoice(
               voice,
-              row ? `Поехали. ${gymSaySet(row, gymPctBase(first, sessions), first.name)}` : 'Поехали',
+              row
+                ? `Поехали. ${gymSaySet(
+                    row,
+                    gymPctBase(first, sessions),
+                    first.name,
+                    gymLastWorkingWeight(sessions, first.name, Date.now()),
+                  )}`
+                : 'Поехали',
             );
             onStart();
           }}
@@ -23563,6 +23599,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   // Если режим был включён до старта тренировки, ждать нечего.
   const [armed, setArmed] = useState(() => !!(settings || {}).gymHandsFree);
   const [listening, setListening] = useState(false);
+  // Упражнение, которое озвучили последним: по нему решаем, называть ли имя.
+  const announcedEx = useRef(exercises[0] ? exercises[0].id : '');
   const voiceHandler = useRef(() => {});
   const say = (text) => gymSay(text, voiceOn);
   const [openId, setOpenId] = useState(exercises[0] ? exercises[0].id : '');
@@ -23756,7 +23794,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
         if (parts.length) say(parts.join('. '));
         restSpoken.current = { ten: 0, zero: 0, total: rest };
       } else {
-        announceNext({ exId: ex.id, index: i }, ex.id, parts.join('. '));
+        announceNext({ exId: ex.id, index: i }, parts.join('. '));
       }
     }
     if (rest) setRestUntil(restUntilMs);
@@ -23805,14 +23843,23 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     return null;
   };
 
-  const announceNext = (skip, prevExId, prefix) => {
+  const announceNext = (skip, prefix) => {
     const head = prefix ? [prefix] : [];
     setArmed(true);
     const t = nextTarget(skip);
     if (!t) { say([...head, 'Все подходы записаны. Можно завершать.'].join('. ')); return; }
     if (t.ex.id !== openId) setOpenId(t.ex.id);
-    const changed = t.ex.id !== (prevExId || openId);
-    say([...head, gymSaySet(t.row, gymPctBase(t.ex, sessions), changed ? t.ex.name : '')].join('. '));
+    // Сравниваем с тем, что объявляли в прошлый раз, а не с раскрытым сейчас:
+    // экран переключается на новое упражнение сразу по записи последнего
+    // подхода, задолго до этой фразы, и по openId смена уже «не видна».
+    const changed = t.ex.id !== announcedEx.current;
+    announcedEx.current = t.ex.id;
+    say([...head, gymSaySet(
+      t.row,
+      gymPctBase(t.ex, sessions),
+      changed ? t.ex.name : '',
+      gymLastWorkingWeight(sessions, t.ex.name, session.startedAt || Date.now()),
+    )].join('. '));
   };
 
   // Подход, который предстоит сделать: первый незаписанный в упражнении.
