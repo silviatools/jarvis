@@ -7894,6 +7894,141 @@ ${wordList}
   );
 }
 
+const ENG_STORY_DEFAULT_PROMPT = `You are a friendly English teacher. The student was given this list of words (with their Russian translations) and asked to write one short text in English using all of them:
+
+{words}
+
+Their text:
+"{text}"
+
+Reply in English, briefly:
+1. Check whether every word from the list appears in the text and is used correctly (meaning + grammar). List any that are missing or misused, with a quick fix for each.
+2. Comment on the overall text — is it coherent and natural? Suggest one or two improvements if useful.
+Be warm and concise, no markdown, no headings.`;
+
+// Given N Russian words, the student writes ONE text in English that uses
+// all of them, then AI reviews whether every word was used and used
+// correctly. English translations are hidden behind a button so the
+// student has to recall them, but can peek if stuck.
+function StoryTab({rawData,ai,prompt,onSavePrompt}){
+  const [filter,setFilter]=useState('all');
+  const [order,setOrder]=useState('random');
+  const [dateRange,setDateRange]=useState('all');
+  const [count,setCount]=useState(10);
+  const [promptDraft,setPromptDraft]=useState(prompt);
+  useEffect(()=>{setPromptDraft(prompt);},[prompt]);
+  const [phase,setPhase]=useState('setup'); // setup|write
+  const [words,setWords]=useState([]);
+  const [showTr,setShowTr]=useState(false);
+  const [text,setText]=useState('');
+  const [feedback,setFeedback]=useState(null); // {loading,text}
+  const taRef=useRef(null);
+  useEffect(()=>{if(phase==='write'&&taRef.current)taRef.current.focus();},[phase]);
+
+  const start=()=>{
+    if(!rawData){alert('Load data first');return;}
+    let pool=rawData.slice();
+    if(filter==='hard') pool=pool.filter(w=>w.hard);
+    else if(filter==='not-hard') pool=pool.filter(w=>!w.hard);
+    else if(filter==='not-shown') pool=pool.filter(w=>!w.showNew);
+    if(dateRange!=='all'){
+      const days=parseInt(dateRange);
+      const times=rawData.map(w=>engParseDate(w.date)).filter(Boolean).map(d=>d.getTime());
+      const ref=times.length?Math.max(...times):Date.now();
+      pool=pool.filter(w=>{const d=engParseDate(w.date);return d&&d.getTime()>=ref-(days-1)*86400000;});
+    }
+    if(!pool.length){alert('No words match this filter');return;}
+    if(order==='random') pool.sort(()=>Math.random()-.5);
+    else if(order==='newest') pool.sort((a,b)=>(engParseDate(b.date)?.getTime()||0)-(engParseDate(a.date)?.getTime()||0));
+    else if(order==='oldest') pool.sort((a,b)=>(engParseDate(a.date)?.getTime()||0)-(engParseDate(b.date)?.getTime()||0));
+    const n=count>0?Math.min(count,pool.length):pool.length;
+    setWords(pool.slice(0,n));
+    setShowTr(false);setText('');setFeedback(null);
+    setPhase('write');
+  };
+
+  const check=async()=>{
+    const val=text.trim();
+    if(!val) return;
+    setFeedback({loading:true,text:''});
+    try{
+      const wordList=words.map(w=>`- ${w.en} (${w.ru})`).join('\n');
+      const p=(prompt||ENG_STORY_DEFAULT_PROMPT).replaceAll('{words}',wordList).replaceAll('{text}',val);
+      const c=await engCallAI(ai,p);
+      setFeedback({loading:false,text:c});
+    }catch(e){
+      setFeedback({loading:false,text:'(AI unavailable: '+e.message+')'});
+    }
+  };
+
+  if(!rawData) return <div className="text-center py-20 text-[var(--text-subtle)]"><p>Load data from Google Sheets</p></div>;
+
+  if(phase==='setup') return(
+    <div className="max-w-lg mx-auto space-y-5 pb-8">
+      <div><label>Word filter</label>
+        <select value={filter} onChange={e=>setFilter(e.target.value)}>
+          <option value="all">All words</option>
+          <option value="not-shown">New words only (not shown yet)</option>
+          <option value="hard">Hard words only</option>
+          <option value="not-hard">Non-hard words only</option>
+        </select>
+      </div>
+      <div><label>Word count (0 = all)</label><input type="number" min="0" max="500" value={count||''} onChange={e=>setCount(parseInt(e.target.value)||0)}/></div>
+      <div><label>Order</label><select value={order} onChange={e=>setOrder(e.target.value)}><option value="random">Random</option><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></div>
+      <div><label>Date range</label><select value={dateRange} onChange={e=>setDateRange(e.target.value)}><option value="all">All time</option><option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option></select></div>
+      <div>
+        <label>AI review prompt</label>
+        <textarea value={promptDraft} onChange={e=>setPromptDraft(e.target.value)} rows={9} style={{resize:'vertical',fontFamily:'inherit'}} className="w-full text-sm"/>
+        <p className="text-xs text-[var(--text-subtle)] mt-1">Placeholders: <code>{'{words}'}</code>, <code>{'{text}'}</code></p>
+        <div className="flex gap-2 mt-2">
+          <button onClick={()=>onSavePrompt(promptDraft)} disabled={promptDraft===prompt} className="btn-secondary text-xs py-1.5 px-3">Save prompt</button>
+          <button onClick={()=>setPromptDraft(ENG_STORY_DEFAULT_PROMPT)} className="btn-secondary text-xs py-1.5 px-3">↺ Reset</button>
+        </div>
+      </div>
+      <button onClick={start} className="btn-primary w-full py-3.5">▶ Start</button>
+    </div>
+  );
+
+  return(
+    <div className="max-w-2xl mx-auto space-y-4 pb-8">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-6">
+        <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
+          <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest">write one text using all these words</div>
+          <button onClick={()=>setShowTr(v=>!v)} className="btn-secondary text-xs py-1.5 px-3">{showTr?'🙈 Hide translations':'👁 Show translations'}</button>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {words.map((w,i)=>(
+            <span key={i} className="px-2.5 py-1 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-sm">
+              {w.ru}{showTr&&<span className="text-[var(--text-subtle)]"> — {w.en}</span>}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <label>Your text</label>
+        <textarea ref={taRef} value={text} onChange={e=>setText(e.target.value)} rows={8} placeholder="Write one text in English using all the words above..." className="w-full" disabled={!!feedback}/>
+      </div>
+
+      {!feedback?(
+        <div className="flex gap-2">
+          <button onClick={check} disabled={!text.trim()} className="btn-primary px-5">Check</button>
+          <button onClick={start} className="btn-secondary px-4">🔀 New words</button>
+        </div>
+      ):(
+        <>
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4">
+            {feedback.loading
+              ? <div className="text-sm text-[var(--text-muted)]">⏳ AI is reviewing your text...</div>
+              : <div className="text-sm text-[var(--text-muted)] whitespace-pre-wrap">{feedback.text}</div>}
+          </div>
+          <button onClick={start} className="btn-primary w-full py-3">↻ Try new words</button>
+        </>
+      )}
+    </div>
+  );
+}
+
 // Legacy-чтение настроек English из localStorage (так они хранились раньше —
 // на каждом устройстве отдельно, и Safari стирал их через ~7 дней простоя).
 const engLegacyCfg = () => ({
@@ -7921,6 +8056,7 @@ function EnglishView({ data, setData, embedded }){
   const studyPlan = data.engStudyPlan || { text: '', updatedAt: 0 };
   const mySentPrompt = typeof data.engMySentPrompt === 'string' ? data.engMySentPrompt : ENG_MYSENT_DEFAULT_PROMPT;
   const cipherPrompt = typeof data.engCipherPrompt === 'string' ? data.engCipherPrompt : ENG_CIPHER_DEFAULT_PROMPT;
+  const storyPrompt = typeof data.engStoryPrompt === 'string' ? data.engStoryPrompt : ENG_STORY_DEFAULT_PROMPT;
   const [rawData,setRawData]=useState(()=>{try{return JSON.parse(localStorage.getItem('eng_raw_data')||'null');}catch{return null;}});
   const [loading,setLoading]=useState(false);
   const initStatus=()=>{try{const d=localStorage.getItem('eng_raw_data');return d?{type:'ok',text:`${JSON.parse(d).length} words`}:{type:'',text:'Load from Google Sheets'};}catch{return{type:'',text:'Load from Google Sheets'};}};
@@ -7935,6 +8071,7 @@ function EnglishView({ data, setData, embedded }){
   const saveStudyPlan=(p)=>setData(d=>({...d, engStudyPlan:{ text: p.text || '', updatedAt: p.updatedAt || Date.now() }}));
   const saveMySentPrompt=(p)=>setData(d=>({...d, engMySentPrompt: p}));
   const saveCipherPrompt=(p)=>setData(d=>({...d, engCipherPrompt: p}));
+  const saveStoryPrompt=(p)=>setData(d=>({...d, engStoryPrompt: p}));
 
   // One-time migration: keys entered before this fix only live in this
   // browser's localStorage — move them into the DB so they stop getting lost.
@@ -7987,7 +8124,7 @@ function EnglishView({ data, setData, embedded }){
           </div>
         </div>
         <div className="flex gap-2 py-3 border-b border-[var(--border)]">
-          {[['cards','🃏 Flashcards'],['fill','✍ Fill in the blank'],['mysentence','📝 My Sentence'],['cipher','🔐 Cipher'],['typing','⌨ Typing']].map(([id,l])=>(
+          {[['cards','🃏 Flashcards'],['fill','✍ Fill in the blank'],['mysentence','📝 My Sentence'],['cipher','🔐 Cipher'],['story','📖 Story'],['typing','⌨ Typing']].map(([id,l])=>(
             <button key={id} onClick={()=>setEngTab(id)} className={`px-3 py-2 rounded-xl text-sm font-medium transition-all ${engTab===id?'bg-[var(--text)] text-white':'text-[var(--text-muted)] hover:text-[var(--text)]'}`}>{l}</button>
           ))}
         </div>
@@ -7996,6 +8133,7 @@ function EnglishView({ data, setData, embedded }){
           {engTab==='fill'&&<FillTab rawData={rawData} ai={ai}/>}
           {engTab==='mysentence'&&<MySentenceTab rawData={rawData} ai={ai} prompt={mySentPrompt} onSavePrompt={saveMySentPrompt}/>}
           {engTab==='cipher'&&<CipherTab rawData={rawData} ai={ai} prompt={cipherPrompt} onSavePrompt={saveCipherPrompt}/>}
+          {engTab==='story'&&<StoryTab rawData={rawData} ai={ai} prompt={storyPrompt} onSavePrompt={saveStoryPrompt}/>}
           {engTab==='typing'&&<TypingTab rawData={rawData} ai={ai}/>}
         </div>
       </div>
