@@ -22242,7 +22242,13 @@ const GYM_NUM_WORDS = {
 // Safari отдаёт числа то цифрами, то словами — приводим к цифрам.
 // «сто двадцать пять» → «125», «двадцать пять на двенадцать» → «25 на 12».
 const gymNormalizeNumbers = (text) => {
-  const words = String(text || '').toLowerCase().replace(/[.,!?]/g, ' ').split(/\s+/).filter(Boolean);
+  const words = String(text || '').toLowerCase()
+    // Разделитель дробной части прячем, иначе он срежется вместе с точками и
+    // запятыми предложения, и «22,5» превратится в два числа.
+    .replace(/(\d)[.,](\d)/g, '$1\u0001$2')
+    .replace(/[.,!?]/g, ' ')
+    .replace(/\u0001/g, '.')
+    .split(/\s+/).filter(Boolean);
   const out = [];
   let acc = null;
   const flush = () => { if (acc !== null) { out.push(String(acc)); acc = null; } };
@@ -22260,6 +22266,18 @@ const gymNormalizeNumbers = (text) => {
     .replace(/(\d+(?:\.\d+)?)\s+половин\w*/g, (m, n) => String(parseFloat(n) + 0.5));
 };
 
+// Повторы дробными не бывают, а вес в зале не бывает отрицательным и
+// шестисоткилограммовым. Всё, что не проходит проверку, помечаем invalid:
+// переспросить дешевле, чем потом искать в истории неверный подход.
+const gymLogPhrase = (weight, reps) => {
+  const okReps = reps === undefined
+    || (Number.isFinite(reps) && Math.abs(reps - Math.round(reps)) < 0.001 && reps >= 1 && reps <= 100);
+  const okWeight = weight === undefined
+    || (Number.isFinite(weight) && weight >= 0 && weight <= 500);
+  if (!okReps || !okWeight) return { cmd: 'log', invalid: true };
+  return { cmd: 'log', weight, reps: reps === undefined ? undefined : Math.round(reps) };
+};
+
 const gymParseVoicePhrase = (raw) => {
   const t = gymNormalizeNumbers(raw);
   if (!t) return null;
@@ -22272,24 +22290,35 @@ const gymParseVoicePhrase = (raw) => {
   // «своим весом 15». Вес принудительно нулевой, даже если в плане он есть.
   const nums = (t.match(/\d+(?:\.\d+)?/g) || []).map(Number);
   if (/(без веса|без отягощ\w*|сво(?:им|ем|ём) весом|собственн\w+ вес\w*|на своём весе)/.test(t)) {
-    return { cmd: 'log', weight: 0, reps: nums.length ? Math.round(nums[nums.length - 1]) : undefined };
+    return gymLogPhrase(0, nums.length ? nums[nums.length - 1] : undefined);
   }
 
   // Явные единицы надёжнее порядка слов: «12 повторений с 25 килограммами».
   const byKg = t.match(/(\d+(?:\.\d+)?)\s*(?:кг|килог\w*)/);
-  const byReps = t.match(/(\d+)\s*(?:повтор\w*|раз\w*)/);
+  const byReps = t.match(/(\d+(?:\.\d+)?)\s*(?:повтор\w*|раз\w*)/);
   if (byKg || byReps) {
-    return {
-      cmd: 'log',
-      weight: byKg ? parseFloat(byKg[1]) : undefined,
-      reps: byReps ? parseInt(byReps[1], 10) : undefined,
-    };
+    let weight = byKg ? parseFloat(byKg[1]) : undefined;
+    let reps = byReps ? parseFloat(byReps[1]) : undefined;
+    // Названа единица только для одной величины — вторую берём из того, что
+    // осталось во фразе: «22 с половиной на 14 раз» — это и вес, и повторы.
+    if (weight === undefined && reps !== undefined) {
+      const rest = t.replace(byReps[0], ' ').match(/\d+(?:\.\d+)?/g) || [];
+      if (rest.length === 1) weight = parseFloat(rest[0]);
+    }
+    if (reps === undefined && weight !== undefined) {
+      const rest = t.replace(byKg[0], ' ').match(/\d+(?:\.\d+)?/g) || [];
+      if (rest.length === 1) reps = parseFloat(rest[0]);
+    }
+    return gymLogPhrase(weight, reps);
   }
 
+  // Больше двух чисел без единиц — почти наверняка расслышано неверно
+  // («двадцать два» иногда приходит как «20 20»). Лучше переспросить.
+  if (nums.length > 2) return { cmd: 'log', invalid: true };
   // Два числа — это вес и повторы, одно — только повторы: для упражнений без
   // веса достаточно сказать «15», вес подставится из плана (там ноль).
-  if (nums.length >= 2) return { cmd: 'log', weight: nums[0], reps: Math.round(nums[1]) };
-  if (nums.length === 1) return { cmd: 'log', reps: Math.round(nums[0]) };
+  if (nums.length === 2) return gymLogPhrase(nums[0], nums[1]);
+  if (nums.length === 1) return gymLogPhrase(undefined, nums[0]);
   return null;
 };
 
@@ -23757,6 +23786,9 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   const [listening, setListening] = useState(false);
   // Метка последнего возврата к экрану — по ней перезапускается микрофон.
   const [visibleAt, setVisibleAt] = useState(0);
+  // Последняя распознанная фраза: показываем как есть — так видно, что именно
+  // услышал телефон, когда запись получилась неожиданной.
+  const [heard, setHeard] = useState('');
   // Упражнение, которое озвучили последним: по нему решаем, называть ли имя.
   const announcedEx = useRef(exercises[0] ? exercises[0].id : '');
   const voiceHandler = useRef(() => {});
@@ -24132,12 +24164,27 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   };
 
   voiceHandler.current = (variants) => {
+    // Распознавание даёт несколько вариантов фразы. Берём первый, который не
+    // только разобрался, но и выглядит правдоподобно: верхний вариант часто
+    // бывает мусорным («двадцать два» → «20 20»).
     let parsed = null;
+    let heardText = '';
+    let looksLikeAttempt = false;
     for (const v of variants) {
-      parsed = gymParseVoicePhrase(v);
-      if (parsed) break;
+      const p = gymParseVoicePhrase(v);
+      if (!p) continue;
+      if (p.invalid) { looksLikeAttempt = true; if (!heardText) heardText = v; continue; }
+      parsed = p;
+      heardText = v;
+      break;
     }
-    if (!parsed) return;   // не разобрали — молчим и слушаем дальше
+    setHeard(heardText || variants[0] || '');
+    if (!parsed) {
+      // Молчим на случайных обрывках разговора, но если во фразе явно были
+      // числа — говорим, что не поняли: иначе непонятно, ждать записи или нет.
+      if (looksLikeAttempt) say('Не понял, повторите');
+      return;
+    }
 
     if (parsed.cmd === 'undo') {
       const last = [...logged].sort((a, b) => (b.at || 0) - (a.at || 0))[0];
@@ -24249,6 +24296,9 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
               </span>
             )}
           </div>
+          {handsFree && heard && (
+            <div className="text-[12px] text-[var(--text-muted)] mt-0.5 truncate">Услышано: «{heard}»</div>
+          )}
           <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">
             {!gymListener.supported()
               ? 'Браузер не поддерживает распознавание речи'
