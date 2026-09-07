@@ -23908,13 +23908,15 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       return Array.from({ length: total }, (_, idx) => idx).filter(idx => !done.has(idx));
     };
 
-    if (remaining(ex).length === 0) {
-      // Следующее незакрытое упражнение ищем от текущего вниз по списку, а
-      // потом по кругу — так порядок совпадает с тем, как идёт тренировка,
-      // даже если упражнения выполнялись вразнобой.
+    // Упражнение закрыто? Тогда следующее незакрытое ищем от текущего вниз по
+    // списку, а потом по кругу — так порядок совпадает с тем, как идёт
+    // тренировка, даже если упражнения выполнялись вразнобой.
+    const exerciseDone = remaining(ex).length === 0;
+    let nextEx = null;
+    if (exerciseDone) {
       const from = exercises.findIndex(e => e.id === ex.id);
       const ordered = [...exercises.slice(from + 1), ...exercises.slice(0, Math.max(0, from))];
-      const nextEx = ordered.find(e => remaining(e).length > 0);
+      nextEx = ordered.find(e => remaining(e).length > 0) || null;
       setOpenId(nextEx ? nextEx.id : '');
       setJustOpened(nextEx ? nextEx.id : '');
     }
@@ -23927,7 +23929,22 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       if (override && override.confirm) parts.push(override.confirm);
       if (isRecord) parts.push('Личный рекорд!');
       if (rest) {
-        // Отдых объявляем сразу, следующий подход — когда таймер закончится.
+        // Закрыл упражнение — сразу говорим, что дальше и с чего начинать:
+        // за время отдыха надо успеть дойти до нужного снаряда и занять его.
+        // Длительность отдыха при этом идёт последней, чтобы не потеряться
+        // между названием и весом.
+        if (exerciseDone && nextEx) {
+          const idx = remaining(nextEx)[0];
+          const row = planRowsOf(nextEx)[idx];
+          if (row) {
+            parts.push(`Следующее упражнение: ${gymSaySet(
+              row,
+              gymPctBase(nextEx, sessions),
+              nextEx.name,
+              gymLastWorkingWeight(sessions, nextEx.name, session.startedAt || Date.now()),
+            )}`);
+          }
+        }
         parts.push(gymSayRest(rest));
         if (parts.length) say(parts.join('. '));
         restSpoken.current = { thirty: 0, ten: 0, zero: 0, tick: '', total: rest };
