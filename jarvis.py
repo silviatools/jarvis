@@ -72,6 +72,15 @@ SPA_ROUTES = {
     "/misc", "/wishlist", "/cards", "/gym",
 }
 
+# Deep-link routes that get their OWN <link rel="manifest"> (and Apple home-
+# screen title) instead of the site-wide /manifest.json when served — so
+# "Add to Home Screen" from that route installs a distinct icon that opens
+# straight back to it, instead of iOS falling back to the main manifest's
+# start_url "/" (same fix as the per-user /pf/<token>/ finance app below).
+SHORTCUT_MANIFESTS = {
+    "/misc": {"manifest_route": "/misc/manifest.json", "apple_title": "Jarvis: Прочее"},
+}
+
 # ── Парольный доступ на весь сайт ───────────────────────────────────────────
 # Один общий код на семью. Не гейтим гостевые ссылки (/e/<token>, /trip/<token>
 # и их API) — по ним заходят друзья, которые кода не знают и знать не должны.
@@ -2876,7 +2885,9 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._send_login_page(next_path=self.path or "/")
             return
         if route in ("/", "/index.html") or route in SPA_ROUTES:
-            self._serve_html()
+            self._serve_html(route)
+        elif route == "/misc/manifest.json":
+            self._misc_manifest()
         elif token_from_route(route, "/e/"):
             # Гостевая страница события — отдельный файл, не SPA.
             self._serve_event_page()
@@ -3827,6 +3838,38 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _misc_manifest(self):
+        """Manifest for the /misc home-screen shortcut (see SHORTCUT_MANIFESTS
+        and _serve_html) — same fix as _pf_manifest above, but scope stays "/"
+        since /misc is just an entry point into the same single-page app, not
+        a siloed mini-app: once opened, the rest of Jarvis should navigate
+        normally in standalone mode instead of bouncing out to Safari."""
+        manifest = {
+            "id": "/misc",
+            "name": "Jarvis: Прочее",
+            "short_name": "Прочее",
+            "description": "Быстрый доступ к разделу «Прочее»",
+            "start_url": "/misc",
+            "scope": "/",
+            "display": "standalone",
+            "orientation": "portrait",
+            "background_color": "#4F8EF7",
+            "theme_color": "#4F8EF7",
+            "lang": "ru",
+            "icons": [
+                {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+            ],
+        }
+        body = json.dumps(manifest, ensure_ascii=False).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/manifest+json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body)
+
     def _pf_body(self):
         """Разобранное тело запроса или (None, ответ уже отправлен)."""
         length = self._content_length()
@@ -4162,9 +4205,21 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._cors()
             self.end_headers()
 
-    def _serve_html(self):
+    def _serve_html(self, route: str = "/"):
         try:
             content = HTML_FILE.read_bytes()
+            shortcut = SHORTCUT_MANIFESTS.get(route)
+            if shortcut:
+                content = content.replace(
+                    b'<link rel="manifest" href="/manifest.json" />',
+                    f'<link rel="manifest" href="{shortcut["manifest_route"]}" />'.encode("utf-8"),
+                    1,
+                )
+                content = content.replace(
+                    b'<meta name="apple-mobile-web-app-title" content="Jarvis" />',
+                    f'<meta name="apple-mobile-web-app-title" content="{shortcut["apple_title"]}" />'.encode("utf-8"),
+                    1,
+                )
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(content)))
