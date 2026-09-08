@@ -1269,6 +1269,24 @@ const PLANNER_PATH_BY_SUB = { holidays: '/holidays' };
 const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/cars': 'cars', '/settings': 'settings' };
 const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', cars: '/cars', settings: '/settings' };
 
+// Routes that get their own Add-to-Home-Screen shortcut manifest (mirrors
+// SHORTCUT_MANIFESTS in jarvis.py). The server only sets the right
+// <link rel="manifest"> when it actually renders the page for that route —
+// but switching tabs inside the SPA changes the URL via pushState without a
+// real page load, so the tag in the live DOM would otherwise stay whatever
+// it was on first load. Keep it in sync here so "Add to Home Screen" picks
+// up the right shortcut no matter how you navigated to the tab.
+const SHORTCUT_MANIFESTS_CLIENT = {
+  '/misc': { manifestHref: '/misc/manifest.json', appleTitle: 'Jarvis: Прочее' },
+};
+function syncShortcutManifest(path){
+  const shortcut = SHORTCUT_MANIFESTS_CLIENT[path];
+  const link = document.querySelector('link[rel="manifest"]');
+  if(link) link.setAttribute('href', shortcut ? shortcut.manifestHref : '/manifest.json');
+  const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+  if(appleTitle) appleTitle.setAttribute('content', shortcut ? shortcut.appleTitle : 'Jarvis');
+}
+
 const currentPathname = () => {
   try {
     return window.location.pathname.replace(/\/+$/, '') || '/';
@@ -1445,6 +1463,7 @@ function App() {
       }
     }
     navFromPopstate.current = false;
+    syncShortcutManifest(path);
   }, [tab, plannerTab, miscTab]);
 
   useEffect(() => {

@@ -4223,6 +4223,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(content)))
+            if shortcut:
+                # Never let the browser (or iOS's home-screen bookmark step)
+                # serve a stale copy that still has the site-wide manifest link.
+                self.send_header("Cache-Control", "no-store")
             self._cors()
             self.end_headers()
             self.wfile.write(content)
