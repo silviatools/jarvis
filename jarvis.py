@@ -213,8 +213,9 @@ def subscriber_name(subs: dict, chat_id) -> str:
 
 # Which Telegram section each background reminder belongs to. Keep the ids in
 # sync with NOTIFICATION_CATEGORIES in index (9).html — a subscriber with no
-# entry in data.settings.notifyRouting receives every category (default-on,
-# so nobody currently relying on notifications silently loses them).
+# entry in data.settings.notifyRouting receives NOTHING (default-deny). Anyone
+# who messages the bot is auto-subscribed with zero categories; an owner has
+# to explicitly opt them into each category from Settings → Маршрутизация.
 NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "tasks", "backup"}
 
 
@@ -223,9 +224,18 @@ def recipients_for(app_data: dict, subs: dict, category: str) -> list:
     result = []
     for cid in subs.get("chat_ids", []):
         allowed = routing.get(str(cid))
-        if allowed is None or category in allowed:
+        if allowed and category in allowed:
             result.append(cid)
     return result
+
+
+def is_routed_recipient(chat_id, category: str) -> bool:
+    """Guards inline-button callbacks (chk:/diet:) so a chat that isn't routed
+    for a category can't answer it just by tapping a button it happened to
+    receive or keep around — routing must allow it, same as broadcast sends."""
+    app_data = load_app_data()
+    subs = load_subscribers()
+    return chat_id in recipients_for(app_data, subs, category)
 
 
 def freq_days(chore: dict) -> int:
@@ -311,6 +321,10 @@ def handle_diet_callback(token: str, cq: dict):
     data_str = cq.get("data", "") or ""
     if not data_str.startswith("diet:"):
         tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+        return
+    chat_id = ((cq.get("message") or {}).get("chat") or {}).get("id")
+    if not chat_id or not is_routed_recipient(chat_id, "diet"):
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": "Недоступно"})
         return
     parts = data_str.split(":")
     level = parts[1] if len(parts) > 1 else ""
@@ -864,6 +878,10 @@ def handle_checklist_callback(token: str, cq: dict):
     parts = data_str.split(":")
     if len(parts) < 4:
         tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+        return
+    chat_id_check = ((cq.get("message") or {}).get("chat") or {}).get("id")
+    if not chat_id_check or not is_routed_recipient(chat_id_check, "checklist"):
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": "Недоступно"})
         return
     date_iso = parts[1]
     try:
@@ -2835,7 +2853,27 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         if not route_is_public(route) and not self._is_authed():
             self._json(401, {"error": "unauthorized"})
             return
-        if self.path.startswith("/api/photos/"):
+        if self.path.startswith("/api/subscribers/"):
+            raw_cid = self.path[len("/api/subscribers/"):].split("?", 1)[0]
+            try:
+                target_cid = int(raw_cid)
+            except ValueError:
+                self._json(400, {"error": "invalid chat id"})
+                return
+            subs = load_subscribers()
+            subs["chat_ids"] = [c for c in subs.get("chat_ids", []) if c != target_cid]
+            (subs.get("profiles") or {}).pop(str(target_cid), None)
+            save_subscribers(subs)
+            with APP_DATA_LOCK:
+                app = load_app_data()
+                routing = dict((app.get("settings") or {}).get("notifyRouting") or {})
+                if routing.pop(str(target_cid), None) is not None:
+                    settings = dict(app.get("settings") or {})
+                    settings["notifyRouting"] = routing
+                    app["settings"] = settings
+                    save_app_data(app)
+            self._json(200, {"ok": True})
+        elif self.path.startswith("/api/photos/"):
             filename = self.path[len("/api/photos/"):]
             if "/" in filename or ".." in filename or not filename:
                 self._json(400, {"error": "invalid"})

@@ -3673,18 +3673,33 @@ function NotifyRoutingSettings({ data, setData }) {
 
   const isAllowed = (chatId, catId) => {
     const list = routing[chatId];
-    return list ? list.includes(catId) : true; // no entry yet = everything enabled (backward compatible)
+    return list ? list.includes(catId) : false; // no entry yet = ничего не включено (явный opt-in)
   };
 
   const toggle = (chatId, catId) => {
     setData(d => {
       const r = { ...((d.settings || {}).notifyRouting || {}) };
-      const current = r[chatId] ? [...r[chatId]] : NOTIFICATION_CATEGORIES.map(c => c.id);
+      const current = r[chatId] ? [...r[chatId]] : [];
       const idx = current.indexOf(catId);
       if (idx >= 0) current.splice(idx, 1); else current.push(catId);
       r[chatId] = current;
       return { ...d, settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), notifyRouting: r, updatedAt: Date.now() } };
     });
+  };
+
+  const removeSubscriber = (chatId) => {
+    if (!confirm('Удалить подписчика? Он перестанет получать любые уведомления и не сможет отвечать на них, пока не напишет боту заново.')) return;
+    fetch(`/api/subscribers/${chatId}`, { method: 'DELETE' })
+      .then(r => { if (!r.ok) throw new Error(); })
+      .then(() => {
+        setData(d => {
+          const r = { ...((d.settings || {}).notifyRouting || {}) };
+          delete r[chatId];
+          return { ...d, settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), notifyRouting: r, updatedAt: Date.now() } };
+        });
+        load();
+      })
+      .catch(() => alert('Не удалось удалить подписчика.'));
   };
 
   return (
@@ -3693,7 +3708,7 @@ function NotifyRoutingSettings({ data, setData }) {
         <div>
           <h3 className="font-display text-lg mb-1">Маршрутизация уведомлений</h3>
           <p className="text-sm text-[var(--text-muted)]">
-            Кто из подписчиков бота получает уведомления из каждого раздела. Без настройки — получают все.
+            Кто из подписчиков бота получает уведомления из каждого раздела. Без настройки — не получают ничего: включайте нужные категории вручную.
           </p>
         </div>
         <button onClick={load} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0" title="Обновить список">
@@ -3715,7 +3730,13 @@ function NotifyRoutingSettings({ data, setData }) {
         <div className="space-y-3">
           {subs.map(s => (
             <div key={s.chatId} className="border border-[var(--border)] rounded-xl p-3">
-              <div className="text-sm font-medium mb-2">{s.name || `Без имени (${s.chatId})`}</div>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="text-sm font-medium">{s.name || `Без имени (${s.chatId})`}</div>
+                <button onClick={() => removeSubscriber(s.chatId)}
+                  className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500" title="Удалить подписчика">
+                  <Icon name="trash" size={14} />
+                </button>
+              </div>
               <div className="flex flex-wrap gap-1.5">
                 {NOTIFICATION_CATEGORIES.map(cat => {
                   const on = isAllowed(String(s.chatId), cat.id);
