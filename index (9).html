@@ -7081,7 +7081,7 @@ function EngSyncBtn({cfg,toMark,toUnmark,rawData,tcRef,atRef}){
 
 function FlashcardsTab({rawData,cfg,ai}){
   const [phase,setPhase]=useState('setup');
-  const [settings,setSettings]=useState({direction:'en-ru',count:20,order:'random',filter:'all',dateRange:'all',sentence:true,synonyms:true,tts:false,hide:true,repeat:true,auto:false});
+  const [settings,setSettings]=useState({direction:'en-ru',count:20,order:'random',filter:'all',dateRange:'all',sentence:true,synonyms:true,tts:false,repeat:true,auto:false});
   const [sess,setSess]=useState(null);
   const sessRef=useRef(null);
   useEffect(()=>{sessRef.current=sess;},[sess]);
@@ -7199,7 +7199,7 @@ function FlashcardsTab({rawData,cfg,ai}){
       <div><label>Filter</label><select value={settings.filter} onChange={e=>setSettings(s=>({...s,filter:e.target.value}))}><option value="all">All words</option><option value="hard">Hard only ★</option><option value="not-hard">Non-hard only</option><option value="not-shown">Not studied yet</option></select></div>
       <div><label>Period</label><select value={settings.dateRange} onChange={e=>setSettings(s=>({...s,dateRange:e.target.value}))}><option value="all">All time</option><option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option></select></div>
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 space-y-3">
-        {[['sentence','Show example sentence'],['synonyms','Show synonyms'],['hide','Hide word in example'],['repeat','Repeat mistakes'],['auto','Auto-flip (5 sec)'],['tts','TTS pronunciation']].map(([k,l])=>(
+        {[['sentence','Show example sentence'],['synonyms','Show synonyms'],['repeat','Repeat mistakes'],['auto','Auto-flip (5 sec)'],['tts','TTS pronunciation']].map(([k,l])=>(
           <div key={k} className="flex items-center justify-between"><span className="text-sm">{l}</span><Toggle checked={!!settings[k]} onChange={v=>setSettings(s=>({...s,[k]:v}))}/></div>
         ))}
       </div>
@@ -7245,8 +7245,6 @@ function FlashcardsTab({rawData,cfg,ai}){
   const total=sess.queue.length+sess.done.length;
   const prog=sess.done.length/Math.max(total,1)*100;
   const isHard=sess.markHard.has(w.rowIndex)?'marking':(sess.unmarkHard.has(w.rowIndex)?'unmarking':(w.hard?'hard':'none'));
-  let sentF=w.sentence;
-  if(settings.hide&&dir==='en-ru'&&sentF) sentF=sentF.replace(new RegExp('\\b'+engEscRe(w.en.split(' ')[0])+'\\w*','ig'),'___');
   if(settings.tts&&!sess.flipped){const u=new SpeechSynthesisUtterance(dir==='en-ru'?w.en:'');u.lang='en-US';u.rate=.9;window.speechSynthesis?.cancel();window.speechSynthesis?.speak(u);}
   const cachedSent=getSent(w.en);
   const pendingSent=settings.sentence&&engAIConfigured(ai)?sess.queue.concat(sess.again).filter(x=>!getSent(x.en)).length:0;
@@ -7268,7 +7266,6 @@ function FlashcardsTab({rawData,cfg,ai}){
               {isHard==='marking'?'★ +hard':isHard==='unmarking'?'✕ −hard':isHard==='hard'?'★ hard':'☆ hard'}
             </button>
             <div className="font-display text-4xl sm:text-5xl font-bold leading-tight mb-3">{front}</div>
-            {settings.sentence&&sentF&&<div className="text-sm text-[var(--text-muted)] italic max-w-sm leading-relaxed">{sentF}</div>}
             <div className="absolute bottom-3 text-[10px] text-[var(--text-subtle)]">↻ click or press Space</div>
           </div>
           <div style={{...ENG_CARD_S.face,...ENG_CARD_S.back}}>
