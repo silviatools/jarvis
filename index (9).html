@@ -1269,6 +1269,24 @@ const PLANNER_PATH_BY_SUB = { holidays: '/holidays' };
 const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/cars': 'cars', '/settings': 'settings' };
 const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', cars: '/cars', settings: '/settings' };
 
+// Routes that get their own Add-to-Home-Screen shortcut manifest (mirrors
+// SHORTCUT_MANIFESTS in jarvis.py). The server only sets the right
+// <link rel="manifest"> when it actually renders the page for that route —
+// but switching tabs inside the SPA changes the URL via pushState without a
+// real page load, so the tag in the live DOM would otherwise stay whatever
+// it was on first load. Keep it in sync here so "Add to Home Screen" picks
+// up the right shortcut no matter how you navigated to the tab.
+const SHORTCUT_MANIFESTS_CLIENT = {
+  '/misc': { manifestHref: '/misc/manifest.json', appleTitle: 'Jarvis: Прочее' },
+};
+function syncShortcutManifest(path){
+  const shortcut = SHORTCUT_MANIFESTS_CLIENT[path];
+  const link = document.querySelector('link[rel="manifest"]');
+  if(link) link.setAttribute('href', shortcut ? shortcut.manifestHref : '/manifest.json');
+  const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+  if(appleTitle) appleTitle.setAttribute('content', shortcut ? shortcut.appleTitle : 'Jarvis');
+}
+
 const currentPathname = () => {
   try {
     return window.location.pathname.replace(/\/+$/, '') || '/';
@@ -1445,6 +1463,7 @@ function App() {
       }
     }
     navFromPopstate.current = false;
+    syncShortcutManifest(path);
   }, [tab, plannerTab, miscTab]);
 
   useEffect(() => {
@@ -3673,18 +3692,33 @@ function NotifyRoutingSettings({ data, setData }) {
 
   const isAllowed = (chatId, catId) => {
     const list = routing[chatId];
-    return list ? list.includes(catId) : true; // no entry yet = everything enabled (backward compatible)
+    return list ? list.includes(catId) : false; // no entry yet = ничего не включено (явный opt-in)
   };
 
   const toggle = (chatId, catId) => {
     setData(d => {
       const r = { ...((d.settings || {}).notifyRouting || {}) };
-      const current = r[chatId] ? [...r[chatId]] : NOTIFICATION_CATEGORIES.map(c => c.id);
+      const current = r[chatId] ? [...r[chatId]] : [];
       const idx = current.indexOf(catId);
       if (idx >= 0) current.splice(idx, 1); else current.push(catId);
       r[chatId] = current;
       return { ...d, settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), notifyRouting: r, updatedAt: Date.now() } };
     });
+  };
+
+  const removeSubscriber = (chatId) => {
+    if (!confirm('Удалить подписчика? Он перестанет получать любые уведомления и не сможет отвечать на них, пока не напишет боту заново.')) return;
+    fetch(`/api/subscribers/${chatId}`, { method: 'DELETE' })
+      .then(r => { if (!r.ok) throw new Error(); })
+      .then(() => {
+        setData(d => {
+          const r = { ...((d.settings || {}).notifyRouting || {}) };
+          delete r[chatId];
+          return { ...d, settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), notifyRouting: r, updatedAt: Date.now() } };
+        });
+        load();
+      })
+      .catch(() => alert('Не удалось удалить подписчика.'));
   };
 
   return (
@@ -3693,7 +3727,7 @@ function NotifyRoutingSettings({ data, setData }) {
         <div>
           <h3 className="font-display text-lg mb-1">Маршрутизация уведомлений</h3>
           <p className="text-sm text-[var(--text-muted)]">
-            Кто из подписчиков бота получает уведомления из каждого раздела. Без настройки — получают все.
+            Кто из подписчиков бота получает уведомления из каждого раздела. Без настройки — не получают ничего: включайте нужные категории вручную.
           </p>
         </div>
         <button onClick={load} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0" title="Обновить список">
@@ -3715,7 +3749,13 @@ function NotifyRoutingSettings({ data, setData }) {
         <div className="space-y-3">
           {subs.map(s => (
             <div key={s.chatId} className="border border-[var(--border)] rounded-xl p-3">
-              <div className="text-sm font-medium mb-2">{s.name || `Без имени (${s.chatId})`}</div>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="text-sm font-medium">{s.name || `Без имени (${s.chatId})`}</div>
+                <button onClick={() => removeSubscriber(s.chatId)}
+                  className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500" title="Удалить подписчика">
+                  <Icon name="trash" size={14} />
+                </button>
+              </div>
               <div className="flex flex-wrap gap-1.5">
                 {NOTIFICATION_CATEGORIES.map(cat => {
                   const on = isAllowed(String(s.chatId), cat.id);
@@ -7081,7 +7121,7 @@ function EngSyncBtn({cfg,toMark,toUnmark,rawData,tcRef,atRef}){
 
 function FlashcardsTab({rawData,cfg,ai}){
   const [phase,setPhase]=useState('setup');
-  const [settings,setSettings]=useState({direction:'en-ru',count:20,order:'random',filter:'all',dateRange:'all',sentence:true,synonyms:true,tts:false,hide:true,repeat:true,auto:false});
+  const [settings,setSettings]=useState({direction:'en-ru',count:20,order:'random',filter:'all',dateRange:'all',sentence:true,synonyms:true,tts:false,repeat:true,auto:false});
   const [sess,setSess]=useState(null);
   const sessRef=useRef(null);
   useEffect(()=>{sessRef.current=sess;},[sess]);
@@ -7199,7 +7239,7 @@ function FlashcardsTab({rawData,cfg,ai}){
       <div><label>Filter</label><select value={settings.filter} onChange={e=>setSettings(s=>({...s,filter:e.target.value}))}><option value="all">All words</option><option value="hard">Hard only ★</option><option value="not-hard">Non-hard only</option><option value="not-shown">Not studied yet</option></select></div>
       <div><label>Period</label><select value={settings.dateRange} onChange={e=>setSettings(s=>({...s,dateRange:e.target.value}))}><option value="all">All time</option><option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last 30 days</option></select></div>
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4 space-y-3">
-        {[['sentence','Show example sentence'],['synonyms','Show synonyms'],['hide','Hide word in example'],['repeat','Repeat mistakes'],['auto','Auto-flip (5 sec)'],['tts','TTS pronunciation']].map(([k,l])=>(
+        {[['sentence','Show example sentence'],['synonyms','Show synonyms'],['repeat','Repeat mistakes'],['auto','Auto-flip (5 sec)'],['tts','TTS pronunciation']].map(([k,l])=>(
           <div key={k} className="flex items-center justify-between"><span className="text-sm">{l}</span><Toggle checked={!!settings[k]} onChange={v=>setSettings(s=>({...s,[k]:v}))}/></div>
         ))}
       </div>
@@ -7245,8 +7285,6 @@ function FlashcardsTab({rawData,cfg,ai}){
   const total=sess.queue.length+sess.done.length;
   const prog=sess.done.length/Math.max(total,1)*100;
   const isHard=sess.markHard.has(w.rowIndex)?'marking':(sess.unmarkHard.has(w.rowIndex)?'unmarking':(w.hard?'hard':'none'));
-  let sentF=w.sentence;
-  if(settings.hide&&dir==='en-ru'&&sentF) sentF=sentF.replace(new RegExp('\\b'+engEscRe(w.en.split(' ')[0])+'\\w*','ig'),'___');
   if(settings.tts&&!sess.flipped){const u=new SpeechSynthesisUtterance(dir==='en-ru'?w.en:'');u.lang='en-US';u.rate=.9;window.speechSynthesis?.cancel();window.speechSynthesis?.speak(u);}
   const cachedSent=getSent(w.en);
   const pendingSent=settings.sentence&&engAIConfigured(ai)?sess.queue.concat(sess.again).filter(x=>!getSent(x.en)).length:0;
@@ -7268,7 +7306,6 @@ function FlashcardsTab({rawData,cfg,ai}){
               {isHard==='marking'?'★ +hard':isHard==='unmarking'?'✕ −hard':isHard==='hard'?'★ hard':'☆ hard'}
             </button>
             <div className="font-display text-4xl sm:text-5xl font-bold leading-tight mb-3">{front}</div>
-            {settings.sentence&&sentF&&<div className="text-sm text-[var(--text-muted)] italic max-w-sm leading-relaxed">{sentF}</div>}
             <div className="absolute bottom-3 text-[10px] text-[var(--text-subtle)]">↻ click or press Space</div>
           </div>
           <div style={{...ENG_CARD_S.face,...ENG_CARD_S.back}}>
@@ -7395,7 +7432,7 @@ function FillTab({rawData,ai}){
         const blank=item.sentence.replace(new RegExp('\\b'+engEscRe(item.word.en.split(' ')[0])+'\\w*','i'),'___');
         return(
           <div key={i} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-3">
-            <div className="text-xs text-[var(--text-subtle)]">#{i+1} · <span className="cursor-pointer blur-sm hover:blur-none transition-all select-none" onClick={e=>e.currentTarget.classList.remove('blur-sm')}>{item.word.en} — {item.word.ru}</span></div>
+            <div className="text-xs text-[var(--text-subtle)]">#{i+1} · <span className="cursor-pointer blur-lg transition-all select-none" onClick={e=>e.currentTarget.classList.remove('blur-lg')}>{item.word.en} — {item.word.ru}</span></div>
             <div className="font-display text-lg italic">{ans.checked?item.sentence:blank}</div>
             <div className="flex items-center gap-2 flex-wrap">
               <input className={`w-44 ${ans.checked?(ans.ok?'border-green-400':'border-red-400'):''}`} value={ans.val||''} onChange={e=>setAnswers(a=>({...a,[i]:{...a[i],val:e.target.value}}))} onKeyDown={e=>e.key==='Enter'&&check(i)} placeholder="type the word..." disabled={ans.checked}/>
@@ -7863,7 +7900,7 @@ ${wordList}
         <div className="font-display text-xl sm:text-2xl font-bold mb-5">{w.ruSentence || '(no sentence generated)'}</div>
         <div>
           <span
-            className={`italic select-none transition-all ${revealed?'':'blur-sm cursor-pointer'}`}
+            className={`italic select-none transition-all ${revealed?'':'blur-lg cursor-pointer'}`}
             onClick={()=>setRevealed(true)}
             title={revealed?'':'Click to reveal'}
           >{w.en}</span>
@@ -11858,7 +11895,7 @@ function HolidayForm({ initial, onSave, onClose }) {
           <input
             value={dateInput}
             onChange={e => handleDateChange(e.target.value)}
-            inputMode="numeric"
+            inputMode="decimal"
             placeholder={form.type === 'birthday' ? '20.04.2003' : '20.04'}
           />
           <p className="text-xs text-[var(--text-subtle)] mt-1">

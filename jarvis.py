@@ -72,6 +72,15 @@ SPA_ROUTES = {
     "/misc", "/wishlist", "/cards", "/gym",
 }
 
+# Deep-link routes that get their OWN <link rel="manifest"> (and Apple home-
+# screen title) instead of the site-wide /manifest.json when served — so
+# "Add to Home Screen" from that route installs a distinct icon that opens
+# straight back to it, instead of iOS falling back to the main manifest's
+# start_url "/" (same fix as the per-user /pf/<token>/ finance app below).
+SHORTCUT_MANIFESTS = {
+    "/misc": {"manifest_route": "/misc/manifest.json", "apple_title": "Jarvis: Прочее"},
+}
+
 # ── Парольный доступ на весь сайт ───────────────────────────────────────────
 # Один общий код на семью. Не гейтим гостевые ссылки (/e/<token>, /trip/<token>
 # и их API) — по ним заходят друзья, которые кода не знают и знать не должны.
@@ -213,8 +222,9 @@ def subscriber_name(subs: dict, chat_id) -> str:
 
 # Which Telegram section each background reminder belongs to. Keep the ids in
 # sync with NOTIFICATION_CATEGORIES in index (9).html — a subscriber with no
-# entry in data.settings.notifyRouting receives every category (default-on,
-# so nobody currently relying on notifications silently loses them).
+# entry in data.settings.notifyRouting receives NOTHING (default-deny). Anyone
+# who messages the bot is auto-subscribed with zero categories; an owner has
+# to explicitly opt them into each category from Settings → Маршрутизация.
 NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "tasks", "backup"}
 
 
@@ -223,9 +233,18 @@ def recipients_for(app_data: dict, subs: dict, category: str) -> list:
     result = []
     for cid in subs.get("chat_ids", []):
         allowed = routing.get(str(cid))
-        if allowed is None or category in allowed:
+        if allowed and category in allowed:
             result.append(cid)
     return result
+
+
+def is_routed_recipient(chat_id, category: str) -> bool:
+    """Guards inline-button callbacks (chk:/diet:) so a chat that isn't routed
+    for a category can't answer it just by tapping a button it happened to
+    receive or keep around — routing must allow it, same as broadcast sends."""
+    app_data = load_app_data()
+    subs = load_subscribers()
+    return chat_id in recipients_for(app_data, subs, category)
 
 
 def freq_days(chore: dict) -> int:
@@ -311,6 +330,10 @@ def handle_diet_callback(token: str, cq: dict):
     data_str = cq.get("data", "") or ""
     if not data_str.startswith("diet:"):
         tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+        return
+    chat_id = ((cq.get("message") or {}).get("chat") or {}).get("id")
+    if not chat_id or not is_routed_recipient(chat_id, "diet"):
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": "Недоступно"})
         return
     parts = data_str.split(":")
     level = parts[1] if len(parts) > 1 else ""
@@ -864,6 +887,10 @@ def handle_checklist_callback(token: str, cq: dict):
     parts = data_str.split(":")
     if len(parts) < 4:
         tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+        return
+    chat_id_check = ((cq.get("message") or {}).get("chat") or {}).get("id")
+    if not chat_id_check or not is_routed_recipient(chat_id_check, "checklist"):
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": "Недоступно"})
         return
     date_iso = parts[1]
     try:
@@ -2835,7 +2862,27 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         if not route_is_public(route) and not self._is_authed():
             self._json(401, {"error": "unauthorized"})
             return
-        if self.path.startswith("/api/photos/"):
+        if self.path.startswith("/api/subscribers/"):
+            raw_cid = self.path[len("/api/subscribers/"):].split("?", 1)[0]
+            try:
+                target_cid = int(raw_cid)
+            except ValueError:
+                self._json(400, {"error": "invalid chat id"})
+                return
+            subs = load_subscribers()
+            subs["chat_ids"] = [c for c in subs.get("chat_ids", []) if c != target_cid]
+            (subs.get("profiles") or {}).pop(str(target_cid), None)
+            save_subscribers(subs)
+            with APP_DATA_LOCK:
+                app = load_app_data()
+                routing = dict((app.get("settings") or {}).get("notifyRouting") or {})
+                if routing.pop(str(target_cid), None) is not None:
+                    settings = dict(app.get("settings") or {})
+                    settings["notifyRouting"] = routing
+                    app["settings"] = settings
+                    save_app_data(app)
+            self._json(200, {"ok": True})
+        elif self.path.startswith("/api/photos/"):
             filename = self.path[len("/api/photos/"):]
             if "/" in filename or ".." in filename or not filename:
                 self._json(400, {"error": "invalid"})
@@ -2876,7 +2923,9 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._send_login_page(next_path=self.path or "/")
             return
         if route in ("/", "/index.html") or route in SPA_ROUTES:
-            self._serve_html()
+            self._serve_html(route)
+        elif route == "/misc/manifest.json":
+            self._misc_manifest()
         elif token_from_route(route, "/e/"):
             # Гостевая страница события — отдельный файл, не SPA.
             self._serve_event_page()
@@ -3827,6 +3876,38 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _misc_manifest(self):
+        """Manifest for the /misc home-screen shortcut (see SHORTCUT_MANIFESTS
+        and _serve_html) — same fix as _pf_manifest above, but scope stays "/"
+        since /misc is just an entry point into the same single-page app, not
+        a siloed mini-app: once opened, the rest of Jarvis should navigate
+        normally in standalone mode instead of bouncing out to Safari."""
+        manifest = {
+            "id": "/misc",
+            "name": "Jarvis: Прочее",
+            "short_name": "Прочее",
+            "description": "Быстрый доступ к разделу «Прочее»",
+            "start_url": "/misc",
+            "scope": "/",
+            "display": "standalone",
+            "orientation": "portrait",
+            "background_color": "#4F8EF7",
+            "theme_color": "#4F8EF7",
+            "lang": "ru",
+            "icons": [
+                {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+            ],
+        }
+        body = json.dumps(manifest, ensure_ascii=False).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/manifest+json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body)
+
     def _pf_body(self):
         """Разобранное тело запроса или (None, ответ уже отправлен)."""
         length = self._content_length()
@@ -4162,12 +4243,28 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._cors()
             self.end_headers()
 
-    def _serve_html(self):
+    def _serve_html(self, route: str = "/"):
         try:
             content = HTML_FILE.read_bytes()
+            shortcut = SHORTCUT_MANIFESTS.get(route)
+            if shortcut:
+                content = content.replace(
+                    b'<link rel="manifest" href="/manifest.json" />',
+                    f'<link rel="manifest" href="{shortcut["manifest_route"]}" />'.encode("utf-8"),
+                    1,
+                )
+                content = content.replace(
+                    b'<meta name="apple-mobile-web-app-title" content="Jarvis" />',
+                    f'<meta name="apple-mobile-web-app-title" content="{shortcut["apple_title"]}" />'.encode("utf-8"),
+                    1,
+                )
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(content)))
+            if shortcut:
+                # Never let the browser (or iOS's home-screen bookmark step)
+                # serve a stale copy that still has the site-wide manifest link.
+                self.send_header("Cache-Control", "no-store")
             self._cors()
             self.end_headers()
             self.wfile.write(content)
