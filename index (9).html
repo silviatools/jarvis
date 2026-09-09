@@ -22406,6 +22406,12 @@ const gymListener = (() => {
   let startedAt = 0;
   let gotResult = false;
   let quickFails = 0;
+  // Отказ в доступе к микрофону. На iOS он прилетает не только когда доступ
+  // правда запрещён, но и просто после возвращения из фона — поэтому режим не
+  // выключаем, а продолжаем пытаться с растущей паузой и просим коснуться
+  // экрана: из жеста Safari отдаёт микрофон обратно сразу.
+  let blocked = false;
+  let denials = 0;
 
   const ensure = () => {
     if (rec) return rec;
@@ -22416,7 +22422,13 @@ const gymListener = (() => {
     rec.interimResults = false;
     rec.continuous = false;   // Safari непрерывный режим всё равно не держит
     rec.maxAlternatives = 3;
-    rec.onstart = () => { startedAt = Date.now(); gotResult = false; if (onState) onState(true); };
+    rec.onstart = () => {
+      startedAt = Date.now();
+      gotResult = false;
+      blocked = false;
+      denials = 0;
+      if (onState) onState(true);
+    };
     rec.onresult = (e) => {
       // Пока приложение говорит само, микрофон слышит именно его — такие
       // фразы игнорируем, иначе тренировка запишет то, что сама продиктовала.
@@ -22435,8 +22447,11 @@ const gymListener = (() => {
     };
     rec.onerror = (e) => {
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        wanted = false;
-        if (onDenied) onDenied();
+        // wanted НЕ сбрасываем: режим «свободные руки» остаётся включённым,
+        // микрофон поднимем сами — сразу же после первого касания экрана.
+        blocked = true;
+        denials += 1;
+        if (onDenied) onDenied(denials);
       }
     };
     rec.onend = () => {
@@ -22447,7 +22462,11 @@ const gymListener = (() => {
       // микрофон должен вернуться сам, когда помеха пройдёт.
       const lasted = Date.now() - startedAt;
       quickFails = (gotResult || lasted > 3000) ? 0 : quickFails + 1;
-      const delay = Math.min(250 * Math.pow(2, Math.max(0, quickFails - 1)), 5000);
+      // После отказа в доступе паузу берём длиннее: молотить start() каждые
+      // полсекунды бессмысленно, всё равно откроет только касание экрана.
+      const delay = blocked
+        ? Math.min(2000 * Math.pow(2, Math.max(0, denials - 1)), 20000)
+        : Math.min(250 * Math.pow(2, Math.max(0, quickFails - 1)), 5000);
       setTimeout(() => {
         if (!wanted) return;
         try { rec.start(); } catch (_) {
@@ -22486,6 +22505,20 @@ const gymListener = (() => {
       wanted = false;
       if (!rec) return;
       try { rec.stop(); } catch (_) {}
+    },
+    blocked: () => blocked,
+    // Повторная попытка — вызывать из жеста (любое касание экрана тренировки).
+    // Объект после отказа берём новый: старый в Safari остаётся сломанным.
+    retry() {
+      if (!handler) return;
+      blocked = false;
+      denials = 0;
+      quickFails = 0;
+      wanted = true;
+      try { if (rec && rec.abort) rec.abort(); } catch (_) {}
+      rec = null;
+      const r = ensure();
+      if (r) { try { r.start(); } catch (_) {} }
     },
     // Разрешение на микрофон спрашиваем в жесте: позже старт молча провалится.
     prime() {
@@ -24059,6 +24092,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   // Если режим был включён до старта тренировки, ждать нечего.
   const [armed, setArmed] = useState(() => !!(settings || {}).gymHandsFree);
   const [listening, setListening] = useState(false);
+  const [micBlocked, setMicBlocked] = useState(false);
   // Метка последнего возврата к экрану — по ней перезапускается микрофон.
   const [visibleAt, setVisibleAt] = useState(0);
   // Последняя распознанная фраза: показываем как есть — так видно, что именно
@@ -24120,11 +24154,13 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     const t = setTimeout(() => {
       gymListener.start(
         (variants) => voiceHandler.current(variants),
-        setListening,
-        () => {
+        (on) => { setListening(on); if (on) setMicBlocked(false); },
+        (count) => {
+          // Режим НЕ выключаем: на iOS отказ прилетает и просто после возврата
+          // из фона. Говорим об этом один раз, дальше молча ждём касания.
           setListening(false);
-          onToggleHandsFree(false);
-          say('Нет доступа к микрофону');
+          setMicBlocked(true);
+          if (count === 1) say('Микрофон не отвечает. Коснитесь экрана, чтобы вернуть его');
         },
       );
     }, 1200);
@@ -24136,6 +24172,16 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   }, [handsFree, armed, visibleAt]);
 
   useEffect(() => () => gymListener.stop(), []);
+
+  // Микрофон, которому отказали, Safari отдаёт обратно только в пользовательском
+  // жесте. Поэтому ловим ЛЮБОЕ касание экрана тренировки: режим включён —
+  // значит, он должен вернуться сам, без похода в настройки.
+  useEffect(() => {
+    if (!handsFree || !micBlocked) return;
+    const onTap = () => gymListener.retry();
+    document.addEventListener('pointerdown', onTap);
+    return () => document.removeEventListener('pointerdown', onTap);
+  }, [handsFree, micBlocked]);
 
   // Экран доводим до первого подхода нового упражнения — по центру, чтобы
   // сразу видеть и план, и поля ввода. Ждём конца раскрытия: пока карточка
@@ -24627,6 +24673,11 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
                 <Icon name="mic" size={11} /> слушаю
               </span>
             )}
+            {handsFree && !listening && micBlocked && (
+              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full text-white" style={{ background: '#b45309' }}>
+                <Icon name="mic" size={11} /> коснитесь экрана
+              </span>
+            )}
           </div>
           {handsFree && heard && (
             <div className="text-[12px] text-[var(--text-muted)] mt-0.5 truncate">Услышано: «{heard}»</div>
@@ -24636,7 +24687,9 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
               ? 'Браузер не поддерживает распознавание речи'
               : !handsFree
                 ? 'Скажете «25 на 12» — подход запишется сам, руки не нужны'
-                : !armed
+                : micBlocked
+                  ? 'Микрофон остановился — режим включён, коснитесь экрана, и он вернётся'
+                  : !armed
                   ? 'Включится со следующего подхода'
                   : resting
                     ? 'Идёт отдых. Скажите «пропустить отдых», чтобы начать подход раньше'
