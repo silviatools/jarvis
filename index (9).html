@@ -21850,18 +21850,23 @@ const gymBestLogged = (sessions, name) => {
   return best;
 };
 
+// Рабочий вес упражнения — тот, что реально стоял в ПОСЛЕДНЕМ рабочем подходе:
+// не рекорд и не максимум за день, а последнее, что было сделано. Сортируем по
+// дате тренировки, внутри дня — по времени записи подхода.
 const gymLastWorkingWeight = (sessions, name, beforeMs) => {
   const key = gymKey(name);
   let lastDate = '';
-  let best = 0;
+  let lastAt = -1;
+  let weight = 0;
   gymEachSet(sessions, (set, ses) => {
     if (!gymIsWorking(set) || gymKey(set.exerciseName) !== key) return;
     const date = ses.date;
     if (!date || (beforeMs && (set.at || 0) >= beforeMs)) return;
-    if (date > lastDate) { lastDate = date; best = gymNum(set.weight); }
-    else if (date === lastDate) best = Math.max(best, gymNum(set.weight));
+    const at = gymNum(set.at);
+    if (date > lastDate) { lastDate = date; lastAt = at; weight = gymNum(set.weight); }
+    else if (date === lastDate && at >= lastAt) { lastAt = at; weight = gymNum(set.weight); }
   });
-  return best;
+  return weight;
 };
 
 // «Макс. вес», от которого считаются проценты: указанный руками или, если не
@@ -21873,20 +21878,23 @@ const gymMaxFor = (ex, sessions) => {
 };
 
 // База для процентов. В режиме «Подробно» проценты в программе пишутся от
-// РАБОЧЕГО веса («разминка ~50% от рабочего»), поэтому базой берём середину
-// диапазона первой рабочей группы, заданной в кг. В остальных режимах — как и
-// было, макс. вес упражнения.
-const gymPctBase = (ex, sessions) => {
+// РАБОЧЕГО веса («разминка ~50% от рабочего»), поэтому базой берём вес
+// последнего рабочего подхода, а если истории ещё нет — середину диапазона
+// первой рабочей группы в кг. В остальных режимах — макс. вес упражнения.
+// beforeMs отсекает подходы, записанные позже указанного момента: во время
+// тренировки база должна оставаться такой, какой была на её старте.
+const gymPctBase = (ex, sessions, beforeMs = 0) => {
   if (ex?.mode === 'groups') {
+    // Проценты здесь — «от рабочего», поэтому в первую очередь берём вес
+    // последнего рабочего подхода из истории: он точнее плана, ведь именно с
+    // ним упражнение делалось в прошлый раз. Рекорд за всю историю не годится —
+    // разминка от давнего максимума вышла бы тяжелее нужного.
+    const last = gymLastWorkingWeight(sessions, ex?.name, beforeMs);
+    if (last > 0) return last;
     const g = gymGroups(ex).find(x => x.kind !== 'warmup' && (x.weightUnit || 'kg') === 'kg' && !gymRange(x.weight).empty);
     if (g) return gymRangeMid(gymRange(g.weight));
     const manual = gymNum(ex?.maxWeight);
     if (manual > 0) return manual;
-    // Проценты здесь — «от рабочего», поэтому считаем от веса последней
-    // тренировки, а не от рекорда за всю историю: иначе разминка к рабочим
-    // 55-65 считалась бы от давнего максимума и вышла бы тяжелее нужного.
-    const last = gymLastWorkingWeight(sessions, ex?.name, 0);
-    if (last > 0) return last;
   }
   return gymMaxFor(ex, sessions);
 };
@@ -22071,6 +22079,11 @@ const gymDayTitle = (day, index) => day.title || `${index + 1} день`;
 // синтез останется заблокированным. Поэтому первую фразу говорим прямо в
 // обработчике «Начать тренировку» (gymPrimeVoice), а дальше уже можно из
 // таймеров.
+
+// Когда синтез договорил. Микрофон, слушающий во время отдыха, должен
+// пропустить хвост собственной фразы приложения: команда «дальше» в ней есть.
+let gymSpeechEndedAt = 0;
+
 const gymSay = (text, enabled = true) => {
   if (!enabled || !text) return;
   const synth = window.speechSynthesis;
@@ -22085,6 +22098,9 @@ const gymSay = (text, enabled = true) => {
     const u = new SpeechSynthesisUtterance(String(text).replace(/([!?])\s*\./g, '$1'));
     u.lang = 'ru-RU';
     u.rate = 1.05;
+    u.onend = () => { gymSpeechEndedAt = Date.now(); };
+    u.onerror = () => { gymSpeechEndedAt = Date.now(); };
+    gymSpeechEndedAt = Date.now();
     // Голос выбираем отдельным try: без русского голоса фраза всё равно должна
     // прозвучать (u.lang её вытянет), а не потеряться из-за него целиком.
     try {
@@ -22299,7 +22315,11 @@ const gymParseVoicePhrase = (raw) => {
   const t = gymNormalizeNumbers(raw);
   if (!t) return null;
   if (/отмен|удали|сотри/.test(t)) return { cmd: 'undo' };
-  if (/пропуст|дальше|поехали/.test(t)) return { cmd: 'skipRest' };
+  // explicit — сказано именно «пропустить». Во время отдыха принимаем только
+  // такую формулировку: слово «дальше» приложение произносит само («Дальше:
+  // рабочий 2…»), и микрофон, слушающий отдых, принял бы это за команду.
+  if (/пропуст/.test(t)) return { cmd: 'skipRest', explicit: true };
+  if (/дальше|поехали/.test(t)) return { cmd: 'skipRest' };
   if (/заверш|закончи|финиш/.test(t)) return { cmd: 'finish' };
   if (/(столько же|как в плане|по плану|как обычно|так же)/.test(t)) return { cmd: 'log' };
 
@@ -22364,6 +22384,10 @@ const gymListener = (() => {
       // Пока приложение говорит само, микрофон слышит именно его — такие
       // фразы игнорируем, иначе тренировка запишет то, что сама продиктовала.
       if (window.speechSynthesis && window.speechSynthesis.speaking) return;
+      // Распознавание отдаёт фразу с задержкой, поэтому глушим и короткий
+      // хвост после конца озвучки: иначе «Дальше: рабочий 2» прилетает уже
+      // после того, как синтез замолчал, и читается как команда «дальше».
+      if (Date.now() - gymSpeechEndedAt < 1500) return;
       gotResult = true;
       const variants = [];
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -22451,9 +22475,13 @@ const gymPlural = (n, one, few, many) => {
   return many;
 };
 
+const gymSayKg = (min, max) => (min === max
+  ? `${gymRound1(min)} ${gymPlural(min, 'килограмм', 'килограмма', 'килограмм')}`
+  : `от ${gymRound1(min)} до ${gymRound1(max)} килограмм`);
+
 // Вес в плане задан в килограммах — называем килограммы. Задан процентами —
-// называем проценты: пересчёт в килограммы виден на экране, а на слух «сто
-// процентов» понятнее, чем «шестьдесят два с половиной».
+// называем и проценты, и посчитанные от рабочего веса килограммы: считать в
+// уме между подходами не нужно.
 const gymSayWeight = (row, base) => {
   const unit = row?.unit || 'kg';
   if (unit === 'body') return 'со своим весом';
@@ -22461,7 +22489,10 @@ const gymSayWeight = (row, base) => {
   if (r.empty) return '';
   if (unit === 'pct') {
     const pct = r.min === r.max ? `${gymRound1(r.min)}` : `от ${gymRound1(r.min)} до ${gymRound1(r.max)}`;
-    return row?.kind === 'warmup' ? `${pct} процентов от рабочего` : `${pct} процентов`;
+    const head = row?.kind === 'warmup' ? `${pct} процентов от рабочего` : `${pct} процентов`;
+    const t = gymRowTarget(row, base);
+    if (t.empty || !(t.min > 0 || t.max > 0)) return head;
+    return `${head}, это ${gymSayKg(t.min, t.max)}`;
   }
   if (r.min === r.max) return `${gymRound1(r.min)} ${gymPlural(r.min, 'килограмм', 'килограмма', 'килограмм')}`;
   return `от ${gymRound1(r.min)} до ${gymRound1(r.max)} килограмм`;
@@ -22493,10 +22524,13 @@ const gymSaySet = (row, base, exerciseName, lastWeight) => {
     .filter(Boolean).join('. ');
   if (head) parts.push(head);
   if (row?.rir) parts.push(`RIR ${row.rir}`);
-  // Рабочий подход в процентах: килограммы не названы, поэтому даём ориентир —
-  // с чем это упражнение делали в прошлый раз. На разминке это лишнее.
+  // Рабочий подход в процентах: даём ориентир — с чем это упражнение делали в
+  // прошлый раз. Если посчитанные килограммы и так совпали с прошлым разом,
+  // повторять их не нужно; на разминке это лишнее в любом случае.
   if ((row?.unit || 'kg') === 'pct' && row?.kind !== 'warmup' && lastWeight > 0) {
-    parts.push(`В прошлый раз ${gymRound1(lastWeight)} ${gymPlural(lastWeight, 'килограмм', 'килограмма', 'килограмм')}`);
+    const t = gymRowTarget(row, base);
+    const same = !t.empty && gymRound1(t.min) === gymRound1(lastWeight) && gymRound1(t.max) === gymRound1(lastWeight);
+    if (!same) parts.push(`В прошлый раз ${gymRound1(lastWeight)} ${gymPlural(lastWeight, 'килограмм', 'килограмма', 'килограмм')}`);
   }
   return parts.join('. ');
 };
@@ -23854,6 +23888,16 @@ function GymSessionSummary({ session, exercises, sessions, onClose }) {
     index[key].list.push(s);
   });
 
+  // Проценты считаем от рабочего веса ДО этой тренировки — иначе план поехал бы
+  // вслед за фактом и «в плане» оказалось бы всё подряд.
+  const baseCache = {};
+  const baseOf = (ex) => {
+    if (!Object.prototype.hasOwnProperty.call(baseCache, ex.id)) {
+      baseCache[ex.id] = gymPctBase(ex, sessions, session.startedAt || Date.now());
+    }
+    return baseCache[ex.id];
+  };
+
   let inPlan = 0;
   let planChecked = 0;
   sets.forEach(s => {
@@ -23862,7 +23906,7 @@ function GymSessionSummary({ session, exercises, sessions, onClose }) {
     const row = gymPlanRows(ex)[s.setIndex || 0];
     if (!row) return;
     planChecked += 1;
-    if (gymFactBadge(row, gymPctBase(ex, sessions), s.weight, s.reps).tone === 'ok') inPlan += 1;
+    if (gymFactBadge(row, baseOf(ex), s.weight, s.reps).tone === 'ok') inPlan += 1;
   });
 
   // Рекорды считаем относительно того, что было ДО этой тренировки
@@ -23922,7 +23966,7 @@ function GymSessionSummary({ session, exercises, sessions, onClose }) {
       <div className="space-y-2">
         {groups.map((g, i) => {
           const ex = exById[g.exId];
-          const base = ex ? gymPctBase(ex, sessions) : 0;
+          const base = ex ? baseOf(ex) : 0;
           return (
             <div key={i} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3">
               <div className="text-[15px] font-medium">{g.name}</div>
@@ -24025,8 +24069,11 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   // уже есть, иначе рендер падает на временной мёртвой зоне.
   const resting = restUntil > now;
 
+  // Микрофон держим включённым и во время отдыха: там ждём команду
+  // «пропустить отдых». Запись подхода в это время игнорируется — разбирает
+  // это voiceHandler, ему видно, идёт отдых или нет.
   useEffect(() => {
-    if (!handsFree || !armed || resting || !gymListener.supported()) {
+    if (!handsFree || !armed || !gymListener.supported()) {
       gymListener.stop();
       setListening(false);
       return;
@@ -24049,7 +24096,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       gymListener.stop();
       setListening(false);
     };
-  }, [handsFree, armed, resting, visibleAt]);
+  }, [handsFree, armed, visibleAt]);
 
   useEffect(() => () => gymListener.stop(), []);
 
@@ -24216,7 +24263,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
           if (row) {
             parts.push(`Следующее упражнение: ${gymSaySet(
               row,
-              gymPctBase(nextEx, sessions),
+              gymPctBase(nextEx, sessions, session.startedAt || Date.now()),
               nextEx.name,
               gymLastWorkingWeight(sessions, nextEx.name, session.startedAt || Date.now()),
             )}`);
@@ -24228,7 +24275,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
         // «В прошлый раз» тут не повторяем — это уже прозвучало в начале.
         if (!exerciseDone) {
           const row = planRowsOf(ex)[remaining(ex)[0]];
-          if (row) parts.push(`Дальше: ${gymSaySet(row, gymPctBase(ex, sessions), '')}`);
+          if (row) parts.push(`Дальше: ${gymSaySet(row, gymPctBase(ex, sessions, session.startedAt || Date.now()), '')}`);
         }
         if (parts.length) say(parts.join('. '));
         restSpoken.current = { thirty: 0, ten: 0, zero: 0, tick: '', total: rest };
@@ -24299,7 +24346,9 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   const pctCache = {};
   const pctBaseOf = (ex) => {
     if (!Object.prototype.hasOwnProperty.call(pctCache, ex.id)) {
-      pctCache[ex.id] = gymPctBase(ex, sessions);
+      // Базу процентов фиксируем на начало тренировки: если считать её вместе с
+      // уже записанными сегодня подходами, план поехал бы прямо по ходу дела.
+      pctCache[ex.id] = gymPctBase(ex, sessions, session.startedAt || Date.now());
     }
     return pctCache[ex.id];
   };
@@ -24330,7 +24379,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     announcedEx.current = t.ex.id;
     say([...head, gymSaySet(
       t.row,
-      gymPctBase(t.ex, sessions),
+      gymPctBase(t.ex, sessions, session.startedAt || Date.now()),
       changed ? t.ex.name : '',
       gymLastWorkingWeight(sessions, t.ex.name, session.startedAt || Date.now()),
     )].join('. '));
@@ -24418,6 +24467,12 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       heardText = v;
       break;
     }
+    // Во время отдыха слушаем только команды: числа в это время — либо чужой
+    // разговор, либо хвост собственной озвучки, записывать их нельзя.
+    if (resting && parsed && parsed.cmd === 'log') parsed = null;
+    if (resting && parsed && parsed.cmd === 'skipRest' && !parsed.explicit) parsed = null;
+    if (resting && !parsed) { setHeard(''); return; }
+
     setHeard(heardText || variants[0] || '');
     if (!parsed) {
       // Молчим на случайных обрывках разговора, но если во фразе явно были
@@ -24547,7 +24602,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
                 : !armed
                   ? 'Включится со следующего подхода'
                   : resting
-                    ? 'Микрофон включится после отдыха — или сразу, если нажать «Пропустить»'
+                    ? 'Идёт отдых. Скажите «пропустить отдых», чтобы начать подход раньше'
                     : voiceHint}
           </div>
         </div>
