@@ -22358,6 +22358,20 @@ const gymParseVoicePhrase = (raw) => {
   if (/пропуст/.test(t)) return { cmd: 'skipRest', explicit: true };
   if (/дальше|поехали/.test(t)) return { cmd: 'skipRest' };
   if (/заверш|закончи|финиш/.test(t)) return { cmd: 'finish' };
+  // «Повтори» — сказать заново про предстоящий подход. Слово подобрано так,
+  // чтобы не цеплять «12 повторений»: там после «повтор» идёт «е», а не «и».
+  // \b здесь бесполезен: для регулярных выражений кириллица — не «слово»,
+  // поэтому границы задаём пробелами и краями фразы явно.
+  if (/(^|\s)повтор(и|ите|ить)(\s|$)|ещ[её] раз/.test(t)) return { cmd: 'repeat' };
+  // «Перезапись» — исправить только что записанный подход. Числа в той же
+  // фразе («перезапиши 60 на 8») применяем сразу, без переспроса.
+  if (/перезап/.test(t)) {
+    const inner = gymParseVoicePhrase(t.replace(/перезап\w*/g, ' '));
+    if (inner && inner.cmd === 'log' && !inner.invalid && inner.reps !== undefined) {
+      return { cmd: 'rewrite', weight: inner.weight, reps: inner.reps };
+    }
+    return { cmd: 'rewrite' };
+  }
   if (/(столько же|как в плане|по плану|как обычно|так же)/.test(t)) return { cmd: 'log' };
 
   // Упражнения без веса (пресс, подтягивания, планка): «без веса 15»,
@@ -22583,6 +22597,17 @@ const gymSayRest = (sec) => {
     return `Отдых ${m} ${gymPlural(m, 'минута', 'минуты', 'минут')}`;
   }
   return `Отдых ${s} ${gymPlural(s, 'секунда', 'секунды', 'секунд')}`;
+};
+
+// Остаток отдыха вслух: «две минуты сорок секунд» слушается лучше, чем «сто
+// шестьдесят секунд».
+const gymSayLeft = (sec) => {
+  const s = Math.max(0, gymInt(sec, 0));
+  if (s < 60) return `${s} ${gymPlural(s, 'секунда', 'секунды', 'секунд')}`;
+  const m = Math.floor(s / 60);
+  const rest = s % 60;
+  const mm = `${m} ${gymPlural(m, 'минута', 'минуты', 'минут')}`;
+  return rest ? `${mm} ${rest} ${gymPlural(rest, 'секунда', 'секунды', 'секунд')}` : mm;
 };
 
 // «Рабочий 2. 60 килограмм, 8 повторений» — то, что нужно услышать, не глядя
@@ -24093,6 +24118,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   const [armed, setArmed] = useState(() => !!(settings || {}).gymHandsFree);
   const [listening, setListening] = useState(false);
   const [micBlocked, setMicBlocked] = useState(false);
+  // Режим исправления: ждём, что скажут вес и повторы прошлого подхода заново.
+  const [rewriting, setRewriting] = useState(false);
   // Метка последнего возврата к экрану — по ней перезапускается микрофон.
   const [visibleAt, setVisibleAt] = useState(0);
   // Последняя распознанная фраза: показываем как есть — так видно, что именно
@@ -24173,6 +24200,14 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
 
   useEffect(() => () => gymListener.stop(), []);
 
+  // Перезапись не должна висеть вечно: иначе числа, сказанные через полчаса,
+  // ушли бы в исправление давнего подхода вместо записи нового.
+  useEffect(() => {
+    if (!rewriting) return;
+    const t = setTimeout(() => setRewriting(false), 60000);
+    return () => clearTimeout(t);
+  }, [rewriting]);
+
   // Микрофон, которому отказали, Safari отдаёт обратно только в пользовательском
   // жесте. Поэтому ловим ЛЮБОЕ касание экрана тренировки: режим включён —
   // значит, он должен вернуться сам, без похода в настройки.
@@ -24212,7 +24247,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       // происходит сейчас, а не то, что было пять минут назад.
       window.speechSynthesis?.cancel();
       const left = restUntil ? Math.ceil((restUntil - Date.now()) / 1000) : 0;
-      if (left > 0) say(`Отдых, осталось ${left} ${gymPlural(left, 'секунда', 'секунды', 'секунд')}`);
+      if (left > 0) say(`Отдых, осталось ${gymSayLeft(left)}`);
       else announceNext();
     };
     document.addEventListener('visibilitychange', onVisible);
@@ -24269,6 +24304,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       alert('Укажите количество повторений');
       return;
     }
+    // Записали новый подход — значит, исправлять прошлый уже не собираемся.
+    setRewriting(false);
     const plan = gymPlanRows(ex)[i] || {};
     const rec = {
       id: (loggedAt(ex.id, i) || {}).id || crypto.randomUUID(),
@@ -24468,6 +24505,41 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     )].join('. '));
   };
 
+  // «Повтори» — то же самое объявление ещё раз, без побочных действий: экран не
+  // листаем, отдых не трогаем. На отдыхе сначала говорим, сколько его осталось.
+  const repeatCurrent = () => {
+    const t = nextTarget();
+    if (!t) { say('Все подходы записаны. Можно завершать.'); return; }
+    const parts = [];
+    const left = restUntil > Date.now() ? Math.ceil((restUntil - Date.now()) / 1000) : 0;
+    if (left > 0) parts.push(`Отдых, осталось ${gymSayLeft(left)}`);
+    parts.push(gymSaySet(
+      t.row,
+      gymPctBase(t.ex, sessions, session.startedAt || Date.now()),
+      t.ex.name,
+      gymLastWorkingWeight(sessions, t.ex.name, session.startedAt || Date.now()),
+    ));
+    say(parts.join('. '));
+  };
+
+  const lastLogged = () => [...logged].sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null;
+  const saySetFact = (w, r) => (w
+    ? `${gymRound1(w)} на ${r}`
+    : `${r} ${gymPlural(r, 'повторение', 'повторения', 'повторений')} своим весом`);
+
+  // Исправление уже записанного подхода. Отдых при этом не трогаем: он идёт
+  // своим чередом, и после исправления тренировка продолжается как обычно.
+  const rewriteLast = (weight, reps) => {
+    const last = lastLogged();
+    if (!last) { setRewriting(false); say('Пока нечего перезаписывать'); return; }
+    const w = weight !== undefined ? weight : gymNum(last.weight);
+    const r = reps !== undefined ? reps : gymInt(last.reps, 0);
+    if (!r) { say('Не понял, повторите'); return; }
+    onSave({ ...session, sets: logged.map(s => (s.id === last.id ? { ...s, weight: w, reps: r } : s)) });
+    setRewriting(false);
+    say(`Перезаписал, ${saySetFact(w, r)}`);
+  };
+
   // Подход, который предстоит сделать: первый незаписанный в упражнении.
   // Считаем по упражнению, а не по всей тренировке, — если вернуться к
   // пропущенному упражнению вручную, подсветка встанет там, где нужно.
@@ -24486,8 +24558,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     const t = row ? gymRowTarget(row, pctBaseOf(ex)) : null;
     const noWeight = !t || t.body || t.empty || (!t.min && !t.max);
     return noWeight
-      ? 'Скажите «15» — вес не нужен. Ещё: «столько же», «отмена»'
-      : 'Скажите «25 на 12». Ещё: «столько же», «отмена», «завершить»';
+      ? 'Скажите «15» — вес не нужен. Ещё: «столько же», «повтори», «перезапись», «отмена»'
+      : 'Скажите «25 на 12». Ещё: «столько же», «повтори», «перезапись», «отмена»';
   })();
 
   const rowCount = (ex) => {
@@ -24551,8 +24623,9 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       break;
     }
     // Во время отдыха слушаем только команды: числа в это время — либо чужой
-    // разговор, либо хвост собственной озвучки, записывать их нельзя.
-    if (resting && parsed && parsed.cmd === 'log') parsed = null;
+    // разговор, либо хвост собственной озвучки, записывать их нельзя. Исключение
+    // — начатая перезапись: там числа как раз и ждём.
+    if (resting && !rewriting && parsed && parsed.cmd === 'log') parsed = null;
     if (resting && parsed && parsed.cmd === 'skipRest' && !parsed.explicit) parsed = null;
     if (resting && !parsed) { setHeard(''); return; }
 
@@ -24563,6 +24636,23 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       if (looksLikeAttempt) say('Не понял, повторите');
       return;
     }
+
+    if (parsed.cmd === 'repeat') { repeatCurrent(); return; }
+
+    if (parsed.cmd === 'rewrite') {
+      // Числа сказаны в той же фразе — исправляем сразу, иначе переспрашиваем.
+      if (parsed.reps !== undefined) { rewriteLast(parsed.weight, parsed.reps); return; }
+      const last = lastLogged();
+      if (!last) { say('Пока нечего перезаписывать'); return; }
+      setRewriting(true);
+      say(`Записано ${saySetFact(gymNum(last.weight), gymInt(last.reps, 0))}. Скажите вес и повторения заново`);
+      return;
+    }
+
+    // Начатую перезапись «отмена» именно отменяет, а не стирает подход.
+    if (rewriting && parsed.cmd === 'undo') { setRewriting(false); say('Отменил перезапись'); return; }
+    // Числа во время перезаписи — это исправление, а не новый подход.
+    if (rewriting && parsed.cmd === 'log') { rewriteLast(parsed.weight, parsed.reps); return; }
 
     if (parsed.cmd === 'undo') {
       const last = [...logged].sort((a, b) => (b.at || 0) - (a.at || 0))[0];
@@ -24673,6 +24763,11 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
                 <Icon name="mic" size={11} /> слушаю
               </span>
             )}
+            {handsFree && rewriting && (
+              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full text-white" style={{ background: '#b45309' }}>
+                перезапись
+              </span>
+            )}
             {handsFree && !listening && micBlocked && (
               <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full text-white" style={{ background: '#b45309' }}>
                 <Icon name="mic" size={11} /> коснитесь экрана
@@ -24689,10 +24784,12 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
                 ? 'Скажете «25 на 12» — подход запишется сам, руки не нужны'
                 : micBlocked
                   ? 'Микрофон остановился — режим включён, коснитесь экрана, и он вернётся'
+                  : rewriting
+                  ? 'Перезапись: скажите вес и повторения прошлого подхода заново'
                   : !armed
                   ? 'Включится со следующего подхода'
                   : resting
-                    ? 'Идёт отдых. Скажите «пропустить отдых», чтобы начать подход раньше'
+                    ? 'Идёт отдых. Скажите «пропустить отдых», «повтори» или «перезапись»'
                     : voiceHint}
           </div>
         </div>
