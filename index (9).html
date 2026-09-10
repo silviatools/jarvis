@@ -22625,9 +22625,26 @@ const gymNormalizeNumbers = (text) => {
     out.push(w);
   });
   flush();
+  // Составное числительное иногда приезжает россыпью цифр: «двадцать семь» —
+  // как «20 7», «сто двадцать пять» — как «100 20 5». Склеиваем соседние числа
+  // по правилам языка: круглый десяток (сотня) плюс меньший разряд — это одно
+  // число. Слова между числами («на», «раз») склейку запрещают, поэтому
+  // «двадцать на семь» так и остаётся весом и повторами.
+  const joined = [];
+  out.forEach(tok => {
+    const n = /^\d+$/.test(tok) ? parseInt(tok, 10) : null;
+    const prev = joined.length ? joined[joined.length - 1] : '';
+    const p = /^\d+$/.test(prev) ? parseInt(prev, 10) : null;
+    const step = p !== null && p % 100 === 0 ? 100 : 10;
+    if (n !== null && p !== null && p >= 20 && p % 10 === 0 && n > 0 && n < step) {
+      joined[joined.length - 1] = String(p + n);
+      return;
+    }
+    joined.push(tok);
+  });
   // «двенадцать с половиной» → 12.5. Гантели и блины часто половинчатые, а
   // произносить «двенадцать точка пять» никто не станет.
-  return out.join(' ')
+  return joined.join(' ')
     .replace(/(\d+(?:\.\d+)?)\s+с\s+половиной/g, (m, n) => String(parseFloat(n) + 0.5))
     .replace(/(\d+(?:\.\d+)?)\s+половин\w*/g, (m, n) => String(parseFloat(n) + 0.5));
 };
