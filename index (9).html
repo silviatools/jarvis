@@ -1316,6 +1316,10 @@ function App() {
   const [settingsTab, setSettingsTab] = useState('general');
   const [houseTab, setHouseTab] = useState('boss');
   const [mealTab, setMealTab] = useState('plan');
+  // Заявка от голосового ассистента открыть конкретную запись (например,
+  // карту лояльности) после навигации в раздел — { target, id } | null.
+  // Сам экран раздела читает её и сбрасывает через onVoiceFocusConsumed.
+  const [voiceFocus, setVoiceFocus] = useState(null);
   const initialLoad = React.useRef(true);
   const serverLoaded = React.useRef(false);
 
@@ -1581,12 +1585,23 @@ function App() {
               setSub={setMiscTab}
               settingsTab={settingsTab}
               setSettingsTab={setSettingsTab}
+              voiceFocus={voiceFocus}
+              onVoiceFocusConsumed={() => setVoiceFocus(null)}
             />
           )}
         </main>
       )}
       <BottomNav tab={tab} setTab={setTab} />
-      <VoiceButton data={data} setData={setData} settings={data.settings} />
+      <VoiceButton
+        data={data}
+        setData={setData}
+        settings={data.settings}
+        setTab={setTab}
+        setPlannerTab={setPlannerTab}
+        setMiscTab={setMiscTab}
+        setHouseTab={setHouseTab}
+        setVoiceFocus={setVoiceFocus}
+      />
     </div>
   );
 }
@@ -3797,7 +3812,7 @@ function VoiceAssistantSettings({ data, setData }) {
         <div>
           <h3 className="font-display text-lg mb-1">Голосовой ассистент</h3>
           <p className="text-sm text-[var(--text-muted)]">
-            Добавляйте дела голосом. Нажмите кнопку микрофона внизу экрана, скажите что сделать — ИИ разберёт и добавит в нужный раздел.
+            Нажмите кнопку микрофона внизу экрана и скажите, что нужно. На провайдере Claude ассистент видит все разделы проекта: отвечает на вопросы по любым данным (бюджет, здоровье, авто, GYM и т.д.), открывает нужный раздел на экране и добавляет регулярные дела. На OpenAI — только добавление дел и вопросы по «По дому»/«Боссу».
           </p>
           <p className="text-sm text-[var(--text-muted)]">
             Этот же ключ используется в разделе «Здоровье» для распознавания загруженных документов (результатов приёма у врача) — поля записи заполняются автоматически.
@@ -8183,6 +8198,261 @@ function EnglishView({ data, setData, embedded }){
 
 // ============== VOICE ASSISTANT ==============
 
+// ── Голосовой ассистент — агент с инструментами (Claude) ───────────────────
+// Раньше ассистент отвечал одним JSON-объектом и видел только «По дому»/
+// «Босс». Теперь он умеет вызывать инструменты: сам решает, какие данные
+// прочитать и что открыть на экране — вместо того чтобы одним запросом
+// пытаться впихнуть в промпт данные вообще всех разделов проекта.
+// Единый источник правды: и промпт, и обработчик tool-calls берут список
+// разделов отсюда — не дублируем его в нескольких местах.
+
+// target → куда навигация переключает вкладки. focusable — раздел умеет
+// сразу открывать конкретную запись по focus_id (см. LoyaltyCardsView).
+const VOICE_NAV_TARGETS = {
+  home:             { tab: 'home' },
+  body:             { tab: 'mybody' },
+  budget:           { tab: 'budget' },
+  supplements:      { tab: 'supplements' },
+  meals:            { tab: 'meals' },
+  weather:          { tab: 'weather' },
+  health:           { tab: 'health' },
+  house_boss:       { tab: 'house', houseTab: 'boss' },
+  house_tasks:      { tab: 'house', houseTab: 'tasks' },
+  house_cleaning:   { tab: 'house', houseTab: 'cleaning' },
+  planner_plans:    { tab: 'planner', plannerTab: 'plans' },
+  planner_holidays: { tab: 'planner', plannerTab: 'holidays' },
+  planner_events:   { tab: 'planner', plannerTab: 'events' },
+  planner_camping:  { tab: 'planner', plannerTab: 'camping' },
+  misc_home:        { tab: 'misc', miscTab: '' },
+  wishlist:         { tab: 'misc', miscTab: 'wishlist' },
+  cards:            { tab: 'misc', miscTab: 'cards', focusable: true },
+  gym:              { tab: 'misc', miscTab: 'gym' },
+  cars:             { tab: 'misc', miscTab: 'cars' },
+  english:          { tab: 'misc', miscTab: 'english' },
+  settings:         { tab: 'misc', miscTab: 'settings' },
+};
+
+const VOICE_NAV_LABELS = {
+  home: 'Главный экран', body: 'Тело/вес', budget: 'Бюджет', supplements: 'БАДы',
+  meals: 'Питание', weather: 'Погода', health: 'Здоровье',
+  house_boss: 'Дела — Босс', house_tasks: 'Дела — Задачи (канбан)', house_cleaning: 'Дела — По дому',
+  planner_plans: 'Планировщик — Мои планы', planner_holidays: 'Планировщик — Праздники',
+  planner_events: 'Планировщик — События', planner_camping: 'Планировщик — Кемпинг',
+  misc_home: 'Прочее — главная', wishlist: 'Хотелки', cards: 'Карты лояльности',
+  gym: 'GYM', cars: 'Автомобили и обслуживание', english: 'English', settings: 'Настройки',
+};
+
+// Разделы данных, которые ассистент умеет читать инструментом get_data.
+// Списки на всякий случай обрезаны (.slice) — история операций/тренировок
+// может расти годами, а в ответ модели должно уходить разумное количество
+// токенов, а не вся база целиком.
+const VOICE_DATA_DOMAINS = {
+  house_boss:     { label: 'Задачи «Босс» по расписанию', get: d => (d.bossTasks || []).filter(t => !t.archived) },
+  house_cleaning: { label: 'Регулярные дела по дому',      get: d => (d.chores || []).filter(c => !c.archived) },
+  house_tasks:    { label: 'Канбан-доска задач',           get: d => d.kanban?.columns || [] },
+  cars: {
+    label: 'Автомобили и история обслуживания (когда, что, за сколько)',
+    get: d => ({
+      cars: (d.cars || []).filter(c => !c.archived),
+      serviceRecords: (d.serviceRecords || []).slice(-150),
+    }),
+  },
+  health: {
+    label: 'Здоровье: хронические состояния и события (болезни, визиты, процедуры)',
+    get: d => ({ conditions: d.healthConditions || [], events: (d.healthEvents || []).slice(-150) }),
+  },
+  budget: {
+    label: 'Бюджет активного пользователя: расходы, доходы, долги, накопления, ДДС',
+    get: d => {
+      const slice = d.budgetByUser?.[d.activeBudgetUserId] || {};
+      return {
+        categories: slice.budgetCategories || [],
+        expenses: (slice.budgetExpenses || []).slice(-200),
+        recurring: slice.budgetRecurring || [],
+        debts: slice.budgetDebts || [],
+        debtTransactions: (slice.debtTransactions || []).slice(-100),
+        incomeSources: slice.budgetIncomeSources || [],
+        savingsTransactions: (slice.savingsTransactions || []).slice(-100),
+        cashflowAccounts: slice.budgetCashflowAccounts || [],
+        cashflowOps: (slice.budgetCashflowOps || []).slice(-200),
+      };
+    },
+  },
+  cards: {
+    label: 'Карты лояльности магазинов (название, категория, заметка, id для навигации)',
+    // code/photo — штрихкод и фото карты, отвечать по ним нечего, а тратить
+    // на них токены незачем.
+    get: d => (d.loyaltyCards || []).map(({ photo, code, ...rest }) => rest),
+  },
+  gym: {
+    label: 'GYM: программы, дни, упражнения, журнал тренировок',
+    get: d => ({
+      programs: d.gymPrograms || [], days: d.gymDays || [], exercises: d.gymExercises || [],
+      sessions: (d.gymSessions || []).slice(-40),
+    }),
+  },
+  wishlist: {
+    label: 'Хотелки (списки и вещи в них)',
+    get: d => ({ categories: d.wishlistCategories || [], items: d.wishlistItems || [] }),
+  },
+  planner: {
+    label: 'Планировщик: события, друзья-участники, личные планы',
+    get: d => ({ events: d.plannerEvents || [], friends: d.plannerFriends || [], plans: d.plannerPlans || [] }),
+  },
+  camping: {
+    label: 'Кемпинг: справочник вещей и поездки со сборами',
+    get: d => ({ items: d.campingItems || [], categories: d.campingCategories || [], trips: d.campingTrips || [] }),
+  },
+  meals: {
+    label: 'Питание: рацион, приёмы пищи, БАДы',
+    get: d => ({ meals: (d.meals || []).slice(-30), supplements: d.supplements || [], dietLog: (d.dietLog || []).slice(-30) }),
+  },
+  body: {
+    label: 'Тело: история замеров и веса',
+    get: d => (d.bodyEntries || []).slice(-60),
+  },
+};
+
+const VOICE_AGENT_TOOLS = [
+  {
+    name: 'get_data',
+    description: 'Прочитать актуальные данные пользователя из одного раздела приложения. Вызывай перед тем как отвечать на вопрос по конкретному разделу — не отвечай по памяти.',
+    input_schema: {
+      type: 'object',
+      properties: { domain: { type: 'string', enum: Object.keys(VOICE_DATA_DOMAINS) } },
+      required: ['domain'],
+    },
+  },
+  {
+    name: 'navigate',
+    description: 'Открыть раздел приложения на экране пользователя (например «открой карту Пятёрочки», «покажи бюджет», «зайди в GYM»).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', enum: Object.keys(VOICE_NAV_TARGETS) },
+        focus_id: {
+          type: 'string',
+          description: 'Только для target="cards": id карты из get_data("cards") или её точное название — карта откроется сразу.',
+        },
+      },
+      required: ['target'],
+    },
+  },
+  {
+    name: 'add_task',
+    description: 'Добавить новое регулярное дело в раздел «По дому» (chores) или «Босс» (boss).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        section: { type: 'string', enum: ['chores', 'boss'] },
+        name: { type: 'string' },
+        frequency: { type: 'string', enum: ['daily', 'every2', 'every3', 'weekly', 'biweekly', 'monthly', 'custom'] },
+        customDays: { type: 'number' },
+        period: { type: 'string', enum: ['morning', 'evening', 'allday'] },
+        days: { type: 'array', items: { type: 'number' } },
+      },
+      required: ['section', 'name'],
+    },
+  },
+];
+
+function buildVoiceAgentSystemPrompt() {
+  const domainList = Object.entries(VOICE_DATA_DOMAINS).map(([k, v]) => `  • ${k} — ${v.label}`).join('\n');
+  const navList = Object.entries(VOICE_NAV_LABELS).map(([k, v]) => `  • ${k} — ${v}`).join('\n');
+  const todayStr = dateToLocalStr(new Date());
+
+  return `Ты голосовой помощник приложения Jarvis. Отвечай кратко и по-русски, разговорным языком — ответ озвучивается вслух, а не читается.
+
+СЕГОДНЯ: ${todayStr}
+
+У тебя есть инструменты, покрывающие весь проект:
+
+1. get_data(domain) — прочитать актуальные данные раздела. Разделы:
+${domainList}
+
+2. navigate(target, focus_id?) — открыть раздел на экране пользователя. Разделы:
+${navList}
+
+3. add_task(section, name, ...) — добавить регулярное дело в «По дому» или «Босс».
+
+Правила:
+- Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
+- Не отвечай по памяти на вопросы о данных пользователя — всегда сначала get_data по нужному разделу.
+- Если просят открыть/показать раздел — вызови navigate и коротко подтверди («Открываю»).
+- Если данных нет или вопрос не по теме проекта — так и скажи, не выдумывай.`;
+}
+
+function executeVoiceTool(name, input, nav, data) {
+  if (name === 'get_data') {
+    const domain = VOICE_DATA_DOMAINS[input?.domain];
+    if (!domain) return { error: 'unknown_domain' };
+    return domain.get(data);
+  }
+  if (name === 'navigate') {
+    const target = VOICE_NAV_TARGETS[input?.target];
+    if (!target) return { error: 'unknown_target' };
+    nav.setTab(target.tab);
+    if (target.houseTab !== undefined) nav.setHouseTab(target.houseTab);
+    if (target.plannerTab !== undefined) nav.setPlannerTab(target.plannerTab);
+    if (target.miscTab !== undefined) nav.setMiscTab(target.miscTab);
+    nav.setVoiceFocus(target.focusable && input?.focus_id ? { target: input.target, id: input.focus_id } : null);
+    return { ok: true };
+  }
+  if (name === 'add_task') {
+    applyVoiceTask(input, nav.setData);
+    return { ok: true };
+  }
+  return { error: 'unknown_tool' };
+}
+
+// Многошаговый цикл tool-use: модель может вызвать несколько инструментов
+// подряд (например get_data("cards") → navigate("cards", id найденной карты)),
+// прежде чем дать финальный текстовый ответ. data — снимок на момент начала
+// разговора: инструменты навигации/добавления это не смущает (они читают
+// данные только чтобы найти id и не нуждаются в собственных правках задним числом).
+async function runVoiceAgent(messages, settings, data, nav, maxSteps = 6) {
+  const key = (settings?.voiceApiKey || '').trim();
+  if (!key) throw new Error('no_key');
+  const model = (settings?.voiceModel || '').trim() || 'claude-sonnet-4-6';
+  const system = buildVoiceAgentSystemPrompt();
+  let convo = messages.map(m => ({ role: m.role, content: m.content }));
+
+  for (let step = 0; step < maxSteps; step++) {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: VOICE_AGENT_TOOLS }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || `Claude API ${res.status}`);
+    }
+    const resp = await res.json();
+    const content = resp.content || [];
+    const toolUses = content.filter(b => b.type === 'tool_use');
+    const text = content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+
+    if (!toolUses.length) return text || 'Готово';
+
+    convo.push({ role: 'assistant', content });
+    convo.push({
+      role: 'user',
+      content: toolUses.map(tu => {
+        let output;
+        try { output = executeVoiceTool(tu.name, tu.input, nav, data); }
+        catch (e) { output = { error: e.message }; }
+        return { type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(output) };
+      }),
+    });
+  }
+  return 'Не разобрался за отведённое число шагов — попробуйте переформулировать.';
+}
+
 function buildVoiceSystemPrompt(appData) {
   const DAY_NAMES = ['вс','пн','вт','ср','чт','пт','сб'];
   const PERIOD_NAMES = { morning: 'утро', evening: 'вечер', allday: 'весь день' };
@@ -8475,7 +8745,7 @@ function speak(text, settings) {
   });
 }
 
-function VoiceButton({ data, setData, settings }) {
+function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTab, setHouseTab, setVoiceFocus }) {
   const [phase, setPhase] = useState('idle'); // idle|recording|processing|clarifying|success|answered|error
   const [transcript, setTranscript] = useState('');
   const [clarifyQuestion, setClarifyQuestion] = useState('');
@@ -8494,6 +8764,32 @@ function VoiceButton({ data, setData, settings }) {
     const newMessages = [...existingMessages, { role: 'user', content: text }];
     setMessages(newMessages);
     setPhase('processing');
+
+    const provider = settings?.voiceProvider || 'claude';
+    // Полный доступ ко всему проекту (чтение любых разделов + навигация)
+    // требует настоящего tool-calling — сейчас это умеет только ветка Claude.
+    // OpenAI пока остаётся на старом однократном JSON-протоколе ниже
+    // (умеет добавлять дела и отвечать по «По дому»/«Боссу»).
+    if (provider === 'claude') {
+      try {
+        const nav = { setData, setTab, setPlannerTab, setMiscTab, setHouseTab, setVoiceFocus };
+        const answerStr = await runVoiceAgent(newMessages, settings, data, nav);
+        setAnswerText(answerStr);
+        setPhase('answered');
+        await speak(answerStr, settings);
+        setPhase('idle');
+        setMessages([]);
+      } catch (e) {
+        const msg = e.message === 'no_key'
+          ? 'Настройте API-ключ в Настройках → Ассистент'
+          : `Ошибка: ${e.message}`;
+        setErrorMsg(msg);
+        setPhase('error');
+        setTimeout(() => setPhase('idle'), 4000);
+      }
+      return;
+    }
+
     try {
       const parsed = await callAI(newMessages, settings, data);
       if (parsed.action === 'add') {
@@ -25569,7 +25865,7 @@ const MISC_APPS = [
   { id: 'settings', label: 'Настройки',  icon: 'settings',   color: '#4b5563' },
 ];
 
-function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab }) {
+function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voiceFocus, onVoiceFocusConsumed }) {
   const app = MISC_APPS.find(a => a.id === sub);
 
   if (!app) {
@@ -25610,7 +25906,14 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab }) {
         <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest flex-shrink-0">{app.label}</div>
       </div>
 
-      {sub === 'cards' && <LoyaltyCardsView data={data} setData={setData} />}
+      {sub === 'cards' && (
+        <LoyaltyCardsView
+          data={data}
+          setData={setData}
+          focusId={voiceFocus && voiceFocus.target === 'cards' ? voiceFocus.id : null}
+          onFocusConsumed={onVoiceFocusConsumed}
+        />
+      )}
       {sub === 'english' && <EngErrorBoundary><EnglishView data={data} setData={setData} embedded /></EngErrorBoundary>}
       {sub === 'cars' && <CarsView data={data} setData={setData} />}
       {sub === 'settings' && (
@@ -26929,12 +27232,24 @@ const newLoyaltyCard = () => ({
   updatedAt: Date.now(),
 });
 
-function LoyaltyCardsView({ data, setData }) {
+function LoyaltyCardsView({ data, setData, focusId, onFocusConsumed }) {
   const cards = data.loyaltyCards || [];
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('all');
   const [editing, setEditing] = useState(null);
   const [opened, setOpened] = useState(null);
+
+  // Голосовой ассистент просит открыть конкретную карту — по id или по
+  // названию (модель не всегда знает id, но всегда знает, что произнёс
+  // пользователь). Разовое действие: сразу сообщаем родителю, что заявку
+  // обработали, чтобы повторный визит в раздел не открывал карту снова.
+  useEffect(() => {
+    if (!focusId) return;
+    const needle = String(focusId).toLowerCase();
+    const found = cards.find(c => c.id === focusId || (c.name || '').toLowerCase() === needle);
+    if (found) setOpened(found.id);
+    onFocusConsumed && onFocusConsumed();
+  }, [focusId]);
 
   const save = (card) => {
     setData(d => {
