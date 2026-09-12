@@ -151,8 +151,12 @@
   var picked = null;        // id выбранного варианта в открытом вопросе
   var revealed = false;
   var showTeams = false;
+  var saveStatus = '';
   var saveTimer = null;
   var pollTimer = null;
+  var saving = 0;           // незавершённые записи счёта
+  var retryTimer = null;    // повтор записи после обрыва сети
+  var retryDelay = 0;
 
   var esc = function (s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -181,23 +185,41 @@
     saveTimer = setTimeout(save, 400);
   }
 
+  // Счёт уходит целиком, поэтому повтор безопасен: на плохом вайфае посреди
+  // игры очки иначе пропадали бы молча — на экране есть, на сервере нет.
   function save() {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    saving++;
     fetch('/api/game/' + encodeURIComponent(token) + '/state', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ teams: teams, answered: Object.keys(answered) }),
-    }).catch(function () {});
+    }).then(function (r) {
+      if (!r.ok && r.status >= 500) throw new Error('server');
+      retryDelay = 0;
+      setSaveStatus('');
+    }).catch(function () {
+      retryDelay = Math.min(retryDelay ? retryDelay * 2 : 3000, 30000);
+      setSaveStatus('Счёт не сохранён — пробуем ещё раз…');
+      retryTimer = setTimeout(save, retryDelay);
+    }).then(function () { saving--; });
+  }
+
+  function setSaveStatus(text) {
+    saveStatus = text;
+    var el = document.getElementById('save-status');
+    if (el) el.textContent = text;
   }
 
   // Пока никто ничего не трогает, подтягиваем чужой счёт: ведущий может
   // считать очки с телефона, а поле показывать на ноутбуке.
   function poll() {
-    if (openQ || showTeams || saveTimer) return;
+    if (openQ || showTeams || saveTimer || saving || retryTimer) return;
     fetch('/api/game/' + encodeURIComponent(token))
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (p) {
-        if (!p || openQ || showTeams || saveTimer) return;
+        if (!p || openQ || showTeams || saveTimer || saving || retryTimer) return;
         applyPayload(p);
         render();
       })
@@ -333,7 +355,8 @@
       + (game.game.description ? '<div class="desc">' + esc(game.game.description) + '</div>' : '')
       + '<div class="subtle" style="margin-top:6px">Сыграно ' + answeredCount() + ' из ' + questionsCount() + '</div>'
       + '</div></div>'
-      + '<div class="toolbar"><button class="btn" id="open-teams">Команды</button></div>'
+      + '<div class="toolbar"><button class="btn" id="open-teams">Команды</button>'
+      + '<div id="save-status" class="subtle" style="align-self:center;color:var(--bad)">' + esc(saveStatus) + '</div></div>'
       + renderTeams()
       + renderBoard()
       + '<div class="footer-note">Счёт виден всем, кто открыл эту ссылку.</div>';

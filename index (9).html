@@ -26112,6 +26112,18 @@ const quizGameCategoryCount = (g) =>
 const quizPlayFor = (data, g) =>
   (data.quizPlays || []).find(s => s && g && s.id === g.shareToken) || null;
 
+// Партия привязана к ТОКЕНУ ссылки, а не к игре: перевыпустили ссылку —
+// старая запись счёта уже ни к чему не относится, а удалили игру — тем более.
+// Убираем такие записи вместе с тумбстоном, иначе сервер вернёт их обратно
+// следующей же синхронизацией и они останутся в данных навсегда.
+const dropQuizPlays = (d, keep) => {
+  const list = d.quizPlays || [];
+  const doomed = list.filter(s => !keep(s));
+  let deletedIds = d.deletedIds;
+  doomed.forEach(s => { deletedIds = withDeletedId({ ...d, deletedIds }, 'quizPlays', s.id); });
+  return { quizPlays: list.filter(keep), deletedIds };
+};
+
 const quizPoints = (raw) => {
   const n = parseInt(String(raw ?? '').replace(/[^\d-]/g, ''), 10);
   return Number.isFinite(n) ? n : 0;
@@ -26149,15 +26161,31 @@ function QuizView({ data, setData }) {
 
   const removeGame = (game) => {
     if (!confirm(`Удалить игру «${game.title || 'без названия'}»?\n\nСсылка перестанет работать, счёт команд тоже удалится.`)) return;
-    setData(d => ({
-      ...d,
-      quizGames: (d.quizGames || []).filter(g => g.id !== game.id),
-      quizPlays: (d.quizPlays || []).filter(s => s.id !== game.shareToken),
-      deletedIds: withDeletedId(
-        { ...d, deletedIds: withDeletedId(d, 'quizGames', game.id) },
-        'quizPlays', game.shareToken),
-    }));
+    setData(d => {
+      const { quizPlays, deletedIds } = dropQuizPlays(
+        d, s => s.id !== game.shareToken && s.gameId !== game.id);
+      return {
+        ...d,
+        quizGames: (d.quizGames || []).filter(g => g.id !== game.id),
+        quizPlays,
+        deletedIds: withDeletedId({ ...d, deletedIds }, 'quizGames', game.id),
+      };
+    });
     setOpenId(null);
+  };
+
+  const regenerateToken = (game) => {
+    setData(d => {
+      const { quizPlays, deletedIds } = dropQuizPlays(
+        d, s => s.id !== game.shareToken && s.gameId !== game.id);
+      return {
+        ...d,
+        quizGames: (d.quizGames || []).map(g =>
+          g.id === game.id ? { ...g, shareToken: makePlannerToken(), shareEnabled: true } : g),
+        quizPlays,
+        deletedIds,
+      };
+    });
   };
 
   // Сброс перед новой партией: обнуляем счёт и снимаем отметки «сыгран».
@@ -26203,6 +26231,7 @@ function QuizView({ data, setData }) {
         onEdit={() => setDraft({ game: open, isNew: false })}
         onDelete={() => removeGame(open)}
         onUpdate={patch => updateGame(open.id, patch)}
+        onRegenerate={() => regenerateToken(open)}
         onResetPlay={() => resetPlay(open)}
       />
     );
@@ -26262,7 +26291,7 @@ function QuizView({ data, setData }) {
   );
 }
 
-function QuizGameDetail({ game, play, onBack, onEdit, onDelete, onUpdate, onResetPlay }) {
+function QuizGameDetail({ game, play, onBack, onEdit, onDelete, onUpdate, onRegenerate, onResetPlay }) {
   const [copied, setCopied] = useState(false);
   const shareOn = game.shareEnabled !== false;
   const shareUrl = quizGameUrl(game);
@@ -26292,7 +26321,7 @@ function QuizGameDetail({ game, play, onBack, onEdit, onDelete, onUpdate, onRese
 
   const regenerateToken = () => {
     if (!confirm('Сделать новую ссылку?\n\nСтарая перестанет работать, а счёт текущей партии потеряется.')) return;
-    onUpdate({ shareToken: makePlannerToken(), shareEnabled: true });
+    onRegenerate();
   };
 
   return (
