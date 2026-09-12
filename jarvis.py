@@ -69,7 +69,7 @@ FREQ_DAYS = {
 SPA_ROUTES = {
     "/mybody", "/budget", "/supplements", "/meals", "/weather",
     "/house", "/cars", "/holidays", "/settings", "/planner", "/health",
-    "/misc", "/wishlist", "/cards", "/gym",
+    "/misc", "/wishlist", "/cards", "/gym", "/quiz",
 }
 
 # Deep-link routes that get their OWN <link rel="manifest"> (and Apple home-
@@ -119,7 +119,11 @@ def route_is_public(route: str) -> bool:
         return True
     if token_from_route(route, "/e/") or token_from_route(route, "/trip/"):
         return True
+    if token_from_route(route, "/game/"):
+        return True
     if _route_token_prefix_public(route, "/api/event/") or _route_token_prefix_public(route, "/api/camping-trip/"):
+        return True
+    if _route_token_prefix_public(route, "/api/game/"):
         return True
     return False
 
@@ -1625,6 +1629,153 @@ def camping_trip_public_payload(app: dict, trip: dict) -> dict:
     }
 
 
+# ── Своя игра: публичная ссылка на игру ────────────────────────────────────
+# Игрок открывает /game/<token> — отдельную страницу quiz.html, которая ходит
+# только в /api/game/<token>: поле с категориями и вопросами одной игры плюс
+# общий счёт команд. Сам счёт живёт на сервере (quizPlays, id = токен игры),
+# поэтому ведущий может открыть ссылку на ноутбуке, а считать очки с телефона —
+# у всех одно и то же поле. Правка самой игры возможна только в приложении:
+# по ссылке меняется ТОЛЬКО счёт и отметки «вопрос сыгран».
+QUIZ_PAGE_FILE = DIR / "quiz.html"
+
+MAX_QUIZ_BODY       = 64 * 1024
+MAX_QUIZ_TEAMS      = 30
+MAX_QUIZ_TEAM_NAME  = 40
+MAX_QUIZ_ANSWERED   = 2000            # сыгранных вопросов на одну игру
+MAX_QUIZ_SCORE      = 10_000_000      # потолок вменяемого счёта
+
+
+def quiz_int(value, default: int = 0) -> int:
+    """Число из данных, которые редактировал человек: '300', 300, 300.0.
+    Не-число превращается в default, а не роняет отдачу всей игры."""
+    try:
+        return int(float(str(value).replace(",", ".").strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def find_quiz_game(app: dict, token: str) -> dict | None:
+    """Игра с активной публичной ссылкой. Отключённая ссылка (shareEnabled
+    = false) работает как «игра не найдена» — та же логика, что у событий."""
+    for g in (app.get("quizGames") or []):
+        if not isinstance(g, dict):
+            continue
+        if str(g.get("shareToken") or "") != token:
+            continue
+        return g if g.get("shareEnabled", True) else None
+    return None
+
+
+def quiz_play_state(app: dict, token: str) -> dict:
+    """Счёт и сыгранные вопросы одной игры. Хранится отдельной коллекцией
+    quizPlays (id = токен ссылки), чтобы записи игроков по ссылке и правки
+    самой игры в приложении не затирали друг друга при синхронизации."""
+    for s in (app.get("quizPlays") or []):
+        if isinstance(s, dict) and str(s.get("id") or "") == token:
+            return {
+                "teams": [t for t in (s.get("teams") or []) if isinstance(t, dict)],
+                "answered": [str(q) for q in (s.get("answered") or [])],
+                "updatedAt": quiz_int(s.get("updatedAt")),
+            }
+    return {"teams": [], "answered": [], "updatedAt": 0}
+
+
+def quiz_public_payload(app: dict, game: dict) -> dict:
+    """Публичный срез ОДНОЙ игры: категории, вопросы с вариантами ответа и
+    текущий счёт. Пустые (недозаполненные) вопросы и варианты отбрасываются —
+    на поле не должно быть клеток, за которыми ничего нет."""
+    categories = []
+    for c in (game.get("categories") or []):
+        if not isinstance(c, dict):
+            continue
+        questions = []
+        for q in (c.get("questions") or []):
+            if not isinstance(q, dict):
+                continue
+            text = str(q.get("text") or "").strip()
+            if not text:
+                continue
+            options = [
+                {
+                    "id": str(o.get("id") or ""),
+                    "text": str(o.get("text") or "").strip(),
+                    "correct": bool(o.get("correct")),
+                }
+                for o in (q.get("options") or [])
+                if isinstance(o, dict) and str(o.get("text") or "").strip()
+            ]
+            questions.append({
+                "id": str(q.get("id") or ""),
+                "points": quiz_int(q.get("points")),
+                "text": text,
+                "options": options,
+            })
+        if questions:
+            categories.append({
+                "id": str(c.get("id") or ""),
+                "name": str(c.get("name") or "").strip() or "Без названия",
+                "questions": questions,
+            })
+
+    state = quiz_play_state(app, str(game.get("shareToken") or ""))
+    return {
+        "game": {
+            "id": game.get("id"),
+            "title": str(game.get("title") or "").strip() or "Своя игра",
+            "description": str(game.get("description") or ""),
+        },
+        "categories": categories,
+        "teams": state["teams"],
+        "answered": state["answered"],
+        "serverNow": int(time.time() * 1000),
+    }
+
+
+def quiz_save_state(token: str, teams_raw, answered_raw) -> tuple[int, dict]:
+    """Запись счёта по публичной ссылке. Всё, что пришло из браузера,
+    обрезается по длине и количеству: страницу открывает любой, у кого есть
+    ссылка, поэтому объём чужих данных в файле должен быть ограничен."""
+    teams = []
+    for t in (teams_raw or [])[:MAX_QUIZ_TEAMS]:
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id") or "").strip()[:64]
+        if not tid:
+            continue
+        score = max(-MAX_QUIZ_SCORE, min(MAX_QUIZ_SCORE, quiz_int(t.get("score"))))
+        teams.append({
+            "id": tid,
+            "name": " ".join(str(t.get("name") or "").split())[:MAX_QUIZ_TEAM_NAME],
+            "score": score,
+        })
+
+    answered, seen = [], set()
+    for q in (answered_raw or [])[:MAX_QUIZ_ANSWERED]:
+        qid = str(q or "").strip()[:64]
+        if qid and qid not in seen:
+            seen.add(qid)
+            answered.append(qid)
+
+    with APP_DATA_LOCK:
+        app = load_app_data() if APP_DATA_FILE.exists() else {}
+        game = find_quiz_game(app, token)
+        if game is None:
+            return 404, {"error": "game not found"}
+        plays = [s for s in (app.get("quizPlays") or []) if isinstance(s, dict)]
+        entry = {
+            "id": token,
+            "gameId": game.get("id"),
+            "teams": teams,
+            "answered": answered,
+            "updatedAt": int(time.time() * 1000),
+        }
+        exists = any(str(s.get("id") or "") == token for s in plays)
+        app["quizPlays"] = ([s if str(s.get("id") or "") != token else entry for s in plays]
+                            if exists else [*plays, entry])
+        save_app_data(app)
+        return 200, quiz_public_payload(app, game)
+
+
 # ── Личные финансы: PWA быстрого ввода операций (ДДС) ──────────────────────
 # Телефон открывает /pf/<token> — отдельную страницу finance.html, которая
 # ходит только в /api/pf/<token>/*. Токен привязан к КОНКРЕТНОМУ пользователю
@@ -2942,6 +3093,19 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif token_from_route(route, "/trip/"):
             # Гостевая страница чек-листа поездки — тоже отдельный файл.
             self._serve_trip_page()
+        elif token_from_route(route, "/game/"):
+            # Публичная страница «Своей игры» — отдельный файл, не SPA.
+            self._serve_quiz_page()
+        elif token_from_route(route, "/api/game/"):
+            token = token_from_route(route, "/api/game/")
+            with APP_DATA_LOCK:
+                app = load_app_data() if APP_DATA_FILE.exists() else {}
+                game = find_quiz_game(app, token)
+                payload = quiz_public_payload(app, game) if game else None
+            if payload is None:
+                self._json(404, {"error": "game not found"})
+            else:
+                self._json(200, payload)
         elif self.path.split("?", 1)[0].startswith("/pf/"):
             # Мобильное приложение личных финансов — отдельная страница.
             self._pf_page(self.path.split("?", 1)[0])
@@ -3080,6 +3244,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._event_shopping_delete(token_from_route(route, "/api/event/", "/shopping-delete"))
         elif token_from_route(route, "/api/event/", "/shopping-toggle"):
             self._event_shopping_toggle(token_from_route(route, "/api/event/", "/shopping-toggle"))
+        elif token_from_route(route, "/api/game/", "/state"):
+            self._quiz_state(token_from_route(route, "/api/game/", "/state"))
         elif route.startswith("/api/pf/"):
             self._pf_post(route)
         elif self.path == "/api/config":
@@ -3668,6 +3834,44 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"camping-trip.html not found")
+
+    def _serve_quiz_page(self):
+        try:
+            content = QUIZ_PAGE_FILE.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("X-Robots-Tag", "noindex, nofollow")
+            self.send_header("Cache-Control", "no-store")
+            self._cors()
+            self.end_headers()
+            self.wfile.write(content)
+        except FileNotFoundError:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"quiz.html not found")
+
+    def _quiz_state(self, token: str):
+        """Счёт команд и сыгранные вопросы по публичной ссылке. Пропуск —
+        сам токен: игру ведут те, кому ведущий прислал ссылку, отдельных
+        участников у неё нет. Сама игра по ссылке не меняется."""
+        length = self._content_length()
+        if length is None:
+            self._json(411, {"error": "Content-Length required"})
+            return
+        if length > MAX_QUIZ_BODY:
+            self._json(413, {"error": "payload too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length))
+        except Exception:
+            self._json(400, {"error": "invalid json"})
+            return
+        if not isinstance(payload, dict):
+            self._json(400, {"error": "invalid json"})
+            return
+        code, body = quiz_save_state(token, payload.get("teams"), payload.get("answered"))
+        self._json(code, body)
 
     def _pf_page(self, raw_path: str):
         """Страница приложения и её манифест.
