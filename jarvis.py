@@ -119,11 +119,11 @@ def route_is_public(route: str) -> bool:
         return True
     if token_from_route(route, "/e/") or token_from_route(route, "/trip/"):
         return True
-    if token_from_route(route, "/game/"):
+    if token_from_route(route, "/game/") or token_from_route(route, "/game-edit/"):
         return True
     if _route_token_prefix_public(route, "/api/event/") or _route_token_prefix_public(route, "/api/camping-trip/"):
         return True
-    if _route_token_prefix_public(route, "/api/game/"):
+    if _route_token_prefix_public(route, "/api/game/") or _route_token_prefix_public(route, "/api/game-edit/"):
         return True
     return False
 
@@ -1638,7 +1638,17 @@ def camping_trip_public_payload(app: dict, trip: dict) -> dict:
 # по ссылке меняется ТОЛЬКО счёт и отметки «вопрос сыгран».
 QUIZ_PAGE_FILE = DIR / "quiz.html"
 
+QUIZ_EDIT_PAGE_FILE = DIR / "quiz-edit.html"
+
 MAX_QUIZ_BODY       = 64 * 1024
+MAX_QUIZ_EDIT_BODY  = 512 * 1024      # вопросы одной игры целиком
+MAX_QUIZ_CATEGORIES = 20
+MAX_QUIZ_QUESTIONS  = 30              # на категорию
+MAX_QUIZ_OPTIONS    = 10              # вариантов ответа на вопрос
+MAX_QUIZ_CAT_NAME   = 60
+MAX_QUIZ_TEXT       = 600
+MAX_QUIZ_OPTION     = 200
+MAX_QUIZ_POINTS     = 1_000_000
 MAX_QUIZ_TEAMS      = 30
 MAX_QUIZ_TEAM_NAME  = 40
 MAX_QUIZ_ANSWERED   = 2000            # сыгранных вопросов на одну игру
@@ -1664,6 +1674,129 @@ def find_quiz_game(app: dict, token: str) -> dict | None:
             continue
         return g if g.get("shareEnabled", True) else None
     return None
+
+
+def find_quiz_game_by_edit_token(app: dict, token: str) -> dict | None:
+    """Игра, открытая по ссылке на РЕДАКТИРОВАНИЕ вопросов. Токен отдельный от
+    игрового: его дают тому, кто помогает придумывать вопросы, и отзывают
+    независимо от ссылки на партию (editEnabled = false → «не найдено»)."""
+    for g in (app.get("quizGames") or []):
+        if not isinstance(g, dict):
+            continue
+        if str(g.get("editToken") or "") != token:
+            continue
+        return g if g.get("editEnabled", True) else None
+    return None
+
+
+def quiz_clean_id(raw) -> str:
+    """id из браузера редактора: годится только короткая «безопасная» строка,
+    всё остальное заменяем своим uuid — идти с ним в данные всё равно нельзя."""
+    s = str(raw or "").strip()
+    if s and len(s) <= 64 and re.match(r"^[A-Za-z0-9_-]+$", s):
+        return s
+    return str(uuid.uuid4())
+
+
+def quiz_sanitize_categories(raw) -> list:
+    """Категории и вопросы, присланные по ссылке редактирования. Всё режется
+    по длине и количеству: страницу открывает любой, у кого есть ссылка, и
+    записанное ложится в общий файл данных владельца."""
+    categories = []
+    for c in (raw or [])[:MAX_QUIZ_CATEGORIES]:
+        if not isinstance(c, dict):
+            continue
+        questions = []
+        for q in (c.get("questions") or [])[:MAX_QUIZ_QUESTIONS]:
+            if not isinstance(q, dict):
+                continue
+            options, correct_seen = [], False
+            for o in (q.get("options") or [])[:MAX_QUIZ_OPTIONS]:
+                if not isinstance(o, dict):
+                    continue
+                text = str(o.get("text") or "").strip()[:MAX_QUIZ_OPTION]
+                if not text:
+                    continue
+                # Верный вариант ровно один — как и в редакторе приложения.
+                correct = bool(o.get("correct")) and not correct_seen
+                correct_seen = correct_seen or correct
+                options.append({"id": quiz_clean_id(o.get("id")), "text": text, "correct": correct})
+            questions.append({
+                "id": quiz_clean_id(q.get("id")),
+                "points": max(-MAX_QUIZ_POINTS, min(MAX_QUIZ_POINTS, quiz_int(q.get("points")))),
+                "text": str(q.get("text") or "").strip()[:MAX_QUIZ_TEXT],
+                "options": options,
+            })
+        categories.append({
+            "id": quiz_clean_id(c.get("id")),
+            "name": " ".join(str(c.get("name") or "").split())[:MAX_QUIZ_CAT_NAME],
+            "questions": questions,
+        })
+    return categories
+
+
+def quiz_edit_payload(game: dict) -> dict:
+    """Полный срез игры для редактора: в отличие от игрового поля, сюда идут
+    и пустые заготовки вопросов — человек как раз пришёл их заполнять."""
+    categories = []
+    for c in (game.get("categories") or []):
+        if not isinstance(c, dict):
+            continue
+        questions = []
+        for q in (c.get("questions") or []):
+            if not isinstance(q, dict):
+                continue
+            questions.append({
+                "id": str(q.get("id") or ""),
+                "points": quiz_int(q.get("points")),
+                "text": str(q.get("text") or ""),
+                "options": [
+                    {"id": str(o.get("id") or ""), "text": str(o.get("text") or ""), "correct": bool(o.get("correct"))}
+                    for o in (q.get("options") or []) if isinstance(o, dict)
+                ],
+            })
+        categories.append({
+            "id": str(c.get("id") or ""),
+            "name": str(c.get("name") or ""),
+            "questions": questions,
+        })
+    return {
+        "game": {
+            "id": game.get("id"),
+            "title": str(game.get("title") or "").strip() or "Своя игра",
+            "description": str(game.get("description") or ""),
+            "updatedAt": quiz_int(game.get("updatedAt")),
+        },
+        "categories": categories,
+        "limits": {
+            "categories": MAX_QUIZ_CATEGORIES,
+            "questions": MAX_QUIZ_QUESTIONS,
+            "options": MAX_QUIZ_OPTIONS,
+            "catName": MAX_QUIZ_CAT_NAME,
+            "text": MAX_QUIZ_TEXT,
+            "option": MAX_QUIZ_OPTION,
+        },
+        "serverNow": int(time.time() * 1000),
+    }
+
+
+def quiz_edit_save(token: str, categories_raw) -> tuple[int, dict]:
+    """Запись вопросов по ссылке редактирования. Меняются ТОЛЬКО категории и
+    вопросы: ни название игры, ни токены, ни счёт партии по этой ссылке
+    недоступны. updatedAt новее локальной копии — значит правка помощника
+    переживёт ближайшую синхронизацию с приложением владельца."""
+    if not isinstance(categories_raw, list):
+        return 400, {"error": "invalid categories"}
+    categories = quiz_sanitize_categories(categories_raw)
+    with APP_DATA_LOCK:
+        app = load_app_data() if APP_DATA_FILE.exists() else {}
+        game = find_quiz_game_by_edit_token(app, token)
+        if game is None:
+            return 404, {"error": "game not found"}
+        game["categories"] = categories
+        game["updatedAt"] = int(time.time() * 1000)
+        save_app_data(app)
+        return 200, quiz_edit_payload(game)
 
 
 def quiz_play_state(app: dict, token: str) -> dict:
@@ -3096,6 +3229,19 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif token_from_route(route, "/game/"):
             # Публичная страница «Своей игры» — отдельный файл, не SPA.
             self._serve_quiz_page()
+        elif token_from_route(route, "/game-edit/"):
+            # Страница «внеси вопросы» — тоже отдельный файл, не SPA.
+            self._serve_quiz_edit_page()
+        elif token_from_route(route, "/api/game-edit/"):
+            token = token_from_route(route, "/api/game-edit/")
+            with APP_DATA_LOCK:
+                app = load_app_data() if APP_DATA_FILE.exists() else {}
+                game = find_quiz_game_by_edit_token(app, token)
+                payload = quiz_edit_payload(game) if game else None
+            if payload is None:
+                self._json(404, {"error": "game not found"})
+            else:
+                self._json(200, payload)
         elif token_from_route(route, "/api/game/"):
             token = token_from_route(route, "/api/game/")
             with APP_DATA_LOCK:
@@ -3244,6 +3390,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._event_shopping_delete(token_from_route(route, "/api/event/", "/shopping-delete"))
         elif token_from_route(route, "/api/event/", "/shopping-toggle"):
             self._event_shopping_toggle(token_from_route(route, "/api/event/", "/shopping-toggle"))
+        elif token_from_route(route, "/api/game-edit/"):
+            self._quiz_edit(token_from_route(route, "/api/game-edit/"))
         elif token_from_route(route, "/api/game/", "/state"):
             self._quiz_state(token_from_route(route, "/api/game/", "/state"))
         elif route.startswith("/api/pf/"):
@@ -3850,6 +3998,42 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"quiz.html not found")
+
+    def _serve_quiz_edit_page(self):
+        try:
+            content = QUIZ_EDIT_PAGE_FILE.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("X-Robots-Tag", "noindex, nofollow")
+            self.send_header("Cache-Control", "no-store")
+            self._cors()
+            self.end_headers()
+            self.wfile.write(content)
+        except FileNotFoundError:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"quiz-edit.html not found")
+
+    def _quiz_edit(self, token: str):
+        """Вопросы, присланные по ссылке редактирования."""
+        length = self._content_length()
+        if length is None:
+            self._json(411, {"error": "Content-Length required"})
+            return
+        if length > MAX_QUIZ_EDIT_BODY:
+            self._json(413, {"error": "payload too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length))
+        except Exception:
+            self._json(400, {"error": "invalid json"})
+            return
+        if not isinstance(payload, dict):
+            self._json(400, {"error": "invalid json"})
+            return
+        code, body = quiz_edit_save(token, payload.get("categories"))
+        self._json(code, body)
 
     def _quiz_state(self, token: str):
         """Счёт команд и сыгранные вопросы по публичной ссылке. Пропуск —

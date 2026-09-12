@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="theme-color" content="#fafafa" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<title>Вопросы для игры</title>
+<link rel="icon" href="/favicon.ico" type="image/x-icon" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --border: #e8e8e8;
+    --border-strong: #d4d4d4;
+    --text: #0a0a0a;
+    --text-muted: #6b6b6b;
+    --text-subtle: #9a9a9a;
+    --accent: #b45309;
+    --bad: #dc2626;
+    --good: #15803d;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; color: inherit; cursor: pointer; border: none; background: none; }
+  input, textarea {
+    font-family: inherit; font-size: 15px; width: 100%; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 11px 13px; outline: none;
+  }
+  input:focus, textarea:focus { border-color: var(--text); }
+  textarea { resize: vertical; min-height: 62px; line-height: 1.4; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 22px 14px 120px; overflow-wrap: break-word; }
+  h1 { font-family: 'Fraunces', Georgia, serif; font-size: 25px; line-height: 1.2; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .muted { color: var(--text-muted); font-size: 14px; }
+  .subtle { color: var(--text-subtle); font-size: 12px; }
+  .hint {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 12px 14px; font-size: 13px; color: var(--text-muted); margin: 14px 0 18px;
+  }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 18px; margin-bottom: 12px; overflow: hidden; }
+  .cat-head { display: flex; align-items: center; gap: 8px; padding: 12px; }
+  .cat-body { border-top: 1px solid var(--border); padding: 12px; }
+  .q { border: 1px solid var(--border); border-radius: 14px; padding: 12px; margin-bottom: 10px; }
+  .q-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .q-top .lbl { font-size: 12px; color: var(--text-subtle); text-transform: uppercase; letter-spacing: .08em; }
+  .q-top input { width: 96px; padding: 8px 10px; }
+  .grow { flex: 1; min-width: 0; }
+  .opt-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .radio {
+    width: 24px; height: 24px; flex: 0 0 24px; border-radius: 999px;
+    border: 1.5px solid var(--border-strong); display: flex; align-items: center; justify-content: center;
+    background: var(--surface);
+  }
+  .radio.on { background: var(--text); border-color: var(--text); color: #fff; }
+  .radio svg { width: 13px; height: 13px; opacity: 0; }
+  .radio.on svg { opacity: 1; }
+  .icon-btn { padding: 8px; border-radius: 9px; color: var(--text-muted); line-height: 0; flex: 0 0 auto; }
+  .icon-btn:hover { color: var(--bad); background: #fdf2f2; }
+  .link-btn { font-size: 14px; color: var(--text-muted); padding: 8px 2px; display: inline-flex; align-items: center; gap: 6px; }
+  .link-btn:hover { color: var(--text); }
+  .btn {
+    background: var(--surface); border: 1px solid var(--border-strong); border-radius: 10px;
+    padding: 12px 16px; font-size: 15px; font-weight: 500; display: inline-flex;
+    align-items: center; justify-content: center; gap: 6px;
+  }
+  .btn.wide { width: 100%; }
+  .btn.primary { background: var(--text); color: #fff; border-color: var(--text); }
+  .btn.primary:disabled { opacity: .45; cursor: default; }
+  .bar {
+    position: fixed; left: 0; right: 0; bottom: 0; background: rgba(250,250,250,.94);
+    backdrop-filter: blur(8px); border-top: 1px solid var(--border); padding: 12px 14px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+  .bar-inner { max-width: 720px; margin: 0 auto; display: flex; align-items: center; gap: 12px; }
+  .status { flex: 1; min-width: 0; font-size: 13px; color: var(--text-muted); }
+  .status.err { color: var(--bad); }
+  .status.ok { color: var(--good); }
+  .center { text-align: center; padding: 64px 16px; }
+  .cnt { font-size: 12px; color: var(--text-subtle); flex: 0 0 auto; }
+</style>
+</head>
+<body>
+<div class="wrap" id="root"><div class="center muted">Загружаем игру…</div></div>
+
+<script>
+(function () {
+  var root = document.getElementById('root');
+  var token = (location.pathname.split('/').filter(Boolean)[1] || '');
+
+  var game = null;          // { title, description }
+  var categories = [];      // то, что редактируем
+  var limits = { categories: 20, questions: 30, options: 10, catName: 60, text: 600, option: 200 };
+  var dirty = false;
+  var saving = false;
+  var status = '';
+  var statusKind = '';
+
+  var esc = function (s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  };
+
+  var uid = function () {
+    try { return crypto.randomUUID(); } catch (e) {}
+    return 'id-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  };
+
+  var newOption = function () { return { id: uid(), text: '', correct: false }; };
+  var newQuestion = function (points) { return { id: uid(), points: points, text: '', options: [newOption(), newOption()] }; };
+  var newCategory = function () {
+    return { id: uid(), name: '', questions: [100, 200, 300, 400, 500].map(newQuestion) };
+  };
+
+  function setStatus(text, kind) {
+    status = text; statusKind = kind || '';
+    var el = document.getElementById('status');
+    if (el) { el.textContent = text; el.className = 'status ' + statusKind; }
+  }
+
+  function markDirty() {
+    if (!dirty) { dirty = true; syncBar(); }
+    setStatus('Есть несохранённые изменения', '');
+  }
+
+  function syncBar() {
+    var btn = document.getElementById('save');
+    if (btn) btn.disabled = saving || !dirty;
+  }
+
+  // Заполненным считается вопрос с текстом — ровно как на игровом поле:
+  // пустые заготовки автор не увидит в игре, и это надо показывать сразу.
+  function readyCount(cat) {
+    return (cat.questions || []).filter(function (q) { return String(q.text || '').trim(); }).length;
+  }
+
+  function totalReady() {
+    return categories.reduce(function (n, c) { return n + readyCount(c); }, 0);
+  }
+
+  function find(catId, qId) {
+    var cat = null, q = null;
+    categories.forEach(function (c) {
+      if (c.id !== catId) return;
+      cat = c;
+      (c.questions || []).forEach(function (x) { if (x.id === qId) q = x; });
+    });
+    return { cat: cat, q: q };
+  }
+
+  var CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+  var TRASH = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+  var XMARK = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+
+  function renderQuestion(cat, q) {
+    var opts = (q.options || []).map(function (o) {
+      return '<div class="opt-row">'
+        + '<button class="radio' + (o.correct ? ' on' : '') + '" data-correct="' + esc(cat.id) + '|' + esc(q.id) + '|' + esc(o.id) + '" title="Верный ответ">' + CHECK + '</button>'
+        + '<input class="grow" value="' + esc(o.text) + '" maxlength="' + limits.option + '" placeholder="Вариант ответа"'
+        + ' data-opt="' + esc(cat.id) + '|' + esc(q.id) + '|' + esc(o.id) + '" />'
+        + '<button class="icon-btn" data-opt-del="' + esc(cat.id) + '|' + esc(q.id) + '|' + esc(o.id) + '">' + XMARK + '</button>'
+        + '</div>';
+    }).join('');
+
+    return '<div class="q">'
+      + '<div class="q-top">'
+      + '<span class="lbl">за</span>'
+      + '<input type="number" inputmode="numeric" value="' + esc(q.points) + '" data-points="' + esc(cat.id) + '|' + esc(q.id) + '" />'
+      + '<div class="grow"></div>'
+      + '<button class="icon-btn" data-q-del="' + esc(cat.id) + '|' + esc(q.id) + '">' + TRASH + '</button>'
+      + '</div>'
+      + '<textarea placeholder="Текст вопроса" maxlength="' + limits.text + '" data-text="' + esc(cat.id) + '|' + esc(q.id) + '">' + esc(q.text) + '</textarea>'
+      + opts
+      + ((q.options || []).length < limits.options
+          ? '<button class="link-btn" data-opt-add="' + esc(cat.id) + '|' + esc(q.id) + '">+ Вариант ответа</button>'
+          : '<div class="subtle" style="margin-top:8px">Больше вариантов добавить нельзя</div>')
+      + '</div>';
+  }
+
+  function render() {
+    var html = ''
+      + '<h1>' + esc(game.title) + '</h1>'
+      + '<div class="muted">Вопросы для игры · заполнено ' + totalReady() + '</div>'
+      + '<div class="hint">Вы редактируете вопросы этой игры по ссылке от автора. Впишите категории, '
+      + 'вопросы и варианты ответа, отметьте кружком верный — и нажмите «Сохранить». '
+      + 'Автор увидит вопросы у себя в приложении. На игровое поле попадают только вопросы с текстом.</div>';
+
+    html += categories.map(function (cat) {
+      return '<div class="card">'
+        + '<div class="cat-head">'
+        + '<input class="grow" value="' + esc(cat.name) + '" maxlength="' + limits.catName + '" placeholder="Название категории — например «Деньги»" data-cat="' + esc(cat.id) + '" />'
+        + '<span class="cnt">' + readyCount(cat) + '</span>'
+        + '<button class="icon-btn" data-cat-del="' + esc(cat.id) + '">' + TRASH + '</button>'
+        + '</div>'
+        + '<div class="cat-body">'
+        + (cat.questions || []).map(function (q) { return renderQuestion(cat, q); }).join('')
+        + ((cat.questions || []).length < limits.questions
+            ? '<button class="btn wide" data-q-add="' + esc(cat.id) + '">+ Вопрос</button>'
+            : '<div class="subtle">Больше вопросов в категорию не добавить</div>')
+        + '</div></div>';
+    }).join('');
+
+    html += categories.length < limits.categories
+      ? '<button class="btn wide" id="cat-add">+ Категория</button>'
+      : '<div class="subtle">Больше категорий добавить нельзя</div>';
+
+    html += '<div class="bar"><div class="bar-inner">'
+      + '<div id="status" class="status ' + statusKind + '">' + esc(status) + '</div>'
+      + '<button class="btn primary" id="save">Сохранить</button>'
+      + '</div></div>';
+
+    root.innerHTML = html;
+    bind();
+    syncBar();
+  }
+
+  // Текст правим БЕЗ перерисовки — иначе курсор прыгал бы в начало поля на
+  // каждом символе. Перерисовка только там, где меняется состав списков.
+  function bind() {
+    root.querySelectorAll('[data-cat]').forEach(function (el) {
+      el.addEventListener('input', function () {
+        var id = el.getAttribute('data-cat');
+        categories.forEach(function (c) { if (c.id === id) c.name = el.value; });
+        markDirty();
+      });
+    });
+
+    root.querySelectorAll('[data-points]').forEach(function (el) {
+      el.addEventListener('input', function () {
+        var p = el.getAttribute('data-points').split('|');
+        var f = find(p[0], p[1]);
+        if (f.q) f.q.points = el.value;
+        markDirty();
+      });
+    });
+
+    root.querySelectorAll('[data-text]').forEach(function (el) {
+      el.addEventListener('input', function () {
+        var p = el.getAttribute('data-text').split('|');
+        var f = find(p[0], p[1]);
+        if (f.q) f.q.text = el.value;
+        markDirty();
+        var cnt = el.closest('.card').querySelector('.cnt');
+        if (cnt && f.cat) cnt.textContent = readyCount(f.cat);
+      });
+    });
+
+    root.querySelectorAll('[data-opt]').forEach(function (el) {
+      el.addEventListener('input', function () {
+        var p = el.getAttribute('data-opt').split('|');
+        var f = find(p[0], p[1]);
+        if (f.q) (f.q.options || []).forEach(function (o) { if (o.id === p[2]) o.text = el.value; });
+        markDirty();
+      });
+    });
+
+    root.querySelectorAll('[data-correct]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var p = el.getAttribute('data-correct').split('|');
+        var f = find(p[0], p[1]);
+        if (!f.q) return;
+        var was = (f.q.options || []).some(function (o) { return o.id === p[2] && o.correct; });
+        (f.q.options || []).forEach(function (o) { o.correct = (o.id === p[2]) && !was; });
+        markDirty();
+        render();
+      });
+    });
+
+    root.querySelectorAll('[data-opt-add]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var p = el.getAttribute('data-opt-add').split('|');
+        var f = find(p[0], p[1]);
+        if (f.q) f.q.options = (f.q.options || []).concat([newOption()]);
+        markDirty(); render();
+      });
+    });
+
+    root.querySelectorAll('[data-opt-del]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var p = el.getAttribute('data-opt-del').split('|');
+        var f = find(p[0], p[1]);
+        if (f.q) f.q.options = (f.q.options || []).filter(function (o) { return o.id !== p[2]; });
+        markDirty(); render();
+      });
+    });
+
+    root.querySelectorAll('[data-q-add]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var id = el.getAttribute('data-q-add');
+        categories.forEach(function (c) {
+          if (c.id !== id) return;
+          var last = (c.questions || [])[(c.questions || []).length - 1];
+          var next = last ? (parseInt(last.points, 10) || 0) + 100 : 100;
+          c.questions = (c.questions || []).concat([newQuestion(next)]);
+        });
+        markDirty(); render();
+      });
+    });
+
+    root.querySelectorAll('[data-q-del]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var p = el.getAttribute('data-q-del').split('|');
+        var f = find(p[0], p[1]);
+        if (f.q && String(f.q.text || '').trim() && !confirm('Удалить вопрос?')) return;
+        categories.forEach(function (c) {
+          if (c.id !== p[0]) return;
+          c.questions = (c.questions || []).filter(function (q) { return q.id !== p[1]; });
+        });
+        markDirty(); render();
+      });
+    });
+
+    root.querySelectorAll('[data-cat-del]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var id = el.getAttribute('data-cat-del');
+        var cat = categories.filter(function (c) { return c.id === id; })[0];
+        if (cat && readyCount(cat) && !confirm('Удалить категорию «' + (cat.name || 'без названия') + '» вместе с вопросами?')) return;
+        categories = categories.filter(function (c) { return c.id !== id; });
+        markDirty(); render();
+      });
+    });
+
+    var catAdd = document.getElementById('cat-add');
+    if (catAdd) catAdd.addEventListener('click', function () {
+      categories = categories.concat([newCategory()]);
+      markDirty(); render();
+    });
+
+    var save = document.getElementById('save');
+    if (save) save.addEventListener('click', doSave);
+  }
+
+  function doSave() {
+    if (saving || !dirty) return;
+    saving = true; syncBar();
+    setStatus('Сохраняем…', '');
+    fetch('/api/game-edit/' + encodeURIComponent(token), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ categories: categories }),
+    }).then(function (r) {
+      if (!r.ok) throw new Error(r.status === 404 ? 'Ссылка больше не работает — попросите автора прислать новую.' : 'Не получилось сохранить');
+      return r.json();
+    }).then(function (p) {
+      apply(p);
+      dirty = false; saving = false;
+      render();
+      var t = new Date();
+      setStatus('Сохранено в ' + String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0'), 'ok');
+    }).catch(function (e) {
+      saving = false; syncBar();
+      setStatus(e.message || 'Не получилось сохранить — попробуйте ещё раз', 'err');
+    });
+  }
+
+  function apply(p) {
+    game = p.game;
+    limits = p.limits || limits;
+    categories = (p.categories || []).map(function (c) {
+      return {
+        id: c.id || uid(),
+        name: c.name || '',
+        questions: (c.questions || []).map(function (q) {
+          // Пустые варианты на сервере не хранятся (на поле их всё равно нет),
+          // поэтому у незаполненного вопроса пара пустых строк появляется здесь —
+          // иначе помощнику пришлось бы жать «+ Вариант ответа» под каждым.
+          var options = (q.options || []).map(function (o) {
+            return { id: o.id || uid(), text: o.text || '', correct: !!o.correct };
+          });
+          while (options.length < 2) options.push(newOption());
+          return { id: q.id || uid(), points: q.points, text: q.text || '', options: options };
+        }),
+      };
+    });
+    if (!categories.length) categories = [newCategory()];
+  }
+
+  // Правки автора в приложении подтягиваем при возврате на вкладку, но
+  // только если свои изменения уже сохранены — иначе затрём набранное.
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState !== 'visible' || dirty || saving) return;
+    fetch('/api/game-edit/' + encodeURIComponent(token))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (p) { if (p && !dirty && !saving) { apply(p); render(); } })
+      .catch(function () {});
+  });
+
+  window.addEventListener('beforeunload', function (e) {
+    if (!dirty) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
+
+  function renderError() {
+    root.innerHTML = '<div class="center"><div style="font-family:Fraunces,Georgia,serif;font-size:20px;margin-bottom:8px;">Игра не найдена</div>'
+      + '<div class="muted">Ссылка недействительна или автор отключил редактирование.</div></div>';
+  }
+
+  if (!token) {
+    renderError();
+  } else {
+    fetch('/api/game-edit/' + encodeURIComponent(token))
+      .then(function (r) { if (!r.ok) throw new Error('not found'); return r.json(); })
+      .then(function (p) { apply(p); render(); })
+      .catch(renderError);
+  }
+})();
+</script>
+</body>
+</html>

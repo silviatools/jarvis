@@ -26070,6 +26070,12 @@ const QUIZ_DEFAULT_POINTS = [100, 200, 300, 400, 500];
 const quizGameUrl = (g) =>
   g && g.shareToken ? `${window.location.origin}/game/${g.shareToken}` : '';
 
+// Вторая ссылка — на составление вопросов: её дают тому, кто помогает собрать
+// игру. Токен отдельный: игроки по ссылке на партию вопросы править не могут,
+// а помощник не видит счёт и не может отозвать игровую ссылку.
+const quizEditUrl = (g) =>
+  g && g.editToken ? `${window.location.origin}/game-edit/${g.editToken}` : '';
+
 const newQuizOption = () => ({ id: crypto.randomUUID(), text: '', correct: false });
 
 const newQuizQuestion = (points = 100) => ({
@@ -26092,6 +26098,8 @@ const newQuizGame = () => ({
   categories: [newQuizCategory()],
   shareToken: makePlannerToken(),
   shareEnabled: true,
+  editToken: makePlannerToken(),
+  editEnabled: true,
   createdAt: Date.now(),
   updatedAt: Date.now(),
 });
@@ -26188,6 +26196,10 @@ function QuizView({ data, setData }) {
     });
   };
 
+  const regenerateEditToken = (game) => {
+    updateGame(game.id, { editToken: makePlannerToken(), editEnabled: true });
+  };
+
   // Сброс перед новой партией: обнуляем счёт и снимаем отметки «сыгран».
   // Пишем в ту же коллекцию, что и страница игры — синхронизация разрулит
   // по updatedAt, как и с любой другой записью.
@@ -26214,6 +26226,7 @@ function QuizView({ data, setData }) {
     return (
       <QuizEditor
         initial={draft.game}
+        latest={games.find(g => g.id === draft.game.id) || null}
         isNew={draft.isNew}
         onCancel={() => setDraft(null)}
         onSave={saveGame}
@@ -26232,6 +26245,7 @@ function QuizView({ data, setData }) {
         onDelete={() => removeGame(open)}
         onUpdate={patch => updateGame(open.id, patch)}
         onRegenerate={() => regenerateToken(open)}
+        onRegenerateEdit={() => regenerateEditToken(open)}
         onResetPlay={() => resetPlay(open)}
       />
     );
@@ -26291,10 +26305,89 @@ function QuizView({ data, setData }) {
   );
 }
 
-function QuizGameDetail({ game, play, onBack, onEdit, onDelete, onUpdate, onRegenerate, onResetPlay }) {
+// Карточка «ссылка + копировать + поделиться». Их на экране две — на саму игру
+// и на составление вопросов, — и ведут себя они одинаково.
+function QuizShareBlock({ title, url, enabled, note, offNote, openLabel, canOpen, onToggle, onRegenerate, shareTitle }) {
   const [copied, setCopied] = useState(false);
+
+  const copyLink = async () => {
+    const ok = await copyToClipboard(url);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } else {
+      prompt('Скопируйте ссылку вручную:', url);
+    }
+  };
+
+  const shareLink = async () => {
+    try {
+      await navigator.share({ title: shareTitle, text: shareTitle, url });
+    } catch (_) {}
+  };
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+      <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-3">{title}</div>
+      <div className="flex items-center gap-2">
+        <input
+          readOnly
+          value={url}
+          onFocus={e => e.target.select()}
+          className="flex-1 min-w-0 text-xs !py-2 !px-3 text-[var(--text-muted)]"
+          style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
+        />
+        <button
+          onClick={copyLink}
+          className="btn-secondary !py-2 !px-3 text-sm flex items-center gap-1.5 flex-shrink-0"
+          title="Скопировать ссылку"
+        >
+          <Icon name={copied ? 'check' : 'copy'} size={14} />
+          <span className="hidden sm:inline">{copied ? 'Скопировано' : 'Копировать'}</span>
+        </button>
+        {typeof navigator !== 'undefined' && navigator.share && (
+          <button onClick={shareLink} className="btn-secondary !py-2 !px-3 flex-shrink-0" title="Поделиться">
+            <Icon name="share" size={14} />
+          </button>
+        )}
+      </div>
+      <div className={`text-[11px] mt-2 ${enabled ? 'text-[var(--text-subtle)]' : 'text-red-500'}`}>
+        {enabled ? note : offNote}
+      </div>
+      <div className="flex items-center gap-3 mt-3 flex-wrap">
+        {enabled && canOpen && (
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1.5"
+          >
+            <Icon name="externalLink" size={14} /> {openLabel}
+          </a>
+        )}
+        <button onClick={onToggle} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)]">
+          {enabled ? 'Отключить ссылку' : 'Включить ссылку'}
+        </button>
+        <button onClick={onRegenerate} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)]">
+          Новая ссылка
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function QuizGameDetail({ game, play, onBack, onEdit, onDelete, onUpdate, onRegenerate, onRegenerateEdit, onResetPlay }) {
   const shareOn = game.shareEnabled !== false;
+  const editOn = game.editEnabled !== false;
   const shareUrl = quizGameUrl(game);
+  const editUrl = quizEditUrl(game);
+
+  // Игры, созданные до появления второй ссылки, токена редактирования не
+  // имеют — заводим его при первом открытии карточки, чтобы ссылка была не
+  // пустой строкой, а рабочей.
+  useEffect(() => {
+    if (!game.editToken) onUpdate({ editToken: makePlannerToken(), editEnabled: true });
+  }, [game.id, game.editToken]);
   const teams = [...((play && play.teams) || [])].sort((a, b) => (b.score || 0) - (a.score || 0));
   const total = quizGameQuestionCount(game);
   // Считаем только те отметки, которым на поле соответствует живой вопрос:
@@ -26303,25 +26396,14 @@ function QuizGameDetail({ game, play, onBack, onEdit, onDelete, onUpdate, onRege
   const answered = (game.categories || []).reduce(
     (n, c) => n + quizReadyQuestions(c).filter(q => answeredIds.has(q.id)).length, 0);
 
-  const copyLink = async () => {
-    const ok = await copyToClipboard(shareUrl);
-    if (ok) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } else {
-      prompt('Скопируйте ссылку вручную:', shareUrl);
-    }
-  };
-
-  const shareLink = async () => {
-    try {
-      await navigator.share({ title: game.title || 'Своя игра', text: game.title || '', url: shareUrl });
-    } catch (_) {}
-  };
-
   const regenerateToken = () => {
-    if (!confirm('Сделать новую ссылку?\n\nСтарая перестанет работать, а счёт текущей партии потеряется.')) return;
+    if (!confirm('Сделать новую ссылку на игру?\n\nСтарая перестанет работать, а счёт текущей партии потеряется.')) return;
     onRegenerate();
+  };
+
+  const regenerateEditToken = () => {
+    if (!confirm('Сделать новую ссылку на составление вопросов?\n\nСтарая перестанет работать — помощнику придётся прислать новую.')) return;
+    onRegenerateEdit();
   };
 
   return (
@@ -26340,54 +26422,31 @@ function QuizGameDetail({ game, play, onBack, onEdit, onDelete, onUpdate, onRege
         <button onClick={onDelete} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={16} /></button>
       </div>
 
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
-        <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-3">Ссылка на игру</div>
-        <div className="flex items-center gap-2">
-          <input
-            readOnly
-            value={shareUrl}
-            onFocus={e => e.target.select()}
-            className="flex-1 min-w-0 text-xs !py-2 !px-3 text-[var(--text-muted)]"
-            style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
-          />
-          <button
-            onClick={copyLink}
-            className="btn-secondary !py-2 !px-3 text-sm flex items-center gap-1.5 flex-shrink-0"
-            title="Скопировать ссылку"
-          >
-            <Icon name={copied ? 'check' : 'copy'} size={14} />
-            <span className="hidden sm:inline">{copied ? 'Скопировано' : 'Копировать'}</span>
-          </button>
-          {typeof navigator !== 'undefined' && navigator.share && (
-            <button onClick={shareLink} className="btn-secondary !py-2 !px-3 flex-shrink-0" title="Поделиться">
-              <Icon name="share" size={14} />
-            </button>
-          )}
-        </div>
-        <div className={`text-[11px] mt-2 ${shareOn ? 'text-[var(--text-subtle)]' : 'text-red-500'}`}>
-          {shareOn
-            ? 'По ссылке открывается поле с категориями и вопросами. Счёт команд ведут там же — меняется он только по ссылке, сама игра по ней не редактируется.'
-            : 'Ссылка отключена — сейчас она не откроется ни у кого. Включите её, чтобы снова играть.'}
-        </div>
-        <div className="flex items-center gap-3 mt-3 flex-wrap">
-          {shareOn && total > 0 && (
-            <a
-              href={shareUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1.5"
-            >
-              <Icon name="externalLink" size={14} /> Открыть игру
-            </a>
-          )}
-          <button onClick={() => onUpdate({ shareEnabled: !shareOn })} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)]">
-            {shareOn ? 'Отключить ссылку' : 'Включить ссылку'}
-          </button>
-          <button onClick={regenerateToken} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)]">
-            Новая ссылка
-          </button>
-        </div>
-      </div>
+      <QuizShareBlock
+        title="Ссылка для игры"
+        url={shareUrl}
+        enabled={shareOn}
+        shareTitle={game.title || 'Своя игра'}
+        openLabel="Открыть игру"
+        canOpen={total > 0}
+        note="По ссылке открывается поле с категориями и вопросами. Счёт команд ведут там же — меняется он только по ссылке, сама игра по ней не редактируется."
+        offNote="Ссылка отключена — сейчас она не откроется ни у кого. Включите её, чтобы снова играть."
+        onToggle={() => onUpdate({ shareEnabled: !shareOn })}
+        onRegenerate={regenerateToken}
+      />
+
+      <QuizShareBlock
+        title="Ссылка для составления вопросов"
+        url={editUrl}
+        enabled={editOn}
+        shareTitle={`Вопросы для игры «${game.title || 'Своя игра'}»`}
+        openLabel="Открыть редактор"
+        canOpen
+        note="По этой ссылке другой человек добавляет и правит категории, вопросы и варианты ответа — удобно, когда игру собираете вдвоём. Ни счёт команд, ни ссылка на партию по ней недоступны."
+        offNote="Редактирование по ссылке отключено — сейчас она не откроется ни у кого."
+        onToggle={() => onUpdate({ editEnabled: !editOn })}
+        onRegenerate={regenerateEditToken}
+      />
 
       {total === 0 && (
         <div className="text-sm text-red-500 bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
@@ -26444,7 +26503,7 @@ function QuizGameDetail({ game, play, onBack, onEdit, onDelete, onUpdate, onRege
 // Редактор игры. Правки живут в локальном черновике и уезжают в data только
 // по «Сохранить» — иначе недописанная клетка сразу появлялась бы на поле у
 // игроков, открывших ссылку прямо сейчас.
-function QuizEditor({ initial, isNew, onCancel, onSave }) {
+function QuizEditor({ initial, latest, isNew, onCancel, onSave }) {
   const [game, setGame] = useState(() => JSON.parse(JSON.stringify(initial)));
   const [openCat, setOpenCat] = useState(() => ((initial.categories || [])[0] || {}).id || null);
 
@@ -26500,6 +26559,15 @@ function QuizEditor({ initial, isNew, onCancel, onSave }) {
     const title = String(game.title || '').trim();
     if (!title) { alert('Впишите название игры.'); return; }
 
+    // Пока редактор был открыт, вопросы мог прислать помощник по ссылке
+    // редактирования: сохранение перезапишет игру целиком, поэтому спрашиваем.
+    // latest приезжает из data, которую синхронизация обновляет сама.
+    const freshTs = latest && typeof latest.updatedAt === 'number' ? latest.updatedAt : 0;
+    const draftTs = typeof initial.updatedAt === 'number' ? initial.updatedAt : 0;
+    if (freshTs > draftTs && !confirm(
+      'Пока вы правили игру, вопросы изменились по ссылке для составления вопросов.\n\n' +
+      'Сохранить свою версию? Присланные вопросы будут заменены тем, что на экране.')) return;
+
     // Чистим черновик: пустые варианты и вопросы без текста на поле не нужны,
     // категория без единого готового вопроса — тоже.
     const categories = (game.categories || []).map(c => ({
@@ -26532,6 +26600,8 @@ function QuizEditor({ initial, isNew, onCancel, onSave }) {
       categories,
       shareToken: game.shareToken || makePlannerToken(),
       shareEnabled: game.shareEnabled !== false,
+      editToken: game.editToken || makePlannerToken(),
+      editEnabled: game.editEnabled !== false,
       createdAt: game.createdAt || Date.now(),
       updatedAt: Date.now(),
     });
