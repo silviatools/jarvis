@@ -1040,12 +1040,17 @@ ASSISTANT_DATA_DOMAINS = {
             "items": app.get("campingItems", []), "categories": app.get("campingCategories", []),
             "trips": app.get("campingTrips", []),
         }),
-    "meals": ("Питание: рацион, приёмы пищи, БАДы",
+    "meals": ("Питание: рацион, приёмы пищи, БАДы, списки покупок",
         lambda app: {
             "meals": app.get("meals", [])[-30:], "supplements": app.get("supplements", []),
-            "dietLog": app.get("dietLog", [])[-30:],
+            "dietLog": app.get("dietLog", [])[-30:], "shoppingLists": app.get("shoppingLists", []),
         }),
     "body": ("Тело: история замеров и веса", lambda app: app.get("bodyEntries", [])[-60:]),
+    "checklist": ("Ежедневный чек-лист: поля и журнал ответов",
+        lambda app: {
+            "fields": [f for f in app.get("dailyChecklistFields", []) if not f.get("archived")],
+            "log": app.get("dailyChecklistLog", [])[-30:],
+        }),
 }
 
 # target → (подпись, относительный путь сайта). Подвкладки вроде houseTab не
@@ -1075,6 +1080,361 @@ ASSISTANT_NAV_TARGETS = {
     "settings": ("Настройки", "/settings"),
 }
 
+# ── Текстовый ассистент: универсальная запись данных ────────────────────────
+# Зеркалит WRITE_REGISTRY/executeVoiceTool в index (9).html (та же разведка
+# по коду легла в основу обеих реализаций) — коллекций больше двадцати, почти
+# все id-массивы с одним паттерном (апсерт по id, hard delete + tombstone,
+# иногда каскад на дочерние записи), поэтому три общих инструмента вместо
+# одного на раздел. В отличие от браузера (где данные иммутабельны и правки
+# идут через setData), здесь app — обычный dict, который можно мутировать на
+# месте и сохранить через save_app_data после каждого успешного вызова.
+
+BUDGET_SCOPED_COLLECTIONS = {
+    "budgetExpenses", "budgetRecurring", "savingsTransactions",
+    "budgetDebts", "debtTransactions", "budgetCashflowAccounts", "budgetCashflowOps",
+}
+
+
+def _collection_array(app: dict, key: str) -> list:
+    if key in BUDGET_SCOPED_COLLECTIONS:
+        uid = app.get("activeBudgetUserId")
+        slice_ = (app.get("budgetByUser") or {}).get(uid)
+        if slice_ is None:
+            return []
+        return slice_.setdefault(key, [])
+    return app.setdefault(key, [])
+
+
+def _set_collection_array(app: dict, key: str, arr: list):
+    if key in BUDGET_SCOPED_COLLECTIONS:
+        uid = app.get("activeBudgetUserId")
+        app.setdefault("budgetByUser", {}).setdefault(uid, {})[key] = arr
+    else:
+        app[key] = arr
+
+
+def _cascade_delete_planner_event(app: dict, event_id: str):
+    # Гостевые коллекции (ответы/комментарии/список покупок и т.д.) ассистент
+    # не читает и не пишет напрямую, но при удалении события строки должны
+    # уйти вместе с ним — иначе это утечка данных в файле.
+    for key in ("plannerResponses", "plannerComments", "plannerGuests",
+                "plannerExpenses", "plannerPayments", "plannerShoppingItems"):
+        arr = app.get(key)
+        if arr:
+            arr[:] = [r for r in arr if r.get("eventId") != event_id]
+
+
+def _cascade_delete_checklist_field(app: dict, field_id: str):
+    for entry in app.get("dailyChecklistLog") or []:
+        answers = entry.get("answers")
+        if answers and field_id in answers:
+            del answers[field_id]
+
+
+# label — для сообщений; create_defaults — поля новой записи по умолчанию
+# (id/updatedAt добавляются отдельно). require_confirm — запись финансовая,
+# create/update тоже просят подтверждения (delete требует его всегда и для
+# всех коллекций). cascade_delete — при удалении рекурсивно удалить записи,
+# где record[field] == id. cascade_orphan — вместо удаления обнулить
+# record[field]. cascade_strip — убрать id из списка record[field].
+# custom_cascade_delete — когда каскад не укладывается в эти три формы.
+# tombstone=False — коллекция без списка удалений (нет таких в этом реестре,
+# оставлено для симметрии с JS-версией).
+WRITE_REGISTRY = {
+    "chores": {
+        "label": "Регулярное дело «По дому»",
+        "create_defaults": lambda: {"frequency": "weekly", "customDays": None, "notify": False, "notifyTime": "09:00", "archived": False},
+    },
+    "bossTasks": {
+        "label": "Задача «Босс»",
+        "create_defaults": lambda: {"period": "morning", "days": [1, 2, 3, 4, 5], "archived": False},
+    },
+    "cars": {
+        "label": "Автомобиль",
+        "create_defaults": lambda: {"archived": False},
+        "cascade_delete": [{"collection": "serviceRecords", "field": "carId"}],
+    },
+    "serviceRecords": {"label": "Запись об обслуживании автомобиля", "create_defaults": lambda: {}},
+    "healthConditions": {
+        "label": "Состояние здоровья",
+        "create_defaults": lambda: {"tags": []},
+        "cascade_orphan": [{"collection": "healthEvents", "field": "conditionId"}],
+    },
+    "healthEvents": {"label": "Событие здоровья (визит/болезнь/процедура)", "create_defaults": lambda: {"tags": [], "medications": []}},
+    "loyaltyCards": {"label": "Карта лояльности магазина", "create_defaults": lambda: {"format": "auto"}},
+    "gymPrograms": {
+        "label": "Программа тренировок GYM",
+        "create_defaults": lambda: {},
+        "cascade_delete": [{"collection": "gymDays", "field": "programId"}],
+    },
+    "gymDays": {
+        "label": "Тренировочный день GYM",
+        "create_defaults": lambda: {"order": 0},
+        "cascade_delete": [{"collection": "gymExercises", "field": "dayId"}],
+    },
+    "gymExercises": {"label": "Упражнение GYM", "create_defaults": lambda: {"mode": "groups", "groups": [], "order": 0}},
+    "gymSessions": {"label": "Тренировка (журнал GYM)", "create_defaults": lambda: {"sets": []}},
+    "wishlistCategories": {
+        "label": "Список хотелок",
+        "create_defaults": lambda: {},
+        "cascade_orphan": [{"collection": "wishlistItems", "field": "categoryId"}],
+    },
+    "wishlistItems": {"label": "Хотелка", "create_defaults": lambda: {"bought": False}},
+    "plannerFriends": {
+        "label": "Друг-участник планировщика",
+        "create_defaults": lambda: {},
+        "cascade_strip": [{"collection": "plannerEvents", "field": "participantIds"}],
+    },
+    "plannerEvents": {
+        "label": "Событие планировщика",
+        "create_defaults": lambda: {"participantIds": [], "participantMode": "list", "confirmed": False},
+        "custom_cascade_delete": _cascade_delete_planner_event,
+    },
+    "plannerPlans": {"label": "Личный план в планировщике", "create_defaults": lambda: {}},
+    "campingCategories": {
+        "label": "Категория кемпинг-вещей",
+        "create_defaults": lambda: {},
+        "cascade_orphan": [{"collection": "campingItems", "field": "categoryId"}],
+    },
+    "campingItems": {"label": "Кемпинг-вещь (справочник)", "create_defaults": lambda: {"isBag": False}},
+    "campingTrips": {"label": "Кемпинг-поездка", "create_defaults": lambda: {"packing": {"bags": [], "items": []}}},
+    "meals": {"label": "Рацион (приём пищи)", "create_defaults": lambda: {"breakfast": [], "snack": [], "lunch": [], "dinner": [], "archived": False}},
+    "supplements": {"label": "БАД", "create_defaults": lambda: {"form": "Таблетки", "frequency": "daily_morning", "archived": False}},
+    "bodyEntries": {"label": "Замер тела", "create_defaults": lambda: {"values": {}}},
+    "dailyChecklistFields": {
+        "label": "Поле ежедневного чек-листа",
+        "create_defaults": lambda: {"options": [], "archived": False},
+        "custom_cascade_delete": _cascade_delete_checklist_field,
+    },
+    "shoppingLists": {"label": "Список покупок", "create_defaults": lambda: {"selections": []}},
+    "budgetExpenses": {
+        "label": "Накопление (финансовая цель)",
+        "require_confirm": True,
+        "create_defaults": lambda: {"archived": False},
+        "cascade_delete": [{"collection": "savingsTransactions", "field": "expenseId"}],
+    },
+    "savingsTransactions": {"label": "Операция по накоплению", "require_confirm": True, "create_defaults": lambda: {}},
+    "budgetRecurring": {"label": "Регулярный платёж", "require_confirm": True, "create_defaults": lambda: {"archived": False}},
+    "budgetDebts": {
+        "label": "Долг",
+        "require_confirm": True,
+        "create_defaults": lambda: {"closed": False},
+        "cascade_delete": [{"collection": "debtTransactions", "field": "debtId"}],
+    },
+    "debtTransactions": {"label": "Операция по долгу", "require_confirm": True, "create_defaults": lambda: {}},
+    "budgetCashflowAccounts": {
+        "label": "Счёт ДДС",
+        "require_confirm": True,
+        "create_defaults": lambda: {},
+        "cascade_delete": [{"collection": "budgetCashflowOps", "field": "accountId"}],
+    },
+    "budgetCashflowOps": {"label": "Операция ДДС (расход/доход)", "require_confirm": True, "create_defaults": lambda: {"source": "manual"}},
+}
+
+
+def create_record_generic(app: dict, collection: str, fields: dict) -> dict:
+    reg = WRITE_REGISTRY.get(collection)
+    if not reg:
+        return {"error": "unknown_collection"}
+    record = {**reg["create_defaults"](), **(fields or {}), "id": str(uuid.uuid4()), "updatedAt": int(time.time() * 1000)}
+    arr = _collection_array(app, collection)
+    arr.append(record)
+    _set_collection_array(app, collection, arr)
+    return {"ok": True, "id": record["id"]}
+
+
+def update_record_generic(app: dict, collection: str, record_id: str, patch: dict) -> dict:
+    reg = WRITE_REGISTRY.get(collection)
+    if not reg:
+        return {"error": "unknown_collection"}
+    arr = _collection_array(app, collection)
+    for i, r in enumerate(arr):
+        if r.get("id") == record_id:
+            arr[i] = {**r, **(patch or {}), "id": record_id, "updatedAt": int(time.time() * 1000)}
+            _set_collection_array(app, collection, arr)
+            return {"ok": True}
+    return {"error": "not_found"}
+
+
+def _delete_record_cascade(app: dict, collection: str, record_id: str):
+    reg = WRITE_REGISTRY.get(collection)
+    if not reg:
+        return
+    custom = reg.get("custom_cascade_delete")
+    if custom:
+        custom(app, record_id)
+    else:
+        for c in reg.get("cascade_orphan", []):
+            for r in _collection_array(app, c["collection"]):
+                if r.get(c["field"]) == record_id:
+                    r[c["field"]] = ""
+        for c in reg.get("cascade_strip", []):
+            for r in _collection_array(app, c["collection"]):
+                v = r.get(c["field"])
+                if isinstance(v, list) and record_id in v:
+                    r[c["field"]] = [x for x in v if x != record_id]
+        for c in reg.get("cascade_delete", []):
+            child_ids = [r.get("id") for r in _collection_array(app, c["collection"]) if r.get(c["field"]) == record_id]
+            for cid in child_ids:
+                _delete_record_cascade(app, c["collection"], cid)
+    arr = _collection_array(app, collection)
+    arr[:] = [r for r in arr if r.get("id") != record_id]
+    if reg.get("tombstone", True):
+        app.setdefault("deletedIds", {}).setdefault(collection, {})[str(record_id)] = int(time.time() * 1000)
+
+
+def delete_record_generic(app: dict, collection: str, record_id: str) -> dict:
+    reg = WRITE_REGISTRY.get(collection)
+    if not reg:
+        return {"error": "unknown_collection"}
+    if not any(r.get("id") == record_id for r in _collection_array(app, collection)):
+        return {"error": "not_found"}
+    _delete_record_cascade(app, collection, record_id)
+    return {"ok": True}
+
+
+# ── Канбан: не плоский id-массив (задачи вложены в колонки), свои функции ──
+DEFAULT_KANBAN_COLUMNS = [
+    {"id": "col-1", "title": "К выполнению", "tasks": []},
+    {"id": "col-2", "title": "В работе", "tasks": []},
+    {"id": "col-3", "title": "Готово", "tasks": []},
+]
+
+
+def _kanban_columns(app: dict) -> list:
+    kanban = app.get("kanban")
+    if kanban and kanban.get("columns"):
+        return kanban["columns"]
+    return DEFAULT_KANBAN_COLUMNS
+
+
+def _find_kanban_task(app: dict, task_id: str):
+    for col in _kanban_columns(app):
+        for t in col.get("tasks", []):
+            if t.get("id") == task_id:
+                return t, col
+    return None, None
+
+
+def _stamp_kanban_column(col: dict):
+    col["updatedAt"] = int(time.time() * 1000)
+
+
+def kanban_create_task(app: dict, column_id: str, fields: dict) -> dict:
+    columns = _kanban_columns(app)
+    target = next((c for c in columns if c.get("id") == column_id), None)
+    if not target:
+        return {"error": "unknown_column"}
+    task = {
+        "id": str(uuid.uuid4()), "title": fields.get("title", ""), "startDate": "",
+        "dueDate": fields.get("dueDate", ""), "priority": fields.get("priority") or "none",
+        "description": fields.get("description", ""), "subtasks": [], "comments": [],
+        "createdAt": datetime.utcnow().isoformat(),
+    }
+    target.setdefault("tasks", []).insert(0, task)
+    _stamp_kanban_column(target)
+    app.setdefault("kanban", {})["columns"] = columns
+    return {"ok": True, "id": task["id"]}
+
+
+def kanban_update_task(app: dict, task_id: str, patch: dict) -> dict:
+    task, col = _find_kanban_task(app, task_id)
+    if not task:
+        return {"error": "task_not_found"}
+    task.update(patch or {})
+    _stamp_kanban_column(col)
+    return {"ok": True}
+
+
+def kanban_delete_task(app: dict, task_id: str) -> dict:
+    task, col = _find_kanban_task(app, task_id)
+    if not task:
+        return {"error": "task_not_found"}
+    col["tasks"] = [t for t in col.get("tasks", []) if t.get("id") != task_id]
+    _stamp_kanban_column(col)
+    return {"ok": True}
+
+
+def kanban_move_task(app: dict, task_id: str, target_column_id: str) -> dict:
+    columns = _kanban_columns(app)
+    target_col = next((c for c in columns if c.get("id") == target_column_id), None)
+    if not target_col:
+        return {"error": "unknown_column"}
+    task, col = _find_kanban_task(app, task_id)
+    if not task:
+        return {"error": "task_not_found"}
+    if col.get("id") == target_column_id:
+        return {"ok": True}
+    col["tasks"] = [t for t in col.get("tasks", []) if t.get("id") != task_id]
+    _stamp_kanban_column(col)
+    target_col.setdefault("tasks", []).insert(0, task)
+    _stamp_kanban_column(target_col)
+    return {"ok": True}
+
+
+def kanban_add_comment(app: dict, task_id: str, text: str) -> dict:
+    task, col = _find_kanban_task(app, task_id)
+    if not task:
+        return {"error": "task_not_found"}
+    comment = {"id": str(uuid.uuid4()), "text": text, "createdAt": datetime.utcnow().isoformat()}
+    task.setdefault("comments", []).append(comment)
+    _stamp_kanban_column(col)
+    return {"ok": True, "id": comment["id"]}
+
+
+def kanban_delete_comment(app: dict, task_id: str, comment_id: str) -> dict:
+    task, col = _find_kanban_task(app, task_id)
+    if not task:
+        return {"error": "task_not_found"}
+    task["comments"] = [c for c in task.get("comments", []) if c.get("id") != comment_id]
+    _stamp_kanban_column(col)
+    return {"ok": True}
+
+
+def kanban_add_subtask(app: dict, task_id: str, text: str) -> dict:
+    task, col = _find_kanban_task(app, task_id)
+    if not task:
+        return {"error": "task_not_found"}
+    subtask = {"id": str(uuid.uuid4()), "text": text, "done": False}
+    task.setdefault("subtasks", []).append(subtask)
+    _stamp_kanban_column(col)
+    return {"ok": True, "id": subtask["id"]}
+
+
+def kanban_toggle_subtask(app: dict, task_id: str, subtask_id: str, done) -> dict:
+    task, col = _find_kanban_task(app, task_id)
+    if not task:
+        return {"error": "task_not_found"}
+    for s in task.get("subtasks", []):
+        if s.get("id") == subtask_id:
+            s["done"] = bool(done) if done is not None else not s.get("done")
+            _stamp_kanban_column(col)
+            return {"ok": True}
+    return {"error": "subtask_not_found"}
+
+
+# ── Дневные логи (dietLog, dailyChecklistLog): один ряд на дату — апсерт
+# заменяет запись за эту дату целиком, а не добавляет новую.
+def log_diet_compliance(app: dict, date: str, level: str) -> dict:
+    log = [e for e in app.get("dietLog", []) if e.get("date") != date]
+    log.append({"id": str(uuid.uuid4()), "date": date, "level": level, "updatedAt": int(time.time() * 1000)})
+    app["dietLog"] = log
+    return {"ok": True}
+
+
+def log_checklist_answer(app: dict, date: str, field_id: str, option: str) -> dict:
+    existing = next((e for e in app.get("dailyChecklistLog", []) if e.get("date") == date), None)
+    answers = dict(existing.get("answers") or {}) if existing else {}
+    answers[field_id] = option
+    log = [e for e in app.get("dailyChecklistLog", []) if e.get("date") != date]
+    log.append({
+        "id": (existing or {}).get("id") or str(uuid.uuid4()),
+        "date": date, "answers": answers, "updatedAt": int(time.time() * 1000),
+    })
+    app["dailyChecklistLog"] = log
+    return {"ok": True}
+
+
 ASSISTANT_TOOLS = [
     {
         "name": "get_data",
@@ -1095,67 +1455,185 @@ ASSISTANT_TOOLS = [
         },
     },
     {
-        "name": "add_task",
-        "description": "Добавить новое регулярное дело в раздел «По дому» (chores) или «Босс» (boss).",
+        "name": "create_record",
+        "description": "Добавить новую запись в один из разделов проекта.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "section": {"type": "string", "enum": ["chores", "boss"]},
-                "name": {"type": "string"},
-                "frequency": {"type": "string", "enum": ["daily", "every2", "every3", "weekly", "biweekly", "monthly", "custom"]},
-                "customDays": {"type": "number"},
-                "period": {"type": "string", "enum": ["morning", "evening", "allday"]},
-                "days": {"type": "array", "items": {"type": "number"}},
+                "collection": {"type": "string", "enum": list(WRITE_REGISTRY.keys())},
+                "fields": {"type": "object", "description": "Поля новой записи — сначала вызови get_data по этому же разделу, чтобы увидеть форму существующих записей."},
+                "confirmed": {"type": "boolean", "description": "true только после того как пользователь явно подтвердил — обязательно для финансовых разделов."},
             },
-            "required": ["section", "name"],
+            "required": ["collection", "fields"],
+        },
+    },
+    {
+        "name": "update_record",
+        "description": "Изменить поля существующей записи по id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string", "enum": list(WRITE_REGISTRY.keys())},
+                "id": {"type": "string"},
+                "patch": {"type": "object", "description": "Только те поля, которые нужно изменить."},
+                "confirmed": {"type": "boolean"},
+            },
+            "required": ["collection", "id", "patch"],
+        },
+    },
+    {
+        "name": "delete_record",
+        "description": "Удалить запись по id. Всегда требует явного подтверждения пользователя.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string", "enum": list(WRITE_REGISTRY.keys())},
+                "id": {"type": "string"},
+                "confirmed": {"type": "boolean"},
+            },
+            "required": ["collection", "id"],
+        },
+    },
+    {
+        "name": "kanban_create_task",
+        "description": "Создать задачу на канбан-доске «Задачи» (раздел house_tasks).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "columnId": {"type": "string", "description": "id колонки из get_data(\"house_tasks\")"},
+                "title": {"type": "string"},
+                "priority": {"type": "string", "enum": ["none", "low", "medium", "high"]},
+                "description": {"type": "string"},
+                "dueDate": {"type": "string"},
+            },
+            "required": ["columnId", "title"],
+        },
+    },
+    {
+        "name": "kanban_update_task",
+        "description": "Изменить поля задачи канбана (title/priority/description/dueDate/closed и т.п.) — для комментариев и подзадач есть отдельные инструменты.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"taskId": {"type": "string"}, "patch": {"type": "object"}},
+            "required": ["taskId", "patch"],
+        },
+    },
+    {
+        "name": "kanban_delete_task",
+        "description": "Удалить задачу канбана. Требует подтверждения.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"taskId": {"type": "string"}, "confirmed": {"type": "boolean"}},
+            "required": ["taskId"],
+        },
+    },
+    {
+        "name": "kanban_move_task",
+        "description": "Переместить задачу канбана в другую колонку.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"taskId": {"type": "string"}, "columnId": {"type": "string"}},
+            "required": ["taskId", "columnId"],
+        },
+    },
+    {
+        "name": "kanban_add_comment",
+        "description": "Добавить комментарий к задаче канбана.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"taskId": {"type": "string"}, "text": {"type": "string"}},
+            "required": ["taskId", "text"],
+        },
+    },
+    {
+        "name": "kanban_delete_comment",
+        "description": "Удалить комментарий у задачи канбана.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"taskId": {"type": "string"}, "commentId": {"type": "string"}},
+            "required": ["taskId", "commentId"],
+        },
+    },
+    {
+        "name": "kanban_add_subtask",
+        "description": "Добавить подзадачу к задаче канбана.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"taskId": {"type": "string"}, "text": {"type": "string"}},
+            "required": ["taskId", "text"],
+        },
+    },
+    {
+        "name": "kanban_toggle_subtask",
+        "description": "Отметить подзадачу канбана выполненной/невыполненной.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"taskId": {"type": "string"}, "subtaskId": {"type": "string"}, "done": {"type": "boolean"}},
+            "required": ["taskId", "subtaskId"],
+        },
+    },
+    {
+        "name": "log_diet_compliance",
+        "description": "Отметить соблюдение диеты за конкретный день.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "YYYY-MM-DD"},
+                "level": {"type": "string", "enum": ["much_below", "below", "on_plan", "above", "much_above", "mini_cheat", "cheat"]},
+            },
+            "required": ["date", "level"],
+        },
+    },
+    {
+        "name": "log_checklist_answer",
+        "description": "Отметить ответ ежедневного чек-листа (раздел checklist) за конкретный день.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "YYYY-MM-DD"},
+                "fieldId": {"type": "string", "description": "id поля из get_data(\"checklist\")"},
+                "option": {"type": "string"},
+            },
+            "required": ["date", "fieldId", "option"],
         },
     },
 ]
 
-
-def _assistant_add_task(app: dict, inp: dict) -> dict:
-    section = inp.get("section")
-    name = (inp.get("name") or "").strip()
-    if not name:
-        return {"error": "missing_name"}
-    now_ms = int(time.time() * 1000)
-    if section == "chores":
-        app.setdefault("chores", []).append({
-            "id": str(uuid.uuid4()), "name": name,
-            "frequency": inp.get("frequency") or "weekly",
-            "customDays": inp.get("customDays"),
-            "notify": False, "notifyTime": "09:00",
-            "archived": False, "updatedAt": now_ms,
-        })
-    elif section == "boss":
-        app.setdefault("bossTasks", []).append({
-            "id": str(uuid.uuid4()), "name": name,
-            "period": inp.get("period") or "morning",
-            "days": inp.get("days") or [1, 2, 3, 4, 5],
-            "archived": False, "updatedAt": now_ms,
-        })
-    else:
-        return {"error": "unknown_section"}
-    save_app_data(app)
-    return {"ok": True}
-
-
 def build_assistant_system_prompt() -> str:
     domain_list = "\n".join(f"  • {k} — {label}" for k, (label, _) in ASSISTANT_DATA_DOMAINS.items())
     nav_list = "\n".join(f"  • {k} — {label}" for k, (label, _) in ASSISTANT_NAV_TARGETS.items())
+    write_list = "\n".join(
+        f"  • {k} — {v['label']}" + (" (финансовое — подтверждение)" if v.get("require_confirm") else "")
+        for k, v in WRITE_REGISTRY.items()
+    )
     return (
-        "Ты текстовый ассистент приложения Jarvis, отвечаешь в Telegram. "
+        "Ты ассистент приложения Jarvis, отвечаешь в Telegram. "
         "Отвечай кратко и по-русски, обычным текстом без markdown-разметки и JSON — сообщение уходит как есть.\n\n"
         f"СЕГОДНЯ: {today_msk().isoformat()}\n\n"
-        "У тебя есть инструменты, покрывающие весь проект:\n\n"
+        "У тебя есть инструменты, покрывающие весь проект — всё то же самое, что пользователь делает руками:\n\n"
         f"1. get_data(domain) — прочитать актуальные данные раздела. Разделы:\n{domain_list}\n\n"
         f"2. navigate(target) — дать пользователю ссылку на раздел сайта. Разделы:\n{nav_list}\n\n"
-        "3. add_task(section, name, ...) — добавить регулярное дело в «По дому» или «Босс».\n\n"
+        f"3. create_record(collection, fields) / update_record(collection, id, patch) / delete_record(collection, id) — добавить/изменить/удалить запись. Коллекции:\n{write_list}\n\n"
+        "4. Канбан-доска «Задачи» (house_tasks) устроена отдельно от прочих разделов — свои инструменты: "
+        "kanban_create_task, kanban_update_task, kanban_delete_task, kanban_move_task, kanban_add_comment, "
+        "kanban_delete_comment, kanban_add_subtask, kanban_toggle_subtask.\n\n"
+        "5. log_diet_compliance(date, level) / log_checklist_answer(date, fieldId, option) — отметки по дням "
+        "(один раз на дату — вызов заменяет предыдущую отметку на эту дату, если она была).\n\n"
+        "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task) и любая запись в финансовые разделы "
+        "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
+        "— вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми "
+        "словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ ответ (не вызывай "
+        "инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением "
+        "(«да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.\n\n"
         "Правила:\n"
         "- Сначала вызови нужные инструменты, потом дай один короткий финальный ответ.\n"
         "- Не отвечай по памяти на вопросы о данных пользователя — всегда сначала get_data по нужному разделу.\n"
+        "- Перед созданием/изменением записи по незнакомой структуре сначала вызови get_data по этому разделу, "
+        "чтобы увидеть форму существующих записей (имена полей, форматы).\n"
         "- Если просят открыть/показать раздел — вызови navigate.\n"
-        "- Если данных нет или вопрос не по теме проекта — так и скажи, не выдумывай."
+        "- Если данных нет или вопрос не по теме проекта — так и скажи, не выдумывай.\n"
+        "- Никогда не удаляй и не меняй финансовые данные без подтверждения, даже если пользователь говорит это "
+        "как бы между делом."
     )
 
 
@@ -1173,8 +1651,50 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str) -> di
         label, path = entry
         url = (site_url.rstrip("/") + path) if site_url else None
         return {"ok": True, "label": label, "url": url}
-    if name == "add_task":
-        return _assistant_add_task(app, inp)
+
+    if name in ("create_record", "update_record", "delete_record"):
+        reg = WRITE_REGISTRY.get(inp.get("collection"))
+        if not reg:
+            return {"error": "unknown_collection"}
+        is_delete = name == "delete_record"
+        needs_confirm = is_delete or bool(reg.get("require_confirm"))
+        if needs_confirm and not inp.get("confirmed"):
+            verb = "удалить" if is_delete else ("добавить" if name == "create_record" else "изменить")
+            return {"needs_confirmation": True, "message": f"Нужно подтверждение пользователя, чтобы {verb}: {reg['label']}."}
+        if name == "create_record":
+            result = create_record_generic(app, inp.get("collection"), inp.get("fields") or {})
+        elif name == "update_record":
+            result = update_record_generic(app, inp.get("collection"), inp.get("id"), inp.get("patch") or {})
+        else:
+            result = delete_record_generic(app, inp.get("collection"), inp.get("id"))
+        if result.get("ok"):
+            save_app_data(app)
+        return result
+
+    if name == "kanban_delete_task" and not inp.get("confirmed"):
+        return {"needs_confirmation": True, "message": "Нужно подтверждение пользователя, чтобы удалить задачу канбана."}
+
+    kanban_calls = {
+        "kanban_create_task": lambda: kanban_create_task(app, inp.get("columnId"), {
+            "title": inp.get("title"), "priority": inp.get("priority"),
+            "description": inp.get("description"), "dueDate": inp.get("dueDate"),
+        }),
+        "kanban_update_task": lambda: kanban_update_task(app, inp.get("taskId"), inp.get("patch") or {}),
+        "kanban_delete_task": lambda: kanban_delete_task(app, inp.get("taskId")),
+        "kanban_move_task": lambda: kanban_move_task(app, inp.get("taskId"), inp.get("columnId")),
+        "kanban_add_comment": lambda: kanban_add_comment(app, inp.get("taskId"), inp.get("text")),
+        "kanban_delete_comment": lambda: kanban_delete_comment(app, inp.get("taskId"), inp.get("commentId")),
+        "kanban_add_subtask": lambda: kanban_add_subtask(app, inp.get("taskId"), inp.get("text")),
+        "kanban_toggle_subtask": lambda: kanban_toggle_subtask(app, inp.get("taskId"), inp.get("subtaskId"), inp.get("done")),
+        "log_diet_compliance": lambda: log_diet_compliance(app, inp.get("date"), inp.get("level")),
+        "log_checklist_answer": lambda: log_checklist_answer(app, inp.get("date"), inp.get("fieldId"), inp.get("option")),
+    }
+    if name in kanban_calls:
+        result = kanban_calls[name]()
+        if result.get("ok"):
+            save_app_data(app)
+        return result
+
     return {"error": "unknown_tool"}
 
 

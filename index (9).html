@@ -4054,10 +4054,13 @@ function VoiceAssistantSettings({ data, setData }) {
           <li>Ассистент ответит и озвучит ответ</li>
         </ol>
         <p className="text-xs text-[var(--text-subtle)] mt-3">
-          Тот же ассистент отвечает и в Telegram-боте: напишите ему любое сообщение (не команду) — он читает данные всего проекта и присылает ссылки на разделы. Использует тот же набор ключей, что назначен функции «Ассистент» выше.
+          Тот же ассистент отвечает и в Telegram-боте: напишите ему любое сообщение (не команду) — он читает и меняет данные всего проекта и присылает ссылки на разделы. Использует тот же набор ключей, что назначен функции «Ассистент» выше.
         </p>
         <p className="text-xs text-[var(--text-subtle)] mt-3">
-          Примеры: «Добавь задачу пылесосить раз в неделю», «Когда последний раз обслуживали машину?», «Открой карту Пятёрочки»
+          Ассистент умеет всё то же, что вы руками: добавлять и менять записи в любом разделе (дела, авто, здоровье, GYM, хотелки, планировщик, кемпинг, канбан-задачи вместе с комментариями и подзадачами и т.д.), а не только заводить регулярные дела. Удаление и любые изменения в финансах он сначала озвучивает и ждёт вашего «да» — со следующим сообщением/фразой.
+        </p>
+        <p className="text-xs text-[var(--text-subtle)] mt-3">
+          Примеры: «Когда последний раз обслуживали машину?», «Добавь комментарий „тест“ к задаче про распродажу ПК», «Запиши визит к врачу вчера», «Удали карту Пятёрочки»
         </p>
       </div>
     </div>
@@ -8483,14 +8486,361 @@ const VOICE_DATA_DOMAINS = {
     get: d => ({ items: d.campingItems || [], categories: d.campingCategories || [], trips: d.campingTrips || [] }),
   },
   meals: {
-    label: 'Питание: рацион, приёмы пищи, БАДы',
-    get: d => ({ meals: (d.meals || []).slice(-30), supplements: d.supplements || [], dietLog: (d.dietLog || []).slice(-30) }),
+    label: 'Питание: рацион, приёмы пищи, БАДы, списки покупок',
+    get: d => ({
+      meals: (d.meals || []).slice(-30), supplements: d.supplements || [],
+      dietLog: (d.dietLog || []).slice(-30), shoppingLists: d.shoppingLists || [],
+    }),
   },
   body: {
     label: 'Тело: история замеров и веса',
     get: d => (d.bodyEntries || []).slice(-60),
   },
+  checklist: {
+    label: 'Ежедневный чек-лист: поля и журнал ответов',
+    get: d => ({
+      fields: (d.dailyChecklistFields || []).filter(f => !f.archived),
+      log: (d.dailyChecklistLog || []).slice(-30),
+    }),
+  },
 };
+
+// ── Голосовой/текстовый ассистент: универсальная запись данных ─────────────
+// Коллекций больше двадцати, и почти все — id-массивы с одним и тем же
+// паттерном (см. разведку по коду перед этим блоком): апсерт по id, hard
+// delete + tombstone, иногда каскад на дочерние записи. Вместо отдельного
+// инструмента на каждый раздел — три общих (create/update/delete_record) с
+// реестром правил на каждую коллекцию. Канбан и дневные логи (dietLog,
+// dailyChecklistLog) устроены иначе и получают свои функции ниже.
+
+// Бюджетные коллекции живут не в data.<key>, а в
+// data.budgetByUser[activeBudgetUserId].<key> — см. getCollectionArray/setCollectionArray.
+const BUDGET_SCOPED_COLLECTIONS = new Set([
+  'budgetExpenses', 'budgetRecurring', 'savingsTransactions',
+  'budgetDebts', 'debtTransactions', 'budgetCashflowAccounts', 'budgetCashflowOps',
+]);
+
+const getCollectionArray = (data, key) => {
+  if (BUDGET_SCOPED_COLLECTIONS.has(key)) {
+    const uid = data.activeBudgetUserId;
+    return ((data.budgetByUser || {})[uid] || {})[key] || [];
+  }
+  return data[key] || [];
+};
+
+const setCollectionArray = (data, key, arr) => {
+  if (BUDGET_SCOPED_COLLECTIONS.has(key)) {
+    const uid = data.activeBudgetUserId;
+    const slice = { ...((data.budgetByUser || {})[uid] || {}), [key]: arr };
+    return { ...data, budgetByUser: { ...(data.budgetByUser || {}), [uid]: slice } };
+  }
+  return { ...data, [key]: arr };
+};
+
+// createDefaults — поля новой записи по умолчанию (id/updatedAt добавляются
+// отдельно; updatedAt на самом деле проставляет сам setData — см. stampUpdatedAt
+// — поэтому его тут можно не указывать вообще). requireConfirm — запись сама
+// по себе финансовая, create/update тоже просят подтверждения (не только
+// delete, для которого подтверждение обязательно всегда и для всех).
+// cascadeDelete — при удалении рекурсивно удалить записи из collection, где
+// record[field] === id. cascadeOrphan — вместо удаления обнулить record[field].
+// cascadeStrip — убрать id из массива record[field]. customCascadeDelete —
+// когда каскад не укладывается в эти три формы (полностью заменяет их).
+// tombstone:false — коллекция без списка удалений (совпадает с тем, как её
+// правит сама вкладка приложения — лёгкие справочники категорий).
+const WRITE_REGISTRY = {
+  chores: {
+    label: 'Регулярное дело «По дому»',
+    createDefaults: () => ({ frequency: 'weekly', customDays: null, notify: false, notifyTime: '09:00', archived: false }),
+  },
+  bossTasks: {
+    label: 'Задача «Босс»',
+    createDefaults: () => ({ period: 'morning', days: [1, 2, 3, 4, 5], archived: false }),
+  },
+  cars: {
+    label: 'Автомобиль',
+    createDefaults: () => ({ archived: false }),
+    cascadeDelete: [{ collection: 'serviceRecords', field: 'carId' }],
+  },
+  serviceRecords: { label: 'Запись об обслуживании автомобиля', createDefaults: () => ({}) },
+  healthConditions: {
+    label: 'Состояние здоровья',
+    createDefaults: () => ({ tags: [] }),
+    cascadeOrphan: [{ collection: 'healthEvents', field: 'conditionId' }],
+  },
+  healthEvents: { label: 'Событие здоровья (визит/болезнь/процедура)', createDefaults: () => ({ tags: [], medications: [] }) },
+  loyaltyCards: { label: 'Карта лояльности магазина', createDefaults: () => ({ format: 'auto' }) },
+  gymPrograms: {
+    label: 'Программа тренировок GYM',
+    createDefaults: () => ({}),
+    cascadeDelete: [{ collection: 'gymDays', field: 'programId' }],
+  },
+  gymDays: {
+    label: 'Тренировочный день GYM',
+    createDefaults: () => ({ order: 0 }),
+    cascadeDelete: [{ collection: 'gymExercises', field: 'dayId' }],
+  },
+  gymExercises: { label: 'Упражнение GYM', createDefaults: () => ({ mode: 'groups', groups: [], order: 0 }) },
+  gymSessions: { label: 'Тренировка (журнал GYM)', createDefaults: () => ({ sets: [] }) },
+  wishlistCategories: {
+    label: 'Список хотелок',
+    createDefaults: () => ({}),
+    cascadeOrphan: [{ collection: 'wishlistItems', field: 'categoryId' }],
+  },
+  wishlistItems: { label: 'Хотелка', createDefaults: () => ({ bought: false }) },
+  plannerFriends: {
+    label: 'Друг-участник планировщика',
+    createDefaults: () => ({}),
+    cascadeStrip: [{ collection: 'plannerEvents', field: 'participantIds' }],
+  },
+  plannerEvents: {
+    label: 'Событие планировщика',
+    createDefaults: () => ({ participantIds: [], participantMode: 'list', confirmed: false }),
+    // Каскад в гостевые коллекции (ответы/комментарии/список покупок и т.д.) —
+    // ассистент их не читает и не пишет напрямую, но при удалении события
+    // строки должны уйти вместе с ним, иначе это утечка данных в файле.
+    customCascadeDelete: (data, id) => {
+      const strip = (key) => ({ [key]: (data[key] || []).filter(r => r.eventId !== id) });
+      return {
+        ...data,
+        ...strip('plannerResponses'), ...strip('plannerComments'), ...strip('plannerGuests'),
+        ...strip('plannerExpenses'), ...strip('plannerPayments'), ...strip('plannerShoppingItems'),
+      };
+    },
+  },
+  plannerPlans: { label: 'Личный план в планировщике', createDefaults: () => ({}) },
+  campingCategories: {
+    label: 'Категория кемпинг-вещей',
+    createDefaults: () => ({}),
+    cascadeOrphan: [{ collection: 'campingItems', field: 'categoryId' }],
+  },
+  campingItems: { label: 'Кемпинг-вещь (справочник)', createDefaults: () => ({ isBag: false }) },
+  campingTrips: { label: 'Кемпинг-поездка', createDefaults: () => ({ packing: { bags: [], items: [] } }) },
+  meals: { label: 'Рацион (приём пищи)', createDefaults: () => ({ breakfast: [], snack: [], lunch: [], dinner: [], archived: false }) },
+  supplements: { label: 'БАД', createDefaults: () => ({ form: 'Таблетки', frequency: 'daily_morning', archived: false }) },
+  bodyEntries: { label: 'Замер тела', createDefaults: () => ({ values: {} }) },
+  dailyChecklistFields: {
+    label: 'Поле ежедневного чек-листа',
+    createDefaults: () => ({ options: [], archived: false }),
+    // Не обнуление одного поля, а вычистка ключа поля из КАЖДОЙ записи журнала.
+    customCascadeDelete: (data, id) => ({
+      ...data,
+      dailyChecklistLog: (data.dailyChecklistLog || []).map(e => {
+        if (!e.answers || !(id in e.answers)) return e;
+        const answers = { ...e.answers };
+        delete answers[id];
+        return { ...e, answers };
+      }),
+    }),
+  },
+  shoppingLists: { label: 'Список покупок', createDefaults: () => ({ selections: [] }) },
+  budgetExpenses: {
+    label: 'Накопление (финансовая цель)',
+    requireConfirm: true,
+    createDefaults: () => ({ archived: false }),
+    cascadeDelete: [{ collection: 'savingsTransactions', field: 'expenseId' }],
+  },
+  savingsTransactions: { label: 'Операция по накоплению', requireConfirm: true, createDefaults: () => ({}) },
+  budgetRecurring: { label: 'Регулярный платёж', requireConfirm: true, createDefaults: () => ({ archived: false }) },
+  budgetDebts: {
+    label: 'Долг',
+    requireConfirm: true,
+    createDefaults: () => ({ closed: false }),
+    cascadeDelete: [{ collection: 'debtTransactions', field: 'debtId' }],
+  },
+  debtTransactions: { label: 'Операция по долгу', requireConfirm: true, createDefaults: () => ({}) },
+  budgetCashflowAccounts: {
+    label: 'Счёт ДДС',
+    requireConfirm: true,
+    createDefaults: () => ({}),
+    cascadeDelete: [{ collection: 'budgetCashflowOps', field: 'accountId' }],
+  },
+  budgetCashflowOps: { label: 'Операция ДДС (расход/доход)', requireConfirm: true, createDefaults: () => ({ source: 'manual' }) },
+};
+
+function createRecordGeneric(data, collectionKey, fields) {
+  const reg = WRITE_REGISTRY[collectionKey];
+  if (!reg) return { data, error: 'unknown_collection' };
+  const record = { ...reg.createDefaults(), ...(fields || {}), id: crypto.randomUUID() };
+  const arr = getCollectionArray(data, collectionKey);
+  return { data: setCollectionArray(data, collectionKey, [...arr, record]), record };
+}
+
+function updateRecordGeneric(data, collectionKey, id, patch) {
+  const reg = WRITE_REGISTRY[collectionKey];
+  if (!reg) return { data, error: 'unknown_collection' };
+  const arr = getCollectionArray(data, collectionKey);
+  if (!arr.some(r => r.id === id)) return { data, error: 'not_found' };
+  const next = arr.map(r => r.id === id ? { ...r, ...(patch || {}), id: r.id } : r);
+  return { data: setCollectionArray(data, collectionKey, next) };
+}
+
+function deleteRecordCascade(data, collectionKey, id) {
+  const reg = WRITE_REGISTRY[collectionKey];
+  if (!reg) return data;
+  if (reg.customCascadeDelete) {
+    data = reg.customCascadeDelete(data, id);
+  } else {
+    (reg.cascadeOrphan || []).forEach(({ collection, field }) => {
+      const arr = getCollectionArray(data, collection);
+      data = setCollectionArray(data, collection, arr.map(r => r[field] === id ? { ...r, [field]: '' } : r));
+    });
+    (reg.cascadeStrip || []).forEach(({ collection, field }) => {
+      const arr = getCollectionArray(data, collection);
+      data = setCollectionArray(data, collection, arr.map(r =>
+        Array.isArray(r[field]) && r[field].includes(id) ? { ...r, [field]: r[field].filter(x => x !== id) } : r));
+    });
+    (reg.cascadeDelete || []).forEach(({ collection, field }) => {
+      const arr = getCollectionArray(data, collection);
+      arr.filter(r => r[field] === id).map(r => r.id).forEach(childId => {
+        data = deleteRecordCascade(data, collection, childId);
+      });
+    });
+  }
+  const arr = getCollectionArray(data, collectionKey);
+  data = setCollectionArray(data, collectionKey, arr.filter(r => r.id !== id));
+  if (reg.tombstone !== false) {
+    data = { ...data, deletedIds: withDeletedId(data, collectionKey, id) };
+  }
+  return data;
+}
+
+function deleteRecordGeneric(data, collectionKey, id) {
+  const reg = WRITE_REGISTRY[collectionKey];
+  if (!reg) return { data, error: 'unknown_collection' };
+  const arr = getCollectionArray(data, collectionKey);
+  if (!arr.some(r => r.id === id)) return { data, error: 'not_found' };
+  return { data: deleteRecordCascade(data, collectionKey, id) };
+}
+
+// ── Канбан: не плоский id-массив (задачи вложены в колонки), свои функции ──
+const getKanbanColumns = (data) => (data.kanban && data.kanban.columns) || DEFAULT_KANBAN_COLUMNS;
+
+// Тот же принцип, что у KanbanView.setColumns: колонка получает свежий
+// updatedAt только если её содержимое (без самого updatedAt) реально
+// изменилось — иначе правки внутри задач не будут расходиться между
+// устройствами (задачи не top-level массив, автоштамп их не видит).
+const setKanbanColumns = (data, columns) => {
+  const prevById = new Map(getKanbanColumns(data).map(c => [c.id, c]));
+  const stamped = columns.map(c => {
+    const prev = prevById.get(c.id);
+    const strip = (x) => JSON.stringify({ ...x, updatedAt: undefined });
+    if (prev && strip(prev) === strip(c)) return prev;
+    return { ...c, updatedAt: Date.now() };
+  });
+  return { ...data, kanban: { ...(data.kanban || {}), columns: stamped } };
+};
+
+const findKanbanTask = (data, taskId) => {
+  for (const col of getKanbanColumns(data)) {
+    const task = (col.tasks || []).find(t => t.id === taskId);
+    if (task) return { task, columnId: col.id };
+  }
+  return null;
+};
+
+const patchKanbanTask = (data, taskId, mutate) => {
+  const found = findKanbanTask(data, taskId);
+  if (!found) return { data, error: 'task_not_found' };
+  const columns = getKanbanColumns(data).map(c => c.id !== found.columnId ? c : {
+    ...c, tasks: c.tasks.map(t => t.id === taskId ? mutate(t) : t),
+  });
+  return { data: setKanbanColumns(data, columns) };
+};
+
+function kanbanCreateTask(data, columnId, fields) {
+  const columns = getKanbanColumns(data);
+  if (!columns.some(c => c.id === columnId)) return { data, error: 'unknown_column' };
+  const task = newTask(fields);
+  const next = columns.map(c => c.id === columnId ? { ...c, tasks: [task, ...(c.tasks || [])] } : c);
+  return { data: setKanbanColumns(data, next), task };
+}
+
+function kanbanUpdateTask(data, taskId, patch) {
+  return patchKanbanTask(data, taskId, t => ({ ...t, ...patch }));
+}
+
+function kanbanDeleteTask(data, taskId) {
+  const found = findKanbanTask(data, taskId);
+  if (!found) return { data, error: 'task_not_found' };
+  const columns = getKanbanColumns(data).map(c => c.id !== found.columnId ? c : { ...c, tasks: c.tasks.filter(t => t.id !== taskId) });
+  return { data: setKanbanColumns(data, columns) };
+}
+
+function kanbanMoveTask(data, taskId, targetColumnId) {
+  const columns = getKanbanColumns(data);
+  if (!columns.some(c => c.id === targetColumnId)) return { data, error: 'unknown_column' };
+  const found = findKanbanTask(data, taskId);
+  if (!found) return { data, error: 'task_not_found' };
+  if (found.columnId === targetColumnId) return { data };
+  const task = found.task;
+  const next = columns.map(c => {
+    if (c.id === found.columnId) return { ...c, tasks: c.tasks.filter(t => t.id !== taskId) };
+    if (c.id === targetColumnId) return { ...c, tasks: [task, ...c.tasks] };
+    return c;
+  });
+  return { data: setKanbanColumns(data, next) };
+}
+
+function kanbanAddComment(data, taskId, text) {
+  return patchKanbanTask(data, taskId, t => ({ ...t, comments: [...(t.comments || []), newComment(text)] }));
+}
+
+function kanbanDeleteComment(data, taskId, commentId) {
+  return patchKanbanTask(data, taskId, t => ({ ...t, comments: (t.comments || []).filter(c => c.id !== commentId) }));
+}
+
+function kanbanAddSubtask(data, taskId, text) {
+  return patchKanbanTask(data, taskId, t => ({ ...t, subtasks: [...(t.subtasks || []), { id: crypto.randomUUID(), text, done: false }] }));
+}
+
+function kanbanToggleSubtask(data, taskId, subtaskId, done) {
+  return patchKanbanTask(data, taskId, t => ({
+    ...t,
+    subtasks: (t.subtasks || []).map(s => s.id === subtaskId ? { ...s, done: done !== undefined ? !!done : !s.done } : s),
+  }));
+}
+
+// ── Дневные логи (dietLog, dailyChecklistLog): один ряд на дату, а не на id —
+// апсерт заменяет запись за эту дату целиком, удаление тоже адресуется датой.
+function logDietCompliance(data, date, level) {
+  const list = (data.dietLog || []).filter(e => e.date !== date);
+  return { data: { ...data, dietLog: [...list, { id: crypto.randomUUID(), date, level, updatedAt: Date.now() }] } };
+}
+
+function deleteDietLogEntry(data, date) {
+  deleteLogEntryOnServer('dietLog', date);
+  return {
+    data: {
+      ...data,
+      dietLog: (data.dietLog || []).filter(e => e.date !== date),
+      deletedIds: withDeletedId(data, 'dietLog', date),
+    },
+  };
+}
+
+function logChecklistAnswer(data, date, fieldId, option) {
+  const existing = (data.dailyChecklistLog || []).find(e => e.date === date);
+  const answers = { ...(existing?.answers || {}), [fieldId]: option };
+  const list = (data.dailyChecklistLog || []).filter(e => e.date !== date);
+  return {
+    data: {
+      ...data,
+      dailyChecklistLog: [...list, { id: existing?.id || crypto.randomUUID(), date, answers, updatedAt: Date.now() }],
+    },
+  };
+}
+
+function deleteChecklistLogEntry(data, date) {
+  deleteLogEntryOnServer('dailyChecklistLog', date);
+  return {
+    data: {
+      ...data,
+      dailyChecklistLog: (data.dailyChecklistLog || []).filter(e => e.date !== date),
+      deletedIds: withDeletedId(data, 'dailyChecklistLog', date),
+    },
+  };
+}
 
 const VOICE_AGENT_TOOLS = [
   {
@@ -8518,19 +8868,146 @@ const VOICE_AGENT_TOOLS = [
     },
   },
   {
-    name: 'add_task',
-    description: 'Добавить новое регулярное дело в раздел «По дому» (chores) или «Босс» (boss).',
+    name: 'create_record',
+    description: 'Добавить новую запись в один из разделов проекта.',
     input_schema: {
       type: 'object',
       properties: {
-        section: { type: 'string', enum: ['chores', 'boss'] },
-        name: { type: 'string' },
-        frequency: { type: 'string', enum: ['daily', 'every2', 'every3', 'weekly', 'biweekly', 'monthly', 'custom'] },
-        customDays: { type: 'number' },
-        period: { type: 'string', enum: ['morning', 'evening', 'allday'] },
-        days: { type: 'array', items: { type: 'number' } },
+        collection: { type: 'string', enum: Object.keys(WRITE_REGISTRY) },
+        fields: { type: 'object', description: 'Поля новой записи — сначала вызови get_data по этому же разделу, чтобы увидеть форму существующих записей.' },
+        confirmed: { type: 'boolean', description: 'true только после того как пользователь явно подтвердил — обязательно для финансовых разделов.' },
       },
-      required: ['section', 'name'],
+      required: ['collection', 'fields'],
+    },
+  },
+  {
+    name: 'update_record',
+    description: 'Изменить поля существующей записи по id.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        collection: { type: 'string', enum: Object.keys(WRITE_REGISTRY) },
+        id: { type: 'string' },
+        patch: { type: 'object', description: 'Только те поля, которые нужно изменить.' },
+        confirmed: { type: 'boolean' },
+      },
+      required: ['collection', 'id', 'patch'],
+    },
+  },
+  {
+    name: 'delete_record',
+    description: 'Удалить запись по id. Всегда требует явного подтверждения пользователя.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        collection: { type: 'string', enum: Object.keys(WRITE_REGISTRY) },
+        id: { type: 'string' },
+        confirmed: { type: 'boolean' },
+      },
+      required: ['collection', 'id'],
+    },
+  },
+  {
+    name: 'kanban_create_task',
+    description: 'Создать задачу на канбан-доске «Задачи» (раздел house_tasks).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        columnId: { type: 'string', description: 'id колонки из get_data("house_tasks")' },
+        title: { type: 'string' },
+        priority: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
+        description: { type: 'string' },
+        dueDate: { type: 'string' },
+      },
+      required: ['columnId', 'title'],
+    },
+  },
+  {
+    name: 'kanban_update_task',
+    description: 'Изменить поля задачи канбана (title/priority/description/dueDate/closed и т.п.) — для комментариев и подзадач есть отдельные инструменты.',
+    input_schema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' }, patch: { type: 'object' } },
+      required: ['taskId', 'patch'],
+    },
+  },
+  {
+    name: 'kanban_delete_task',
+    description: 'Удалить задачу канбана. Требует подтверждения.',
+    input_schema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' }, confirmed: { type: 'boolean' } },
+      required: ['taskId'],
+    },
+  },
+  {
+    name: 'kanban_move_task',
+    description: 'Переместить задачу канбана в другую колонку.',
+    input_schema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' }, columnId: { type: 'string' } },
+      required: ['taskId', 'columnId'],
+    },
+  },
+  {
+    name: 'kanban_add_comment',
+    description: 'Добавить комментарий к задаче канбана.',
+    input_schema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' }, text: { type: 'string' } },
+      required: ['taskId', 'text'],
+    },
+  },
+  {
+    name: 'kanban_delete_comment',
+    description: 'Удалить комментарий у задачи канбана.',
+    input_schema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' }, commentId: { type: 'string' } },
+      required: ['taskId', 'commentId'],
+    },
+  },
+  {
+    name: 'kanban_add_subtask',
+    description: 'Добавить подзадачу к задаче канбана.',
+    input_schema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' }, text: { type: 'string' } },
+      required: ['taskId', 'text'],
+    },
+  },
+  {
+    name: 'kanban_toggle_subtask',
+    description: 'Отметить подзадачу канбана выполненной/невыполненной.',
+    input_schema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' }, subtaskId: { type: 'string' }, done: { type: 'boolean' } },
+      required: ['taskId', 'subtaskId'],
+    },
+  },
+  {
+    name: 'log_diet_compliance',
+    description: 'Отметить соблюдение диеты за конкретный день.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', description: 'YYYY-MM-DD' },
+        level: { type: 'string', enum: ['much_below', 'below', 'on_plan', 'above', 'much_above', 'mini_cheat', 'cheat'] },
+      },
+      required: ['date', 'level'],
+    },
+  },
+  {
+    name: 'log_checklist_answer',
+    description: 'Отметить ответ ежедневного чек-листа (раздел checklist) за конкретный день.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', description: 'YYYY-MM-DD' },
+        fieldId: { type: 'string', description: 'id поля из get_data("checklist")' },
+        option: { type: 'string' },
+      },
+      required: ['date', 'fieldId', 'option'],
     },
   },
 ];
@@ -8538,13 +9015,14 @@ const VOICE_AGENT_TOOLS = [
 function buildVoiceAgentSystemPrompt() {
   const domainList = Object.entries(VOICE_DATA_DOMAINS).map(([k, v]) => `  • ${k} — ${v.label}`).join('\n');
   const navList = Object.entries(VOICE_NAV_LABELS).map(([k, v]) => `  • ${k} — ${v}`).join('\n');
+  const writeList = Object.entries(WRITE_REGISTRY).map(([k, v]) => `  • ${k} — ${v.label}${v.requireConfirm ? ' (финансовое — подтверждение)' : ''}`).join('\n');
   const todayStr = dateToLocalStr(new Date());
 
-  return `Ты голосовой помощник приложения Jarvis. Отвечай кратко и по-русски, разговорным языком — ответ озвучивается вслух, а не читается.
+  return `Ты ассистент приложения Jarvis. Отвечай кратко и по-русски, разговорным языком.
 
 СЕГОДНЯ: ${todayStr}
 
-У тебя есть инструменты, покрывающие весь проект:
+У тебя есть инструменты, покрывающие весь проект — всё то же самое, что пользователь делает руками:
 
 1. get_data(domain) — прочитать актуальные данные раздела. Разделы:
 ${domainList}
@@ -8552,36 +9030,104 @@ ${domainList}
 2. navigate(target, focus_id?) — открыть раздел на экране пользователя. Разделы:
 ${navList}
 
-3. add_task(section, name, ...) — добавить регулярное дело в «По дому» или «Босс».
+3. create_record(collection, fields) / update_record(collection, id, patch) / delete_record(collection, id) — добавить/изменить/удалить запись. Коллекции:
+${writeList}
+
+4. Канбан-доска «Задачи» (house_tasks) устроена отдельно от прочих разделов — свои инструменты: kanban_create_task, kanban_update_task, kanban_delete_task, kanban_move_task, kanban_add_comment, kanban_delete_comment, kanban_add_subtask, kanban_toggle_subtask.
+
+5. log_diet_compliance(date, level) / log_checklist_answer(date, fieldId, option) — отметки по дням (один раз на дату — вызов заменяет предыдущую отметку на эту дату, если она была).
+
+ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task) и любая запись в финансовые разделы (помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
 - Не отвечай по памяти на вопросы о данных пользователя — всегда сначала get_data по нужному разделу.
+- Перед созданием/изменением записи по незнакомой структуре сначала вызови get_data по этому разделу, чтобы увидеть форму существующих записей (имена полей, форматы).
 - Если просят открыть/показать раздел — вызови navigate и коротко подтверди («Открываю»).
-- Если данных нет или вопрос не по теме проекта — так и скажи, не выдумывай.`;
+- Если данных нет или вопрос не по теме проекта — так и скажи, не выдумывай.
+- Никогда не удаляй и не меняй финансовые данные без подтверждения, даже если пользователь говорит это как бы между делом.`;
 }
 
 function executeVoiceTool(name, input, nav, data) {
+  input = input || {};
+  const noop = (output) => ({ output, data });
+  const applied = (result, output) => {
+    if (result.error) return noop({ error: result.error });
+    nav.setData(result.data);
+    return { output: output || { ok: true }, data: result.data };
+  };
+
   if (name === 'get_data') {
-    const domain = VOICE_DATA_DOMAINS[input?.domain];
-    if (!domain) return { error: 'unknown_domain' };
-    return domain.get(data);
+    const domain = VOICE_DATA_DOMAINS[input.domain];
+    if (!domain) return noop({ error: 'unknown_domain' });
+    return noop(domain.get(data));
   }
   if (name === 'navigate') {
-    const target = VOICE_NAV_TARGETS[input?.target];
-    if (!target) return { error: 'unknown_target' };
+    const target = VOICE_NAV_TARGETS[input.target];
+    if (!target) return noop({ error: 'unknown_target' });
     nav.setTab(target.tab);
     if (target.houseTab !== undefined) nav.setHouseTab(target.houseTab);
     if (target.plannerTab !== undefined) nav.setPlannerTab(target.plannerTab);
     if (target.miscTab !== undefined) nav.setMiscTab(target.miscTab);
-    nav.setVoiceFocus(target.focusable && input?.focus_id ? { target: input.target, id: input.focus_id } : null);
-    return { ok: true };
+    nav.setVoiceFocus(target.focusable && input.focus_id ? { target: input.target, id: input.focus_id } : null);
+    return noop({ ok: true });
   }
-  if (name === 'add_task') {
-    applyVoiceTask(input, nav.setData);
-    return { ok: true };
+
+  if (name === 'create_record' || name === 'update_record' || name === 'delete_record') {
+    const reg = WRITE_REGISTRY[input.collection];
+    if (!reg) return noop({ error: 'unknown_collection' });
+    const isDelete = name === 'delete_record';
+    const needsConfirm = isDelete || !!reg.requireConfirm;
+    if (needsConfirm && !input.confirmed) {
+      const verb = isDelete ? 'удалить' : name === 'create_record' ? 'добавить' : 'изменить';
+      return noop({ needs_confirmation: true, message: `Нужно подтверждение пользователя, чтобы ${verb}: ${reg.label}.` });
+    }
+    if (name === 'create_record') {
+      const result = createRecordGeneric(data, input.collection, input.fields);
+      return applied(result, result.error ? undefined : { ok: true, id: result.record.id });
+    }
+    if (name === 'update_record') {
+      return applied(updateRecordGeneric(data, input.collection, input.id, input.patch));
+    }
+    return applied(deleteRecordGeneric(data, input.collection, input.id));
   }
-  return { error: 'unknown_tool' };
+
+  if (name === 'kanban_create_task') {
+    const result = kanbanCreateTask(data, input.columnId, {
+      title: input.title, priority: input.priority || 'none',
+      description: input.description || '', dueDate: input.dueDate || '',
+    });
+    return applied(result, result.error ? undefined : { ok: true, id: result.task.id });
+  }
+  if (name === 'kanban_update_task') {
+    return applied(kanbanUpdateTask(data, input.taskId, input.patch || {}));
+  }
+  if (name === 'kanban_delete_task') {
+    if (!input.confirmed) return noop({ needs_confirmation: true, message: 'Нужно подтверждение пользователя, чтобы удалить задачу канбана.' });
+    return applied(kanbanDeleteTask(data, input.taskId));
+  }
+  if (name === 'kanban_move_task') {
+    return applied(kanbanMoveTask(data, input.taskId, input.columnId));
+  }
+  if (name === 'kanban_add_comment') {
+    return applied(kanbanAddComment(data, input.taskId, input.text));
+  }
+  if (name === 'kanban_delete_comment') {
+    return applied(kanbanDeleteComment(data, input.taskId, input.commentId));
+  }
+  if (name === 'kanban_add_subtask') {
+    return applied(kanbanAddSubtask(data, input.taskId, input.text));
+  }
+  if (name === 'kanban_toggle_subtask') {
+    return applied(kanbanToggleSubtask(data, input.taskId, input.subtaskId, input.done));
+  }
+  if (name === 'log_diet_compliance') {
+    return applied(logDietCompliance(data, input.date, input.level));
+  }
+  if (name === 'log_checklist_answer') {
+    return applied(logChecklistAnswer(data, input.date, input.fieldId, input.option));
+  }
+  return noop({ error: 'unknown_tool' });
 }
 
 // Многошаговый цикл tool-use: модель может вызвать несколько инструментов
@@ -8603,8 +9149,16 @@ async function runVoiceAgent(messages, settings, data, nav, maxSteps = 6) {
     : runVoiceAgentClaude(convo, preset.apiKey, model, data, nav, maxSteps);
 }
 
+// Возвращают { text, pendingConfirmation }. data — снимок на момент начала
+// разговора; executeVoiceTool возвращает { output, data } на каждый вызов —
+// data threading нужен, чтобы create/update/delete в одном раунде видели
+// друг друга (создали запись → тут же спросили её обратно), а не только тот
+// снимок, с которого раунд начался. pendingConfirmation = хотя бы один вызов
+// в этом раунде вернул needs_confirmation — тогда VoiceButton не сбрасывает
+// историю после ответа, чтобы следующее «да» продолжило тот же разговор.
 async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
   const system = buildVoiceAgentSystemPrompt();
+  let pendingConfirmation = false;
   for (let step = 0; step < maxSteps; step++) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -8625,20 +9179,24 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
     const toolUses = content.filter(b => b.type === 'tool_use');
     const text = content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
 
-    if (!toolUses.length) return text || 'Готово';
+    if (!toolUses.length) return { text: text || 'Готово', pendingConfirmation };
 
     convo.push({ role: 'assistant', content });
     convo.push({
       role: 'user',
       content: toolUses.map(tu => {
         let output;
-        try { output = executeVoiceTool(tu.name, tu.input, nav, data); }
-        catch (e) { output = { error: e.message }; }
+        try {
+          const result = executeVoiceTool(tu.name, tu.input, nav, data);
+          data = result.data;
+          output = result.output;
+        } catch (e) { output = { error: e.message }; }
+        if (output && output.needs_confirmation) pendingConfirmation = true;
         return { type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(output) };
       }),
     });
   }
-  return 'Не разобрался за отведённое число шагов — попробуйте переформулировать.';
+  return { text: 'Не разобрался за отведённое число шагов — попробуйте переформулировать.', pendingConfirmation };
 }
 
 // Те же инструменты (input_schema — обычный JSON Schema, подходит и OpenAI как
@@ -8652,6 +9210,7 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps) {
     function: { name: t.name, description: t.description, parameters: t.input_schema },
   }));
   const oaiMessages = [{ role: 'system', content: system }, ...convo];
+  let pendingConfirmation = false;
 
   for (let step = 0; step < maxSteps; step++) {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -8667,19 +9226,23 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps) {
     const message = resp.choices?.[0]?.message || {};
     const toolCalls = message.tool_calls || [];
 
-    if (!toolCalls.length) return message.content || 'Готово';
+    if (!toolCalls.length) return { text: message.content || 'Готово', pendingConfirmation };
 
     oaiMessages.push({ role: 'assistant', content: message.content || null, tool_calls: toolCalls });
     for (const tc of toolCalls) {
       let input = {};
       try { input = JSON.parse(tc.function?.arguments || '{}'); } catch (_) { /* оставляем {} */ }
       let output;
-      try { output = executeVoiceTool(tc.function?.name, input, nav, data); }
-      catch (e) { output = { error: e.message }; }
+      try {
+        const result = executeVoiceTool(tc.function?.name, input, nav, data);
+        data = result.data;
+        output = result.output;
+      } catch (e) { output = { error: e.message }; }
+      if (output && output.needs_confirmation) pendingConfirmation = true;
       oaiMessages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(output) });
     }
   }
-  return 'Не разобрался за отведённое число шагов — попробуйте переформулировать.';
+  return { text: 'Не разобрался за отведённое число шагов — попробуйте переформулировать.', pendingConfirmation };
 }
 
 
@@ -8837,36 +9400,6 @@ async function extractHealthEventFromDocument(files, settings) {
   };
 }
 
-function applyVoiceTask(parsed, setData) {
-  if (parsed.section === 'chores') {
-    setData(d => ({
-      ...d,
-      chores: [...(d.chores || []), {
-        id: crypto.randomUUID(),
-        name: parsed.name,
-        frequency: parsed.frequency || 'weekly',
-        customDays: parsed.customDays || null,
-        notify: false,
-        notifyTime: '09:00',
-        archived: false,
-        updatedAt: Date.now(),
-      }],
-    }));
-  } else if (parsed.section === 'boss') {
-    setData(d => ({
-      ...d,
-      bossTasks: [...(d.bossTasks || []), {
-        id: crypto.randomUUID(),
-        name: parsed.name,
-        period: parsed.period || 'morning',
-        days: parsed.days || [1, 2, 3, 4, 5],
-        archived: false,
-        updatedAt: Date.now(),
-      }],
-    }));
-  }
-}
-
 let _currentAudio = null;
 
 function speak(text, settings) {
@@ -8941,18 +9474,22 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     // "voiceAssistant" в Настройках → Ассистент, тот и используется.
     try {
       const nav = { setData, setTab, setPlannerTab, setMiscTab, setHouseTab, setVoiceFocus };
-      const answerStr = await runVoiceAgent(newMessages, settings, data, nav);
+      const { text: answerStr, pendingConfirmation } = await runVoiceAgent(newMessages, settings, data, nav);
       setAnswerText(answerStr);
       setPhase('answered');
       await speak(answerStr, settings);
       setPhase('idle');
-      setMessages([]);
+      // Ожидание подтверждения (удаление/финансовая запись) — не сбрасываем
+      // разговор: следующее нажатие микрофона должно продолжить его тем же
+      // «да»/«нет», а не начать новый вопрос с чистого листа.
+      setMessages(pendingConfirmation ? [...newMessages, { role: 'assistant', content: answerStr }] : []);
     } catch (e) {
       const msg = e.message === 'no_key'
         ? 'Настройте набор ключей ИИ для ассистента в Настройках → Ассистент'
         : `Ошибка: ${e.message}`;
       setErrorMsg(msg);
       setPhase('error');
+      setMessages([]);
       setTimeout(() => setPhase('idle'), 4000);
     }
   };
@@ -9008,8 +9545,10 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
         setTimeout(() => setPhase('idle'), 4000);
         return;
       }
-      setMessages([]);
-      startRecording([]);
+      // messages обычно [] — но останется непустым после раунда с
+      // ожиданием подтверждения (см. processTranscript), тогда это нажатие
+      // продолжает тот же разговор, а не начинает новый с нуля.
+      startRecording(messages);
     } else if (phase === 'recording') {
       // Manual early stop — triggers onend which calls processTranscript
       if (recogRef.current) recogRef.current.stop();
