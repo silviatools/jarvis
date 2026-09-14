@@ -1008,17 +1008,27 @@ ASSISTANT_DATA_DOMAINS = {
             "conditions": app.get("healthConditions", []),
             "events": app.get("healthEvents", [])[-150:],
         }),
-    "budget": ("Бюджет активного пользователя: расходы, доходы, долги, накопления, ДДС",
+    "budget": ("Бюджет активного пользователя: вкладки По месяцу/ДДС/Накопления/Постоянные/Спортпит/Долги/Планы — план и факт по категориям и доходам, расходы, доходы, долги, накопления, ДДС, регулярные платежи, спортпит, заметки по месяцам, именные планы (поездки/мероприятия)",
         lambda app: {
             "categories": _assistant_budget_slice(app).get("budgetCategories", []),
+            "recurringCategories": _assistant_budget_slice(app).get("budgetRecurringCategories", []),
+            "planCategories": _assistant_budget_slice(app).get("budgetPlanCategories", []),
+            "planValues": _assistant_budget_slice(app).get("budgetPlanValues", {}),
+            "factValues": _assistant_budget_slice(app).get("budgetFactValues", {}),
+            "incomeSources": _assistant_budget_slice(app).get("budgetIncomeSources", []),
+            "incomeValues": _assistant_budget_slice(app).get("budgetIncomeValues", {}),
+            "incomeFactValues": _assistant_budget_slice(app).get("budgetIncomeFactValues", {}),
             "expenses": _assistant_budget_slice(app).get("budgetExpenses", [])[-200:],
+            "savingsTransactions": _assistant_budget_slice(app).get("savingsTransactions", [])[-100:],
             "recurring": _assistant_budget_slice(app).get("budgetRecurring", []),
+            "supplements": _assistant_budget_slice(app).get("budgetSupplements", []),
+            "supplementAssignments": _assistant_budget_slice(app).get("budgetSupplementAssignments", {}),
             "debts": _assistant_budget_slice(app).get("budgetDebts", []),
             "debtTransactions": _assistant_budget_slice(app).get("debtTransactions", [])[-100:],
-            "incomeSources": _assistant_budget_slice(app).get("budgetIncomeSources", []),
-            "savingsTransactions": _assistant_budget_slice(app).get("savingsTransactions", [])[-100:],
             "cashflowAccounts": _assistant_budget_slice(app).get("budgetCashflowAccounts", []),
             "cashflowOps": _assistant_budget_slice(app).get("budgetCashflowOps", [])[-200:],
+            "monthlyNotes": _assistant_budget_slice(app).get("budgetMonthlyNotes", []),
+            "plans": _assistant_budget_slice(app).get("budgetPlans", []),
         }),
     "cards": ("Карты лояльности магазинов",
         lambda app: [{k: v for k, v in c.items() if k not in ("photo", "code")}
@@ -1030,10 +1040,11 @@ ASSISTANT_DATA_DOMAINS = {
         }),
     "wishlist": ("Хотелки",
         lambda app: {"categories": app.get("wishlistCategories", []), "items": app.get("wishlistItems", [])}),
-    "planner": ("Планировщик: события, друзья-участники, личные планы",
+    "planner": ("Планировщик: события, друзья-участники, личные планы, праздники/дни рождения",
         lambda app: {
             "events": app.get("plannerEvents", []), "friends": app.get("plannerFriends", []),
             "plans": app.get("plannerPlans", []),
+            "holidays": [h for h in app.get("holidays", []) if not h.get("archived")],
         }),
     "camping": ("Кемпинг: справочник вещей и поездки со сборами",
         lambda app: {
@@ -1049,7 +1060,23 @@ ASSISTANT_DATA_DOMAINS = {
             "supplements": app.get("supplements", []),
             "dietLog": app.get("dietLog", [])[-30:], "shoppingLists": app.get("shoppingLists", []),
         }),
-    "body": ("Тело: история замеров и веса", lambda app: app.get("bodyEntries", [])[-60:]),
+    "body": ("Тело: история замеров и веса, режимы (диета/тренировки), целевые значения",
+        lambda app: {
+            "entries": app.get("bodyEntries", [])[-60:],
+            "modes": app.get("bodyModes", []), "activeModeId": app.get("activeBodyModeId"),
+            "fieldTargets": app.get("bodyFieldTargets", {}), "progressStartDate": app.get("bodyProgressStartDate", ""),
+        }),
+    "supplements": ("БАДы: обычный и тренировочный список, журнал приёма по дням (утро/вечер/тренировка)",
+        lambda app: {
+            "supplements": app.get("supplements", []),
+            "workoutSupplements": app.get("workoutSupplements", []),
+            # taken — объект вида "<дата>_<период>_<id>": true, растёт бесконечно;
+            # отдаём только последние ~30 дней, иначе токены на историю за годы.
+            "taken": {
+                k: v for k, v in (app.get("taken") or {}).items()
+                if k.split("_")[0] >= (today_msk() - timedelta(days=30)).isoformat()
+            },
+        }),
     "checklist": ("Ежедневный чек-лист: поля и журнал ответов",
         lambda app: {
             "fields": [f for f in app.get("dailyChecklistFields", []) if not f.get("archived")],
@@ -1096,6 +1123,7 @@ ASSISTANT_NAV_TARGETS = {
 BUDGET_SCOPED_COLLECTIONS = {
     "budgetExpenses", "budgetRecurring", "savingsTransactions",
     "budgetDebts", "debtTransactions", "budgetCashflowAccounts", "budgetCashflowOps",
+    "budgetMonthlyNotes",
 }
 
 
@@ -1203,8 +1231,13 @@ WRITE_REGISTRY = {
     "campingItems": {"label": "Кемпинг-вещь (справочник)", "create_defaults": lambda: {"isBag": False}},
     "campingTrips": {"label": "Кемпинг-поездка", "create_defaults": lambda: {"packing": {"bags": [], "items": []}}},
     "meals": {"label": "Рацион (приём пищи)", "create_defaults": lambda: {"breakfast": [], "snack": [], "lunch": [], "dinner": [], "archived": False}},
-    "supplements": {"label": "БАД", "create_defaults": lambda: {"form": "Таблетки", "frequency": "daily_morning", "archived": False}},
+    "supplements": {"label": "БАД (обычный список)", "create_defaults": lambda: {"form": "Таблетки", "frequency": "daily_morning", "archived": False}},
+    "workoutSupplements": {"label": "БАД (тренировочный список)", "create_defaults": lambda: {"form": "Таблетки", "frequency": "daily_morning", "archived": False}},
     "bodyEntries": {"label": "Замер тела", "create_defaults": lambda: {"values": {}}},
+    "holidays": {
+        "label": "Праздник/день рождения (раздел Планировщик → Праздники)",
+        "create_defaults": lambda: {"type": "birthday", "date": "", "birthYear": "", "notify": True, "reminders": []},
+    },
     "dailyChecklistFields": {
         "label": "Поле ежедневного чек-листа",
         "create_defaults": lambda: {"options": [], "archived": False},
@@ -1235,6 +1268,10 @@ WRITE_REGISTRY = {
         "cascade_delete": [{"collection": "budgetCashflowOps", "field": "accountId"}],
     },
     "budgetCashflowOps": {"label": "Операция ДДС (расход/доход)", "require_confirm": True, "create_defaults": lambda: {"source": "manual"}},
+    "budgetMonthlyNotes": {
+        "label": "Заметка «Выводы по месяцу» (раздел Бюджет → По месяцу)",
+        "create_defaults": lambda: {"month": "", "sort": 0},
+    },
 }
 
 

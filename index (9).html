@@ -8468,19 +8468,29 @@ const VOICE_DATA_DOMAINS = {
     get: d => ({ conditions: d.healthConditions || [], events: (d.healthEvents || []).slice(-150) }),
   },
   budget: {
-    label: 'Бюджет активного пользователя: расходы, доходы, долги, накопления, ДДС',
+    label: 'Бюджет активного пользователя: вкладки По месяцу/ДДС/Накопления/Постоянные/Спортпит/Долги/Планы — план и факт по категориям и доходам, расходы, доходы, долги, накопления, ДДС, регулярные платежи, спортпит, заметки по месяцам, именные планы (поездки/мероприятия)',
     get: d => {
       const slice = d.budgetByUser?.[d.activeBudgetUserId] || {};
       return {
-        categories: slice.budgetCategories || [],
-        expenses: (slice.budgetExpenses || []).slice(-200),
-        recurring: slice.budgetRecurring || [],
+        categories: slice.budgetCategories || [], // вкладка «Постоянные» — категории расходов
+        recurringCategories: slice.budgetRecurringCategories || [],
+        planCategories: slice.budgetPlanCategories || [], // вкладка «По месяцу» — категории плана/факта (группы со статьями)
+        planValues: slice.budgetPlanValues || {}, // план по статьям, ключ обычно "статья_месяц"
+        factValues: slice.budgetFactValues || {}, // факт по статьям
+        incomeSources: slice.budgetIncomeSources || [],
+        incomeValues: slice.budgetIncomeValues || {}, // план по источникам дохода
+        incomeFactValues: slice.budgetIncomeFactValues || {}, // факт по источникам дохода
+        expenses: (slice.budgetExpenses || []).slice(-200), // вкладка «Накопления» — финансовые цели
+        savingsTransactions: (slice.savingsTransactions || []).slice(-100),
+        recurring: slice.budgetRecurring || [], // вкладка «Постоянные» — регулярные платежи
+        supplements: slice.budgetSupplements || [], // вкладка «Спортпит» — список к покупке
+        supplementAssignments: slice.budgetSupplementAssignments || {}, // в каком месяце что куплено
         debts: slice.budgetDebts || [],
         debtTransactions: (slice.debtTransactions || []).slice(-100),
-        incomeSources: slice.budgetIncomeSources || [],
-        savingsTransactions: (slice.savingsTransactions || []).slice(-100),
         cashflowAccounts: slice.budgetCashflowAccounts || [],
         cashflowOps: (slice.budgetCashflowOps || []).slice(-200),
+        monthlyNotes: slice.budgetMonthlyNotes || [], // «Выводы по месяцу» — заметки текстом
+        plans: slice.budgetPlans || [], // вкладка «Планы» — именные бюджеты (поездка/мероприятие)
       };
     },
   },
@@ -8502,8 +8512,11 @@ const VOICE_DATA_DOMAINS = {
     get: d => ({ categories: d.wishlistCategories || [], items: d.wishlistItems || [] }),
   },
   planner: {
-    label: 'Планировщик: события, друзья-участники, личные планы',
-    get: d => ({ events: d.plannerEvents || [], friends: d.plannerFriends || [], plans: d.plannerPlans || [] }),
+    label: 'Планировщик: события, друзья-участники, личные планы, праздники/дни рождения',
+    get: d => ({
+      events: d.plannerEvents || [], friends: d.plannerFriends || [], plans: d.plannerPlans || [],
+      holidays: (d.holidays || []).filter(h => !h.archived), // вкладка «Праздники»
+    }),
   },
   camping: {
     label: 'Кемпинг: справочник вещей и поездки со сборами',
@@ -8521,8 +8534,29 @@ const VOICE_DATA_DOMAINS = {
     }),
   },
   body: {
-    label: 'Тело: история замеров и веса',
-    get: d => (d.bodyEntries || []).slice(-60),
+    label: 'Тело: история замеров и веса, режимы (диета/тренировки), целевые значения',
+    get: d => ({
+      entries: (d.bodyEntries || []).slice(-60),
+      modes: d.bodyModes || [], activeModeId: d.activeBodyModeId || null,
+      fieldTargets: d.bodyFieldTargets || {}, progressStartDate: d.bodyProgressStartDate || '',
+    }),
+  },
+  supplements: {
+    label: 'БАДы: обычный и тренировочный список, журнал приёма по дням (утро/вечер/тренировка)',
+    get: d => {
+      // taken — объект вида "<дата>_<период>_<id>": true, растёт бесконечно;
+      // отдаём только последние ~30 дней, иначе токены на историю за годы.
+      const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 30);
+      const cutoffStr = dateToLocalStr(cutoff);
+      const taken = Object.fromEntries(
+        Object.entries(d.taken || {}).filter(([k]) => k.split('_')[0] >= cutoffStr)
+      );
+      return {
+        supplements: d.supplements || [], // обычный список (раздел «БАДДы»/«Питание»)
+        workoutSupplements: d.workoutSupplements || [], // список для тренировок
+        taken, // отметки приёма за последние ~30 дней
+      };
+    },
   },
   checklist: {
     label: 'Ежедневный чек-лист: поля и журнал ответов',
@@ -8546,6 +8580,7 @@ const VOICE_DATA_DOMAINS = {
 const BUDGET_SCOPED_COLLECTIONS = new Set([
   'budgetExpenses', 'budgetRecurring', 'savingsTransactions',
   'budgetDebts', 'debtTransactions', 'budgetCashflowAccounts', 'budgetCashflowOps',
+  'budgetMonthlyNotes',
 ]);
 
 const getCollectionArray = (data, key) => {
@@ -8645,8 +8680,13 @@ const WRITE_REGISTRY = {
   campingItems: { label: 'Кемпинг-вещь (справочник)', createDefaults: () => ({ isBag: false }) },
   campingTrips: { label: 'Кемпинг-поездка', createDefaults: () => ({ packing: { bags: [], items: [] } }) },
   meals: { label: 'Рацион (приём пищи)', createDefaults: () => ({ breakfast: [], snack: [], lunch: [], dinner: [], archived: false }) },
-  supplements: { label: 'БАД', createDefaults: () => ({ form: 'Таблетки', frequency: 'daily_morning', archived: false }) },
+  supplements: { label: 'БАД (обычный список)', createDefaults: () => ({ form: 'Таблетки', frequency: 'daily_morning', archived: false }) },
+  workoutSupplements: { label: 'БАД (тренировочный список)', createDefaults: () => ({ form: 'Таблетки', frequency: 'daily_morning', archived: false }) },
   bodyEntries: { label: 'Замер тела', createDefaults: () => ({ values: {} }) },
+  holidays: {
+    label: 'Праздник/день рождения (раздел Планировщик → Праздники)',
+    createDefaults: () => ({ type: 'birthday', date: '', birthYear: '', notify: true, reminders: [] }),
+  },
   dailyChecklistFields: {
     label: 'Поле ежедневного чек-листа',
     createDefaults: () => ({ options: [], archived: false }),
@@ -8686,6 +8726,10 @@ const WRITE_REGISTRY = {
     cascadeDelete: [{ collection: 'budgetCashflowOps', field: 'accountId' }],
   },
   budgetCashflowOps: { label: 'Операция ДДС (расход/доход)', requireConfirm: true, createDefaults: () => ({ source: 'manual' }) },
+  budgetMonthlyNotes: {
+    label: 'Заметка «Выводы по месяцу» (раздел Бюджет → По месяцу)',
+    createDefaults: () => ({ month: '', sort: 0 }),
+  },
 };
 
 function createRecordGeneric(data, collectionKey, fields) {
