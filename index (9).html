@@ -8875,6 +8875,43 @@ function kanbanToggleSubtask(data, taskId, subtaskId, done) {
   }));
 }
 
+// ── Ингредиенты плана готовки: вложены в cookingPlans[].ingredients, поэтому
+// не подходят под общий create/update/delete_record (та же причина, что у
+// канбана) — свои функции поверх найденного плана.
+const findCookingPlan = (data, planId) => (data.cookingPlans || []).find(p => p.id === planId) || null;
+
+const patchCookingPlan = (data, planId, mutate) => {
+  const plans = data.cookingPlans || [];
+  if (!plans.some(p => p.id === planId)) return { data, error: 'plan_not_found' };
+  return { data: { ...data, cookingPlans: plans.map(p => p.id === planId ? { ...mutate(p), updatedAt: Date.now() } : p) } };
+};
+
+function cookingPlanAddIngredient(data, planId, fields) {
+  if (!findCookingPlan(data, planId)) return { data, error: 'plan_not_found' };
+  const ingredient = {
+    id: crypto.randomUUID(), name: '', portions: '', portionSize: '',
+    actualRaw: null, actualCooked: null, ...fields,
+  };
+  const result = patchCookingPlan(data, planId, p => ({ ...p, ingredients: [...(p.ingredients || []), ingredient] }));
+  return { ...result, ingredient };
+}
+
+function cookingPlanUpdateIngredient(data, planId, ingredientId, patch) {
+  const plan = findCookingPlan(data, planId);
+  if (!plan) return { data, error: 'plan_not_found' };
+  if (!(plan.ingredients || []).some(i => i.id === ingredientId)) return { data, error: 'ingredient_not_found' };
+  return patchCookingPlan(data, planId, p => ({
+    ...p, ingredients: p.ingredients.map(i => i.id === ingredientId ? { ...i, ...patch } : i),
+  }));
+}
+
+function cookingPlanDeleteIngredient(data, planId, ingredientId) {
+  const plan = findCookingPlan(data, planId);
+  if (!plan) return { data, error: 'plan_not_found' };
+  if (!(plan.ingredients || []).some(i => i.id === ingredientId)) return { data, error: 'ingredient_not_found' };
+  return patchCookingPlan(data, planId, p => ({ ...p, ingredients: p.ingredients.filter(i => i.id !== ingredientId) }));
+}
+
 // ── Дневные логи (dietLog, dailyChecklistLog): один ряд на дату, а не на id —
 // апсерт заменяет запись за эту дату целиком, удаление тоже адресуется датой.
 function logDietCompliance(data, date, level) {
@@ -9084,6 +9121,46 @@ const VOICE_AGENT_TOOLS = [
       required: ['date', 'fieldId', 'option'],
     },
   },
+  {
+    name: 'cooking_plan_add_ingredient',
+    description: 'Добавить продукт в план готовки (раздел Питание → Готовка).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        planId: { type: 'string', description: 'id плана из get_data("meals").cookingPlans' },
+        name: { type: 'string' },
+        portions: { type: 'number', description: 'Число порций — вместе с portionSize задаёт план сырого веса в граммах' },
+        portionSize: { type: 'number', description: 'Грамм на порцию' },
+        plannedRaw: { type: 'number', description: 'План сырого веса в граммах напрямую, если не через порции' },
+      },
+      required: ['planId', 'name'],
+    },
+  },
+  {
+    name: 'cooking_plan_update_ingredient',
+    description: 'Изменить план/факт продукта в плане готовки — например «Запиши гречка сырое факт 650», «У курицы готовое 1500». Сначала get_data("meals"), чтобы найти id продукта по названию.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        planId: { type: 'string' },
+        ingredientId: { type: 'string', description: 'id продукта из get_data("meals").cookingPlans[].ingredients' },
+        patch: {
+          type: 'object',
+          description: 'Поля: actualRaw (факт сырого веса, г), actualCooked (факт готового веса, г), name, portions, portionSize, plannedRaw',
+        },
+      },
+      required: ['planId', 'ingredientId', 'patch'],
+    },
+  },
+  {
+    name: 'cooking_plan_delete_ingredient',
+    description: 'Удалить продукт из плана готовки. Требует подтверждения.',
+    input_schema: {
+      type: 'object',
+      properties: { planId: { type: 'string' }, ingredientId: { type: 'string' }, confirmed: { type: 'boolean' } },
+      required: ['planId', 'ingredientId'],
+    },
+  },
 ];
 
 function buildVoiceAgentSystemPrompt() {
@@ -9110,6 +9187,8 @@ ${writeList}
 4. Канбан-доска «Задачи» (house_tasks) устроена отдельно от прочих разделов — свои инструменты: kanban_create_task, kanban_update_task, kanban_delete_task, kanban_move_task, kanban_add_comment, kanban_delete_comment, kanban_add_subtask, kanban_toggle_subtask.
 
 5. log_diet_compliance(date, level) / log_checklist_answer(date, fieldId, option) — отметки по дням (один раз на дату — вызов заменяет предыдущую отметку на эту дату, если она была).
+
+6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и готового веса), cooking_plan_delete_ingredient.
 
 ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task) и любая запись в финансовые разделы (помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
@@ -9200,6 +9279,19 @@ function executeVoiceTool(name, input, nav, data) {
   }
   if (name === 'log_checklist_answer') {
     return applied(logChecklistAnswer(data, input.date, input.fieldId, input.option));
+  }
+  if (name === 'cooking_plan_add_ingredient') {
+    const result = cookingPlanAddIngredient(data, input.planId, {
+      name: input.name, portions: input.portions, portionSize: input.portionSize, plannedRaw: input.plannedRaw,
+    });
+    return applied(result, result.error ? undefined : { ok: true, id: result.ingredient.id });
+  }
+  if (name === 'cooking_plan_update_ingredient') {
+    return applied(cookingPlanUpdateIngredient(data, input.planId, input.ingredientId, input.patch || {}));
+  }
+  if (name === 'cooking_plan_delete_ingredient') {
+    if (!input.confirmed) return noop({ needs_confirmation: true, message: 'Нужно подтверждение пользователя, чтобы удалить продукт из плана готовки.' });
+    return applied(cookingPlanDeleteIngredient(data, input.planId, input.ingredientId));
   }
   return noop({ error: 'unknown_tool' });
 }

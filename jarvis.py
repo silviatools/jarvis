@@ -1456,6 +1456,54 @@ def kanban_toggle_subtask(app: dict, task_id: str, subtask_id: str, done) -> dic
     return {"error": "subtask_not_found"}
 
 
+# ── Ингредиенты плана готовки: вложены в cookingPlans[].ingredients, поэтому
+# не подходят под общий create/update/delete_record (та же причина, что у
+# канбана) — свои функции поверх найденного плана.
+def _find_cooking_plan(app: dict, plan_id: str):
+    for p in app.get("cookingPlans") or []:
+        if p.get("id") == plan_id:
+            return p
+    return None
+
+
+def cooking_plan_add_ingredient(app: dict, plan_id: str, fields: dict) -> dict:
+    plan = _find_cooking_plan(app, plan_id)
+    if not plan:
+        return {"error": "plan_not_found"}
+    ingredient = {
+        "id": str(uuid.uuid4()), "name": "", "portions": "", "portionSize": "",
+        "actualRaw": None, "actualCooked": None,
+        **{k: v for k, v in (fields or {}).items() if v is not None},
+    }
+    plan.setdefault("ingredients", []).append(ingredient)
+    plan["updatedAt"] = int(time.time() * 1000)
+    return {"ok": True, "id": ingredient["id"]}
+
+
+def cooking_plan_update_ingredient(app: dict, plan_id: str, ingredient_id: str, patch: dict) -> dict:
+    plan = _find_cooking_plan(app, plan_id)
+    if not plan:
+        return {"error": "plan_not_found"}
+    for ing in plan.get("ingredients", []):
+        if ing.get("id") == ingredient_id:
+            ing.update(patch or {})
+            plan["updatedAt"] = int(time.time() * 1000)
+            return {"ok": True}
+    return {"error": "ingredient_not_found"}
+
+
+def cooking_plan_delete_ingredient(app: dict, plan_id: str, ingredient_id: str) -> dict:
+    plan = _find_cooking_plan(app, plan_id)
+    if not plan:
+        return {"error": "plan_not_found"}
+    ingredients = plan.get("ingredients", [])
+    if not any(i.get("id") == ingredient_id for i in ingredients):
+        return {"error": "ingredient_not_found"}
+    plan["ingredients"] = [i for i in ingredients if i.get("id") != ingredient_id]
+    plan["updatedAt"] = int(time.time() * 1000)
+    return {"ok": True}
+
+
 # ── Дневные логи (dietLog, dailyChecklistLog): один ряд на дату — апсерт
 # заменяет запись за эту дату целиком, а не добавляет новую.
 def log_diet_compliance(app: dict, date: str, level: str) -> dict:
@@ -1640,6 +1688,46 @@ ASSISTANT_TOOLS = [
             "required": ["date", "fieldId", "option"],
         },
     },
+    {
+        "name": "cooking_plan_add_ingredient",
+        "description": "Добавить продукт в план готовки (раздел Питание → Готовка).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "planId": {"type": "string", "description": "id плана из get_data(\"meals\").cookingPlans"},
+                "name": {"type": "string"},
+                "portions": {"type": "number", "description": "Число порций — вместе с portionSize задаёт план сырого веса в граммах"},
+                "portionSize": {"type": "number", "description": "Грамм на порцию"},
+                "plannedRaw": {"type": "number", "description": "План сырого веса в граммах напрямую, если не через порции"},
+            },
+            "required": ["planId", "name"],
+        },
+    },
+    {
+        "name": "cooking_plan_update_ingredient",
+        "description": "Изменить план/факт продукта в плане готовки — например «Запиши гречка сырое факт 650», «У курицы готовое 1500». Сначала get_data(\"meals\"), чтобы найти id продукта по названию.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "planId": {"type": "string"},
+                "ingredientId": {"type": "string", "description": "id продукта из get_data(\"meals\").cookingPlans[].ingredients"},
+                "patch": {
+                    "type": "object",
+                    "description": "Поля: actualRaw (факт сырого веса, г), actualCooked (факт готового веса, г), name, portions, portionSize, plannedRaw",
+                },
+            },
+            "required": ["planId", "ingredientId", "patch"],
+        },
+    },
+    {
+        "name": "cooking_plan_delete_ingredient",
+        "description": "Удалить продукт из плана готовки. Требует подтверждения.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"planId": {"type": "string"}, "ingredientId": {"type": "string"}, "confirmed": {"type": "boolean"}},
+            "required": ["planId", "ingredientId"],
+        },
+    },
 ]
 
 def build_assistant_system_prompt() -> str:
@@ -1662,7 +1750,10 @@ def build_assistant_system_prompt() -> str:
         "kanban_delete_comment, kanban_add_subtask, kanban_toggle_subtask.\n\n"
         "5. log_diet_compliance(date, level) / log_checklist_answer(date, fieldId, option) — отметки по дням "
         "(один раз на дату — вызов заменяет предыдущую отметку на эту дату, если она была).\n\n"
-        "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task) и любая запись в финансовые разделы "
+        "6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — "
+        "свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и "
+        "готового веса), cooking_plan_delete_ingredient.\n\n"
+        "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
         "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
         "— вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми "
         "словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ ответ (не вызывай "
@@ -1716,8 +1807,10 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str) -> di
 
     if name == "kanban_delete_task" and not inp.get("confirmed"):
         return {"needs_confirmation": True, "message": "Нужно подтверждение пользователя, чтобы удалить задачу канбана."}
+    if name == "cooking_plan_delete_ingredient" and not inp.get("confirmed"):
+        return {"needs_confirmation": True, "message": "Нужно подтверждение пользователя, чтобы удалить продукт из плана готовки."}
 
-    kanban_calls = {
+    misc_write_calls = {
         "kanban_create_task": lambda: kanban_create_task(app, inp.get("columnId"), {
             "title": inp.get("title"), "priority": inp.get("priority"),
             "description": inp.get("description"), "dueDate": inp.get("dueDate"),
@@ -1731,9 +1824,16 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str) -> di
         "kanban_toggle_subtask": lambda: kanban_toggle_subtask(app, inp.get("taskId"), inp.get("subtaskId"), inp.get("done")),
         "log_diet_compliance": lambda: log_diet_compliance(app, inp.get("date"), inp.get("level")),
         "log_checklist_answer": lambda: log_checklist_answer(app, inp.get("date"), inp.get("fieldId"), inp.get("option")),
+        "cooking_plan_add_ingredient": lambda: cooking_plan_add_ingredient(app, inp.get("planId"), {
+            "name": inp.get("name"), "portions": inp.get("portions"),
+            "portionSize": inp.get("portionSize"), "plannedRaw": inp.get("plannedRaw"),
+        }),
+        "cooking_plan_update_ingredient": lambda: cooking_plan_update_ingredient(
+            app, inp.get("planId"), inp.get("ingredientId"), inp.get("patch") or {}),
+        "cooking_plan_delete_ingredient": lambda: cooking_plan_delete_ingredient(app, inp.get("planId"), inp.get("ingredientId")),
     }
-    if name in kanban_calls:
-        result = kanban_calls[name]()
+    if name in misc_write_calls:
+        result = misc_write_calls[name]()
         if result.get("ok"):
             save_app_data(app)
         return result
