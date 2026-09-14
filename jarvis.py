@@ -286,6 +286,273 @@ def send_message(token: str, chat_id: int, text: str):
     })
 
 
+def send_photo(token: str, chat_id: int, filename: str, data: bytes, caption: str = "") -> bool:
+    if not requests:
+        return False
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{token}/sendPhoto",
+            data={"chat_id": chat_id, "caption": caption},
+            files={"photo": (filename, data, "image/png")},
+            timeout=60,
+        )
+        return r.ok
+    except Exception as e:
+        print(f"  [sendPhoto] {e}")
+        return False
+
+
+# ── штрихкоды карт лояльности ────────────────────────────────────────────────
+# Тот же принцип и те же кодировщики, что и в разделе «Карты» на клиенте
+# (index (9).html, cardBarcode/cardAutoFormat) — портированы на Python, чтобы
+# отправить готовую картинку штрихкода в Telegram по гео-триггеру (iOS
+# Shortcuts), не открывая веб-страницу. QR здесь не реализован — сценарий
+# рассчитан на обычные 1D-штрихкоды карт магазинов.
+
+BC_EAN_L = ['0001101', '0011001', '0010011', '0111101', '0100011',
+            '0110001', '0101111', '0111011', '0110111', '0001011']
+BC_EAN_G = ['0100111', '0110011', '0011011', '0100001', '0011101',
+            '0111001', '0000101', '0010001', '0001001', '0010111']
+BC_EAN_R = [s.translate({48: 49, 49: 48}) for s in BC_EAN_L]
+BC_EAN13_PARITY = ['LLLLLL', 'LLGLGG', 'LLGGLG', 'LLGGGL', 'LGLLGG',
+                    'LGGLLG', 'LGGGLL', 'LGLGLG', 'LGLGGL', 'LGGLGL']
+
+
+def bc_ean_check_digit(body: str) -> int:
+    total, weight = 0, 3
+    for ch in reversed(body):
+        total += int(ch) * weight
+        weight = 1 if weight == 3 else 3
+    return (10 - total % 10) % 10
+
+
+def bc_ean13(digits: str) -> str:
+    body = digits[:12]
+    parity = BC_EAN13_PARITY[int(body[0])]
+    out = '101'
+    for i in range(1, 7):
+        out += (BC_EAN_L if parity[i - 1] == 'L' else BC_EAN_G)[int(body[i])]
+    out += '01010'
+    for d in body[7:] + str(bc_ean_check_digit(body)):
+        out += BC_EAN_R[int(d)]
+    return out + '101'
+
+
+def bc_ean8(digits: str) -> str:
+    body = digits[:7]
+    out = '101'
+    for d in body[:4]:
+        out += BC_EAN_L[int(d)]
+    out += '01010'
+    for d in body[4:] + str(bc_ean_check_digit(body)):
+        out += BC_EAN_R[int(d)]
+    return out + '101'
+
+
+def bc_upca(digits: str) -> str:
+    body = digits[:11]
+    out = '101'
+    for d in body[:6]:
+        out += BC_EAN_L[int(d)]
+    out += '01010'
+    for d in body[6:] + str(bc_ean_check_digit(body)):
+        out += BC_EAN_R[int(d)]
+    return out + '101'
+
+
+BC_C128 = ['11011001100', '11001101100', '11001100110', '10010011000', '10010001100', '10001001100', '10011001000', '10011000100', '10001100100', '11001001000', '11001000100', '11000100100', '10110011100', '10011011100', '10011001110', '10111001100', '10011101100', '10011100110', '11001110010', '11001011100', '11001001110', '11011100100', '11001110100', '11101101110', '11101001100', '11100101100', '11100100110', '11101100100', '11100110100', '11100110010', '11011011000', '11011000110', '11000110110', '10100011000', '10001011000', '10001000110', '10110001000', '10001101000', '10001100010', '11010001000', '11000101000', '11000100010', '10110111000', '10110001110', '10001101110', '10111011000', '10111000110', '10001110110', '11101110110', '11010001110', '11000101110', '11011101000', '11011100010', '11011101110', '11101011000', '11101000110', '11100010110', '11101101000', '11101100010', '11100011010', '11101111010', '11001000010', '11110001010', '10100110000', '10100001100', '10010110000', '10010000110', '10000101100', '10000100110', '10110010000', '10110000100', '10011010000', '10011000010', '10000110100', '10000110010', '11000010010', '11001010000', '11110111010', '11000010100', '10001111010', '10100111100', '10010111100', '10010011110', '10111100100', '10011110100', '10011110010', '11110100100', '11110010100', '11110010010', '11011011110', '11011110110', '11110110110', '10101111000', '10100011110', '10001011110', '10111101000', '10111100010', '11110101000', '11110100010', '10111011110', '10111101110', '11101011110', '11110101110', '11010000100', '11010010000', '11010011100']
+BC_C128_STOP = '1100011101011'
+
+
+def bc_c128b(ch: str):
+    c = ord(ch)
+    return c - 32 if 32 <= c <= 126 else None
+
+
+def bc_digit_run(s: str, i: int) -> int:
+    n = 0
+    while i + n < len(s) and s[i + n].isdigit():
+        n += 1
+    return n
+
+
+def bc_code128(text: str):
+    for ch in text:
+        if bc_c128b(ch) is None:
+            return None
+    codes = []
+    i = 0
+    run0 = bc_digit_run(text, 0)
+    if len(text) and run0 % 2 == 0 and (run0 > 0 if run0 == len(text) else run0 >= 4):
+        mode = 'C'
+        codes.append(105)
+    else:
+        mode = 'B'
+        codes.append(104)
+    while i < len(text):
+        run = bc_digit_run(text, i)
+        if mode == 'C':
+            if run >= 2:
+                codes.append(int(text[i:i + 2]))
+                i += 2
+                continue
+            codes.append(100)
+            mode = 'B'
+            continue
+        even_run = run - (run % 2)
+        at_end = (i + run == len(text))
+        if even_run >= 6 or (at_end and run >= 4 and run % 2 == 0):
+            codes.append(99)
+            mode = 'C'
+            continue
+        codes.append(bc_c128b(text[i]))
+        i += 1
+    total = codes[0]
+    for k in range(1, len(codes)):
+        total += k * codes[k]
+    codes.append(total % 103)
+    return ''.join(BC_C128[c] for c in codes) + BC_C128_STOP
+
+
+BC_C39 = {
+    '0': 'nnnwwnwnn', '1': 'wnnwnnnnw', '2': 'nnwwnnnnw', '3': 'wnwwnnnnn', '4': 'nnnwwnnnw',
+    '5': 'wnnwwnnnn', '6': 'nnwwwnnnn', '7': 'nnnwnnwnw', '8': 'wnnwnnwnn', '9': 'nnwwnnwnn',
+    'A': 'wnnnnwnnw', 'B': 'nnwnnwnnw', 'C': 'wnwnnwnnn', 'D': 'nnnnwwnnw', 'E': 'wnnnwwnnn',
+    'F': 'nnwnwwnnn', 'G': 'nnnnnwwnw', 'H': 'wnnnnwwnn', 'I': 'nnwnnwwnn', 'J': 'nnnnwwwnn',
+    'K': 'wnnnnnnww', 'L': 'nnwnnnnww', 'M': 'wnwnnnnwn', 'N': 'nnnnwnnww', 'O': 'wnnnwnnwn',
+    'P': 'nnwnwnnwn', 'Q': 'nnnnnnwww', 'R': 'wnnnnnwwn', 'S': 'nnwnnnwwn', 'T': 'nnnnwnwwn',
+    'U': 'wwnnnnnnw', 'V': 'nwwnnnnnw', 'W': 'wwwnnnnnn', 'X': 'nwnnwnnnw', 'Y': 'wwnnwnnnn',
+    'Z': 'nwwnwnnnn', '-': 'nwnnnnwnw', '.': 'wwnnnnwnn', ' ': 'nwwnnnwnn', '$': 'nwnwnwnnn',
+    '/': 'nwnwnnnwn', '+': 'nwnnnwnwn', '%': 'nnnwnwnwn', '*': 'nwnnwnwnn',
+}
+
+
+def bc_code39(text: str):
+    parts = []
+    for ch in '*' + text.upper() + '*':
+        pat = BC_C39.get(ch)
+        if not pat:
+            return None
+        s = ''
+        for idx, w in enumerate(pat):
+            s += ('1' if idx % 2 == 0 else '0') * (3 if w == 'w' else 1)
+        parts.append(s)
+    return '0'.join(parts)
+
+
+BC_ITF = ['nnwwn', 'wnnnw', 'nwnnw', 'wwnnn', 'nnwnw',
+          'wnwnn', 'nwwnn', 'nnnww', 'wnnwn', 'nwnwn']
+
+
+def bc_itf(digits: str) -> str:
+    code = digits
+    if len(code) % 2:
+        code = '0' + code
+    out = '1010'
+    for i in range(0, len(code), 2):
+        bars, spaces = BC_ITF[int(code[i])], BC_ITF[int(code[i + 1])]
+        for j in range(5):
+            out += '1' * (3 if bars[j] == 'w' else 1)
+            out += '0' * (3 if spaces[j] == 'w' else 1)
+    return out + '11101'
+
+
+def bc_check_ok(digits: str) -> bool:
+    return int(digits[-1]) == bc_ean_check_digit(digits[:-1])
+
+
+def card_auto_format(code: str) -> str:
+    s = (code or '').strip()
+    if re.fullmatch(r'\d{13}', s):
+        return 'ean13' if bc_check_ok(s) else 'code128'
+    if re.fullmatch(r'\d{12}', s):
+        return 'upca' if bc_check_ok(s) else 'code128'
+    if re.fullmatch(r'\d{8}', s):
+        return 'ean8' if bc_check_ok(s) else 'code128'
+    if re.fullmatch(r'[\x20-\x7e]+', s):
+        return 'code128'
+    return 'qr'
+
+
+def card_barcode_bits(code: str, fmt: str) -> tuple:
+    """Возвращает (bits, actual_format) для 1D-штрихкода карты или бросает
+    ValueError с человекочитаемым сообщением — как cardBarcode на клиенте."""
+    s = (code or '').strip()
+    if not s:
+        raise ValueError('Номер не указан')
+    fmt = card_auto_format(s) if (not fmt or fmt == 'auto') else fmt
+    digits = re.sub(r'\D', '', s)
+    if fmt == 'ean13':
+        if len(digits) < 12:
+            raise ValueError('Для EAN-13 нужно 12–13 цифр')
+        return bc_ean13(digits), fmt
+    if fmt == 'ean8':
+        if len(digits) < 7:
+            raise ValueError('Для EAN-8 нужно 7–8 цифр')
+        return bc_ean8(digits), fmt
+    if fmt == 'upca':
+        if len(digits) < 11:
+            raise ValueError('Для UPC-A нужно 11–12 цифр')
+        return bc_upca(digits), fmt
+    if fmt == 'itf':
+        if not digits:
+            raise ValueError('ITF кодирует только цифры')
+        return bc_itf(digits), fmt
+    if fmt == 'code39':
+        bits = bc_code39(s)
+        if not bits:
+            raise ValueError('Code 39 не поддерживает эти символы')
+        return bits, fmt
+    if fmt == 'qr':
+        raise ValueError('QR-коды пока не поддерживаются для отправки в Telegram')
+    bits = bc_code128(s)
+    if not bits:
+        raise ValueError('Code 128 не поддерживает эти символы')
+    return bits, 'code128'
+
+
+BARCODE_QUIET = 12  # тихая зона по краям, в модулях — как BARCODE_QUIET в index (9).html
+
+
+def _png_encode(width: int, height: int, row: bytes) -> bytes:
+    """Минимальный PNG-энкодер (8-бит grayscale, одна и та же строка на все
+    высоты) — без Pillow/внешних библиотек, только zlib из стандартной
+    библиотеки."""
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack('>I', len(data)) + tag + data + struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff)
+
+    sig = b'\x89PNG\r\n\x1a\n'
+    ihdr = struct.pack('>IIBBBBB', width, height, 8, 0, 0, 0, 0)
+    raw = bytearray()
+    filtered_row = b'\x00' + row
+    for _ in range(height):
+        raw.extend(filtered_row)
+    idat = zlib.compress(bytes(raw), 6)
+    return sig + chunk(b'IHDR', ihdr) + chunk(b'IDAT', idat) + chunk(b'IEND', b'')
+
+
+def render_barcode_png(bits: str, module: int = 4, height: int = 220) -> bytes:
+    """Штрихкод как BarcodeStripes в index (9).html — чёрные полосы на белом
+    фоне с тихой зоной по краям, растрированные в PNG."""
+    width = (len(bits) + BARCODE_QUIET * 2) * module
+    row = bytearray(b'\xff' * width)
+    for i, b in enumerate(bits):
+        if b == '1':
+            x0 = (BARCODE_QUIET + i) * module
+            row[x0:x0 + module] = b'\x00' * module
+    return _png_encode(width, height, bytes(row))
+
+
+def find_loyalty_card(app_data: dict, card_id: str):
+    for c in app_data.get('loyaltyCards', []) or []:
+        if isinstance(c, dict) and c.get('id') == card_id:
+            return c
+    return None
+
+
 # ── diet compliance (Соблюдение) ─────────────────────────────────────────────
 
 DIET_LABELS = {
@@ -4560,6 +4827,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                     self._json(409, {"error": "backup already in progress"})
             except Exception as e:
                 self._json(500, {"error": str(e)})
+        elif token_from_route(route, "/api/cards/", "/send-telegram"):
+            self._card_send_telegram(token_from_route(route, "/api/cards/", "/send-telegram"))
         else:
             self.send_response(404)
             self.end_headers()
@@ -5647,6 +5916,41 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"index (9).html not found")
+
+    def _card_send_telegram(self, card_id: str):
+        """Рисует штрихкод карты лояльности и шлёт его фото всем Telegram-
+        подписчикам — для гео-триггера через iOS Shortcuts (Личная
+        автоматизация → Location → 'Получить содержимое URL')."""
+        app_data = load_app_data()
+        card = find_loyalty_card(app_data, card_id)
+        if not card:
+            self._json(404, {"error": "card not found"})
+            return
+        code = str(card.get("code") or "").strip()
+        if not code:
+            self._json(400, {"error": "card has no code"})
+            return
+        try:
+            bits, _fmt = card_barcode_bits(code, card.get("format") or "auto")
+        except ValueError as e:
+            self._json(400, {"error": str(e)})
+            return
+        token = get_token()
+        if not token:
+            self._json(400, {"error": "Telegram bot token not configured"})
+            return
+        subs = load_subscribers()
+        chat_ids = subs.get("chat_ids", [])
+        if not chat_ids:
+            self._json(400, {"error": "no telegram subscribers"})
+            return
+        png = render_barcode_png(bits)
+        name = str(card.get("name") or "Карта").strip() or "Карта"
+        sent = sum(1 for cid in chat_ids if send_photo(token, cid, f"{name}.png", png, caption=name))
+        if not sent:
+            self._json(502, {"error": "telegram send failed"})
+            return
+        self._json(200, {"ok": True, "sent": sent})
 
     def _content_length(self):
         """Parsed Content-Length, or None when missing/malformed. Body-reading
