@@ -936,6 +936,51 @@ def handle_checklist_callback(token: str, cq: dict):
 # voiceModel) — они уже синхронизируются между устройствами.
 
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
+
+# Наборы ключей ИИ (settings.aiPresets/aiAssignments) — то же самое, что и в
+# index (9).html: несколько ключей/провайдеров можно завести сразу и
+# назначить каждой функции проекта свой (AI_FUNCTIONS). Тут используется
+# только "voiceAssistant" (общий с кнопкой-микрофоном в браузере), остальные
+# функции — распознавание документов и т.п. — работают на клиенте.
+AI_FUNCTIONS = ["voiceAssistant", "healthExtract", "gymExtract", "wishlistScreenshot"]
+AI_PROVIDER_DEFAULT_MODEL = {"claude": "claude-sonnet-5", "openai": "gpt-4o"}
+
+
+def _ensure_ai_presets(settings: dict) -> dict:
+    """Разовая миграция со старой единой пары voiceProvider/voiceApiKey/voiceModel —
+    зеркалит ensureAiPresets() в index (9).html. Ничего не сохраняет: клиент
+    рано или поздно сам допишет aiPresets в синхронизируемые данные, а до
+    этого момента сервер просто считает пресет на лету из старых полей."""
+    if settings.get("aiPresets"):
+        return settings
+    key = (settings.get("voiceApiKey") or "").strip()
+    if not key:
+        return settings
+    provider = "openai" if settings.get("voiceProvider") == "openai" else "claude"
+    preset = {
+        "id": str(uuid.uuid4()),
+        "name": "OpenAI (из старых настроек)" if provider == "openai" else "Claude (из старых настроек)",
+        "provider": provider,
+        "apiKey": key,
+        "model": settings.get("voiceModel") or "",
+    }
+    s = dict(settings)
+    s["aiPresets"] = [preset]
+    s["aiAssignments"] = {k: preset["id"] for k in AI_FUNCTIONS}
+    return s
+
+
+def resolve_ai_preset(settings: dict, function_key: str):
+    s = _ensure_ai_presets(settings or {})
+    presets = s.get("aiPresets") or []
+    if not presets:
+        return None
+    assigned_id = (s.get("aiAssignments") or {}).get(function_key)
+    for p in presets:
+        if p.get("id") == assigned_id:
+            return p
+    return presets[0]
 
 
 def _assistant_budget_slice(app: dict) -> dict:
@@ -1135,39 +1180,25 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str) -> di
 
 # Память разговора — только в процессе, на время жизни контейнера. Это чат-
 # ассистент, а не журнал переписки: после рестарта каждый чат начинается заново.
+# Хранится только чистый текст (роль user/assistant) — служебные ходы
+# tool-calling каждого раунда живут только в локальной копии внутри
+# _assistant_loop_claude/_openai и в историю не попадают: иначе при смене
+# провайдера в середине переписки в истории оказался бы чужой формат.
 _assistant_convo: dict = {}
 _ASSISTANT_MAX_TURNS = 16
 _ASSISTANT_MAX_STEPS = 6
 
 
-def handle_assistant_message(token: str, chat_id, text: str):
-    app = load_app_data()
-    settings = app.get("settings") or {}
-    key = (settings.get("voiceApiKey") or "").strip()
-    if not key:
-        send_message(token, chat_id, "Настройте API-ключ ассистента в приложении: Настройки → Ассистент.")
-        return
-    # Инструменты (get_data/navigate/add_task) реализованы только поверх
-    # Anthropic Messages API. Если в настройках выбран OpenAI, в этом поле
-    # лежит ключ OpenAI — отправлять его в Anthropic бессмысленно, Claude
-    # ответит "API key is invalid" (ключ-то валиден, просто не тот провайдер).
-    provider = (settings.get("voiceProvider") or "claude").strip()
-    if provider != "claude":
-        send_message(
-            token, chat_id,
-            "Ассистент в Telegram сейчас работает только на Claude. "
-            "В приложении: Настройки → Ассистент → AI-провайдер — выберите «Claude (Anthropic)» "
-            "и вставьте туда ключ с console.anthropic.com.",
-        )
-        return
-    model = (settings.get("voiceModel") or "").strip() or "claude-sonnet-4-6"
-    site_url = (settings.get("publicUrl") or "").strip()
+class _AssistantError(Exception):
+    pass
 
-    convo = _assistant_convo.setdefault(chat_id, [])
-    convo.append({"role": "user", "content": text})
+
+def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, site_url: str):
+    """Прогоняет tool-use цикл Claude поверх локальной копии истории.
+    Возвращает (текст ответа | None, список ссылок navigate). None — агент не
+    уложился в отведённые шаги. Ошибки HTTP/сети — как _AssistantError."""
     system = build_assistant_system_prompt()
-
-    answer = None
+    convo = list(history)
     nav_links = []
     for _ in range(_ASSISTANT_MAX_STEPS):
         try:
@@ -1175,7 +1206,7 @@ def handle_assistant_message(token: str, chat_id, text: str):
                 ANTHROPIC_MESSAGES_URL,
                 headers={
                     "Content-Type": "application/json",
-                    "x-api-key": key,
+                    "x-api-key": api_key,
                     "anthropic-version": "2023-06-01",
                 },
                 json={
@@ -1185,26 +1216,20 @@ def handle_assistant_message(token: str, chat_id, text: str):
                 timeout=30,
             )
         except Exception as e:
-            del convo[:]
-            send_message(token, chat_id, f"Ошибка связи с ИИ: {e}")
-            return
+            raise _AssistantError(f"Ошибка связи с ИИ: {e}")
         if not r.ok:
-            del convo[:]
             try:
                 err = r.json().get("error", {}).get("message")
             except Exception:
                 err = None
-            send_message(token, chat_id, f"Ошибка ИИ: {err or r.status_code}")
-            return
+            raise _AssistantError(f"Ошибка ИИ: {err or r.status_code}")
 
         resp = r.json()
         content = resp.get("content", [])
         tool_uses = [b for b in content if b.get("type") == "tool_use"]
         texts = "\n".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
-
         if not tool_uses:
-            answer = texts or "Готово"
-            break
+            return texts or "Готово", nav_links
 
         convo.append({"role": "assistant", "content": content})
         tool_results = []
@@ -1220,14 +1245,95 @@ def handle_assistant_message(token: str, chat_id, text: str):
                 "content": json.dumps(output, ensure_ascii=False),
             })
         convo.append({"role": "user", "content": tool_results})
+    return None, nav_links
+
+
+def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, site_url: str):
+    """То же самое поверх OpenAI function calling — другой формат запроса и
+    ответа (tool_calls в сообщении assistant, результаты — отдельными
+    сообщениями role:"tool"), но те же инструменты и та же семантика."""
+    system = build_assistant_system_prompt()
+    tools = [
+        {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
+        for t in ASSISTANT_TOOLS
+    ]
+    convo = [{"role": "system", "content": system}] + list(history)
+    nav_links = []
+    for _ in range(_ASSISTANT_MAX_STEPS):
+        try:
+            r = requests.post(
+                OPENAI_CHAT_URL,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+                json={"model": model, "max_tokens": 800, "messages": convo, "tools": tools},
+                timeout=30,
+            )
+        except Exception as e:
+            raise _AssistantError(f"Ошибка связи с ИИ: {e}")
+        if not r.ok:
+            try:
+                err = r.json().get("error", {}).get("message")
+            except Exception:
+                err = None
+            raise _AssistantError(f"Ошибка ИИ: {err or r.status_code}")
+
+        resp = r.json()
+        choices = resp.get("choices") or [{}]
+        message = choices[0].get("message") or {}
+        tool_calls = message.get("tool_calls") or []
+        if not tool_calls:
+            return message.get("content") or "Готово", nav_links
+
+        convo.append({"role": "assistant", "content": message.get("content"), "tool_calls": tool_calls})
+        for tc in tool_calls:
+            fn = tc.get("function") or {}
+            try:
+                inp = json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                inp = {}
+            try:
+                output = execute_assistant_tool(fn.get("name"), inp, app, site_url)
+            except Exception as e:
+                output = {"error": str(e)}
+            if fn.get("name") == "navigate" and output.get("url"):
+                nav_links.append((output.get("label"), output["url"]))
+            convo.append({"role": "tool", "tool_call_id": tc.get("id"), "content": json.dumps(output, ensure_ascii=False)})
+    return None, nav_links
+
+
+def handle_assistant_message(token: str, chat_id, text: str):
+    app = load_app_data()
+    settings = app.get("settings") or {}
+    preset = resolve_ai_preset(settings, "voiceAssistant")
+    api_key = (preset or {}).get("apiKey", "").strip()
+    if not api_key:
+        send_message(
+            token, chat_id,
+            "Ассистенту не назначен набор ключей ИИ. В приложении: Настройки → Ассистент — "
+            "добавьте набор ключей (Claude или OpenAI) и назначьте его функции «Ассистент».",
+        )
+        return
+    provider = "openai" if preset.get("provider") == "openai" else "claude"
+    model = (preset.get("model") or "").strip() or AI_PROVIDER_DEFAULT_MODEL[provider]
+    site_url = (settings.get("publicUrl") or "").strip()
+
+    history = _assistant_convo.setdefault(chat_id, [])
+    history.append({"role": "user", "content": text})
+
+    loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
+    try:
+        answer, nav_links = loop_fn(history, api_key, model, app, site_url)
+    except _AssistantError as e:
+        del history[:]
+        send_message(token, chat_id, str(e))
+        return
 
     if answer is None:
-        del convo[:]
+        del history[:]
         send_message(token, chat_id, "Не разобрался за отведённое число шагов — попробуйте переформулировать.")
         return
 
-    convo.append({"role": "assistant", "content": answer})
-    del convo[:-_ASSISTANT_MAX_TURNS]
+    history.append({"role": "assistant", "content": answer})
+    del history[:-_ASSISTANT_MAX_TURNS]
 
     reply = html.escape(answer)
     for label, url in nav_links:

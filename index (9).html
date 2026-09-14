@@ -222,9 +222,17 @@ const DEFAULT_SETTINGS = {
   workAddress: '',
   tomtomKey: '',
   telegramToken: '',
+  // Устаревшая единая пара провайдер+ключ — больше не редактируется в UI,
+  // только источник для разовой миграции в aiPresets (см. ensureAiPresets).
   voiceProvider: 'claude',
   voiceApiKey: '',
   voiceModel: '',
+  // Наборы ключей ИИ: [{id, name, provider: 'claude'|'openai', apiKey, model}].
+  // Несколько ключей (в том числе несколько на один провайдер) можно завести
+  // сразу и раздать по функциям проекта — см. AI_FUNCTIONS/aiAssignments ниже.
+  aiPresets: [],
+  // functionKey (см. AI_FUNCTIONS) → id пресета из aiPresets.
+  aiAssignments: {},
   voiceTtsVoice: 'nova',
   gymVoice: true,        // озвучивание подходов и отдыха на тренировке
   gymBackgroundAudio: false, // звук с погашенным экраном (ценой чужой музыки)
@@ -233,6 +241,62 @@ const DEFAULT_SETTINGS = {
   backupReminder: { enabled: false, frequency: 'weekly', time: '03:00', dayOfWeek: 0, dayOfMonth: 1 },
   lastBackupSentAt: '',
 };
+
+// ── Наборы ключей ИИ ──────────────────────────────────────────────────────
+// Каждая функция проекта, которая ходит к ИИ, выбирает себе набор
+// (aiAssignments[functionKey] = id пресета из aiPresets) — можно держать
+// разные ключи/провайдеров для разных задач, а не один общий на всё.
+const AI_FUNCTIONS = [
+  { key: 'voiceAssistant', label: 'Ассистент (кнопка в приложении + чат в Telegram)' },
+  { key: 'healthExtract', label: 'Здоровье — распознавание документов' },
+  { key: 'gymExtract', label: 'GYM — распознавание программы тренировок' },
+  { key: 'wishlistScreenshot', label: 'Хотелки — распознавание товара по скриншоту' },
+];
+
+const AI_PROVIDER_DEFAULT_MODEL = { claude: 'claude-sonnet-5', openai: 'gpt-4o' };
+
+// Разовая миграция со старой единой пары voiceProvider/voiceApiKey/voiceModel:
+// если пресетов ещё нет, а старый ключ есть — заводим из него один пресет и
+// назначаем его всем функциям. Чистая функция (ничего не сохраняет) — вызов
+// безопасен на каждое чтение; реально в data.settings её результат кладёт
+// migration-эффект в App() (см. ниже), после чего это ветвление больше не
+// участвует.
+function ensureAiPresets(settings) {
+  const s = settings || {};
+  if ((s.aiPresets || []).length > 0) return s;
+  if (!s.voiceApiKey) return s;
+  const preset = {
+    id: crypto.randomUUID(),
+    name: s.voiceProvider === 'openai' ? 'OpenAI (из старых настроек)' : 'Claude (из старых настроек)',
+    provider: s.voiceProvider === 'openai' ? 'openai' : 'claude',
+    apiKey: s.voiceApiKey,
+    model: s.voiceModel || '',
+  };
+  const aiAssignments = {};
+  AI_FUNCTIONS.forEach(f => { aiAssignments[f.key] = preset.id; });
+  return { ...s, aiPresets: [preset], aiAssignments };
+}
+
+// Пресет, назначенный функции functionKey — либо первый доступный, если для
+// неё явно ничего не выбрано (например, функция появилась позже пресетов).
+function resolveAiPreset(settings, functionKey) {
+  const s = ensureAiPresets(settings);
+  const presets = s.aiPresets || [];
+  if (!presets.length) return null;
+  const assignedId = (s.aiAssignments || {})[functionKey];
+  return presets.find(p => p.id === assignedId) || presets[0];
+}
+
+// Озвучка (TTS) жёстко привязана к OpenAI — у Claude нет речевого API. Берём
+// ключ из пресета, назначенного ассистенту, если он на OpenAI, иначе — любой
+// другой OpenAI-пресет из списка.
+function resolveTtsPreset(settings) {
+  const s = ensureAiPresets(settings);
+  const presets = s.aiPresets || [];
+  const assigned = presets.find(p => p.id === (s.aiAssignments || {}).voiceAssistant);
+  if (assigned && assigned.provider === 'openai') return assigned;
+  return presets.find(p => p.provider === 'openai') || null;
+}
 
 // Which Telegram section each background reminder belongs to. Keep the ids in
 // sync with jarvis.py's NOTIFICATION_CATEGORIES — they gate who receives each
@@ -1512,6 +1576,16 @@ function App() {
       setData(d => ({ ...d, meals: (d.meals || []).map(m => isLegacy(m) ? normalizeMeal(m) : m) }));
     }
   }, [data.meals]);
+
+  // Разовая миграция со старой единой пары voiceProvider/voiceApiKey/voiceModel
+  // в отдельные наборы ключей ИИ (aiPresets/aiAssignments) — см. ensureAiPresets.
+  // Сохраняем результат по-настоящему (не только на лету при чтении), чтобы
+  // его увидел и сервер: Telegram-бот в jarvis.py читает те же данные.
+  useEffect(() => {
+    if ((data.settings?.aiPresets || []).length > 0) return;
+    if (!data.settings?.voiceApiKey) return;
+    setData(d => ({ ...d, settings: ensureAiPresets({ ...DEFAULT_SETTINGS, ...(d.settings || {}) }) }));
+  }, [data.settings?.aiPresets, data.settings?.voiceApiKey]);
 
   // Очистка отметок старше сегодняшнего дня. Всё считается ВНУТРИ функционального
   // апдейтера — снимок из первого рендера здесь был бы устаревшим и мог стереть
@@ -3825,77 +3899,120 @@ function NotifyRoutingSettings({ data, setData }) {
 }
 
 function VoiceAssistantSettings({ data, setData }) {
-  const settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
+  const settings = ensureAiPresets({ ...DEFAULT_SETTINGS, ...(data.settings || {}) });
+  const presets = settings.aiPresets || [];
+  const assignments = settings.aiAssignments || {};
 
   const updateSetting = (key, value) => {
     setData(d => ({
       ...d,
-      settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), [key]: value, updatedAt: Date.now() },
+      settings: { ...DEFAULT_SETTINGS, ...ensureAiPresets(d.settings || {}), [key]: value, updatedAt: Date.now() },
     }));
   };
 
-  const providerPlaceholders = {
-    claude: { model: 'claude-sonnet-4-6', key: 'sk-ant-api03-...' },
-    openai: { model: 'gpt-4o', key: 'sk-...' },
+  const setPresets = (next) => updateSetting('aiPresets', next);
+  const updatePreset = (id, patch) => setPresets(presets.map(p => p.id === id ? { ...p, ...patch } : p));
+  const addPreset = () => {
+    setPresets([...presets, {
+      id: crypto.randomUUID(), name: `Набор ${presets.length + 1}`, provider: 'claude', apiKey: '', model: '',
+    }]);
   };
-  const ph = providerPlaceholders[settings.voiceProvider] || providerPlaceholders.claude;
+  const removePreset = (id) => {
+    if (!confirm('Удалить этот набор ключей? Функции, которые на него ссылались, останутся без назначения.')) return;
+    setPresets(presets.filter(p => p.id !== id));
+    const nextAssignments = { ...assignments };
+    Object.keys(nextAssignments).forEach(k => { if (nextAssignments[k] === id) delete nextAssignments[k]; });
+    updateSetting('aiAssignments', nextAssignments);
+  };
+  const setAssignment = (functionKey, presetId) => {
+    updateSetting('aiAssignments', { ...assignments, [functionKey]: presetId });
+  };
 
   return (
     <div className="space-y-3">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <h3 className="font-display text-lg mb-1">Ассистент</h3>
+        <p className="text-sm text-[var(--text-muted)]">
+          Нажмите кнопку микрофона внизу экрана и скажите, что нужно — ассистент видит все разделы проекта: отвечает на вопросы по любым данным (бюджет, здоровье, авто, GYM и т.д.), открывает нужный раздел на экране и добавляет регулярные дела. Работает на любом из провайдеров ниже — какой назначите функции «Ассистент», тот и используется.
+        </p>
+      </div>
+
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
-        <div>
-          <h3 className="font-display text-lg mb-1">Голосовой ассистент</h3>
-          <p className="text-sm text-[var(--text-muted)]">
-            Нажмите кнопку микрофона внизу экрана и скажите, что нужно. На провайдере Claude ассистент видит все разделы проекта: отвечает на вопросы по любым данным (бюджет, здоровье, авто, GYM и т.д.), открывает нужный раздел на экране и добавляет регулярные дела. На OpenAI — только добавление дел и вопросы по «По дому»/«Боссу».
-          </p>
-          <p className="text-sm text-[var(--text-muted)]">
-            Этот же ключ используется в разделе «Здоровье» для распознавания загруженных документов (результатов приёма у врача) — поля записи заполняются автоматически.
-          </p>
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="font-display text-base">Наборы ключей ИИ</h3>
+          <button onClick={addPreset} className="btn-secondary flex items-center gap-1.5 text-sm px-3 py-1.5">
+            <Icon name="plus" size={14} /> Добавить
+          </button>
         </div>
+        {presets.length === 0 && (
+          <p className="text-sm text-[var(--text-subtle)]">Пока ни одного набора — нажмите «Добавить». Можно завести сколько угодно ключей, в том числе несколько на один провайдер.</p>
+        )}
+        {presets.map(p => (
+          <div key={p.id} className="border border-[var(--border)] rounded-xl p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={p.name}
+                onChange={e => updatePreset(p.id, { name: e.target.value })}
+                placeholder="Название набора"
+                className="flex-1"
+              />
+              <button onClick={() => removePreset(p.id)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500" title="Удалить набор">
+                <Icon name="trash" size={16} />
+              </button>
+            </div>
+            <div>
+              <label>Провайдер</label>
+              <select value={p.provider} onChange={e => updatePreset(p.id, { provider: e.target.value })}>
+                <option value="claude">Claude (Anthropic)</option>
+                <option value="openai">OpenAI (ChatGPT)</option>
+              </select>
+            </div>
+            <div>
+              <label>API-ключ</label>
+              <input
+                type="password"
+                value={p.apiKey}
+                onChange={e => updatePreset(p.id, { apiKey: e.target.value })}
+                placeholder={p.provider === 'openai' ? 'sk-...' : 'sk-ant-api03-...'}
+                autoComplete="off"
+              />
+              <p className="text-xs text-[var(--text-subtle)] mt-1">
+                Получите ключ на <span className="font-mono">{p.provider === 'openai' ? 'platform.openai.com' : 'console.anthropic.com'}</span>
+              </p>
+            </div>
+            <div>
+              <label>Модель (необязательно)</label>
+              <input
+                type="text"
+                value={p.model}
+                onChange={e => updatePreset(p.id, { model: e.target.value })}
+                placeholder={`По умолчанию: ${AI_PROVIDER_DEFAULT_MODEL[p.provider] || AI_PROVIDER_DEFAULT_MODEL.claude}`}
+                autoComplete="off"
+              />
+            </div>
+          </div>
+        ))}
+      </div>
 
-        <div>
-          <label>AI-провайдер</label>
-          <select
-            value={settings.voiceProvider}
-            onChange={e => updateSetting('voiceProvider', e.target.value)}
-          >
-            <option value="claude">Claude (Anthropic)</option>
-            <option value="openai">OpenAI (ChatGPT)</option>
-          </select>
-        </div>
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <h3 className="font-display text-base mb-1">Какой набор для какой функции</h3>
+        {presets.length === 0 ? (
+          <p className="text-sm text-[var(--text-subtle)]">Сначала добавьте хотя бы один набор ключей выше.</p>
+        ) : AI_FUNCTIONS.map(f => (
+          <div key={f.key}>
+            <label>{f.label}</label>
+            <select value={assignments[f.key] || ''} onChange={e => setAssignment(f.key, e.target.value)}>
+              <option value="">— не назначено (возьмётся первый набор) —</option>
+              {presets.map(p => (
+                <option key={p.id} value={p.id}>{p.name} · {p.provider === 'openai' ? 'OpenAI' : 'Claude'}</option>
+              ))}
+            </select>
+          </div>
+        ))}
+      </div>
 
-        <div>
-          <label>API-ключ</label>
-          <input
-            type="password"
-            value={settings.voiceApiKey}
-            onChange={e => updateSetting('voiceApiKey', e.target.value)}
-            placeholder={ph.key}
-            autoComplete="off"
-          />
-          {settings.voiceProvider === 'claude' && (
-            <p className="text-xs text-[var(--text-subtle)] mt-1">
-              Получите ключ на <span className="font-mono">console.anthropic.com</span>
-            </p>
-          )}
-          {settings.voiceProvider === 'openai' && (
-            <p className="text-xs text-[var(--text-subtle)] mt-1">
-              Получите ключ на <span className="font-mono">platform.openai.com</span>
-            </p>
-          )}
-        </div>
-
-        <div>
-          <label>Модель (необязательно)</label>
-          <input
-            type="text"
-            value={settings.voiceModel}
-            onChange={e => updateSetting('voiceModel', e.target.value)}
-            placeholder={`По умолчанию: ${ph.model}`}
-            autoComplete="off"
-          />
-        </div>
-
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
         <div>
           <label>Публичный адрес сайта (для ссылок в Telegram)</label>
           <input
@@ -3924,7 +4041,7 @@ function VoiceAssistantSettings({ data, setData }) {
             <option value="fable">Fable — мужской, выразительный</option>
           </select>
           <p className="text-xs text-[var(--text-subtle)] mt-1">
-            Используется API-ключ OpenAI. Если ключ не задан — будет встроенный голос браузера.
+            У Claude нет озвучки — нужен любой набор ключей с провайдером OpenAI (необязательно назначенный ассистенту). Если такого нет — будет встроенный голос браузера.
           </p>
         </div>
       </div>
@@ -3933,15 +4050,14 @@ function VoiceAssistantSettings({ data, setData }) {
         <h3 className="font-display text-base mb-2">Как пользоваться</h3>
         <ol className="text-sm text-[var(--text-muted)] space-y-1 list-decimal list-inside">
           <li>Нажмите кнопку микрофона (внизу справа)</li>
-          <li>Скажите что нужно сделать и как часто</li>
-          <li>Нажмите снова — ИИ добавит дело</li>
-          <li>Если непонятно — ИИ спросит уточнение</li>
+          <li>Скажите что нужно — вопрос, дело или «открой раздел ...»</li>
+          <li>Ассистент ответит и озвучит ответ</li>
         </ol>
         <p className="text-xs text-[var(--text-subtle)] mt-3">
-          Тот же ассистент отвечает и в Telegram-боте: напишите ему любое сообщение (не команду) — он читает данные всего проекта и присылает ссылки на разделы. Нужен только настроенный здесь API-ключ Claude — бот берёт его из этих же настроек.
+          Тот же ассистент отвечает и в Telegram-боте: напишите ему любое сообщение (не команду) — он читает данные всего проекта и присылает ссылки на разделы. Использует тот же набор ключей, что назначен функции «Ассистент» выше.
         </p>
         <p className="text-xs text-[var(--text-subtle)] mt-3">
-          Примеры: «Добавь задачу пылесосить раз в неделю», «Добавь зарядку каждое утро кроме воскресенья»
+          Примеры: «Добавь задачу пылесосить раз в неделю», «Когда последний раз обслуживали машину?», «Открой карту Пятёрочки»
         </p>
       </div>
     </div>
@@ -8473,19 +8589,28 @@ function executeVoiceTool(name, input, nav, data) {
 // прежде чем дать финальный текстовый ответ. data — снимок на момент начала
 // разговора: инструменты навигации/добавления это не смущает (они читают
 // данные только чтобы найти id и не нуждаются в собственных правках задним числом).
+// Провайдер решает пресет, назначенный функции "voiceAssistant" в Настройках
+// → Ассистент — у Claude и OpenAI разный формат tool-calling, поэтому ниже
+// два отдельных цикла на общем наборе инструментов/executeVoiceTool.
 async function runVoiceAgent(messages, settings, data, nav, maxSteps = 6) {
-  const key = (settings?.voiceApiKey || '').trim();
-  if (!key) throw new Error('no_key');
-  const model = (settings?.voiceModel || '').trim() || 'claude-sonnet-4-6';
-  const system = buildVoiceAgentSystemPrompt();
-  let convo = messages.map(m => ({ role: m.role, content: m.content }));
+  const preset = resolveAiPreset(settings, 'voiceAssistant');
+  if (!preset || !preset.apiKey) throw new Error('no_key');
+  const provider = preset.provider === 'openai' ? 'openai' : 'claude';
+  const model = (preset.model || '').trim() || AI_PROVIDER_DEFAULT_MODEL[provider];
+  const convo = messages.map(m => ({ role: m.role, content: m.content }));
+  return provider === 'openai'
+    ? runVoiceAgentOpenAI(convo, preset.apiKey, model, data, nav, maxSteps)
+    : runVoiceAgentClaude(convo, preset.apiKey, model, data, nav, maxSteps);
+}
 
+async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
+  const system = buildVoiceAgentSystemPrompt();
   for (let step = 0; step < maxSteps; step++) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': key,
+        'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
@@ -8516,72 +8641,54 @@ async function runVoiceAgent(messages, settings, data, nav, maxSteps = 6) {
   return 'Не разобрался за отведённое число шагов — попробуйте переформулировать.';
 }
 
-function buildVoiceSystemPrompt(appData) {
-  const DAY_NAMES = ['вс','пн','вт','ср','чт','пт','сб'];
-  const PERIOD_NAMES = { morning: 'утро', evening: 'вечер', allday: 'весь день' };
-  const FREQ_LABELS = { daily:'каждый день', every2:'каждые 2 дня', every3:'каждые 3 дня', weekly:'раз в неделю', biweekly:'раз в 2 нед', monthly:'раз в месяц', custom:'своя' };
+// Те же инструменты (input_schema — обычный JSON Schema, подходит и OpenAI как
+// есть), но формат запроса/ответа function-calling у OpenAI другой: tool_calls
+// плечом к плечу с текстом в одном сообщении assistant, результаты — отдельными
+// сообщениями role:"tool" с tool_call_id, а не одним user-сообщением как у Claude.
+async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps) {
+  const system = buildVoiceAgentSystemPrompt();
+  const tools = VOICE_AGENT_TOOLS.map(t => ({
+    type: 'function',
+    function: { name: t.name, description: t.description, parameters: t.input_schema },
+  }));
+  const oaiMessages = [{ role: 'system', content: system }, ...convo];
 
-  const today = new Date();
-  const todayStr = dateToLocalStr(today);
-  const todayDayName = DAY_NAMES[today.getDay()];
+  for (let step = 0; step < maxSteps; step++) {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify({ model, max_tokens: 800, messages: oaiMessages, tools }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || `OpenAI API ${res.status}`);
+    }
+    const resp = await res.json();
+    const message = resp.choices?.[0]?.message || {};
+    const toolCalls = message.tool_calls || [];
 
-  const chores = (appData.chores || []).filter(c => !c.archived);
-  const bossTasks = (appData.bossTasks || []).filter(t => !t.archived);
+    if (!toolCalls.length) return message.content || 'Готово';
 
-  const choreLines = chores.length
-    ? chores.map(c => {
-        const next = getChoreNextDate(c);
-        const nextStr = isChoreDueToday(c) ? 'СЕГОДНЯ' : dateToLocalStr(next);
-        const freq = FREQ_LABELS[c.frequency] || c.frequency;
-        const custom = c.frequency === 'custom' ? ` (${c.customDays} дн)` : '';
-        return `  • ${c.name} | ${freq}${custom} | последний раз: ${c.lastDone || 'никогда'} | следующий: ${nextStr}`;
-      }).join('\n')
-    : '  (пусто)';
-
-  const bossLines = bossTasks.length
-    ? bossTasks.map(t => {
-        const days = (t.days || []).map(d => DAY_NAMES[d]).join(',');
-        return `  • ${t.name} | ${PERIOD_NAMES[t.period] || t.period} | дни: ${days}`;
-      }).join('\n')
-    : '  (пусто)';
-
-  return `Ты голосовой помощник приложения Jarvis. Отвечай кратко, по-русски.
-
-СЕГОДНЯ: ${todayStr} (${todayDayName})
-
-РАЗДЕЛ "ПО ДОМУ" — регулярные домашние дела:
-${choreLines}
-
-РАЗДЕЛ "БОСС" — задачи по расписанию:
-${bossLines}
-
-ТЫ УМЕЕШЬ:
-1. Ответить на любой вопрос о делах пользователя (что сегодня, что просрочено, когда последний раз, что на этой неделе и т.д.)
-2. Добавить новое дело в один из разделов
-
-ФОРМАТ ОТВЕТА — только JSON, без markdown, без пояснений:
-
-Ответить на вопрос:
-{"action":"answer","text":"краткий разговорный ответ на русском"}
-
-Добавить в "По дому":
-{"action":"add","section":"chores","name":"...","frequency":"daily|every2|every3|weekly|biweekly|monthly|custom","customDays":null}
-
-Добавить в "Босс":
-{"action":"add","section":"boss","name":"...","period":"morning|evening|allday","days":[1,2,3,4,5]}
-
-Уточнить (если непонятно):
-{"action":"clarify","question":"короткий вопрос"}`;
+    oaiMessages.push({ role: 'assistant', content: message.content || null, tool_calls: toolCalls });
+    for (const tc of toolCalls) {
+      let input = {};
+      try { input = JSON.parse(tc.function?.arguments || '{}'); } catch (_) { /* оставляем {} */ }
+      let output;
+      try { output = executeVoiceTool(tc.function?.name, input, nav, data); }
+      catch (e) { output = { error: e.message }; }
+      oaiMessages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(output) });
+    }
+  }
+  return 'Не разобрался за отведённое число шагов — попробуйте переформулировать.';
 }
 
-async function callAI(messages, settings, appData, systemPromptOverride, maxTokens = 400) {
-  const systemPrompt = systemPromptOverride || buildVoiceSystemPrompt(appData || {});
-  const provider = settings.voiceProvider || 'claude';
-  const key = (settings.voiceApiKey || '').trim();
-  if (!key) throw new Error('no_key');
 
-  const model = (settings.voiceModel || '').trim() ||
-    (provider === 'claude' ? 'claude-sonnet-4-6' : 'gpt-4o');
+async function callAI(messages, settings, systemPrompt, maxTokens = 400, functionKey = 'voiceAssistant') {
+  const preset = resolveAiPreset(settings, functionKey);
+  if (!preset || !preset.apiKey) throw new Error('no_key');
+  const provider = preset.provider === 'openai' ? 'openai' : 'claude';
+  const key = preset.apiKey;
+  const model = (preset.model || '').trim() || AI_PROVIDER_DEFAULT_MODEL[provider];
 
   if (provider === 'claude') {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -8630,8 +8737,8 @@ async function callAI(messages, settings, appData, systemPromptOverride, maxToke
 }
 
 // ============== ЗДОРОВЬЕ: РАСПОЗНАВАНИЕ ДОКУМЕНТА ЧЕРЕЗ ИИ ==============
-// Переиспользует ту же connectivity (callAI, settings.voiceProvider/voiceApiKey),
-// что и голосовой ассистент — второй ключ ИИ заводить не нужно.
+// Переиспользует общий callAI и набор ключей, назначенный функции
+// "healthExtract" в Настройках → Ассистент.
 
 const HEALTH_EXTRACT_SYSTEM_PROMPT = `Ты помогаешь заполнить карточку приёма у врача в приложении учёта здоровья по присланному документу (результат осмотра/обследования, выписка, заключение).
 Извлеки из документа только то, что там реально написано — ничего не придумывай и не дополняй медицинскими предположениями. Если какого-то поля в документе нет — оставь пустую строку или пустой массив.
@@ -8667,7 +8774,7 @@ function isHealthDocPdf(file) {
 // (несколько страниц, сфотографированных по очереди); PDF допускается только один за раз.
 async function extractHealthEventFromDocument(files, settings) {
   const fileList = Array.isArray(files) ? files : [files];
-  const provider = settings?.voiceProvider || 'claude';
+  const provider = resolveAiPreset(settings, 'healthExtract')?.provider || 'claude';
   const hasPdf = fileList.some(isHealthDocPdf);
   if (hasPdf && fileList.length > 1) {
     throw new Error('PDF можно приложить только один файл за раз — для нескольких страниц сфотографируйте их и загрузите как изображения.');
@@ -8699,7 +8806,7 @@ async function extractHealthEventFromDocument(files, settings) {
 
   let parsed;
   try {
-    parsed = await callAI(messages, settings, null, HEALTH_EXTRACT_SYSTEM_PROMPT);
+    parsed = await callAI(messages, settings, HEALTH_EXTRACT_SYSTEM_PROMPT, 400, 'healthExtract');
   } catch (e) {
     if (e.message === 'no_key') throw new Error('Сначала укажите API-ключ ИИ в Настройках → Ассистент');
     throw new Error(e.message?.includes('JSON') ? 'ИИ вернул нераспознаваемый ответ, попробуйте ещё раз' : (e.message || 'Не удалось распознать документ'));
@@ -8767,7 +8874,8 @@ function speak(text, settings) {
   if (_currentAudio) { _currentAudio.pause(); _currentAudio = null; }
   window.speechSynthesis?.cancel();
 
-  const key = (settings?.voiceApiKey || '').trim();
+  const ttsPreset = resolveTtsPreset(settings);
+  const key = (ttsPreset?.apiKey || '').trim();
   if (key) {
     // OpenAI TTS — returns promise that resolves when audio finishes
     const voice = settings?.voiceTtsVoice || 'nova';
@@ -8828,63 +8936,20 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     setMessages(newMessages);
     setPhase('processing');
 
-    const provider = settings?.voiceProvider || 'claude';
-    // Полный доступ ко всему проекту (чтение любых разделов + навигация)
-    // требует настоящего tool-calling — сейчас это умеет только ветка Claude.
-    // OpenAI пока остаётся на старом однократном JSON-протоколе ниже
-    // (умеет добавлять дела и отвечать по «По дому»/«Боссу»).
-    if (provider === 'claude') {
-      try {
-        const nav = { setData, setTab, setPlannerTab, setMiscTab, setHouseTab, setVoiceFocus };
-        const answerStr = await runVoiceAgent(newMessages, settings, data, nav);
-        setAnswerText(answerStr);
-        setPhase('answered');
-        await speak(answerStr, settings);
-        setPhase('idle');
-        setMessages([]);
-      } catch (e) {
-        const msg = e.message === 'no_key'
-          ? 'Настройте API-ключ в Настройках → Ассистент'
-          : `Ошибка: ${e.message}`;
-        setErrorMsg(msg);
-        setPhase('error');
-        setTimeout(() => setPhase('idle'), 4000);
-      }
-      return;
-    }
-
+    // Полный доступ ко всему проекту (чтение любых разделов + навигация) —
+    // tool-calling работает на обоих провайдерах, какой назначен функции
+    // "voiceAssistant" в Настройках → Ассистент, тот и используется.
     try {
-      const parsed = await callAI(newMessages, settings, data);
-      if (parsed.action === 'add') {
-        applyVoiceTask(parsed, setData);
-        const name = parsed.name || 'задача';
-        setLastAdded(name);
-        speak(`Добавлено: ${name}`, settings);
-        setPhase('success');
-        setTimeout(() => { setPhase('idle'); setMessages([]); }, 2500);
-      } else if (parsed.action === 'answer') {
-        const answerStr = parsed.text || 'Готово';
-        setAnswerText(answerStr);
-        setPhase('answered');
-        await speak(answerStr, settings);
-        setPhase('idle');
-        setMessages([]);
-      } else if (parsed.action === 'clarify') {
-        const q = parsed.question || 'Уточните запрос';
-        const updatedMessages = [...newMessages, { role: 'assistant', content: q }];
-        setClarifyQuestion(q);
-        setMessages(updatedMessages);
-        setPhase('clarifying');
-        await speak(q, settings);
-        startRecording(updatedMessages);
-      } else {
-        setErrorMsg('Непонятный ответ ИИ. Попробуйте ещё раз.');
-        setPhase('error');
-        setTimeout(() => setPhase('idle'), 3000);
-      }
+      const nav = { setData, setTab, setPlannerTab, setMiscTab, setHouseTab, setVoiceFocus };
+      const answerStr = await runVoiceAgent(newMessages, settings, data, nav);
+      setAnswerText(answerStr);
+      setPhase('answered');
+      await speak(answerStr, settings);
+      setPhase('idle');
+      setMessages([]);
     } catch (e) {
       const msg = e.message === 'no_key'
-        ? 'Настройте API-ключ в Настройках → Ассистент'
+        ? 'Настройте набор ключей ИИ для ассистента в Настройках → Ассистент'
         : `Ошибка: ${e.message}`;
       setErrorMsg(msg);
       setPhase('error');
@@ -8936,9 +9001,9 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
 
   const handleMainButton = () => {
     if (phase === 'idle') {
-      const key = (settings?.voiceApiKey || '').trim();
-      if (!key) {
-        setErrorMsg('Настройте API-ключ в Настройках → Ассистент');
+      const preset = resolveAiPreset(settings, 'voiceAssistant');
+      if (!preset || !preset.apiKey) {
+        setErrorMsg('Настройте набор ключей ИИ для ассистента в Настройках → Ассистент');
         setPhase('error');
         setTimeout(() => setPhase('idle'), 4000);
         return;
@@ -25849,7 +25914,7 @@ const gymNormalizeImportedExercise = (e, dayId, order) => ({
 
 async function extractGymDaysFromImages(files, settings) {
   const list = Array.isArray(files) ? files : [files];
-  const provider = settings?.voiceProvider || 'claude';
+  const provider = resolveAiPreset(settings, 'gymExtract')?.provider || 'claude';
   const hasPdf = list.some(isHealthDocPdf);
   if (hasPdf && list.length > 1) {
     throw new Error('PDF можно приложить только один за раз — несколько страниц сфотографируйте и загрузите картинками.');
@@ -25881,7 +25946,7 @@ async function extractGymDaysFromImages(files, settings) {
 
   let parsed;
   try {
-    parsed = await callAI(messages, settings, null, GYM_DAY_EXTRACT_SYSTEM_PROMPT, 8000);
+    parsed = await callAI(messages, settings, GYM_DAY_EXTRACT_SYSTEM_PROMPT, 8000, 'gymExtract');
   } catch (e) {
     if (e.message === 'no_key') throw new Error('Сначала укажите API-ключ ИИ в Настройках → Ассистент');
     throw new Error(e.message?.includes('JSON') ? 'ИИ вернул нераспознаваемый ответ, попробуйте ещё раз' : (e.message || 'Не удалось распознать изображение'));
@@ -27144,10 +27209,11 @@ const wishlistParseAIResponse = (text) => {
 };
 
 async function wishlistParseScreenshot(base64, mediaType, settings) {
-  const provider = settings.voiceProvider || 'claude';
-  const key = (settings.voiceApiKey || '').trim();
-  if (!key) throw new Error('no_key');
-  const model = (settings.voiceModel || '').trim() || (provider === 'claude' ? 'claude-sonnet-4-6' : 'gpt-4o');
+  const preset = resolveAiPreset(settings, 'wishlistScreenshot');
+  if (!preset || !preset.apiKey) throw new Error('no_key');
+  const provider = preset.provider === 'openai' ? 'openai' : 'claude';
+  const key = preset.apiKey;
+  const model = (preset.model || '').trim() || AI_PROVIDER_DEFAULT_MODEL[provider];
 
   let text;
   if (provider === 'claude') {
