@@ -1147,6 +1147,19 @@ def handle_assistant_message(token: str, chat_id, text: str):
     if not key:
         send_message(token, chat_id, "Настройте API-ключ ассистента в приложении: Настройки → Ассистент.")
         return
+    # Инструменты (get_data/navigate/add_task) реализованы только поверх
+    # Anthropic Messages API. Если в настройках выбран OpenAI, в этом поле
+    # лежит ключ OpenAI — отправлять его в Anthropic бессмысленно, Claude
+    # ответит "API key is invalid" (ключ-то валиден, просто не тот провайдер).
+    provider = (settings.get("voiceProvider") or "claude").strip()
+    if provider != "claude":
+        send_message(
+            token, chat_id,
+            "Ассистент в Telegram сейчас работает только на Claude. "
+            "В приложении: Настройки → Ассистент → AI-провайдер — выберите «Claude (Anthropic)» "
+            "и вставьте туда ключ с console.anthropic.com.",
+        )
+        return
     model = (settings.get("voiceModel") or "").strip() or "claude-sonnet-4-6"
     site_url = (settings.get("publicUrl") or "").strip()
 
