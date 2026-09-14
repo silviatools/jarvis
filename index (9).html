@@ -1318,6 +1318,11 @@ function App() {
   const [mealTab, setMealTab] = useState('plan');
   const initialLoad = React.useRef(true);
   const serverLoaded = React.useRef(false);
+  // Пока в разделе «Бюджет → Планы» открыт черновик плана с несохранёнными
+  // правками, уход с вкладки «Бюджет» целиком (шапка/нижняя навигация, кнопка
+  // «Назад» браузера, авто-переключение на бездействии) не должен молча
+  // стирать его — см. использование ниже.
+  const [budgetPlansDirty, setBudgetPlansDirty] = useState(false);
 
   // On mount: try to load from server, merge with localStorage to prevent data loss
   useEffect(() => {
@@ -1468,6 +1473,15 @@ function App() {
 
   useEffect(() => {
     const onPopState = () => {
+      // Кнопка «Назад» уже увела браузер на другой URL к этому моменту —
+      // если уходим из «Бюджет» с несохранённым черновиком плана, спрашиваем
+      // подтверждение и, если отказались, возвращаем адрес назад на /budget.
+      if (tab === 'budget' && budgetPlansDirty && getTabFromPath() !== 'budget') {
+        if (!confirm('В открытом плане бюджета есть несохранённые изменения. Уйти без сохранения?')) {
+          window.history.pushState(null, '', '/budget');
+          return;
+        }
+      }
       navFromPopstate.current = true;
       setTab(getTabFromPath());
       setPlannerTab(getPlannerSubFromPath());
@@ -1475,7 +1489,7 @@ function App() {
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, []);
+  }, [tab, budgetPlansDirty]);
 
   // Разовая миграция legacy-рационов: строки блюд → массивы {product, amount}.
   // Раньше нормализация была только «на лету» и никогда не сохранялась, так что
@@ -1507,9 +1521,12 @@ function App() {
   const { weatherAutoSwitch, weatherAutoSwitchMinutes } = data.settings || DEFAULT_SETTINGS;
   // …кроме GYM: там между подходами по несколько минут не касаешься экрана,
   // и уезжать на главную ровно в этот момент — худшее, что может случиться.
+  // То же самое для «Бюджет → Планы» с открытым несохранённым черновиком —
+  // молчаливый переход на главную стирал бы правки.
   const inGym = tab === 'misc' && miscTab === 'gym';
+  const inDirtyBudgetPlan = tab === 'budget' && budgetPlansDirty;
   useEffect(() => {
-    if (!weatherAutoSwitch || inGym) return;
+    if (!weatherAutoSwitch || inGym || inDirtyBudgetPlan) return;
     const intervalMs = Math.max(0.5, Number(weatherAutoSwitchMinutes) || 2) * 60 * 1000;
     let timerId = null;
 
@@ -1528,7 +1545,7 @@ function App() {
       if (timerId) clearTimeout(timerId);
       events.forEach(ev => window.removeEventListener(ev, reset));
     };
-  }, [weatherAutoSwitch, weatherAutoSwitchMinutes, inGym]);
+  }, [weatherAutoSwitch, weatherAutoSwitchMinutes, inGym, inDirtyBudgetPlan]);
 
   // Авто-синхронизация конфига уведомлений с jarvis.py
   useEffect(() => {
@@ -1555,13 +1572,22 @@ function App() {
     return () => clearTimeout(timer);
   }, [data.settings?.telegramToken, data.chores]);
 
+  // Клики по шапке/нижней навигации уводят с вкладки «Бюджет» напрямую, минуя
+  // её собственную защиту переключения вкладок — здесь та же проверка перед
+  // уходом, пока в открытом плане бюджета есть несохранённые правки.
+  const requestSetTab = (id) => {
+    if (id !== tab && tab === 'budget' && budgetPlansDirty
+      && !confirm('В открытом плане бюджета есть несохранённые изменения. Уйти без сохранения?')) return;
+    setTab(id);
+  };
+
   return (
     <div className="min-h-screen pb-24 md:pb-8">
-      <Header tab={tab} setTab={setTab} />
+      <Header tab={tab} setTab={requestSetTab} />
       {tab === 'house' ? (
         <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />
       ) : tab === 'budget' ? (
-        <BudgetView data={data} setData={setData} />
+        <BudgetView data={data} setData={setData} onDirtyChange={setBudgetPlansDirty} />
       ) : (
         <main className="max-w-3xl mx-auto px-4 sm:px-6 pt-6 md:pt-8">
           {tab === 'home' && <HomeView data={data} setData={setData} setTab={setTab} setHouseTab={setHouseTab} setMealTab={setMealTab} />}
@@ -1585,7 +1611,7 @@ function App() {
           )}
         </main>
       )}
-      <BottomNav tab={tab} setTab={setTab} />
+      <BottomNav tab={tab} setTab={requestSetTab} />
       <VoiceButton data={data} setData={setData} settings={data.settings} />
     </div>
   );
@@ -5748,6 +5774,7 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
   const [newCom, setNewCom] = useState('');
   const [moveTo, setMoveTo] = useState(colId);
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const initialRef = useRef(JSON.stringify({ ...task }));
 
   const addComment = () => {
     if (!newCom.trim()) return;
@@ -5764,8 +5791,17 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
   const pri = KANBAN_PRIORITIES.find(p => p.id === f.priority) || KANBAN_PRIORITIES[0];
   const isNew = !task.createdAt || task.title === '';
 
+  // Пока в задаче есть несохранённые правки, любое закрытие (крестик, клик по
+  // фону, Escape, кнопка «Отмена») спрашивает подтверждение — иначе введённые
+  // данные терялись молча.
+  const isDirty = () => JSON.stringify(f) !== initialRef.current || moveTo !== colId || newCom.trim() !== '';
+  const requestClose = () => {
+    if (isDirty() && !confirm(isNew ? 'Отменить создание задачи? Введённые данные будут потеряны.' : 'Есть несохранённые изменения. Закрыть без сохранения?')) return;
+    onClose();
+  };
+
   return (
-    <Modal onClose={onClose} title={isNew ? 'Новая задача' : 'Редактировать задачу'}>
+    <Modal onClose={requestClose} title={isNew ? 'Новая задача' : 'Редактировать задачу'}>
       <div className="space-y-4">
         <div><label>Заголовок</label><input value={f.title} onChange={e => set('title', e.target.value)} placeholder="Что нужно сделать?" autoFocus /></div>
 
@@ -5838,7 +5874,7 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
 
         <div className="flex gap-2 pt-2">
           {!isNew && <button onClick={() => onDelete(f.id)} className="btn-secondary px-3 text-red-500"><Icon name="trash" size={16}/></button>}
-          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={requestClose} className="btn-secondary flex-1">Отмена</button>
           <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
         </div>
       </div>
@@ -12370,15 +12406,22 @@ const monthlyNotesMonths = (data) => [...new Set((data.budgetMonthlyNotes || [])
 const financeAppUrl = (user) =>
   user && user.financeToken ? `${window.location.origin}/pf/${user.financeToken}/` : '';
 
-function BudgetView({ data, setData }) {
+function BudgetView({ data, setData, onDirtyChange }) {
   const [budgetTab, setBudgetTab] = useState('monthly');
   const [showUsers, setShowUsers] = useState(false);
   // Открытый на редактирование план бюджета живёт черновиком, пока его не
   // сохранят кнопкой «Сохранить план бюджета» — уход со вкладки «Планы» без
   // сохранения молча стёр бы правки, поэтому переключение вкладки/пользователя
   // здесь спрашивает подтверждение, пока в редакторе плана есть несохранённые
-  // изменения (см. onDirtyChange у BudgetPlansView).
+  // изменения (см. onDirtyChange у BudgetPlansView). Тот же флаг всплывает
+  // наверх в App через onDirtyChange — так уход со всей вкладки «Бюджет»
+  // (шапка/навигация, кнопка «Назад», авто-переход на бездействии) тоже
+  // спрашивает подтверждение вместо того, чтобы молча закрыть черновик.
   const [plansDirty, setPlansDirty] = useState(false);
+  useEffect(() => { onDirtyChange && onDirtyChange(plansDirty); }, [plansDirty]);
+  // Раздел «Бюджет» размонтируется целиком при уходе на другую вкладку —
+  // сбрасываем флаг наверху, иначе он остался бы «висеть» как true.
+  useEffect(() => () => { onDirtyChange && onDirtyChange(false); }, []);
   const confirmLeavePlans = () =>
     !plansDirty || confirm('В открытом плане бюджета есть несохранённые изменения. Уйти без сохранения?');
   const switchBudgetTab = (id) => { if (id !== budgetTab && confirmLeavePlans()) setBudgetTab(id); };
