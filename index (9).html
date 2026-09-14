@@ -477,6 +477,12 @@ const DEFAULT_DATA = () => ({
   // Оба — id-массивы, LWW по updatedAt, как и всё остальное.
   wishlistCategories: [],
   wishlistItems: [],
+  // Прочее → Своя игра: сами игры (категории → вопросы → варианты ответа) и
+  // партии по публичным ссылкам. quizPlays пишет страница /game/<token> на
+  // сервере (id записи = токен ссылки), приложение только показывает счёт и
+  // умеет его сбросить — поэтому это отдельная коллекция, а не поле игры.
+  quizGames: [],
+  quizPlays: [],
   // Прочее → Карты: карты лояльности. code+format — то, из чего рисуется
   // штрихкод на экране; фото карты хранится отдельным файлом в /api/photos.
   loyaltyCards: [],
@@ -1090,6 +1096,7 @@ const Icon = ({ name, size = 22 }) => {
     camera: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z"/><circle cx="12" cy="13" r="3.5"/></svg>,
     externalLink: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>,
     tag: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.6 2.6a2 2 0 0 0-1.4-.6H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.2 8.2a2 2 0 0 0 2.8 0l7.2-7.2a2 2 0 0 0 0-2.8Z"/><circle cx="7" cy="7" r="1.2"/></svg>,
+    quiz: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18M9 9v12"/><path d="M14.5 13.5a1.6 1.6 0 1 1 2.2 1.5c-.5.2-.8.6-.8 1.1v.4"/><path d="M15.9 19.2h.01"/></svg>,
     clipboard: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>,
   };
   return icons[name] || null;
@@ -1255,6 +1262,7 @@ const PATH_TAB_MAP = {
   '/wishlist': 'misc',
   '/cards': 'misc',
   '/gym': 'misc',
+  '/quiz': 'misc',
   '/cars': 'misc',
   '/settings': 'misc',
   '/misc': 'misc',
@@ -1266,8 +1274,8 @@ const TAB_PATH_MAP = Object.fromEntries(Object.entries(PATH_TAB_MAP).map(([p, t]
 const PLANNER_SUB_BY_PATH = { '/holidays': 'holidays' };
 const PLANNER_PATH_BY_SUB = { holidays: '/holidays' };
 
-const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/cars': 'cars', '/settings': 'settings' };
-const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', cars: '/cars', settings: '/settings' };
+const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/quiz': 'quiz', '/cars': 'cars', '/settings': 'settings' };
+const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', quiz: '/quiz', cars: '/cars', settings: '/settings' };
 
 // Routes that get their own Add-to-Home-Screen shortcut manifest (mirrors
 // SHORTCUT_MANIFESTS in jarvis.py). The server only sets the right
@@ -1322,6 +1330,11 @@ function App() {
   const [voiceFocus, setVoiceFocus] = useState(null);
   const initialLoad = React.useRef(true);
   const serverLoaded = React.useRef(false);
+  // Пока в разделе «Бюджет → Планы» открыт черновик плана с несохранёнными
+  // правками, уход с вкладки «Бюджет» целиком (шапка/нижняя навигация, кнопка
+  // «Назад» браузера, авто-переключение на бездействии) не должен молча
+  // стирать его — см. использование ниже.
+  const [budgetPlansDirty, setBudgetPlansDirty] = useState(false);
 
   // On mount: try to load from server, merge with localStorage to prevent data loss
   useEffect(() => {
@@ -1472,6 +1485,15 @@ function App() {
 
   useEffect(() => {
     const onPopState = () => {
+      // Кнопка «Назад» уже увела браузер на другой URL к этому моменту —
+      // если уходим из «Бюджет» с несохранённым черновиком плана, спрашиваем
+      // подтверждение и, если отказались, возвращаем адрес назад на /budget.
+      if (tab === 'budget' && budgetPlansDirty && getTabFromPath() !== 'budget') {
+        if (!confirm('В открытом плане бюджета есть несохранённые изменения. Уйти без сохранения?')) {
+          window.history.pushState(null, '', '/budget');
+          return;
+        }
+      }
       navFromPopstate.current = true;
       setTab(getTabFromPath());
       setPlannerTab(getPlannerSubFromPath());
@@ -1479,7 +1501,7 @@ function App() {
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, []);
+  }, [tab, budgetPlansDirty]);
 
   // Разовая миграция legacy-рационов: строки блюд → массивы {product, amount}.
   // Раньше нормализация была только «на лету» и никогда не сохранялась, так что
@@ -1511,9 +1533,12 @@ function App() {
   const { weatherAutoSwitch, weatherAutoSwitchMinutes } = data.settings || DEFAULT_SETTINGS;
   // …кроме GYM: там между подходами по несколько минут не касаешься экрана,
   // и уезжать на главную ровно в этот момент — худшее, что может случиться.
+  // То же самое для «Бюджет → Планы» с открытым несохранённым черновиком —
+  // молчаливый переход на главную стирал бы правки.
   const inGym = tab === 'misc' && miscTab === 'gym';
+  const inDirtyBudgetPlan = tab === 'budget' && budgetPlansDirty;
   useEffect(() => {
-    if (!weatherAutoSwitch || inGym) return;
+    if (!weatherAutoSwitch || inGym || inDirtyBudgetPlan) return;
     const intervalMs = Math.max(0.5, Number(weatherAutoSwitchMinutes) || 2) * 60 * 1000;
     let timerId = null;
 
@@ -1532,7 +1557,7 @@ function App() {
       if (timerId) clearTimeout(timerId);
       events.forEach(ev => window.removeEventListener(ev, reset));
     };
-  }, [weatherAutoSwitch, weatherAutoSwitchMinutes, inGym]);
+  }, [weatherAutoSwitch, weatherAutoSwitchMinutes, inGym, inDirtyBudgetPlan]);
 
   // Авто-синхронизация конфига уведомлений с jarvis.py
   useEffect(() => {
@@ -1559,13 +1584,22 @@ function App() {
     return () => clearTimeout(timer);
   }, [data.settings?.telegramToken, data.chores]);
 
+  // Клики по шапке/нижней навигации уводят с вкладки «Бюджет» напрямую, минуя
+  // её собственную защиту переключения вкладок — здесь та же проверка перед
+  // уходом, пока в открытом плане бюджета есть несохранённые правки.
+  const requestSetTab = (id) => {
+    if (id !== tab && tab === 'budget' && budgetPlansDirty
+      && !confirm('В открытом плане бюджета есть несохранённые изменения. Уйти без сохранения?')) return;
+    setTab(id);
+  };
+
   return (
     <div className="min-h-screen pb-24 md:pb-8">
-      <Header tab={tab} setTab={setTab} />
+      <Header tab={tab} setTab={requestSetTab} />
       {tab === 'house' ? (
         <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />
       ) : tab === 'budget' ? (
-        <BudgetView data={data} setData={setData} />
+        <BudgetView data={data} setData={setData} onDirtyChange={setBudgetPlansDirty} />
       ) : (
         <main className="max-w-3xl mx-auto px-4 sm:px-6 pt-6 md:pt-8">
           {tab === 'home' && <HomeView data={data} setData={setData} setTab={setTab} setHouseTab={setHouseTab} setMealTab={setMealTab} />}
@@ -1591,12 +1625,12 @@ function App() {
           )}
         </main>
       )}
-      <BottomNav tab={tab} setTab={setTab} />
+      <BottomNav tab={tab} setTab={requestSetTab} />
       <VoiceButton
         data={data}
         setData={setData}
         settings={data.settings}
-        setTab={setTab}
+        setTab={requestSetTab}
         setPlannerTab={setPlannerTab}
         setMiscTab={setMiscTab}
         setHouseTab={setHouseTab}
@@ -5780,6 +5814,7 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
   const [newCom, setNewCom] = useState('');
   const [moveTo, setMoveTo] = useState(colId);
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const initialRef = useRef(JSON.stringify({ ...task }));
 
   const addComment = () => {
     if (!newCom.trim()) return;
@@ -5796,8 +5831,17 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
   const pri = KANBAN_PRIORITIES.find(p => p.id === f.priority) || KANBAN_PRIORITIES[0];
   const isNew = !task.createdAt || task.title === '';
 
+  // Пока в задаче есть несохранённые правки, любое закрытие (крестик, клик по
+  // фону, Escape, кнопка «Отмена») спрашивает подтверждение — иначе введённые
+  // данные терялись молча.
+  const isDirty = () => JSON.stringify(f) !== initialRef.current || moveTo !== colId || newCom.trim() !== '';
+  const requestClose = () => {
+    if (isDirty() && !confirm(isNew ? 'Отменить создание задачи? Введённые данные будут потеряны.' : 'Есть несохранённые изменения. Закрыть без сохранения?')) return;
+    onClose();
+  };
+
   return (
-    <Modal onClose={onClose} title={isNew ? 'Новая задача' : 'Редактировать задачу'}>
+    <Modal onClose={requestClose} title={isNew ? 'Новая задача' : 'Редактировать задачу'}>
       <div className="space-y-4">
         <div><label>Заголовок</label><input value={f.title} onChange={e => set('title', e.target.value)} placeholder="Что нужно сделать?" autoFocus /></div>
 
@@ -5870,7 +5914,7 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
 
         <div className="flex gap-2 pt-2">
           {!isNew && <button onClick={() => onDelete(f.id)} className="btn-secondary px-3 text-red-500"><Icon name="trash" size={16}/></button>}
-          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={requestClose} className="btn-secondary flex-1">Отмена</button>
           <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
         </div>
       </div>
@@ -8244,6 +8288,7 @@ const VOICE_NAV_TARGETS = {
   wishlist:         { tab: 'misc', miscTab: 'wishlist' },
   cards:            { tab: 'misc', miscTab: 'cards', focusable: true },
   gym:              { tab: 'misc', miscTab: 'gym' },
+  quiz:             { tab: 'misc', miscTab: 'quiz' },
   cars:             { tab: 'misc', miscTab: 'cars' },
   english:          { tab: 'misc', miscTab: 'english' },
   settings:         { tab: 'misc', miscTab: 'settings' },
@@ -8257,6 +8302,7 @@ const VOICE_NAV_LABELS = {
   planner_events: 'Планировщик — События', planner_camping: 'Планировщик — Кемпинг',
   misc_home: 'Прочее — главная', wishlist: 'Хотелки', cards: 'Карты лояльности',
   gym: 'GYM', cars: 'Автомобили и обслуживание', english: 'English', settings: 'Настройки',
+  quiz: 'Своя игра',
 };
 
 // Разделы данных, которые ассистент умеет читать инструментом get_data.
@@ -12683,15 +12729,22 @@ const monthlyNotesMonths = (data) => [...new Set((data.budgetMonthlyNotes || [])
 const financeAppUrl = (user) =>
   user && user.financeToken ? `${window.location.origin}/pf/${user.financeToken}/` : '';
 
-function BudgetView({ data, setData }) {
+function BudgetView({ data, setData, onDirtyChange }) {
   const [budgetTab, setBudgetTab] = useState('monthly');
   const [showUsers, setShowUsers] = useState(false);
   // Открытый на редактирование план бюджета живёт черновиком, пока его не
   // сохранят кнопкой «Сохранить план бюджета» — уход со вкладки «Планы» без
   // сохранения молча стёр бы правки, поэтому переключение вкладки/пользователя
   // здесь спрашивает подтверждение, пока в редакторе плана есть несохранённые
-  // изменения (см. onDirtyChange у BudgetPlansView).
+  // изменения (см. onDirtyChange у BudgetPlansView). Тот же флаг всплывает
+  // наверх в App через onDirtyChange — так уход со всей вкладки «Бюджет»
+  // (шапка/навигация, кнопка «Назад», авто-переход на бездействии) тоже
+  // спрашивает подтверждение вместо того, чтобы молча закрыть черновик.
   const [plansDirty, setPlansDirty] = useState(false);
+  useEffect(() => { onDirtyChange && onDirtyChange(plansDirty); }, [plansDirty]);
+  // Раздел «Бюджет» размонтируется целиком при уходе на другую вкладку —
+  // сбрасываем флаг наверху, иначе он остался бы «висеть» как true.
+  useEffect(() => () => { onDirtyChange && onDirtyChange(false); }, []);
   const confirmLeavePlans = () =>
     !plansDirty || confirm('В открытом плане бюджета есть несохранённые изменения. Уйти без сохранения?');
   const switchBudgetTab = (id) => { if (id !== budgetTab && confirmLeavePlans()) setBudgetTab(id); };
@@ -22642,9 +22695,26 @@ const gymNormalizeNumbers = (text) => {
     out.push(w);
   });
   flush();
+  // Составное числительное иногда приезжает россыпью цифр: «двадцать семь» —
+  // как «20 7», «сто двадцать пять» — как «100 20 5». Склеиваем соседние числа
+  // по правилам языка: круглый десяток (сотня) плюс меньший разряд — это одно
+  // число. Слова между числами («на», «раз») склейку запрещают, поэтому
+  // «двадцать на семь» так и остаётся весом и повторами.
+  const joined = [];
+  out.forEach(tok => {
+    const n = /^\d+$/.test(tok) ? parseInt(tok, 10) : null;
+    const prev = joined.length ? joined[joined.length - 1] : '';
+    const p = /^\d+$/.test(prev) ? parseInt(prev, 10) : null;
+    const step = p !== null && p % 100 === 0 ? 100 : 10;
+    if (n !== null && p !== null && p >= 20 && p % 10 === 0 && n > 0 && n < step) {
+      joined[joined.length - 1] = String(p + n);
+      return;
+    }
+    joined.push(tok);
+  });
   // «двенадцать с половиной» → 12.5. Гантели и блины часто половинчатые, а
   // произносить «двенадцать точка пять» никто не станет.
-  return out.join(' ')
+  return joined.join(' ')
     .replace(/(\d+(?:\.\d+)?)\s+с\s+половиной/g, (m, n) => String(parseFloat(n) + 0.5))
     .replace(/(\d+(?:\.\d+)?)\s+половин\w*/g, (m, n) => String(parseFloat(n) + 0.5));
 };
@@ -22671,6 +22741,20 @@ const gymParseVoicePhrase = (raw) => {
   if (/пропуст/.test(t)) return { cmd: 'skipRest', explicit: true };
   if (/дальше|поехали/.test(t)) return { cmd: 'skipRest' };
   if (/заверш|закончи|финиш/.test(t)) return { cmd: 'finish' };
+  // «Повтори» — сказать заново про предстоящий подход. Слово подобрано так,
+  // чтобы не цеплять «12 повторений»: там после «повтор» идёт «е», а не «и».
+  // \b здесь бесполезен: для регулярных выражений кириллица — не «слово»,
+  // поэтому границы задаём пробелами и краями фразы явно.
+  if (/(^|\s)повтор(и|ите|ить)(\s|$)|ещ[её] раз/.test(t)) return { cmd: 'repeat' };
+  // «Перезапись» — исправить только что записанный подход. Числа в той же
+  // фразе («перезапиши 60 на 8») применяем сразу, без переспроса.
+  if (/перезап/.test(t)) {
+    const inner = gymParseVoicePhrase(t.replace(/перезап\w*/g, ' '));
+    if (inner && inner.cmd === 'log' && !inner.invalid && inner.reps !== undefined) {
+      return { cmd: 'rewrite', weight: inner.weight, reps: inner.reps };
+    }
+    return { cmd: 'rewrite' };
+  }
   if (/(столько же|как в плане|по плану|как обычно|так же)/.test(t)) return { cmd: 'log' };
 
   // Упражнения без веса (пресс, подтягивания, планка): «без веса 15»,
@@ -22896,6 +22980,17 @@ const gymSayRest = (sec) => {
     return `Отдых ${m} ${gymPlural(m, 'минута', 'минуты', 'минут')}`;
   }
   return `Отдых ${s} ${gymPlural(s, 'секунда', 'секунды', 'секунд')}`;
+};
+
+// Остаток отдыха вслух: «две минуты сорок секунд» слушается лучше, чем «сто
+// шестьдесят секунд».
+const gymSayLeft = (sec) => {
+  const s = Math.max(0, gymInt(sec, 0));
+  if (s < 60) return `${s} ${gymPlural(s, 'секунда', 'секунды', 'секунд')}`;
+  const m = Math.floor(s / 60);
+  const rest = s % 60;
+  const mm = `${m} ${gymPlural(m, 'минута', 'минуты', 'минут')}`;
+  return rest ? `${mm} ${rest} ${gymPlural(rest, 'секунда', 'секунды', 'секунд')}` : mm;
 };
 
 // «Рабочий 2. 60 килограмм, 8 повторений» — то, что нужно услышать, не глядя
@@ -24406,6 +24501,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   const [armed, setArmed] = useState(() => !!(settings || {}).gymHandsFree);
   const [listening, setListening] = useState(false);
   const [micBlocked, setMicBlocked] = useState(false);
+  // Режим исправления: ждём, что скажут вес и повторы прошлого подхода заново.
+  const [rewriting, setRewriting] = useState(false);
   // Метка последнего возврата к экрану — по ней перезапускается микрофон.
   const [visibleAt, setVisibleAt] = useState(0);
   // Последняя распознанная фраза: показываем как есть — так видно, что именно
@@ -24486,6 +24583,14 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
 
   useEffect(() => () => gymListener.stop(), []);
 
+  // Перезапись не должна висеть вечно: иначе числа, сказанные через полчаса,
+  // ушли бы в исправление давнего подхода вместо записи нового.
+  useEffect(() => {
+    if (!rewriting) return;
+    const t = setTimeout(() => setRewriting(false), 60000);
+    return () => clearTimeout(t);
+  }, [rewriting]);
+
   // Микрофон, которому отказали, Safari отдаёт обратно только в пользовательском
   // жесте. Поэтому ловим ЛЮБОЕ касание экрана тренировки: режим включён —
   // значит, он должен вернуться сам, без похода в настройки.
@@ -24525,7 +24630,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       // происходит сейчас, а не то, что было пять минут назад.
       window.speechSynthesis?.cancel();
       const left = restUntil ? Math.ceil((restUntil - Date.now()) / 1000) : 0;
-      if (left > 0) say(`Отдых, осталось ${left} ${gymPlural(left, 'секунда', 'секунды', 'секунд')}`);
+      if (left > 0) say(`Отдых, осталось ${gymSayLeft(left)}`);
       else announceNext();
     };
     document.addEventListener('visibilitychange', onVisible);
@@ -24582,6 +24687,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       alert('Укажите количество повторений');
       return;
     }
+    // Записали новый подход — значит, исправлять прошлый уже не собираемся.
+    setRewriting(false);
     const plan = gymPlanRows(ex)[i] || {};
     const rec = {
       id: (loggedAt(ex.id, i) || {}).id || crypto.randomUUID(),
@@ -24781,6 +24888,41 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     )].join('. '));
   };
 
+  // «Повтори» — то же самое объявление ещё раз, без побочных действий: экран не
+  // листаем, отдых не трогаем. На отдыхе сначала говорим, сколько его осталось.
+  const repeatCurrent = () => {
+    const t = nextTarget();
+    if (!t) { say('Все подходы записаны. Можно завершать.'); return; }
+    const parts = [];
+    const left = restUntil > Date.now() ? Math.ceil((restUntil - Date.now()) / 1000) : 0;
+    if (left > 0) parts.push(`Отдых, осталось ${gymSayLeft(left)}`);
+    parts.push(gymSaySet(
+      t.row,
+      gymPctBase(t.ex, sessions, session.startedAt || Date.now()),
+      t.ex.name,
+      gymLastWorkingWeight(sessions, t.ex.name, session.startedAt || Date.now()),
+    ));
+    say(parts.join('. '));
+  };
+
+  const lastLogged = () => [...logged].sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null;
+  const saySetFact = (w, r) => (w
+    ? `${gymRound1(w)} на ${r}`
+    : `${r} ${gymPlural(r, 'повторение', 'повторения', 'повторений')} своим весом`);
+
+  // Исправление уже записанного подхода. Отдых при этом не трогаем: он идёт
+  // своим чередом, и после исправления тренировка продолжается как обычно.
+  const rewriteLast = (weight, reps) => {
+    const last = lastLogged();
+    if (!last) { setRewriting(false); say('Пока нечего перезаписывать'); return; }
+    const w = weight !== undefined ? weight : gymNum(last.weight);
+    const r = reps !== undefined ? reps : gymInt(last.reps, 0);
+    if (!r) { say('Не понял, повторите'); return; }
+    onSave({ ...session, sets: logged.map(s => (s.id === last.id ? { ...s, weight: w, reps: r } : s)) });
+    setRewriting(false);
+    say(`Перезаписал, ${saySetFact(w, r)}`);
+  };
+
   // Подход, который предстоит сделать: первый незаписанный в упражнении.
   // Считаем по упражнению, а не по всей тренировке, — если вернуться к
   // пропущенному упражнению вручную, подсветка встанет там, где нужно.
@@ -24799,8 +24941,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     const t = row ? gymRowTarget(row, pctBaseOf(ex)) : null;
     const noWeight = !t || t.body || t.empty || (!t.min && !t.max);
     return noWeight
-      ? 'Скажите «15» — вес не нужен. Ещё: «столько же», «отмена»'
-      : 'Скажите «25 на 12». Ещё: «столько же», «отмена», «завершить»';
+      ? 'Скажите «15» — вес не нужен. Ещё: «столько же», «повтори», «перезапись», «отмена»'
+      : 'Скажите «25 на 12». Ещё: «столько же», «повтори», «перезапись», «отмена»';
   })();
 
   const rowCount = (ex) => {
@@ -24864,8 +25006,9 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       break;
     }
     // Во время отдыха слушаем только команды: числа в это время — либо чужой
-    // разговор, либо хвост собственной озвучки, записывать их нельзя.
-    if (resting && parsed && parsed.cmd === 'log') parsed = null;
+    // разговор, либо хвост собственной озвучки, записывать их нельзя. Исключение
+    // — начатая перезапись: там числа как раз и ждём.
+    if (resting && !rewriting && parsed && parsed.cmd === 'log') parsed = null;
     if (resting && parsed && parsed.cmd === 'skipRest' && !parsed.explicit) parsed = null;
     if (resting && !parsed) { setHeard(''); return; }
 
@@ -24876,6 +25019,23 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       if (looksLikeAttempt) say('Не понял, повторите');
       return;
     }
+
+    if (parsed.cmd === 'repeat') { repeatCurrent(); return; }
+
+    if (parsed.cmd === 'rewrite') {
+      // Числа сказаны в той же фразе — исправляем сразу, иначе переспрашиваем.
+      if (parsed.reps !== undefined) { rewriteLast(parsed.weight, parsed.reps); return; }
+      const last = lastLogged();
+      if (!last) { say('Пока нечего перезаписывать'); return; }
+      setRewriting(true);
+      say(`Записано ${saySetFact(gymNum(last.weight), gymInt(last.reps, 0))}. Скажите вес и повторения заново`);
+      return;
+    }
+
+    // Начатую перезапись «отмена» именно отменяет, а не стирает подход.
+    if (rewriting && parsed.cmd === 'undo') { setRewriting(false); say('Отменил перезапись'); return; }
+    // Числа во время перезаписи — это исправление, а не новый подход.
+    if (rewriting && parsed.cmd === 'log') { rewriteLast(parsed.weight, parsed.reps); return; }
 
     if (parsed.cmd === 'undo') {
       const last = [...logged].sort((a, b) => (b.at || 0) - (a.at || 0))[0];
@@ -24986,6 +25146,11 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
                 <Icon name="mic" size={11} /> слушаю
               </span>
             )}
+            {handsFree && rewriting && (
+              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full text-white" style={{ background: '#b45309' }}>
+                перезапись
+              </span>
+            )}
             {handsFree && !listening && micBlocked && (
               <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full text-white" style={{ background: '#b45309' }}>
                 <Icon name="mic" size={11} /> коснитесь экрана
@@ -25002,10 +25167,12 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
                 ? 'Скажете «25 на 12» — подход запишется сам, руки не нужны'
                 : micBlocked
                   ? 'Микрофон остановился — режим включён, коснитесь экрана, и он вернётся'
+                  : rewriting
+                  ? 'Перезапись: скажите вес и повторения прошлого подхода заново'
                   : !armed
                   ? 'Включится со следующего подхода'
                   : resting
-                    ? 'Идёт отдых. Скажите «пропустить отдых», чтобы начать подход раньше'
+                    ? 'Идёт отдых. Скажите «пропустить отдых», «повтори» или «перезапись»'
                     : voiceHint}
           </div>
         </div>
@@ -25878,6 +26045,7 @@ const MISC_APPS = [
   { id: 'cards',    label: 'Карты',      icon: 'creditCard', color: '#1d4ed8' },
   { id: 'gym',      label: 'GYM',        icon: 'dumbbell',   color: '#0d9488' },
   { id: 'english',  label: 'English',    icon: 'book',       color: '#0f766e' },
+  { id: 'quiz',     label: 'Своя игра',  icon: 'quiz',       color: '#b45309' },
   { id: 'cars',     label: 'Автомобиль', icon: 'car',        color: '#6d28d9' },
   { id: 'settings', label: 'Настройки',  icon: 'settings',   color: '#4b5563' },
 ];
@@ -25943,6 +26111,714 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
       )}
       {sub === 'wishlist' && <WishlistView data={data} setData={setData} />}
       {sub === 'gym' && <GymView data={data} setData={setData} />}
+      {sub === 'quiz' && <QuizView data={data} setData={setData} />}
+    </div>
+  );
+}
+
+// ============== СВОЯ ИГРА ==============
+// Игру собирает владелец: категории → вопросы («Деньги за 100») → варианты
+// ответа с отметкой верного. Играют не здесь, а по ПУБЛИЧНОЙ ссылке
+// /game/<token> — отдельной странице quiz.html, которой хватает
+// /api/game/<token>. Счёт команд ведётся там же и хранится на сервере
+// (коллекция quizPlays, id = токен ссылки), поэтому в приложении он виден
+// «как есть» — с одной кнопкой сброса перед новой партией.
+
+const QUIZ_ACCENT = '#b45309';
+const QUIZ_DEFAULT_POINTS = [100, 200, 300, 400, 500];
+
+const quizGameUrl = (g) =>
+  g && g.shareToken ? `${window.location.origin}/game/${g.shareToken}` : '';
+
+// Вторая ссылка — на составление вопросов: её дают тому, кто помогает собрать
+// игру. Токен отдельный: игроки по ссылке на партию вопросы править не могут,
+// а помощник не видит счёт и не может отозвать игровую ссылку.
+const quizEditUrl = (g) =>
+  g && g.editToken ? `${window.location.origin}/game-edit/${g.editToken}` : '';
+
+const newQuizOption = () => ({ id: crypto.randomUUID(), text: '', correct: false });
+
+const newQuizQuestion = (points = 100) => ({
+  id: crypto.randomUUID(),
+  points,
+  text: '',
+  options: [newQuizOption(), newQuizOption()],
+});
+
+const newQuizCategory = (name = '') => ({
+  id: crypto.randomUUID(),
+  name,
+  questions: QUIZ_DEFAULT_POINTS.map(p => newQuizQuestion(p)),
+});
+
+const newQuizGame = () => ({
+  id: crypto.randomUUID(),
+  title: '',
+  description: '',
+  categories: [newQuizCategory()],
+  shareToken: makePlannerToken(),
+  shareEnabled: true,
+  editToken: makePlannerToken(),
+  editEnabled: true,
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+});
+
+// На поле попадает только вопрос с текстом: недописанную клетку игроку
+// показывать нечего. Тот же фильтр стоит на сервере (quiz_public_payload),
+// поэтому счётчики в приложении совпадают с тем, что видно по ссылке.
+const quizQuestionReady = (q) => !!String((q && q.text) || '').trim();
+
+const quizReadyQuestions = (cat) => ((cat && cat.questions) || []).filter(quizQuestionReady);
+
+const quizGameQuestionCount = (g) =>
+  ((g && g.categories) || []).reduce((n, c) => n + quizReadyQuestions(c).length, 0);
+
+const quizGameCategoryCount = (g) =>
+  ((g && g.categories) || []).filter(c => quizReadyQuestions(c).length > 0).length;
+
+const quizPlayFor = (data, g) =>
+  (data.quizPlays || []).find(s => s && g && s.id === g.shareToken) || null;
+
+// Партия привязана к ТОКЕНУ ссылки, а не к игре: перевыпустили ссылку —
+// старая запись счёта уже ни к чему не относится, а удалили игру — тем более.
+// Убираем такие записи вместе с тумбстоном, иначе сервер вернёт их обратно
+// следующей же синхронизацией и они останутся в данных навсегда.
+const dropQuizPlays = (d, keep) => {
+  const list = d.quizPlays || [];
+  const doomed = list.filter(s => !keep(s));
+  let deletedIds = d.deletedIds;
+  doomed.forEach(s => { deletedIds = withDeletedId({ ...d, deletedIds }, 'quizPlays', s.id); });
+  return { quizPlays: list.filter(keep), deletedIds };
+};
+
+const quizPoints = (raw) => {
+  const n = parseInt(String(raw ?? '').replace(/[^\d-]/g, ''), 10);
+  return Number.isFinite(n) ? n : 0;
+};
+
+function QuizView({ data, setData }) {
+  const games = data.quizGames || [];
+  const [draft, setDraft] = useState(null);   // редактируемая копия игры
+  const [openId, setOpenId] = useState(null);
+
+  // Игру могли удалить на другом устройстве — не показываем пустой экран.
+  useEffect(() => {
+    if (openId && !games.some(g => g.id === openId)) setOpenId(null);
+  }, [games, openId]);
+
+  const saveGame = (game) => {
+    setData(d => {
+      const list = d.quizGames || [];
+      const exists = list.some(g => g.id === game.id);
+      return {
+        ...d,
+        quizGames: exists ? list.map(g => g.id === game.id ? game : g) : [...list, game],
+      };
+    });
+    setDraft(null);
+    setOpenId(game.id);
+  };
+
+  const updateGame = (id, patch) => {
+    setData(d => ({
+      ...d,
+      quizGames: (d.quizGames || []).map(g => g.id === id ? { ...g, ...patch } : g),
+    }));
+  };
+
+  const removeGame = (game) => {
+    if (!confirm(`Удалить игру «${game.title || 'без названия'}»?\n\nСсылка перестанет работать, счёт команд тоже удалится.`)) return;
+    setData(d => {
+      const { quizPlays, deletedIds } = dropQuizPlays(
+        d, s => s.id !== game.shareToken && s.gameId !== game.id);
+      return {
+        ...d,
+        quizGames: (d.quizGames || []).filter(g => g.id !== game.id),
+        quizPlays,
+        deletedIds: withDeletedId({ ...d, deletedIds }, 'quizGames', game.id),
+      };
+    });
+    setOpenId(null);
+  };
+
+  const regenerateToken = (game) => {
+    setData(d => {
+      const { quizPlays, deletedIds } = dropQuizPlays(
+        d, s => s.id !== game.shareToken && s.gameId !== game.id);
+      return {
+        ...d,
+        quizGames: (d.quizGames || []).map(g =>
+          g.id === game.id ? { ...g, shareToken: makePlannerToken(), shareEnabled: true } : g),
+        quizPlays,
+        deletedIds,
+      };
+    });
+  };
+
+  const regenerateEditToken = (game) => {
+    updateGame(game.id, { editToken: makePlannerToken(), editEnabled: true });
+  };
+
+  // Сброс перед новой партией: обнуляем счёт и снимаем отметки «сыгран».
+  // Пишем в ту же коллекцию, что и страница игры — синхронизация разрулит
+  // по updatedAt, как и с любой другой записью.
+  const resetPlay = (game) => {
+    if (!confirm('Обнулить счёт команд и открыть все вопросы заново?')) return;
+    setData(d => {
+      const list = d.quizPlays || [];
+      const cur = list.find(s => s.id === game.shareToken);
+      const entry = {
+        id: game.shareToken,
+        gameId: game.id,
+        teams: ((cur && cur.teams) || []).map(t => ({ ...t, score: 0 })),
+        answered: [],
+        updatedAt: Date.now(),
+      };
+      return {
+        ...d,
+        quizPlays: cur ? list.map(s => s.id === game.shareToken ? entry : s) : [...list, entry],
+      };
+    });
+  };
+
+  if (draft) {
+    return (
+      <QuizEditor
+        initial={draft.game}
+        latest={games.find(g => g.id === draft.game.id) || null}
+        isNew={draft.isNew}
+        onCancel={() => setDraft(null)}
+        onSave={saveGame}
+      />
+    );
+  }
+
+  const open = games.find(g => g.id === openId);
+  if (open) {
+    return (
+      <QuizGameDetail
+        game={open}
+        play={quizPlayFor(data, open)}
+        onBack={() => setOpenId(null)}
+        onEdit={() => setDraft({ game: open, isNew: false })}
+        onDelete={() => removeGame(open)}
+        onUpdate={patch => updateGame(open.id, patch)}
+        onRegenerate={() => regenerateToken(open)}
+        onRegenerateEdit={() => regenerateEditToken(open)}
+        onResetPlay={() => resetPlay(open)}
+      />
+    );
+  }
+
+  const sorted = [...games].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  return (
+    <div>
+      <button
+        onClick={() => setDraft({ game: newQuizGame(), isNew: true })}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-4"
+      >
+        <Icon name="plus" size={18} />
+        Новая игра
+      </button>
+
+      {sorted.length === 0 ? (
+        <EmptyState
+          title="Игр пока нет"
+          text="Создайте категории и вопросы — игроки откроют игру по ссылке"
+        />
+      ) : (
+        <div className="space-y-2">
+          {sorted.map(g => {
+            const play = quizPlayFor(data, g);
+            const teams = (play && play.teams) || [];
+            return (
+              <button
+                key={g.id}
+                onClick={() => setOpenId(g.id)}
+                className="w-full text-left bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 flex items-center gap-3"
+              >
+                <div
+                  className="w-10 h-10 rounded-xl flex items-center justify-center text-white flex-shrink-0"
+                  style={{ background: QUIZ_ACCENT }}
+                >
+                  <Icon name="quiz" size={20} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium truncate">{g.title || 'Без названия'}</div>
+                  <div className="text-xs text-[var(--text-subtle)] truncate">
+                    {[
+                      `${quizGameCategoryCount(g)} кат. · ${quizGameQuestionCount(g)} вопр.`,
+                      teams.length ? `${teams.length} ${plannerPlural(teams.length, 'команда', 'команды', 'команд')}` : '',
+                      g.shareEnabled === false ? 'ссылка отключена' : '',
+                    ].filter(Boolean).join(' · ')}
+                  </div>
+                </div>
+                <Icon name="chevronRight" size={18} />
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Карточка «ссылка + копировать + поделиться». Их на экране две — на саму игру
+// и на составление вопросов, — и ведут себя они одинаково.
+function QuizShareBlock({ title, url, enabled, note, offNote, openLabel, canOpen, onToggle, onRegenerate, shareTitle }) {
+  const [copied, setCopied] = useState(false);
+
+  const copyLink = async () => {
+    const ok = await copyToClipboard(url);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } else {
+      prompt('Скопируйте ссылку вручную:', url);
+    }
+  };
+
+  const shareLink = async () => {
+    try {
+      await navigator.share({ title: shareTitle, text: shareTitle, url });
+    } catch (_) {}
+  };
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+      <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-3">{title}</div>
+      <div className="flex items-center gap-2">
+        <input
+          readOnly
+          value={url}
+          onFocus={e => e.target.select()}
+          className="flex-1 min-w-0 text-xs !py-2 !px-3 text-[var(--text-muted)]"
+          style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
+        />
+        <button
+          onClick={copyLink}
+          className="btn-secondary !py-2 !px-3 text-sm flex items-center gap-1.5 flex-shrink-0"
+          title="Скопировать ссылку"
+        >
+          <Icon name={copied ? 'check' : 'copy'} size={14} />
+          <span className="hidden sm:inline">{copied ? 'Скопировано' : 'Копировать'}</span>
+        </button>
+        {typeof navigator !== 'undefined' && navigator.share && (
+          <button onClick={shareLink} className="btn-secondary !py-2 !px-3 flex-shrink-0" title="Поделиться">
+            <Icon name="share" size={14} />
+          </button>
+        )}
+      </div>
+      <div className={`text-[11px] mt-2 ${enabled ? 'text-[var(--text-subtle)]' : 'text-red-500'}`}>
+        {enabled ? note : offNote}
+      </div>
+      <div className="flex items-center gap-3 mt-3 flex-wrap">
+        {enabled && canOpen && (
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1.5"
+          >
+            <Icon name="externalLink" size={14} /> {openLabel}
+          </a>
+        )}
+        <button onClick={onToggle} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)]">
+          {enabled ? 'Отключить ссылку' : 'Включить ссылку'}
+        </button>
+        <button onClick={onRegenerate} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)]">
+          Новая ссылка
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function QuizGameDetail({ game, play, onBack, onEdit, onDelete, onUpdate, onRegenerate, onRegenerateEdit, onResetPlay }) {
+  const shareOn = game.shareEnabled !== false;
+  const editOn = game.editEnabled !== false;
+  const shareUrl = quizGameUrl(game);
+  const editUrl = quizEditUrl(game);
+
+  // Игры, созданные до появления второй ссылки, токена редактирования не
+  // имеют — заводим его при первом открытии карточки, чтобы ссылка была не
+  // пустой строкой, а рабочей.
+  useEffect(() => {
+    if (!game.editToken) onUpdate({ editToken: makePlannerToken(), editEnabled: true });
+  }, [game.id, game.editToken]);
+  const teams = [...((play && play.teams) || [])].sort((a, b) => (b.score || 0) - (a.score || 0));
+  const total = quizGameQuestionCount(game);
+  // Считаем только те отметки, которым на поле соответствует живой вопрос:
+  // вопрос могли удалить после партии, и «сыграно 7 из 5» выглядело бы дико.
+  const answeredIds = new Set((play && play.answered) || []);
+  const answered = (game.categories || []).reduce(
+    (n, c) => n + quizReadyQuestions(c).filter(q => answeredIds.has(q.id)).length, 0);
+
+  const regenerateToken = () => {
+    if (!confirm('Сделать новую ссылку на игру?\n\nСтарая перестанет работать, а счёт текущей партии потеряется.')) return;
+    onRegenerate();
+  };
+
+  const regenerateEditToken = () => {
+    if (!confirm('Сделать новую ссылку на составление вопросов?\n\nСтарая перестанет работать — помощнику придётся прислать новую.')) return;
+    onRegenerateEdit();
+  };
+
+  return (
+    <div className="fade-in space-y-4">
+      <div className="flex items-center gap-3">
+        <button onClick={onBack} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]">
+          <Icon name="chevronLeft" size={20} />
+        </button>
+        <div className="flex-1 min-w-0">
+          <div className="font-display text-2xl truncate">{game.title || 'Без названия'}</div>
+          <div className="text-xs text-[var(--text-subtle)] truncate">
+            {quizGameCategoryCount(game)} кат. · {total} вопр. · сыграно {answered}
+          </div>
+        </div>
+        <button onClick={onEdit} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={16} /></button>
+        <button onClick={onDelete} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={16} /></button>
+      </div>
+
+      <QuizShareBlock
+        title="Ссылка для игры"
+        url={shareUrl}
+        enabled={shareOn}
+        shareTitle={game.title || 'Своя игра'}
+        openLabel="Открыть игру"
+        canOpen={total > 0}
+        note="По ссылке открывается поле с категориями и вопросами. Счёт команд ведут там же — меняется он только по ссылке, сама игра по ней не редактируется."
+        offNote="Ссылка отключена — сейчас она не откроется ни у кого. Включите её, чтобы снова играть."
+        onToggle={() => onUpdate({ shareEnabled: !shareOn })}
+        onRegenerate={regenerateToken}
+      />
+
+      <QuizShareBlock
+        title="Ссылка для составления вопросов"
+        url={editUrl}
+        enabled={editOn}
+        shareTitle={`Вопросы для игры «${game.title || 'Своя игра'}»`}
+        openLabel="Открыть редактор"
+        canOpen
+        note="По этой ссылке другой человек добавляет и правит категории, вопросы и варианты ответа — удобно, когда игру собираете вдвоём. Ни счёт команд, ни ссылка на партию по ней недоступны."
+        offNote="Редактирование по ссылке отключено — сейчас она не откроется ни у кого."
+        onToggle={() => onUpdate({ editEnabled: !editOn })}
+        onRegenerate={regenerateEditToken}
+      />
+
+      {total === 0 && (
+        <div className="text-sm text-red-500 bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+          В игре нет ни одного заполненного вопроса — по ссылке будет пустое поле.
+          Откройте редактор и впишите тексты вопросов.
+        </div>
+      )}
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)]">Счёт</div>
+          {(teams.length > 0 || answered > 0) && (
+            <button onClick={onResetPlay} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]">
+              Сбросить
+            </button>
+          )}
+        </div>
+        {teams.length === 0 ? (
+          <div className="text-sm text-[var(--text-subtle)]">
+            Команды добавляются на странице игры — по ссылке, кнопкой «Команды».
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {teams.map((t, i) => (
+              <div key={t.id} className="flex items-center gap-3">
+                <div className="w-6 text-center text-xs text-[var(--text-subtle)]">{i + 1}</div>
+                <div className="flex-1 min-w-0 truncate text-sm">{t.name || 'Команда'}</div>
+                <div className="font-display text-lg" style={{ color: QUIZ_ACCENT }}>{t.score || 0}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {(game.categories || []).filter(c => quizReadyQuestions(c).length > 0).map(c => (
+        <div key={c.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+          <div className="font-medium mb-3">{c.name || 'Без названия'}</div>
+          <div className="flex flex-wrap gap-2">
+            {quizReadyQuestions(c).map(q => (
+              <span
+                key={q.id}
+                className="px-3 py-1.5 rounded-lg text-sm border border-[var(--border)] text-[var(--text-muted)]"
+              >
+                {q.points}
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Редактор игры. Правки живут в локальном черновике и уезжают в data только
+// по «Сохранить» — иначе недописанная клетка сразу появлялась бы на поле у
+// игроков, открывших ссылку прямо сейчас.
+function QuizEditor({ initial, latest, isNew, onCancel, onSave }) {
+  const [game, setGame] = useState(() => JSON.parse(JSON.stringify(initial)));
+  const [openCat, setOpenCat] = useState(() => ((initial.categories || [])[0] || {}).id || null);
+
+  const patchCategory = (catId, fn) => setGame(g => ({
+    ...g,
+    categories: (g.categories || []).map(c => c.id === catId ? fn(c) : c),
+  }));
+
+  const patchQuestion = (catId, qId, fn) => patchCategory(catId, c => ({
+    ...c,
+    questions: (c.questions || []).map(q => q.id === qId ? fn(q) : q),
+  }));
+
+  const addCategory = () => {
+    const cat = newQuizCategory();
+    setGame(g => ({ ...g, categories: [...(g.categories || []), cat] }));
+    setOpenCat(cat.id);
+  };
+
+  const removeCategory = (cat) => {
+    if (!confirm(`Удалить категорию «${cat.name || 'без названия'}» вместе с вопросами?`)) return;
+    setGame(g => ({ ...g, categories: (g.categories || []).filter(c => c.id !== cat.id) }));
+  };
+
+  const addQuestion = (cat) => {
+    // Следующая клетка по шагу цены: 100, 200, … — как в обычной «Своей игре».
+    const last = (cat.questions || [])[(cat.questions || []).length - 1];
+    const next = last ? quizPoints(last.points) + 100 : 100;
+    patchCategory(cat.id, c => ({ ...c, questions: [...(c.questions || []), newQuizQuestion(next)] }));
+  };
+
+  const removeQuestion = (cat, q) => {
+    patchCategory(cat.id, c => ({ ...c, questions: (c.questions || []).filter(x => x.id !== q.id) }));
+  };
+
+  const addOption = (cat, q) => {
+    patchQuestion(cat.id, q.id, x => ({ ...x, options: [...(x.options || []), newQuizOption()] }));
+  };
+
+  const removeOption = (cat, q, opt) => {
+    patchQuestion(cat.id, q.id, x => ({ ...x, options: (x.options || []).filter(o => o.id !== opt.id) }));
+  };
+
+  // Верный вариант ровно один: отмечая новый, снимаем отметку с прежнего.
+  const markCorrect = (cat, q, optId) => {
+    patchQuestion(cat.id, q.id, x => ({
+      ...x,
+      options: (x.options || []).map(o => ({ ...o, correct: o.id === optId ? !o.correct : false })),
+    }));
+  };
+
+  const submit = () => {
+    const title = String(game.title || '').trim();
+    if (!title) { alert('Впишите название игры.'); return; }
+
+    // Пока редактор был открыт, вопросы мог прислать помощник по ссылке
+    // редактирования: сохранение перезапишет игру целиком, поэтому спрашиваем.
+    // latest приезжает из data, которую синхронизация обновляет сама.
+    const freshTs = latest && typeof latest.updatedAt === 'number' ? latest.updatedAt : 0;
+    const draftTs = typeof initial.updatedAt === 'number' ? initial.updatedAt : 0;
+    if (freshTs > draftTs && !confirm(
+      'Пока вы правили игру, вопросы изменились по ссылке для составления вопросов.\n\n' +
+      'Сохранить свою версию? Присланные вопросы будут заменены тем, что на экране.')) return;
+
+    // Чистим черновик: пустые варианты и вопросы без текста на поле не нужны,
+    // категория без единого готового вопроса — тоже.
+    const categories = (game.categories || []).map(c => ({
+      ...c,
+      name: String(c.name || '').trim(),
+      questions: (c.questions || [])
+        .filter(quizQuestionReady)
+        .map(q => ({
+          ...q,
+          points: quizPoints(q.points),
+          text: String(q.text || '').trim(),
+          options: (q.options || [])
+            .filter(o => String(o.text || '').trim())
+            .map(o => ({ ...o, text: String(o.text || '').trim(), correct: !!o.correct })),
+        })),
+    })).filter(c => c.questions.length > 0);
+
+    if (categories.length === 0) {
+      alert('Нужен хотя бы один вопрос с текстом — иначе играть будет не во что.');
+      return;
+    }
+    const noCorrect = categories.some(c => c.questions.some(
+      q => q.options.length > 0 && !q.options.some(o => o.correct)));
+    if (noCorrect && !confirm('В некоторых вопросах не отмечен верный вариант. Всё равно сохранить?')) return;
+
+    onSave({
+      ...game,
+      title,
+      description: String(game.description || '').trim(),
+      categories,
+      shareToken: game.shareToken || makePlannerToken(),
+      shareEnabled: game.shareEnabled !== false,
+      editToken: game.editToken || makePlannerToken(),
+      editEnabled: game.editEnabled !== false,
+      createdAt: game.createdAt || Date.now(),
+      updatedAt: Date.now(),
+    });
+  };
+
+  return (
+    <div className="fade-in space-y-4">
+      <div className="flex items-center gap-3">
+        <button onClick={onCancel} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]">
+          <Icon name="chevronLeft" size={20} />
+        </button>
+        <div className="font-display text-2xl flex-1 min-w-0 truncate">
+          {isNew ? 'Новая игра' : 'Редактирование'}
+        </div>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 space-y-3">
+        <div>
+          <label>Название игры</label>
+          <input
+            value={game.title || ''}
+            onChange={e => setGame(g => ({ ...g, title: e.target.value }))}
+            placeholder="Например: Новый год 2026"
+            maxLength={80}
+          />
+        </div>
+        <div>
+          <label>Описание (необязательно)</label>
+          <input
+            value={game.description || ''}
+            onChange={e => setGame(g => ({ ...g, description: e.target.value }))}
+            placeholder="Пара слов для игроков"
+            maxLength={200}
+          />
+        </div>
+      </div>
+
+      {(game.categories || []).map((cat, ci) => {
+        const isOpen = openCat === cat.id;
+        const ready = quizReadyQuestions(cat).length;
+        return (
+          <div key={cat.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+            <div className="flex items-center gap-2 p-3">
+              <button
+                onClick={() => setOpenCat(isOpen ? null : cat.id)}
+                className="p-1 text-[var(--text-subtle)] flex-shrink-0"
+                aria-label={isOpen ? 'Свернуть' : 'Развернуть'}
+              >
+                <span className={`block transition-transform ${isOpen ? 'rotate-180' : ''}`}>
+                  <Icon name="chevronDown" size={18} />
+                </span>
+              </button>
+              <input
+                value={cat.name || ''}
+                onChange={e => patchCategory(cat.id, c => ({ ...c, name: e.target.value }))}
+                placeholder={`Категория ${ci + 1} — например «Деньги»`}
+                maxLength={60}
+                className="flex-1 min-w-0 !py-2"
+              />
+              <span className="text-xs text-[var(--text-subtle)] flex-shrink-0">{ready}</span>
+              <button
+                onClick={() => removeCategory(cat)}
+                className="p-2 rounded-lg text-[var(--text-muted)] hover:text-red-500 flex-shrink-0"
+              >
+                <Icon name="trash" size={16} />
+              </button>
+            </div>
+
+            {isOpen && (
+              <div className="border-t border-[var(--border)] p-3 space-y-3">
+                {(cat.questions || []).map(q => (
+                  <div key={q.id} className="border border-[var(--border)] rounded-xl p-3 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-[var(--text-subtle)] flex-shrink-0">за</span>
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        value={q.points}
+                        onChange={e => patchQuestion(cat.id, q.id, x => ({ ...x, points: e.target.value }))}
+                        className="!py-2 !px-3 w-24 flex-shrink-0"
+                      />
+                      <div className="flex-1" />
+                      <button
+                        onClick={() => removeQuestion(cat, q)}
+                        className="p-2 rounded-lg text-[var(--text-muted)] hover:text-red-500 flex-shrink-0"
+                      >
+                        <Icon name="trash" size={15} />
+                      </button>
+                    </div>
+
+                    <textarea
+                      value={q.text || ''}
+                      onChange={e => patchQuestion(cat.id, q.id, x => ({ ...x, text: e.target.value }))}
+                      placeholder="Текст вопроса"
+                      rows={2}
+                      maxLength={600}
+                      style={{ resize: 'vertical' }}
+                    />
+
+                    <div className="space-y-2">
+                      {(q.options || []).map(o => (
+                        <div key={o.id} className="flex items-center gap-2">
+                          <button
+                            onClick={() => markCorrect(cat, q, o.id)}
+                            className={`check-box flex-shrink-0 ${o.correct ? 'checked' : ''}`}
+                            style={{ width: 24, height: 24, borderRadius: 999 }}
+                            title="Верный ответ"
+                          >
+                            <Icon name="check" size={13} />
+                          </button>
+                          <input
+                            value={o.text || ''}
+                            onChange={e => patchQuestion(cat.id, q.id, x => ({
+                              ...x,
+                              options: (x.options || []).map(y => y.id === o.id ? { ...y, text: e.target.value } : y),
+                            }))}
+                            placeholder="Вариант ответа"
+                            maxLength={200}
+                            className="flex-1 min-w-0 !py-2"
+                          />
+                          <button
+                            onClick={() => removeOption(cat, q, o)}
+                            className="p-2 rounded-lg text-[var(--text-muted)] hover:text-red-500 flex-shrink-0"
+                          >
+                            <Icon name="x" size={15} />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        onClick={() => addOption(cat, q)}
+                        className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1.5"
+                      >
+                        <Icon name="plus" size={14} /> Вариант ответа
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                <button onClick={() => addQuestion(cat)} className="btn-secondary w-full flex items-center justify-center gap-2">
+                  <Icon name="plus" size={16} /> Вопрос
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      <button onClick={addCategory} className="btn-secondary w-full flex items-center justify-center gap-2">
+        <Icon name="plus" size={16} /> Категория
+      </button>
+
+      <div className="flex gap-3">
+        <button onClick={onCancel} className="btn-secondary flex-1">Отмена</button>
+        <button onClick={submit} className="btn-primary flex-1">
+          {isNew ? 'Создать игру' : 'Сохранить'}
+        </button>
+      </div>
     </div>
   );
 }
