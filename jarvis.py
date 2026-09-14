@@ -125,6 +125,10 @@ def route_is_public(route: str) -> bool:
         return True
     if _route_token_prefix_public(route, "/api/game/") or _route_token_prefix_public(route, "/api/game-edit/"):
         return True
+    # Ссылка на штрихкод карты для iOS Shortcuts (гео-триггер бьёт по ней без
+    # сессии) — id карты тут и есть пропуск, как token у событий/поездок.
+    if _route_token_prefix_public(route, "/api/cards/"):
+        return True
     return False
 
 # ── Планировщик дел: гостевые ссылки на событие ────────────────────────────
