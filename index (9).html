@@ -3863,6 +3863,20 @@ function VoiceAssistantSettings({ data, setData }) {
         </div>
 
         <div>
+          <label>Публичный адрес сайта (для ссылок в Telegram)</label>
+          <input
+            type="text"
+            value={settings.publicUrl || ''}
+            onChange={e => updateSetting('publicUrl', e.target.value)}
+            placeholder="https://ваш-домен.up.railway.app"
+            autoComplete="off"
+          />
+          <p className="text-xs text-[var(--text-subtle)] mt-1">
+            Когда ассистент в Telegram-чате открывает раздел, он присылает на него ссылку — без этого адреса просто назовёт раздел словами.
+          </p>
+        </div>
+
+        <div>
           <label>Голос озвучки (OpenAI TTS)</label>
           <select
             value={settings.voiceTtsVoice || 'nova'}
@@ -3889,6 +3903,9 @@ function VoiceAssistantSettings({ data, setData }) {
           <li>Нажмите снова — ИИ добавит дело</li>
           <li>Если непонятно — ИИ спросит уточнение</li>
         </ol>
+        <p className="text-xs text-[var(--text-subtle)] mt-3">
+          Тот же ассистент отвечает и в Telegram-боте: напишите ему любое сообщение (не команду) — он читает данные всего проекта и присылает ссылки на разделы. Нужен только настроенный здесь API-ключ Claude — бот берёт его из этих же настроек.
+        </p>
         <p className="text-xs text-[var(--text-subtle)] mt-3">
           Примеры: «Добавь задачу пылесосить раз в неделю», «Добавь зарядку каждое утро кроме воскресенья»
         </p>

@@ -923,6 +923,301 @@ def handle_checklist_callback(token: str, cq: dict):
         send_message(token, chat_id, f"✅ <b>Чек-лист за {human_date(date_iso)} заполнен!</b>")
 
 
+# ── Текстовый ассистент в Telegram ──────────────────────────────────────────
+# Тот же принцип, что у голосовой кнопки в index (9).html: LLM с tool-calling
+# поверх данных приложения — сама решает, что прочитать и куда отправить
+# пользователя. Только здесь у бота нет экрана, поэтому «навигация» — это
+# ссылка на раздел сайта, а не переключение вкладки. Ключ и модель берём из
+# тех же настроек ассистента, что и браузерная кнопка (settings.voiceApiKey/
+# voiceModel) — они уже синхронизируются между устройствами.
+
+ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+
+
+def _assistant_budget_slice(app: dict) -> dict:
+    active = app.get("activeBudgetUserId")
+    return (app.get("budgetByUser") or {}).get(active) or {}
+
+
+# domain → (человеческое описание, функция чтения из app-данных). Те же
+# разделы и подписи, что в VOICE_DATA_DOMAINS в index (9).html — чтобы у
+# голосового и текстового ассистента было одно и то же меню возможностей.
+ASSISTANT_DATA_DOMAINS = {
+    "house_boss": ("Задачи «Босс» по расписанию",
+        lambda app: [t for t in app.get("bossTasks", []) if not t.get("archived")]),
+    "house_cleaning": ("Регулярные дела по дому",
+        lambda app: [c for c in app.get("chores", []) if not c.get("archived")]),
+    "house_tasks": ("Канбан-доска задач",
+        lambda app: (app.get("kanban") or {}).get("columns", [])),
+    "cars": ("Автомобили и история обслуживания (когда, что, за сколько)",
+        lambda app: {
+            "cars": [c for c in app.get("cars", []) if not c.get("archived")],
+            "serviceRecords": app.get("serviceRecords", [])[-150:],
+        }),
+    "health": ("Здоровье: хронические состояния и события",
+        lambda app: {
+            "conditions": app.get("healthConditions", []),
+            "events": app.get("healthEvents", [])[-150:],
+        }),
+    "budget": ("Бюджет активного пользователя: расходы, доходы, долги, накопления, ДДС",
+        lambda app: {
+            "categories": _assistant_budget_slice(app).get("budgetCategories", []),
+            "expenses": _assistant_budget_slice(app).get("budgetExpenses", [])[-200:],
+            "recurring": _assistant_budget_slice(app).get("budgetRecurring", []),
+            "debts": _assistant_budget_slice(app).get("budgetDebts", []),
+            "debtTransactions": _assistant_budget_slice(app).get("debtTransactions", [])[-100:],
+            "incomeSources": _assistant_budget_slice(app).get("budgetIncomeSources", []),
+            "savingsTransactions": _assistant_budget_slice(app).get("savingsTransactions", [])[-100:],
+            "cashflowAccounts": _assistant_budget_slice(app).get("budgetCashflowAccounts", []),
+            "cashflowOps": _assistant_budget_slice(app).get("budgetCashflowOps", [])[-200:],
+        }),
+    "cards": ("Карты лояльности магазинов",
+        lambda app: [{k: v for k, v in c.items() if k not in ("photo", "code")}
+                     for c in app.get("loyaltyCards", [])]),
+    "gym": ("GYM: программы, дни, упражнения, журнал тренировок",
+        lambda app: {
+            "programs": app.get("gymPrograms", []), "days": app.get("gymDays", []),
+            "exercises": app.get("gymExercises", []), "sessions": app.get("gymSessions", [])[-40:],
+        }),
+    "wishlist": ("Хотелки",
+        lambda app: {"categories": app.get("wishlistCategories", []), "items": app.get("wishlistItems", [])}),
+    "planner": ("Планировщик: события, друзья-участники, личные планы",
+        lambda app: {
+            "events": app.get("plannerEvents", []), "friends": app.get("plannerFriends", []),
+            "plans": app.get("plannerPlans", []),
+        }),
+    "camping": ("Кемпинг: справочник вещей и поездки со сборами",
+        lambda app: {
+            "items": app.get("campingItems", []), "categories": app.get("campingCategories", []),
+            "trips": app.get("campingTrips", []),
+        }),
+    "meals": ("Питание: рацион, приёмы пищи, БАДы",
+        lambda app: {
+            "meals": app.get("meals", [])[-30:], "supplements": app.get("supplements", []),
+            "dietLog": app.get("dietLog", [])[-30:],
+        }),
+    "body": ("Тело: история замеров и веса", lambda app: app.get("bodyEntries", [])[-60:]),
+}
+
+# target → (подпись, относительный путь сайта). Подвкладки вроде houseTab не
+# зашиты в URL (как и в браузерном ассистенте) — ссылка открывает верхнюю
+# вкладку, дальше пользователь сам доходит до нужного места в пару тапов.
+ASSISTANT_NAV_TARGETS = {
+    "home": ("Главный экран", "/"),
+    "body": ("Тело/вес", "/mybody"),
+    "budget": ("Бюджет", "/budget"),
+    "supplements": ("БАДы", "/supplements"),
+    "meals": ("Питание", "/meals"),
+    "weather": ("Погода", "/weather"),
+    "health": ("Здоровье", "/health"),
+    "house_boss": ("Дела — Босс", "/house"),
+    "house_tasks": ("Дела — Задачи (канбан)", "/house"),
+    "house_cleaning": ("Дела — По дому", "/house"),
+    "planner_plans": ("Планировщик — Мои планы", "/planner"),
+    "planner_holidays": ("Планировщик — Праздники", "/holidays"),
+    "planner_events": ("Планировщик — События", "/planner"),
+    "planner_camping": ("Планировщик — Кемпинг", "/planner"),
+    "misc_home": ("Прочее", "/misc"),
+    "wishlist": ("Хотелки", "/wishlist"),
+    "cards": ("Карты лояльности", "/cards"),
+    "gym": ("GYM", "/gym"),
+    "cars": ("Автомобили и обслуживание", "/cars"),
+    "english": ("English", "/misc"),
+    "settings": ("Настройки", "/settings"),
+}
+
+ASSISTANT_TOOLS = [
+    {
+        "name": "get_data",
+        "description": "Прочитать актуальные данные пользователя из одного раздела приложения. Вызывай перед тем как отвечать на вопрос по конкретному разделу — не отвечай по памяти.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"domain": {"type": "string", "enum": list(ASSISTANT_DATA_DOMAINS.keys())}},
+            "required": ["domain"],
+        },
+    },
+    {
+        "name": "navigate",
+        "description": "Дать пользователю ссылку на раздел сайта.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"target": {"type": "string", "enum": list(ASSISTANT_NAV_TARGETS.keys())}},
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "add_task",
+        "description": "Добавить новое регулярное дело в раздел «По дому» (chores) или «Босс» (boss).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "section": {"type": "string", "enum": ["chores", "boss"]},
+                "name": {"type": "string"},
+                "frequency": {"type": "string", "enum": ["daily", "every2", "every3", "weekly", "biweekly", "monthly", "custom"]},
+                "customDays": {"type": "number"},
+                "period": {"type": "string", "enum": ["morning", "evening", "allday"]},
+                "days": {"type": "array", "items": {"type": "number"}},
+            },
+            "required": ["section", "name"],
+        },
+    },
+]
+
+
+def _assistant_add_task(app: dict, inp: dict) -> dict:
+    section = inp.get("section")
+    name = (inp.get("name") or "").strip()
+    if not name:
+        return {"error": "missing_name"}
+    now_ms = int(time.time() * 1000)
+    if section == "chores":
+        app.setdefault("chores", []).append({
+            "id": str(uuid.uuid4()), "name": name,
+            "frequency": inp.get("frequency") or "weekly",
+            "customDays": inp.get("customDays"),
+            "notify": False, "notifyTime": "09:00",
+            "archived": False, "updatedAt": now_ms,
+        })
+    elif section == "boss":
+        app.setdefault("bossTasks", []).append({
+            "id": str(uuid.uuid4()), "name": name,
+            "period": inp.get("period") or "morning",
+            "days": inp.get("days") or [1, 2, 3, 4, 5],
+            "archived": False, "updatedAt": now_ms,
+        })
+    else:
+        return {"error": "unknown_section"}
+    save_app_data(app)
+    return {"ok": True}
+
+
+def build_assistant_system_prompt() -> str:
+    domain_list = "\n".join(f"  • {k} — {label}" for k, (label, _) in ASSISTANT_DATA_DOMAINS.items())
+    nav_list = "\n".join(f"  • {k} — {label}" for k, (label, _) in ASSISTANT_NAV_TARGETS.items())
+    return (
+        "Ты текстовый ассистент приложения Jarvis, отвечаешь в Telegram. "
+        "Отвечай кратко и по-русски, обычным текстом без markdown-разметки и JSON — сообщение уходит как есть.\n\n"
+        f"СЕГОДНЯ: {today_msk().isoformat()}\n\n"
+        "У тебя есть инструменты, покрывающие весь проект:\n\n"
+        f"1. get_data(domain) — прочитать актуальные данные раздела. Разделы:\n{domain_list}\n\n"
+        f"2. navigate(target) — дать пользователю ссылку на раздел сайта. Разделы:\n{nav_list}\n\n"
+        "3. add_task(section, name, ...) — добавить регулярное дело в «По дому» или «Босс».\n\n"
+        "Правила:\n"
+        "- Сначала вызови нужные инструменты, потом дай один короткий финальный ответ.\n"
+        "- Не отвечай по памяти на вопросы о данных пользователя — всегда сначала get_data по нужному разделу.\n"
+        "- Если просят открыть/показать раздел — вызови navigate.\n"
+        "- Если данных нет или вопрос не по теме проекта — так и скажи, не выдумывай."
+    )
+
+
+def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str) -> dict:
+    inp = inp or {}
+    if name == "get_data":
+        entry = ASSISTANT_DATA_DOMAINS.get(inp.get("domain"))
+        if not entry:
+            return {"error": "unknown_domain"}
+        return entry[1](app)
+    if name == "navigate":
+        entry = ASSISTANT_NAV_TARGETS.get(inp.get("target"))
+        if not entry:
+            return {"error": "unknown_target"}
+        label, path = entry
+        url = (site_url.rstrip("/") + path) if site_url else None
+        return {"ok": True, "label": label, "url": url}
+    if name == "add_task":
+        return _assistant_add_task(app, inp)
+    return {"error": "unknown_tool"}
+
+
+# Память разговора — только в процессе, на время жизни контейнера. Это чат-
+# ассистент, а не журнал переписки: после рестарта каждый чат начинается заново.
+_assistant_convo: dict = {}
+_ASSISTANT_MAX_TURNS = 16
+_ASSISTANT_MAX_STEPS = 6
+
+
+def handle_assistant_message(token: str, chat_id, text: str):
+    app = load_app_data()
+    settings = app.get("settings") or {}
+    key = (settings.get("voiceApiKey") or "").strip()
+    if not key:
+        send_message(token, chat_id, "Настройте API-ключ ассистента в приложении: Настройки → Ассистент.")
+        return
+    model = (settings.get("voiceModel") or "").strip() or "claude-sonnet-4-6"
+    site_url = (settings.get("publicUrl") or "").strip()
+
+    convo = _assistant_convo.setdefault(chat_id, [])
+    convo.append({"role": "user", "content": text})
+    system = build_assistant_system_prompt()
+
+    answer = None
+    nav_links = []
+    for _ in range(_ASSISTANT_MAX_STEPS):
+        try:
+            r = requests.post(
+                ANTHROPIC_MESSAGES_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": key,
+                    "anthropic-version": "2023-06-01",
+                },
+                json={
+                    "model": model, "max_tokens": 800, "system": system,
+                    "messages": convo, "tools": ASSISTANT_TOOLS,
+                },
+                timeout=30,
+            )
+        except Exception as e:
+            del convo[:]
+            send_message(token, chat_id, f"Ошибка связи с ИИ: {e}")
+            return
+        if not r.ok:
+            del convo[:]
+            try:
+                err = r.json().get("error", {}).get("message")
+            except Exception:
+                err = None
+            send_message(token, chat_id, f"Ошибка ИИ: {err or r.status_code}")
+            return
+
+        resp = r.json()
+        content = resp.get("content", [])
+        tool_uses = [b for b in content if b.get("type") == "tool_use"]
+        texts = "\n".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
+
+        if not tool_uses:
+            answer = texts or "Готово"
+            break
+
+        convo.append({"role": "assistant", "content": content})
+        tool_results = []
+        for tu in tool_uses:
+            try:
+                output = execute_assistant_tool(tu.get("name"), tu.get("input"), app, site_url)
+            except Exception as e:
+                output = {"error": str(e)}
+            if tu.get("name") == "navigate" and output.get("url"):
+                nav_links.append((output.get("label"), output["url"]))
+            tool_results.append({
+                "type": "tool_result", "tool_use_id": tu.get("id"),
+                "content": json.dumps(output, ensure_ascii=False),
+            })
+        convo.append({"role": "user", "content": tool_results})
+
+    if answer is None:
+        del convo[:]
+        send_message(token, chat_id, "Не разобрался за отведённое число шагов — попробуйте переформулировать.")
+        return
+
+    convo.append({"role": "assistant", "content": answer})
+    del convo[:-_ASSISTANT_MAX_TURNS]
+
+    reply = html.escape(answer)
+    for label, url in nav_links:
+        reply += f'\n\n<a href="{html.escape(url)}">Открыть: {html.escape(label)}</a>'
+    send_message(token, chat_id, reply)
+
+
 # ── update-poller loop ───────────────────────────────────────────────────────
 # Long-polls Telegram continuously so inline-button presses (diet answers) and new
 # subscribers are handled within ~1s, independent of the minute-aligned notifier.
@@ -975,10 +1270,20 @@ def updates_loop():
                 "lastName": from_user.get("last_name", ""),
                 "username": from_user.get("username", ""),
             }
-            if cid not in subs["chat_ids"]:
+            is_new = cid not in subs["chat_ids"]
+            if is_new:
                 subs["chat_ids"].append(cid)
                 print(f"  New subscriber: {cid}")
                 send_message(token, cid, WELCOME_TEXT)
+            text = (msg.get("text") or "").strip()
+            # Всё, что не /команда — обращение к ассистенту (get_data/navigate/
+            # add_task поверх данных проекта). В отдельном потоке: цикл tool-use
+            # может занять несколько секунд, а держать им long-poll нельзя —
+            # это задержит ответы диет-опросникам и остальным подписчикам.
+            if text and not text.startswith("/"):
+                threading.Thread(
+                    target=handle_assistant_message, args=(token, cid, text), daemon=True,
+                ).start()
         if changed:
             save_subscribers(subs)
 
