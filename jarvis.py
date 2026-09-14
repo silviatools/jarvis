@@ -1264,7 +1264,7 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
             r = requests.post(
                 OPENAI_CHAT_URL,
                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-                json={"model": model, "max_tokens": 800, "messages": convo, "tools": tools},
+                json={"model": model, "max_completion_tokens": 800, "messages": convo, "tools": tools},
                 timeout=30,
             )
         except Exception as e:
