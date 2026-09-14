@@ -1040,9 +1040,13 @@ ASSISTANT_DATA_DOMAINS = {
             "items": app.get("campingItems", []), "categories": app.get("campingCategories", []),
             "trips": app.get("campingTrips", []),
         }),
-    "meals": ("Питание: рацион, приёмы пищи, БАДы, списки покупок",
+    "meals": ("Питание: вкладки План/Готовка/Контейнеры/Счётчик/Закупка — рационы, планы готовки, контейнеры для взвешивания, остаток порций, БАДы, списки покупок",
         lambda app: {
-            "meals": app.get("meals", [])[-30:], "supplements": app.get("supplements", []),
+            "meals": app.get("meals", [])[-30:],  # вкладка «План»
+            "cookingPlans": app.get("cookingPlans", [])[-30:],  # вкладка «Готовка» — отдельная сущность от meals
+            "containers": app.get("containers", []),  # вкладка «Контейнеры»
+            "rationStock": app.get("rationStock", 0),  # вкладка «Счётчик»
+            "supplements": app.get("supplements", []),
             "dietLog": app.get("dietLog", [])[-30:], "shoppingLists": app.get("shoppingLists", []),
         }),
     "body": ("Тело: история замеров и веса", lambda app: app.get("bodyEntries", [])[-60:]),
@@ -1207,6 +1211,8 @@ WRITE_REGISTRY = {
         "custom_cascade_delete": _cascade_delete_checklist_field,
     },
     "shoppingLists": {"label": "Список покупок", "create_defaults": lambda: {"selections": []}},
+    "cookingPlans": {"label": "План готовки (раздел Питание → Готовка)", "create_defaults": lambda: {"ingredients": []}},
+    "containers": {"label": "Контейнер для взвешивания (раздел Питание → Контейнеры)", "create_defaults": lambda: {"weight": "", "comment": ""}},
     "budgetExpenses": {
         "label": "Накопление (финансовая цель)",
         "require_confirm": True,

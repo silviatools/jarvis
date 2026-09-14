@@ -8510,9 +8510,13 @@ const VOICE_DATA_DOMAINS = {
     get: d => ({ items: d.campingItems || [], categories: d.campingCategories || [], trips: d.campingTrips || [] }),
   },
   meals: {
-    label: 'Питание: рацион, приёмы пищи, БАДы, списки покупок',
+    label: 'Питание: вкладки План/Готовка/Контейнеры/Счётчик/Закупка — рационы, планы готовки, контейнеры для взвешивания, остаток порций, БАДы, списки покупок',
     get: d => ({
-      meals: (d.meals || []).slice(-30), supplements: d.supplements || [],
+      meals: (d.meals || []).slice(-30), // вкладка «План»
+      cookingPlans: (d.cookingPlans || []).slice(-30), // вкладка «Готовка» — отдельная сущность от meals, не путать
+      containers: d.containers || [], // вкладка «Контейнеры»
+      rationStock: d.rationStock ?? 0, // вкладка «Счётчик»
+      supplements: d.supplements || [],
       dietLog: (d.dietLog || []).slice(-30), shoppingLists: d.shoppingLists || [],
     }),
   },
@@ -8658,6 +8662,8 @@ const WRITE_REGISTRY = {
     }),
   },
   shoppingLists: { label: 'Список покупок', createDefaults: () => ({ selections: [] }) },
+  cookingPlans: { label: 'План готовки (раздел Питание → Готовка)', createDefaults: () => ({ ingredients: [] }) },
+  containers: { label: 'Контейнер для взвешивания (раздел Питание → Контейнеры)', createDefaults: () => ({ weight: '', comment: '' }) },
   budgetExpenses: {
     label: 'Накопление (финансовая цель)',
     requireConfirm: true,
