@@ -222,9 +222,17 @@ const DEFAULT_SETTINGS = {
   workAddress: '',
   tomtomKey: '',
   telegramToken: '',
+  // Устаревшая единая пара провайдер+ключ — больше не редактируется в UI,
+  // только источник для разовой миграции в aiPresets (см. ensureAiPresets).
   voiceProvider: 'claude',
   voiceApiKey: '',
   voiceModel: '',
+  // Наборы ключей ИИ: [{id, name, provider: 'claude'|'openai', apiKey, model}].
+  // Несколько ключей (в том числе несколько на один провайдер) можно завести
+  // сразу и раздать по функциям проекта — см. AI_FUNCTIONS/aiAssignments ниже.
+  aiPresets: [],
+  // functionKey (см. AI_FUNCTIONS) → id пресета из aiPresets.
+  aiAssignments: {},
   voiceTtsVoice: 'nova',
   gymVoice: true,        // озвучивание подходов и отдыха на тренировке
   gymBackgroundAudio: false, // звук с погашенным экраном (ценой чужой музыки)
@@ -233,6 +241,62 @@ const DEFAULT_SETTINGS = {
   backupReminder: { enabled: false, frequency: 'weekly', time: '03:00', dayOfWeek: 0, dayOfMonth: 1 },
   lastBackupSentAt: '',
 };
+
+// ── Наборы ключей ИИ ──────────────────────────────────────────────────────
+// Каждая функция проекта, которая ходит к ИИ, выбирает себе набор
+// (aiAssignments[functionKey] = id пресета из aiPresets) — можно держать
+// разные ключи/провайдеров для разных задач, а не один общий на всё.
+const AI_FUNCTIONS = [
+  { key: 'voiceAssistant', label: 'Ассистент (кнопка в приложении + чат в Telegram)' },
+  { key: 'healthExtract', label: 'Здоровье — распознавание документов' },
+  { key: 'gymExtract', label: 'GYM — распознавание программы тренировок' },
+  { key: 'wishlistScreenshot', label: 'Хотелки — распознавание товара по скриншоту' },
+];
+
+const AI_PROVIDER_DEFAULT_MODEL = { claude: 'claude-sonnet-5', openai: 'gpt-4o' };
+
+// Разовая миграция со старой единой пары voiceProvider/voiceApiKey/voiceModel:
+// если пресетов ещё нет, а старый ключ есть — заводим из него один пресет и
+// назначаем его всем функциям. Чистая функция (ничего не сохраняет) — вызов
+// безопасен на каждое чтение; реально в data.settings её результат кладёт
+// migration-эффект в App() (см. ниже), после чего это ветвление больше не
+// участвует.
+function ensureAiPresets(settings) {
+  const s = settings || {};
+  if ((s.aiPresets || []).length > 0) return s;
+  if (!s.voiceApiKey) return s;
+  const preset = {
+    id: crypto.randomUUID(),
+    name: s.voiceProvider === 'openai' ? 'OpenAI (из старых настроек)' : 'Claude (из старых настроек)',
+    provider: s.voiceProvider === 'openai' ? 'openai' : 'claude',
+    apiKey: s.voiceApiKey,
+    model: s.voiceModel || '',
+  };
+  const aiAssignments = {};
+  AI_FUNCTIONS.forEach(f => { aiAssignments[f.key] = preset.id; });
+  return { ...s, aiPresets: [preset], aiAssignments };
+}
+
+// Пресет, назначенный функции functionKey — либо первый доступный, если для
+// неё явно ничего не выбрано (например, функция появилась позже пресетов).
+function resolveAiPreset(settings, functionKey) {
+  const s = ensureAiPresets(settings);
+  const presets = s.aiPresets || [];
+  if (!presets.length) return null;
+  const assignedId = (s.aiAssignments || {})[functionKey];
+  return presets.find(p => p.id === assignedId) || presets[0];
+}
+
+// Озвучка (TTS) жёстко привязана к OpenAI — у Claude нет речевого API. Берём
+// ключ из пресета, назначенного ассистенту, если он на OpenAI, иначе — любой
+// другой OpenAI-пресет из списка.
+function resolveTtsPreset(settings) {
+  const s = ensureAiPresets(settings);
+  const presets = s.aiPresets || [];
+  const assigned = presets.find(p => p.id === (s.aiAssignments || {}).voiceAssistant);
+  if (assigned && assigned.provider === 'openai') return assigned;
+  return presets.find(p => p.provider === 'openai') || null;
+}
 
 // Which Telegram section each background reminder belongs to. Keep the ids in
 // sync with jarvis.py's NOTIFICATION_CATEGORIES — they gate who receives each
@@ -477,6 +541,12 @@ const DEFAULT_DATA = () => ({
   // Оба — id-массивы, LWW по updatedAt, как и всё остальное.
   wishlistCategories: [],
   wishlistItems: [],
+  // Прочее → Своя игра: сами игры (категории → вопросы → варианты ответа) и
+  // партии по публичным ссылкам. quizPlays пишет страница /game/<token> на
+  // сервере (id записи = токен ссылки), приложение только показывает счёт и
+  // умеет его сбросить — поэтому это отдельная коллекция, а не поле игры.
+  quizGames: [],
+  quizPlays: [],
   // Прочее → Карты: карты лояльности. code+format — то, из чего рисуется
   // штрихкод на экране; фото карты хранится отдельным файлом в /api/photos.
   loyaltyCards: [],
@@ -1090,6 +1160,7 @@ const Icon = ({ name, size = 22 }) => {
     camera: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z"/><circle cx="12" cy="13" r="3.5"/></svg>,
     externalLink: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>,
     tag: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.6 2.6a2 2 0 0 0-1.4-.6H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.2 8.2a2 2 0 0 0 2.8 0l7.2-7.2a2 2 0 0 0 0-2.8Z"/><circle cx="7" cy="7" r="1.2"/></svg>,
+    quiz: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18M9 9v12"/><path d="M14.5 13.5a1.6 1.6 0 1 1 2.2 1.5c-.5.2-.8.6-.8 1.1v.4"/><path d="M15.9 19.2h.01"/></svg>,
     clipboard: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>,
   };
   return icons[name] || null;
@@ -1255,6 +1326,7 @@ const PATH_TAB_MAP = {
   '/wishlist': 'misc',
   '/cards': 'misc',
   '/gym': 'misc',
+  '/quiz': 'misc',
   '/cars': 'misc',
   '/settings': 'misc',
   '/misc': 'misc',
@@ -1266,8 +1338,8 @@ const TAB_PATH_MAP = Object.fromEntries(Object.entries(PATH_TAB_MAP).map(([p, t]
 const PLANNER_SUB_BY_PATH = { '/holidays': 'holidays' };
 const PLANNER_PATH_BY_SUB = { holidays: '/holidays' };
 
-const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/cars': 'cars', '/settings': 'settings' };
-const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', cars: '/cars', settings: '/settings' };
+const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/quiz': 'quiz', '/cars': 'cars', '/settings': 'settings' };
+const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', quiz: '/quiz', cars: '/cars', settings: '/settings' };
 
 // Routes that get their own Add-to-Home-Screen shortcut manifest (mirrors
 // SHORTCUT_MANIFESTS in jarvis.py). The server only sets the right
@@ -1322,6 +1394,11 @@ function App() {
   const [voiceFocus, setVoiceFocus] = useState(null);
   const initialLoad = React.useRef(true);
   const serverLoaded = React.useRef(false);
+  // Пока в разделе «Бюджет → Планы» открыт черновик плана с несохранёнными
+  // правками, уход с вкладки «Бюджет» целиком (шапка/нижняя навигация, кнопка
+  // «Назад» браузера, авто-переключение на бездействии) не должен молча
+  // стирать его — см. использование ниже.
+  const [budgetPlansDirty, setBudgetPlansDirty] = useState(false);
 
   // On mount: try to load from server, merge with localStorage to prevent data loss
   useEffect(() => {
@@ -1472,6 +1549,15 @@ function App() {
 
   useEffect(() => {
     const onPopState = () => {
+      // Кнопка «Назад» уже увела браузер на другой URL к этому моменту —
+      // если уходим из «Бюджет» с несохранённым черновиком плана, спрашиваем
+      // подтверждение и, если отказались, возвращаем адрес назад на /budget.
+      if (tab === 'budget' && budgetPlansDirty && getTabFromPath() !== 'budget') {
+        if (!confirm('В открытом плане бюджета есть несохранённые изменения. Уйти без сохранения?')) {
+          window.history.pushState(null, '', '/budget');
+          return;
+        }
+      }
       navFromPopstate.current = true;
       setTab(getTabFromPath());
       setPlannerTab(getPlannerSubFromPath());
@@ -1479,7 +1565,7 @@ function App() {
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, []);
+  }, [tab, budgetPlansDirty]);
 
   // Разовая миграция legacy-рационов: строки блюд → массивы {product, amount}.
   // Раньше нормализация была только «на лету» и никогда не сохранялась, так что
@@ -1490,6 +1576,16 @@ function App() {
       setData(d => ({ ...d, meals: (d.meals || []).map(m => isLegacy(m) ? normalizeMeal(m) : m) }));
     }
   }, [data.meals]);
+
+  // Разовая миграция со старой единой пары voiceProvider/voiceApiKey/voiceModel
+  // в отдельные наборы ключей ИИ (aiPresets/aiAssignments) — см. ensureAiPresets.
+  // Сохраняем результат по-настоящему (не только на лету при чтении), чтобы
+  // его увидел и сервер: Telegram-бот в jarvis.py читает те же данные.
+  useEffect(() => {
+    if ((data.settings?.aiPresets || []).length > 0) return;
+    if (!data.settings?.voiceApiKey) return;
+    setData(d => ({ ...d, settings: ensureAiPresets({ ...DEFAULT_SETTINGS, ...(d.settings || {}) }) }));
+  }, [data.settings?.aiPresets, data.settings?.voiceApiKey]);
 
   // Очистка отметок старше сегодняшнего дня. Всё считается ВНУТРИ функционального
   // апдейтера — снимок из первого рендера здесь был бы устаревшим и мог стереть
@@ -1511,9 +1607,12 @@ function App() {
   const { weatherAutoSwitch, weatherAutoSwitchMinutes } = data.settings || DEFAULT_SETTINGS;
   // …кроме GYM: там между подходами по несколько минут не касаешься экрана,
   // и уезжать на главную ровно в этот момент — худшее, что может случиться.
+  // То же самое для «Бюджет → Планы» с открытым несохранённым черновиком —
+  // молчаливый переход на главную стирал бы правки.
   const inGym = tab === 'misc' && miscTab === 'gym';
+  const inDirtyBudgetPlan = tab === 'budget' && budgetPlansDirty;
   useEffect(() => {
-    if (!weatherAutoSwitch || inGym) return;
+    if (!weatherAutoSwitch || inGym || inDirtyBudgetPlan) return;
     const intervalMs = Math.max(0.5, Number(weatherAutoSwitchMinutes) || 2) * 60 * 1000;
     let timerId = null;
 
@@ -1532,7 +1631,7 @@ function App() {
       if (timerId) clearTimeout(timerId);
       events.forEach(ev => window.removeEventListener(ev, reset));
     };
-  }, [weatherAutoSwitch, weatherAutoSwitchMinutes, inGym]);
+  }, [weatherAutoSwitch, weatherAutoSwitchMinutes, inGym, inDirtyBudgetPlan]);
 
   // Авто-синхронизация конфига уведомлений с jarvis.py
   useEffect(() => {
@@ -1559,13 +1658,22 @@ function App() {
     return () => clearTimeout(timer);
   }, [data.settings?.telegramToken, data.chores]);
 
+  // Клики по шапке/нижней навигации уводят с вкладки «Бюджет» напрямую, минуя
+  // её собственную защиту переключения вкладок — здесь та же проверка перед
+  // уходом, пока в открытом плане бюджета есть несохранённые правки.
+  const requestSetTab = (id) => {
+    if (id !== tab && tab === 'budget' && budgetPlansDirty
+      && !confirm('В открытом плане бюджета есть несохранённые изменения. Уйти без сохранения?')) return;
+    setTab(id);
+  };
+
   return (
     <div className="min-h-screen pb-24 md:pb-8">
-      <Header tab={tab} setTab={setTab} />
+      <Header tab={tab} setTab={requestSetTab} />
       {tab === 'house' ? (
         <HouseView data={data} setData={setData} houseTab={houseTab} setHouseTab={setHouseTab} />
       ) : tab === 'budget' ? (
-        <BudgetView data={data} setData={setData} />
+        <BudgetView data={data} setData={setData} onDirtyChange={setBudgetPlansDirty} />
       ) : (
         <main className="max-w-3xl mx-auto px-4 sm:px-6 pt-6 md:pt-8">
           {tab === 'home' && <HomeView data={data} setData={setData} setTab={setTab} setHouseTab={setHouseTab} setMealTab={setMealTab} />}
@@ -1591,12 +1699,12 @@ function App() {
           )}
         </main>
       )}
-      <BottomNav tab={tab} setTab={setTab} />
+      <BottomNav tab={tab} setTab={requestSetTab} />
       <VoiceButton
         data={data}
         setData={setData}
         settings={data.settings}
-        setTab={setTab}
+        setTab={requestSetTab}
         setPlannerTab={setPlannerTab}
         setMiscTab={setMiscTab}
         setHouseTab={setHouseTab}
@@ -3791,75 +3899,132 @@ function NotifyRoutingSettings({ data, setData }) {
 }
 
 function VoiceAssistantSettings({ data, setData }) {
-  const settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
+  const settings = ensureAiPresets({ ...DEFAULT_SETTINGS, ...(data.settings || {}) });
+  const presets = settings.aiPresets || [];
+  const assignments = settings.aiAssignments || {};
 
   const updateSetting = (key, value) => {
     setData(d => ({
       ...d,
-      settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), [key]: value, updatedAt: Date.now() },
+      settings: { ...DEFAULT_SETTINGS, ...ensureAiPresets(d.settings || {}), [key]: value, updatedAt: Date.now() },
     }));
   };
 
-  const providerPlaceholders = {
-    claude: { model: 'claude-sonnet-4-6', key: 'sk-ant-api03-...' },
-    openai: { model: 'gpt-4o', key: 'sk-...' },
+  const setPresets = (next) => updateSetting('aiPresets', next);
+  const updatePreset = (id, patch) => setPresets(presets.map(p => p.id === id ? { ...p, ...patch } : p));
+  const addPreset = () => {
+    setPresets([...presets, {
+      id: crypto.randomUUID(), name: `Набор ${presets.length + 1}`, provider: 'claude', apiKey: '', model: '',
+    }]);
   };
-  const ph = providerPlaceholders[settings.voiceProvider] || providerPlaceholders.claude;
+  const removePreset = (id) => {
+    if (!confirm('Удалить этот набор ключей? Функции, которые на него ссылались, останутся без назначения.')) return;
+    setPresets(presets.filter(p => p.id !== id));
+    const nextAssignments = { ...assignments };
+    Object.keys(nextAssignments).forEach(k => { if (nextAssignments[k] === id) delete nextAssignments[k]; });
+    updateSetting('aiAssignments', nextAssignments);
+  };
+  const setAssignment = (functionKey, presetId) => {
+    updateSetting('aiAssignments', { ...assignments, [functionKey]: presetId });
+  };
 
   return (
     <div className="space-y-3">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <h3 className="font-display text-lg mb-1">Ассистент</h3>
+        <p className="text-sm text-[var(--text-muted)]">
+          Нажмите кнопку микрофона внизу экрана и скажите, что нужно — ассистент видит все разделы проекта: отвечает на вопросы по любым данным (бюджет, здоровье, авто, GYM и т.д.), открывает нужный раздел на экране и добавляет регулярные дела. Работает на любом из провайдеров ниже — какой назначите функции «Ассистент», тот и используется.
+        </p>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="font-display text-base">Наборы ключей ИИ</h3>
+          <button onClick={addPreset} className="btn-secondary flex items-center gap-1.5 text-sm px-3 py-1.5">
+            <Icon name="plus" size={14} /> Добавить
+          </button>
+        </div>
+        {presets.length === 0 && (
+          <p className="text-sm text-[var(--text-subtle)]">Пока ни одного набора — нажмите «Добавить». Можно завести сколько угодно ключей, в том числе несколько на один провайдер.</p>
+        )}
+        {presets.map(p => (
+          <div key={p.id} className="border border-[var(--border)] rounded-xl p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={p.name}
+                onChange={e => updatePreset(p.id, { name: e.target.value })}
+                placeholder="Название набора"
+                className="flex-1"
+              />
+              <button onClick={() => removePreset(p.id)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500" title="Удалить набор">
+                <Icon name="trash" size={16} />
+              </button>
+            </div>
+            <div>
+              <label>Провайдер</label>
+              <select value={p.provider} onChange={e => updatePreset(p.id, { provider: e.target.value })}>
+                <option value="claude">Claude (Anthropic)</option>
+                <option value="openai">OpenAI (ChatGPT)</option>
+              </select>
+            </div>
+            <div>
+              <label>API-ключ</label>
+              <input
+                type="password"
+                value={p.apiKey}
+                onChange={e => updatePreset(p.id, { apiKey: e.target.value })}
+                placeholder={p.provider === 'openai' ? 'sk-...' : 'sk-ant-api03-...'}
+                autoComplete="off"
+              />
+              <p className="text-xs text-[var(--text-subtle)] mt-1">
+                Получите ключ на <span className="font-mono">{p.provider === 'openai' ? 'platform.openai.com' : 'console.anthropic.com'}</span>
+              </p>
+            </div>
+            <div>
+              <label>Модель (необязательно)</label>
+              <input
+                type="text"
+                value={p.model}
+                onChange={e => updatePreset(p.id, { model: e.target.value })}
+                placeholder={`По умолчанию: ${AI_PROVIDER_DEFAULT_MODEL[p.provider] || AI_PROVIDER_DEFAULT_MODEL.claude}`}
+                autoComplete="off"
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <h3 className="font-display text-base mb-1">Какой набор для какой функции</h3>
+        {presets.length === 0 ? (
+          <p className="text-sm text-[var(--text-subtle)]">Сначала добавьте хотя бы один набор ключей выше.</p>
+        ) : AI_FUNCTIONS.map(f => (
+          <div key={f.key}>
+            <label>{f.label}</label>
+            <select value={assignments[f.key] || ''} onChange={e => setAssignment(f.key, e.target.value)}>
+              <option value="">— не назначено (возьмётся первый набор) —</option>
+              {presets.map(p => (
+                <option key={p.id} value={p.id}>{p.name} · {p.provider === 'openai' ? 'OpenAI' : 'Claude'}</option>
+              ))}
+            </select>
+          </div>
+        ))}
+      </div>
+
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
         <div>
-          <h3 className="font-display text-lg mb-1">Голосовой ассистент</h3>
-          <p className="text-sm text-[var(--text-muted)]">
-            Нажмите кнопку микрофона внизу экрана и скажите, что нужно. На провайдере Claude ассистент видит все разделы проекта: отвечает на вопросы по любым данным (бюджет, здоровье, авто, GYM и т.д.), открывает нужный раздел на экране и добавляет регулярные дела. На OpenAI — только добавление дел и вопросы по «По дому»/«Боссу».
-          </p>
-          <p className="text-sm text-[var(--text-muted)]">
-            Этот же ключ используется в разделе «Здоровье» для распознавания загруженных документов (результатов приёма у врача) — поля записи заполняются автоматически.
-          </p>
-        </div>
-
-        <div>
-          <label>AI-провайдер</label>
-          <select
-            value={settings.voiceProvider}
-            onChange={e => updateSetting('voiceProvider', e.target.value)}
-          >
-            <option value="claude">Claude (Anthropic)</option>
-            <option value="openai">OpenAI (ChatGPT)</option>
-          </select>
-        </div>
-
-        <div>
-          <label>API-ключ</label>
-          <input
-            type="password"
-            value={settings.voiceApiKey}
-            onChange={e => updateSetting('voiceApiKey', e.target.value)}
-            placeholder={ph.key}
-            autoComplete="off"
-          />
-          {settings.voiceProvider === 'claude' && (
-            <p className="text-xs text-[var(--text-subtle)] mt-1">
-              Получите ключ на <span className="font-mono">console.anthropic.com</span>
-            </p>
-          )}
-          {settings.voiceProvider === 'openai' && (
-            <p className="text-xs text-[var(--text-subtle)] mt-1">
-              Получите ключ на <span className="font-mono">platform.openai.com</span>
-            </p>
-          )}
-        </div>
-
-        <div>
-          <label>Модель (необязательно)</label>
+          <label>Публичный адрес сайта (для ссылок в Telegram)</label>
           <input
             type="text"
-            value={settings.voiceModel}
-            onChange={e => updateSetting('voiceModel', e.target.value)}
-            placeholder={`По умолчанию: ${ph.model}`}
+            value={settings.publicUrl || ''}
+            onChange={e => updateSetting('publicUrl', e.target.value)}
+            placeholder="https://ваш-домен.up.railway.app"
             autoComplete="off"
           />
+          <p className="text-xs text-[var(--text-subtle)] mt-1">
+            Когда ассистент в Telegram-чате открывает раздел, он присылает на него ссылку — без этого адреса просто назовёт раздел словами.
+          </p>
         </div>
 
         <div>
@@ -3876,7 +4041,7 @@ function VoiceAssistantSettings({ data, setData }) {
             <option value="fable">Fable — мужской, выразительный</option>
           </select>
           <p className="text-xs text-[var(--text-subtle)] mt-1">
-            Используется API-ключ OpenAI. Если ключ не задан — будет встроенный голос браузера.
+            У Claude нет озвучки — нужен любой набор ключей с провайдером OpenAI (необязательно назначенный ассистенту). Если такого нет — будет встроенный голос браузера.
           </p>
         </div>
       </div>
@@ -3885,12 +4050,17 @@ function VoiceAssistantSettings({ data, setData }) {
         <h3 className="font-display text-base mb-2">Как пользоваться</h3>
         <ol className="text-sm text-[var(--text-muted)] space-y-1 list-decimal list-inside">
           <li>Нажмите кнопку микрофона (внизу справа)</li>
-          <li>Скажите что нужно сделать и как часто</li>
-          <li>Нажмите снова — ИИ добавит дело</li>
-          <li>Если непонятно — ИИ спросит уточнение</li>
+          <li>Скажите что нужно — вопрос, дело или «открой раздел ...»</li>
+          <li>Ассистент ответит и озвучит ответ</li>
         </ol>
         <p className="text-xs text-[var(--text-subtle)] mt-3">
-          Примеры: «Добавь задачу пылесосить раз в неделю», «Добавь зарядку каждое утро кроме воскресенья»
+          Тот же ассистент отвечает и в Telegram-боте: напишите ему любое сообщение (не команду) — он читает и меняет данные всего проекта и присылает ссылки на разделы. Использует тот же набор ключей, что назначен функции «Ассистент» выше.
+        </p>
+        <p className="text-xs text-[var(--text-subtle)] mt-3">
+          Ассистент умеет всё то же, что вы руками: добавлять и менять записи в любом разделе (дела, авто, здоровье, GYM, хотелки, планировщик, кемпинг, канбан-задачи вместе с комментариями и подзадачами и т.д.), а не только заводить регулярные дела. Удаление и любые изменения в финансах он сначала озвучивает и ждёт вашего «да» — со следующим сообщением/фразой.
+        </p>
+        <p className="text-xs text-[var(--text-subtle)] mt-3">
+          Примеры: «Когда последний раз обслуживали машину?», «Добавь комментарий „тест“ к задаче про распродажу ПК», «Запиши визит к врачу вчера», «Удали карту Пятёрочки»
         </p>
       </div>
     </div>
@@ -5317,6 +5487,18 @@ function CookingView({ data, setData }) {
     createdAt: new Date().toISOString(),
   });
 
+  const duplicate = (plan) => setEditing({
+    id: crypto.randomUUID(),
+    name: plan.name ? `${plan.name} (копия)` : '',
+    ingredients: plan.ingredients.map(i => ({
+      ...i,
+      id: crypto.randomUUID(),
+      actualRaw: null,
+      actualCooked: null,
+    })),
+    createdAt: new Date().toISOString(),
+  });
+
   return (
     <div className="space-y-4">
       <button
@@ -5352,6 +5534,13 @@ function CookingView({ data, setData }) {
                   title="Редактировать"
                 >
                   <Icon name="edit" size={18} />
+                </button>
+                <button
+                  onClick={e => { e.stopPropagation(); duplicate(plan); }}
+                  className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
+                  title="Дублировать"
+                >
+                  <Icon name="copy" size={18} />
                 </button>
                 <button
                   onClick={e => { e.stopPropagation(); remove(plan.id); }}
@@ -5457,13 +5646,18 @@ function CookingView({ data, setData }) {
       })}
 
       {editing && (
-        <CookingPlanModal plan={editing} onSave={save} onClose={() => setEditing(null)} />
+        <CookingPlanModal
+          plan={editing}
+          isNew={!plans.some(p => p.id === editing.id)}
+          onSave={save}
+          onClose={() => setEditing(null)}
+        />
       )}
     </div>
   );
 }
 
-function CookingPlanModal({ plan, onSave, onClose }) {
+function CookingPlanModal({ plan, isNew, onSave, onClose }) {
   const [form, setForm] = useState({
     ...plan,
     ingredients: plan.ingredients.map(i => ({ ...i })),
@@ -5497,7 +5691,7 @@ function CookingPlanModal({ plan, onSave, onClose }) {
   };
 
   return (
-    <Modal onClose={onClose} title={plan.name ? 'Редактировать план' : 'Новый план готовки'}>
+    <Modal onClose={onClose} title={isNew ? 'Новый план готовки' : 'Редактировать план'}>
       <div className="space-y-4">
         <div>
           <label>Название плана</label>
@@ -5763,6 +5957,7 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
   const [newCom, setNewCom] = useState('');
   const [moveTo, setMoveTo] = useState(colId);
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const initialRef = useRef(JSON.stringify({ ...task }));
 
   const addComment = () => {
     if (!newCom.trim()) return;
@@ -5779,8 +5974,17 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
   const pri = KANBAN_PRIORITIES.find(p => p.id === f.priority) || KANBAN_PRIORITIES[0];
   const isNew = !task.createdAt || task.title === '';
 
+  // Пока в задаче есть несохранённые правки, любое закрытие (крестик, клик по
+  // фону, Escape, кнопка «Отмена») спрашивает подтверждение — иначе введённые
+  // данные терялись молча.
+  const isDirty = () => JSON.stringify(f) !== initialRef.current || moveTo !== colId || newCom.trim() !== '';
+  const requestClose = () => {
+    if (isDirty() && !confirm(isNew ? 'Отменить создание задачи? Введённые данные будут потеряны.' : 'Есть несохранённые изменения. Закрыть без сохранения?')) return;
+    onClose();
+  };
+
   return (
-    <Modal onClose={onClose} title={isNew ? 'Новая задача' : 'Редактировать задачу'}>
+    <Modal onClose={requestClose} title={isNew ? 'Новая задача' : 'Редактировать задачу'}>
       <div className="space-y-4">
         <div><label>Заголовок</label><input value={f.title} onChange={e => set('title', e.target.value)} placeholder="Что нужно сделать?" autoFocus /></div>
 
@@ -5853,7 +6057,7 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
 
         <div className="flex gap-2 pt-2">
           {!isNew && <button onClick={() => onDelete(f.id)} className="btn-secondary px-3 text-red-500"><Icon name="trash" size={16}/></button>}
-          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={requestClose} className="btn-secondary flex-1">Отмена</button>
           <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
         </div>
       </div>
@@ -6909,7 +7113,7 @@ async function engCallAI(ai,prompt){
   }
   if(ai.provider==='openai'){
     if(!ai.openaiKey) throw new Error('No OpenAI API key');
-    const r=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+ai.openaiKey},body:JSON.stringify({model:ai.openaiModel,max_tokens:1500,messages:[{role:'user',content:prompt}]})});
+    const r=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+ai.openaiKey},body:JSON.stringify({model:ai.openaiModel,max_completion_tokens:1500,messages:[{role:'user',content:prompt}]})});
     if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'HTTP '+r.status);}
     return(await r.json()).choices?.[0]?.message?.content||'';
   }
@@ -7417,6 +7621,9 @@ function FillTab({rawData,ai}){
   };
 
   const pool=rawData?getPool():[];const avail=count>0?Math.min(count,pool.length):pool.length;
+  // Показываем список слов в порядке, никак не связанном с порядком предложений —
+  // иначе слово #N в списке всегда отвечает предложению #N, и подсказка не нужна.
+  const shuffledWords=useMemo(()=>[...words].sort(()=>Math.random()-.5),[words]);
 
   return(
     <div className="space-y-5 pb-8">
@@ -7438,7 +7645,7 @@ function FillTab({rawData,ai}){
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4">
           <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-3">Words in this batch</div>
           <div className="flex flex-wrap gap-2">
-            {words.map((w,i)=><span key={i} className={`px-2.5 py-1 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-sm ${hideWords?'blur-sm select-none':''}`}>{w.en}</span>)}
+            {shuffledWords.map((w,i)=><span key={i} className={`px-2.5 py-1 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-sm ${hideWords?'blur-sm select-none':''}`}>{w.en}</span>)}
           </div>
         </div>
       )}
@@ -8227,6 +8434,7 @@ const VOICE_NAV_TARGETS = {
   wishlist:         { tab: 'misc', miscTab: 'wishlist' },
   cards:            { tab: 'misc', miscTab: 'cards', focusable: true },
   gym:              { tab: 'misc', miscTab: 'gym' },
+  quiz:             { tab: 'misc', miscTab: 'quiz' },
   cars:             { tab: 'misc', miscTab: 'cars' },
   english:          { tab: 'misc', miscTab: 'english' },
   settings:         { tab: 'misc', miscTab: 'settings' },
@@ -8240,6 +8448,7 @@ const VOICE_NAV_LABELS = {
   planner_events: 'Планировщик — События', planner_camping: 'Планировщик — Кемпинг',
   misc_home: 'Прочее — главная', wishlist: 'Хотелки', cards: 'Карты лояльности',
   gym: 'GYM', cars: 'Автомобили и обслуживание', english: 'English', settings: 'Настройки',
+  quiz: 'Своя игра',
 };
 
 // Разделы данных, которые ассистент умеет читать инструментом get_data.
@@ -8262,19 +8471,29 @@ const VOICE_DATA_DOMAINS = {
     get: d => ({ conditions: d.healthConditions || [], events: (d.healthEvents || []).slice(-150) }),
   },
   budget: {
-    label: 'Бюджет активного пользователя: расходы, доходы, долги, накопления, ДДС',
+    label: 'Бюджет активного пользователя: вкладки По месяцу/ДДС/Накопления/Постоянные/Спортпит/Долги/Планы — план и факт по категориям и доходам, расходы, доходы, долги, накопления, ДДС, регулярные платежи, спортпит, заметки по месяцам, именные планы (поездки/мероприятия)',
     get: d => {
       const slice = d.budgetByUser?.[d.activeBudgetUserId] || {};
       return {
-        categories: slice.budgetCategories || [],
-        expenses: (slice.budgetExpenses || []).slice(-200),
-        recurring: slice.budgetRecurring || [],
+        categories: slice.budgetCategories || [], // вкладка «Постоянные» — категории расходов
+        recurringCategories: slice.budgetRecurringCategories || [],
+        planCategories: slice.budgetPlanCategories || [], // вкладка «По месяцу» — категории плана/факта (группы со статьями)
+        planValues: slice.budgetPlanValues || {}, // план по статьям, ключ обычно "статья_месяц"
+        factValues: slice.budgetFactValues || {}, // факт по статьям
+        incomeSources: slice.budgetIncomeSources || [],
+        incomeValues: slice.budgetIncomeValues || {}, // план по источникам дохода
+        incomeFactValues: slice.budgetIncomeFactValues || {}, // факт по источникам дохода
+        expenses: (slice.budgetExpenses || []).slice(-200), // вкладка «Накопления» — финансовые цели
+        savingsTransactions: (slice.savingsTransactions || []).slice(-100),
+        recurring: slice.budgetRecurring || [], // вкладка «Постоянные» — регулярные платежи
+        supplements: slice.budgetSupplements || [], // вкладка «Спортпит» — список к покупке
+        supplementAssignments: slice.budgetSupplementAssignments || {}, // в каком месяце что куплено
         debts: slice.budgetDebts || [],
         debtTransactions: (slice.debtTransactions || []).slice(-100),
-        incomeSources: slice.budgetIncomeSources || [],
-        savingsTransactions: (slice.savingsTransactions || []).slice(-100),
         cashflowAccounts: slice.budgetCashflowAccounts || [],
         cashflowOps: (slice.budgetCashflowOps || []).slice(-200),
+        monthlyNotes: slice.budgetMonthlyNotes || [], // «Выводы по месяцу» — заметки текстом
+        plans: slice.budgetPlans || [], // вкладка «Планы» — именные бюджеты (поездка/мероприятие)
       };
     },
   },
@@ -8296,22 +8515,446 @@ const VOICE_DATA_DOMAINS = {
     get: d => ({ categories: d.wishlistCategories || [], items: d.wishlistItems || [] }),
   },
   planner: {
-    label: 'Планировщик: события, друзья-участники, личные планы',
-    get: d => ({ events: d.plannerEvents || [], friends: d.plannerFriends || [], plans: d.plannerPlans || [] }),
+    label: 'Планировщик: события, друзья-участники, личные планы, праздники/дни рождения',
+    get: d => ({
+      events: d.plannerEvents || [], friends: d.plannerFriends || [], plans: d.plannerPlans || [],
+      holidays: (d.holidays || []).filter(h => !h.archived), // вкладка «Праздники»
+    }),
   },
   camping: {
     label: 'Кемпинг: справочник вещей и поездки со сборами',
     get: d => ({ items: d.campingItems || [], categories: d.campingCategories || [], trips: d.campingTrips || [] }),
   },
   meals: {
-    label: 'Питание: рацион, приёмы пищи, БАДы',
-    get: d => ({ meals: (d.meals || []).slice(-30), supplements: d.supplements || [], dietLog: (d.dietLog || []).slice(-30) }),
+    label: 'Питание: вкладки План/Готовка/Контейнеры/Счётчик/Закупка — рационы, планы готовки, контейнеры для взвешивания, остаток порций, БАДы, списки покупок',
+    get: d => ({
+      meals: (d.meals || []).slice(-30), // вкладка «План»
+      cookingPlans: (d.cookingPlans || []).slice(-30), // вкладка «Готовка» — отдельная сущность от meals, не путать
+      containers: d.containers || [], // вкладка «Контейнеры»
+      rationStock: d.rationStock ?? 0, // вкладка «Счётчик»
+      supplements: d.supplements || [],
+      dietLog: (d.dietLog || []).slice(-30), shoppingLists: d.shoppingLists || [],
+    }),
   },
   body: {
-    label: 'Тело: история замеров и веса',
-    get: d => (d.bodyEntries || []).slice(-60),
+    label: 'Тело: история замеров и веса, режимы (диета/тренировки), целевые значения',
+    get: d => ({
+      entries: (d.bodyEntries || []).slice(-60),
+      modes: d.bodyModes || [], activeModeId: d.activeBodyModeId || null,
+      fieldTargets: d.bodyFieldTargets || {}, progressStartDate: d.bodyProgressStartDate || '',
+    }),
+  },
+  supplements: {
+    label: 'БАДы: обычный и тренировочный список, журнал приёма по дням (утро/вечер/тренировка)',
+    get: d => {
+      // taken — объект вида "<дата>_<период>_<id>": true, растёт бесконечно;
+      // отдаём только последние ~30 дней, иначе токены на историю за годы.
+      const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 30);
+      const cutoffStr = dateToLocalStr(cutoff);
+      const taken = Object.fromEntries(
+        Object.entries(d.taken || {}).filter(([k]) => k.split('_')[0] >= cutoffStr)
+      );
+      return {
+        supplements: d.supplements || [], // обычный список (раздел «БАДДы»/«Питание»)
+        workoutSupplements: d.workoutSupplements || [], // список для тренировок
+        taken, // отметки приёма за последние ~30 дней
+      };
+    },
+  },
+  checklist: {
+    label: 'Ежедневный чек-лист: поля и журнал ответов',
+    get: d => ({
+      fields: (d.dailyChecklistFields || []).filter(f => !f.archived),
+      log: (d.dailyChecklistLog || []).slice(-30),
+    }),
   },
 };
+
+// ── Голосовой/текстовый ассистент: универсальная запись данных ─────────────
+// Коллекций больше двадцати, и почти все — id-массивы с одним и тем же
+// паттерном (см. разведку по коду перед этим блоком): апсерт по id, hard
+// delete + tombstone, иногда каскад на дочерние записи. Вместо отдельного
+// инструмента на каждый раздел — три общих (create/update/delete_record) с
+// реестром правил на каждую коллекцию. Канбан и дневные логи (dietLog,
+// dailyChecklistLog) устроены иначе и получают свои функции ниже.
+
+// Бюджетные коллекции живут не в data.<key>, а в
+// data.budgetByUser[activeBudgetUserId].<key> — см. getCollectionArray/setCollectionArray.
+const BUDGET_SCOPED_COLLECTIONS = new Set([
+  'budgetExpenses', 'budgetRecurring', 'savingsTransactions',
+  'budgetDebts', 'debtTransactions', 'budgetCashflowAccounts', 'budgetCashflowOps',
+  'budgetMonthlyNotes',
+]);
+
+const getCollectionArray = (data, key) => {
+  if (BUDGET_SCOPED_COLLECTIONS.has(key)) {
+    const uid = data.activeBudgetUserId;
+    return ((data.budgetByUser || {})[uid] || {})[key] || [];
+  }
+  return data[key] || [];
+};
+
+const setCollectionArray = (data, key, arr) => {
+  if (BUDGET_SCOPED_COLLECTIONS.has(key)) {
+    const uid = data.activeBudgetUserId;
+    const slice = { ...((data.budgetByUser || {})[uid] || {}), [key]: arr };
+    return { ...data, budgetByUser: { ...(data.budgetByUser || {}), [uid]: slice } };
+  }
+  return { ...data, [key]: arr };
+};
+
+// createDefaults — поля новой записи по умолчанию (id/updatedAt добавляются
+// отдельно; updatedAt на самом деле проставляет сам setData — см. stampUpdatedAt
+// — поэтому его тут можно не указывать вообще). requireConfirm — запись сама
+// по себе финансовая, create/update тоже просят подтверждения (не только
+// delete, для которого подтверждение обязательно всегда и для всех).
+// cascadeDelete — при удалении рекурсивно удалить записи из collection, где
+// record[field] === id. cascadeOrphan — вместо удаления обнулить record[field].
+// cascadeStrip — убрать id из массива record[field]. customCascadeDelete —
+// когда каскад не укладывается в эти три формы (полностью заменяет их).
+// tombstone:false — коллекция без списка удалений (совпадает с тем, как её
+// правит сама вкладка приложения — лёгкие справочники категорий).
+const WRITE_REGISTRY = {
+  chores: {
+    label: 'Регулярное дело «По дому»',
+    createDefaults: () => ({ frequency: 'weekly', customDays: null, notify: false, notifyTime: '09:00', archived: false }),
+  },
+  bossTasks: {
+    label: 'Задача «Босс»',
+    createDefaults: () => ({ period: 'morning', days: [1, 2, 3, 4, 5], archived: false }),
+  },
+  cars: {
+    label: 'Автомобиль',
+    createDefaults: () => ({ archived: false }),
+    cascadeDelete: [{ collection: 'serviceRecords', field: 'carId' }],
+  },
+  serviceRecords: { label: 'Запись об обслуживании автомобиля', createDefaults: () => ({}) },
+  healthConditions: {
+    label: 'Состояние здоровья',
+    createDefaults: () => ({ tags: [] }),
+    cascadeOrphan: [{ collection: 'healthEvents', field: 'conditionId' }],
+  },
+  healthEvents: { label: 'Событие здоровья (визит/болезнь/процедура)', createDefaults: () => ({ tags: [], medications: [] }) },
+  loyaltyCards: { label: 'Карта лояльности магазина', createDefaults: () => ({ format: 'auto' }) },
+  gymPrograms: {
+    label: 'Программа тренировок GYM',
+    createDefaults: () => ({}),
+    cascadeDelete: [{ collection: 'gymDays', field: 'programId' }],
+  },
+  gymDays: {
+    label: 'Тренировочный день GYM',
+    createDefaults: () => ({ order: 0 }),
+    cascadeDelete: [{ collection: 'gymExercises', field: 'dayId' }],
+  },
+  gymExercises: { label: 'Упражнение GYM', createDefaults: () => ({ mode: 'groups', groups: [], order: 0 }) },
+  gymSessions: { label: 'Тренировка (журнал GYM)', createDefaults: () => ({ sets: [] }) },
+  wishlistCategories: {
+    label: 'Список хотелок',
+    createDefaults: () => ({}),
+    cascadeOrphan: [{ collection: 'wishlistItems', field: 'categoryId' }],
+  },
+  wishlistItems: { label: 'Хотелка', createDefaults: () => ({ bought: false }) },
+  plannerFriends: {
+    label: 'Друг-участник планировщика',
+    createDefaults: () => ({}),
+    cascadeStrip: [{ collection: 'plannerEvents', field: 'participantIds' }],
+  },
+  plannerEvents: {
+    label: 'Событие планировщика',
+    createDefaults: () => ({ participantIds: [], participantMode: 'list', confirmed: false }),
+    // Каскад в гостевые коллекции (ответы/комментарии/список покупок и т.д.) —
+    // ассистент их не читает и не пишет напрямую, но при удалении события
+    // строки должны уйти вместе с ним, иначе это утечка данных в файле.
+    customCascadeDelete: (data, id) => {
+      const strip = (key) => ({ [key]: (data[key] || []).filter(r => r.eventId !== id) });
+      return {
+        ...data,
+        ...strip('plannerResponses'), ...strip('plannerComments'), ...strip('plannerGuests'),
+        ...strip('plannerExpenses'), ...strip('plannerPayments'), ...strip('plannerShoppingItems'),
+      };
+    },
+  },
+  plannerPlans: { label: 'Личный план в планировщике', createDefaults: () => ({}) },
+  campingCategories: {
+    label: 'Категория кемпинг-вещей',
+    createDefaults: () => ({}),
+    cascadeOrphan: [{ collection: 'campingItems', field: 'categoryId' }],
+  },
+  campingItems: { label: 'Кемпинг-вещь (справочник)', createDefaults: () => ({ isBag: false }) },
+  campingTrips: { label: 'Кемпинг-поездка', createDefaults: () => ({ packing: { bags: [], items: [] } }) },
+  meals: { label: 'Рацион (приём пищи)', createDefaults: () => ({ breakfast: [], snack: [], lunch: [], dinner: [], archived: false }) },
+  supplements: { label: 'БАД (обычный список)', createDefaults: () => ({ form: 'Таблетки', frequency: 'daily_morning', archived: false }) },
+  workoutSupplements: { label: 'БАД (тренировочный список)', createDefaults: () => ({ form: 'Таблетки', frequency: 'daily_morning', archived: false }) },
+  bodyEntries: { label: 'Замер тела', createDefaults: () => ({ values: {} }) },
+  holidays: {
+    label: 'Праздник/день рождения (раздел Планировщик → Праздники)',
+    createDefaults: () => ({ type: 'birthday', date: '', birthYear: '', notify: true, reminders: [] }),
+  },
+  dailyChecklistFields: {
+    label: 'Поле ежедневного чек-листа',
+    createDefaults: () => ({ options: [], archived: false }),
+    // Не обнуление одного поля, а вычистка ключа поля из КАЖДОЙ записи журнала.
+    customCascadeDelete: (data, id) => ({
+      ...data,
+      dailyChecklistLog: (data.dailyChecklistLog || []).map(e => {
+        if (!e.answers || !(id in e.answers)) return e;
+        const answers = { ...e.answers };
+        delete answers[id];
+        return { ...e, answers };
+      }),
+    }),
+  },
+  shoppingLists: { label: 'Список покупок', createDefaults: () => ({ selections: [] }) },
+  cookingPlans: { label: 'План готовки (раздел Питание → Готовка)', createDefaults: () => ({ ingredients: [] }) },
+  containers: { label: 'Контейнер для взвешивания (раздел Питание → Контейнеры)', createDefaults: () => ({ weight: '', comment: '' }) },
+  budgetExpenses: {
+    label: 'Накопление (финансовая цель)',
+    requireConfirm: true,
+    createDefaults: () => ({ archived: false }),
+    cascadeDelete: [{ collection: 'savingsTransactions', field: 'expenseId' }],
+  },
+  savingsTransactions: { label: 'Операция по накоплению', requireConfirm: true, createDefaults: () => ({}) },
+  budgetRecurring: { label: 'Регулярный платёж', requireConfirm: true, createDefaults: () => ({ archived: false }) },
+  budgetDebts: {
+    label: 'Долг',
+    requireConfirm: true,
+    createDefaults: () => ({ closed: false }),
+    cascadeDelete: [{ collection: 'debtTransactions', field: 'debtId' }],
+  },
+  debtTransactions: { label: 'Операция по долгу', requireConfirm: true, createDefaults: () => ({}) },
+  budgetCashflowAccounts: {
+    label: 'Счёт ДДС',
+    requireConfirm: true,
+    createDefaults: () => ({}),
+    cascadeDelete: [{ collection: 'budgetCashflowOps', field: 'accountId' }],
+  },
+  budgetCashflowOps: { label: 'Операция ДДС (расход/доход)', requireConfirm: true, createDefaults: () => ({ source: 'manual' }) },
+  budgetMonthlyNotes: {
+    label: 'Заметка «Выводы по месяцу» (раздел Бюджет → По месяцу)',
+    createDefaults: () => ({ month: '', sort: 0 }),
+  },
+};
+
+function createRecordGeneric(data, collectionKey, fields) {
+  const reg = WRITE_REGISTRY[collectionKey];
+  if (!reg) return { data, error: 'unknown_collection' };
+  const record = { ...reg.createDefaults(), ...(fields || {}), id: crypto.randomUUID() };
+  const arr = getCollectionArray(data, collectionKey);
+  return { data: setCollectionArray(data, collectionKey, [...arr, record]), record };
+}
+
+function updateRecordGeneric(data, collectionKey, id, patch) {
+  const reg = WRITE_REGISTRY[collectionKey];
+  if (!reg) return { data, error: 'unknown_collection' };
+  const arr = getCollectionArray(data, collectionKey);
+  if (!arr.some(r => r.id === id)) return { data, error: 'not_found' };
+  const next = arr.map(r => r.id === id ? { ...r, ...(patch || {}), id: r.id } : r);
+  return { data: setCollectionArray(data, collectionKey, next) };
+}
+
+function deleteRecordCascade(data, collectionKey, id) {
+  const reg = WRITE_REGISTRY[collectionKey];
+  if (!reg) return data;
+  if (reg.customCascadeDelete) {
+    data = reg.customCascadeDelete(data, id);
+  } else {
+    (reg.cascadeOrphan || []).forEach(({ collection, field }) => {
+      const arr = getCollectionArray(data, collection);
+      data = setCollectionArray(data, collection, arr.map(r => r[field] === id ? { ...r, [field]: '' } : r));
+    });
+    (reg.cascadeStrip || []).forEach(({ collection, field }) => {
+      const arr = getCollectionArray(data, collection);
+      data = setCollectionArray(data, collection, arr.map(r =>
+        Array.isArray(r[field]) && r[field].includes(id) ? { ...r, [field]: r[field].filter(x => x !== id) } : r));
+    });
+    (reg.cascadeDelete || []).forEach(({ collection, field }) => {
+      const arr = getCollectionArray(data, collection);
+      arr.filter(r => r[field] === id).map(r => r.id).forEach(childId => {
+        data = deleteRecordCascade(data, collection, childId);
+      });
+    });
+  }
+  const arr = getCollectionArray(data, collectionKey);
+  data = setCollectionArray(data, collectionKey, arr.filter(r => r.id !== id));
+  if (reg.tombstone !== false) {
+    data = { ...data, deletedIds: withDeletedId(data, collectionKey, id) };
+  }
+  return data;
+}
+
+function deleteRecordGeneric(data, collectionKey, id) {
+  const reg = WRITE_REGISTRY[collectionKey];
+  if (!reg) return { data, error: 'unknown_collection' };
+  const arr = getCollectionArray(data, collectionKey);
+  if (!arr.some(r => r.id === id)) return { data, error: 'not_found' };
+  return { data: deleteRecordCascade(data, collectionKey, id) };
+}
+
+// ── Канбан: не плоский id-массив (задачи вложены в колонки), свои функции ──
+const getKanbanColumns = (data) => (data.kanban && data.kanban.columns) || DEFAULT_KANBAN_COLUMNS;
+
+// Тот же принцип, что у KanbanView.setColumns: колонка получает свежий
+// updatedAt только если её содержимое (без самого updatedAt) реально
+// изменилось — иначе правки внутри задач не будут расходиться между
+// устройствами (задачи не top-level массив, автоштамп их не видит).
+const setKanbanColumns = (data, columns) => {
+  const prevById = new Map(getKanbanColumns(data).map(c => [c.id, c]));
+  const stamped = columns.map(c => {
+    const prev = prevById.get(c.id);
+    const strip = (x) => JSON.stringify({ ...x, updatedAt: undefined });
+    if (prev && strip(prev) === strip(c)) return prev;
+    return { ...c, updatedAt: Date.now() };
+  });
+  return { ...data, kanban: { ...(data.kanban || {}), columns: stamped } };
+};
+
+const findKanbanTask = (data, taskId) => {
+  for (const col of getKanbanColumns(data)) {
+    const task = (col.tasks || []).find(t => t.id === taskId);
+    if (task) return { task, columnId: col.id };
+  }
+  return null;
+};
+
+const patchKanbanTask = (data, taskId, mutate) => {
+  const found = findKanbanTask(data, taskId);
+  if (!found) return { data, error: 'task_not_found' };
+  const columns = getKanbanColumns(data).map(c => c.id !== found.columnId ? c : {
+    ...c, tasks: c.tasks.map(t => t.id === taskId ? mutate(t) : t),
+  });
+  return { data: setKanbanColumns(data, columns) };
+};
+
+function kanbanCreateTask(data, columnId, fields) {
+  const columns = getKanbanColumns(data);
+  if (!columns.some(c => c.id === columnId)) return { data, error: 'unknown_column' };
+  const task = newTask(fields);
+  const next = columns.map(c => c.id === columnId ? { ...c, tasks: [task, ...(c.tasks || [])] } : c);
+  return { data: setKanbanColumns(data, next), task };
+}
+
+function kanbanUpdateTask(data, taskId, patch) {
+  return patchKanbanTask(data, taskId, t => ({ ...t, ...patch }));
+}
+
+function kanbanDeleteTask(data, taskId) {
+  const found = findKanbanTask(data, taskId);
+  if (!found) return { data, error: 'task_not_found' };
+  const columns = getKanbanColumns(data).map(c => c.id !== found.columnId ? c : { ...c, tasks: c.tasks.filter(t => t.id !== taskId) });
+  return { data: setKanbanColumns(data, columns) };
+}
+
+function kanbanMoveTask(data, taskId, targetColumnId) {
+  const columns = getKanbanColumns(data);
+  if (!columns.some(c => c.id === targetColumnId)) return { data, error: 'unknown_column' };
+  const found = findKanbanTask(data, taskId);
+  if (!found) return { data, error: 'task_not_found' };
+  if (found.columnId === targetColumnId) return { data };
+  const task = found.task;
+  const next = columns.map(c => {
+    if (c.id === found.columnId) return { ...c, tasks: c.tasks.filter(t => t.id !== taskId) };
+    if (c.id === targetColumnId) return { ...c, tasks: [task, ...c.tasks] };
+    return c;
+  });
+  return { data: setKanbanColumns(data, next) };
+}
+
+function kanbanAddComment(data, taskId, text) {
+  return patchKanbanTask(data, taskId, t => ({ ...t, comments: [...(t.comments || []), newComment(text)] }));
+}
+
+function kanbanDeleteComment(data, taskId, commentId) {
+  return patchKanbanTask(data, taskId, t => ({ ...t, comments: (t.comments || []).filter(c => c.id !== commentId) }));
+}
+
+function kanbanAddSubtask(data, taskId, text) {
+  return patchKanbanTask(data, taskId, t => ({ ...t, subtasks: [...(t.subtasks || []), { id: crypto.randomUUID(), text, done: false }] }));
+}
+
+function kanbanToggleSubtask(data, taskId, subtaskId, done) {
+  return patchKanbanTask(data, taskId, t => ({
+    ...t,
+    subtasks: (t.subtasks || []).map(s => s.id === subtaskId ? { ...s, done: done !== undefined ? !!done : !s.done } : s),
+  }));
+}
+
+// ── Ингредиенты плана готовки: вложены в cookingPlans[].ingredients, поэтому
+// не подходят под общий create/update/delete_record (та же причина, что у
+// канбана) — свои функции поверх найденного плана.
+const findCookingPlan = (data, planId) => (data.cookingPlans || []).find(p => p.id === planId) || null;
+
+const patchCookingPlan = (data, planId, mutate) => {
+  const plans = data.cookingPlans || [];
+  if (!plans.some(p => p.id === planId)) return { data, error: 'plan_not_found' };
+  return { data: { ...data, cookingPlans: plans.map(p => p.id === planId ? { ...mutate(p), updatedAt: Date.now() } : p) } };
+};
+
+function cookingPlanAddIngredient(data, planId, fields) {
+  if (!findCookingPlan(data, planId)) return { data, error: 'plan_not_found' };
+  const ingredient = {
+    id: crypto.randomUUID(), name: '', portions: '', portionSize: '',
+    actualRaw: null, actualCooked: null, ...fields,
+  };
+  const result = patchCookingPlan(data, planId, p => ({ ...p, ingredients: [...(p.ingredients || []), ingredient] }));
+  return { ...result, ingredient };
+}
+
+function cookingPlanUpdateIngredient(data, planId, ingredientId, patch) {
+  const plan = findCookingPlan(data, planId);
+  if (!plan) return { data, error: 'plan_not_found' };
+  if (!(plan.ingredients || []).some(i => i.id === ingredientId)) return { data, error: 'ingredient_not_found' };
+  return patchCookingPlan(data, planId, p => ({
+    ...p, ingredients: p.ingredients.map(i => i.id === ingredientId ? { ...i, ...patch } : i),
+  }));
+}
+
+function cookingPlanDeleteIngredient(data, planId, ingredientId) {
+  const plan = findCookingPlan(data, planId);
+  if (!plan) return { data, error: 'plan_not_found' };
+  if (!(plan.ingredients || []).some(i => i.id === ingredientId)) return { data, error: 'ingredient_not_found' };
+  return patchCookingPlan(data, planId, p => ({ ...p, ingredients: p.ingredients.filter(i => i.id !== ingredientId) }));
+}
+
+// ── Дневные логи (dietLog, dailyChecklistLog): один ряд на дату, а не на id —
+// апсерт заменяет запись за эту дату целиком, удаление тоже адресуется датой.
+function logDietCompliance(data, date, level) {
+  const list = (data.dietLog || []).filter(e => e.date !== date);
+  return { data: { ...data, dietLog: [...list, { id: crypto.randomUUID(), date, level, updatedAt: Date.now() }] } };
+}
+
+function deleteDietLogEntry(data, date) {
+  deleteLogEntryOnServer('dietLog', date);
+  return {
+    data: {
+      ...data,
+      dietLog: (data.dietLog || []).filter(e => e.date !== date),
+      deletedIds: withDeletedId(data, 'dietLog', date),
+    },
+  };
+}
+
+function logChecklistAnswer(data, date, fieldId, option) {
+  const existing = (data.dailyChecklistLog || []).find(e => e.date === date);
+  const answers = { ...(existing?.answers || {}), [fieldId]: option };
+  const list = (data.dailyChecklistLog || []).filter(e => e.date !== date);
+  return {
+    data: {
+      ...data,
+      dailyChecklistLog: [...list, { id: existing?.id || crypto.randomUUID(), date, answers, updatedAt: Date.now() }],
+    },
+  };
+}
+
+function deleteChecklistLogEntry(data, date) {
+  deleteLogEntryOnServer('dailyChecklistLog', date);
+  return {
+    data: {
+      ...data,
+      dailyChecklistLog: (data.dailyChecklistLog || []).filter(e => e.date !== date),
+      deletedIds: withDeletedId(data, 'dailyChecklistLog', date),
+    },
+  };
+}
 
 const VOICE_AGENT_TOOLS = [
   {
@@ -8339,19 +8982,186 @@ const VOICE_AGENT_TOOLS = [
     },
   },
   {
-    name: 'add_task',
-    description: 'Добавить новое регулярное дело в раздел «По дому» (chores) или «Босс» (boss).',
+    name: 'create_record',
+    description: 'Добавить новую запись в один из разделов проекта.',
     input_schema: {
       type: 'object',
       properties: {
-        section: { type: 'string', enum: ['chores', 'boss'] },
-        name: { type: 'string' },
-        frequency: { type: 'string', enum: ['daily', 'every2', 'every3', 'weekly', 'biweekly', 'monthly', 'custom'] },
-        customDays: { type: 'number' },
-        period: { type: 'string', enum: ['morning', 'evening', 'allday'] },
-        days: { type: 'array', items: { type: 'number' } },
+        collection: { type: 'string', enum: Object.keys(WRITE_REGISTRY) },
+        fields: { type: 'object', description: 'Поля новой записи — сначала вызови get_data по этому же разделу, чтобы увидеть форму существующих записей.' },
+        confirmed: { type: 'boolean', description: 'true только после того как пользователь явно подтвердил — обязательно для финансовых разделов.' },
       },
-      required: ['section', 'name'],
+      required: ['collection', 'fields'],
+    },
+  },
+  {
+    name: 'update_record',
+    description: 'Изменить поля существующей записи по id.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        collection: { type: 'string', enum: Object.keys(WRITE_REGISTRY) },
+        id: { type: 'string' },
+        patch: { type: 'object', description: 'Только те поля, которые нужно изменить.' },
+        confirmed: { type: 'boolean' },
+      },
+      required: ['collection', 'id', 'patch'],
+    },
+  },
+  {
+    name: 'delete_record',
+    description: 'Удалить запись по id. Всегда требует явного подтверждения пользователя.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        collection: { type: 'string', enum: Object.keys(WRITE_REGISTRY) },
+        id: { type: 'string' },
+        confirmed: { type: 'boolean' },
+      },
+      required: ['collection', 'id'],
+    },
+  },
+  {
+    name: 'kanban_create_task',
+    description: 'Создать задачу на канбан-доске «Задачи» (раздел house_tasks).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        columnId: { type: 'string', description: 'id колонки из get_data("house_tasks")' },
+        title: { type: 'string' },
+        priority: { type: 'string', enum: ['none', 'low', 'medium', 'high'] },
+        description: { type: 'string' },
+        dueDate: { type: 'string' },
+      },
+      required: ['columnId', 'title'],
+    },
+  },
+  {
+    name: 'kanban_update_task',
+    description: 'Изменить поля задачи канбана (title/priority/description/dueDate/closed и т.п.) — для комментариев и подзадач есть отдельные инструменты.',
+    input_schema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' }, patch: { type: 'object' } },
+      required: ['taskId', 'patch'],
+    },
+  },
+  {
+    name: 'kanban_delete_task',
+    description: 'Удалить задачу канбана. Требует подтверждения.',
+    input_schema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' }, confirmed: { type: 'boolean' } },
+      required: ['taskId'],
+    },
+  },
+  {
+    name: 'kanban_move_task',
+    description: 'Переместить задачу канбана в другую колонку.',
+    input_schema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' }, columnId: { type: 'string' } },
+      required: ['taskId', 'columnId'],
+    },
+  },
+  {
+    name: 'kanban_add_comment',
+    description: 'Добавить комментарий к задаче канбана.',
+    input_schema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' }, text: { type: 'string' } },
+      required: ['taskId', 'text'],
+    },
+  },
+  {
+    name: 'kanban_delete_comment',
+    description: 'Удалить комментарий у задачи канбана.',
+    input_schema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' }, commentId: { type: 'string' } },
+      required: ['taskId', 'commentId'],
+    },
+  },
+  {
+    name: 'kanban_add_subtask',
+    description: 'Добавить подзадачу к задаче канбана.',
+    input_schema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' }, text: { type: 'string' } },
+      required: ['taskId', 'text'],
+    },
+  },
+  {
+    name: 'kanban_toggle_subtask',
+    description: 'Отметить подзадачу канбана выполненной/невыполненной.',
+    input_schema: {
+      type: 'object',
+      properties: { taskId: { type: 'string' }, subtaskId: { type: 'string' }, done: { type: 'boolean' } },
+      required: ['taskId', 'subtaskId'],
+    },
+  },
+  {
+    name: 'log_diet_compliance',
+    description: 'Отметить соблюдение диеты за конкретный день.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', description: 'YYYY-MM-DD' },
+        level: { type: 'string', enum: ['much_below', 'below', 'on_plan', 'above', 'much_above', 'mini_cheat', 'cheat'] },
+      },
+      required: ['date', 'level'],
+    },
+  },
+  {
+    name: 'log_checklist_answer',
+    description: 'Отметить ответ ежедневного чек-листа (раздел checklist) за конкретный день.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', description: 'YYYY-MM-DD' },
+        fieldId: { type: 'string', description: 'id поля из get_data("checklist")' },
+        option: { type: 'string' },
+      },
+      required: ['date', 'fieldId', 'option'],
+    },
+  },
+  {
+    name: 'cooking_plan_add_ingredient',
+    description: 'Добавить продукт в план готовки (раздел Питание → Готовка).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        planId: { type: 'string', description: 'id плана из get_data("meals").cookingPlans' },
+        name: { type: 'string' },
+        portions: { type: 'number', description: 'Число порций — вместе с portionSize задаёт план сырого веса в граммах' },
+        portionSize: { type: 'number', description: 'Грамм на порцию' },
+        plannedRaw: { type: 'number', description: 'План сырого веса в граммах напрямую, если не через порции' },
+      },
+      required: ['planId', 'name'],
+    },
+  },
+  {
+    name: 'cooking_plan_update_ingredient',
+    description: 'Изменить план/факт продукта в плане готовки — например «Запиши гречка сырое факт 650», «У курицы готовое 1500». Сначала get_data("meals"), чтобы найти id продукта по названию.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        planId: { type: 'string' },
+        ingredientId: { type: 'string', description: 'id продукта из get_data("meals").cookingPlans[].ingredients' },
+        patch: {
+          type: 'object',
+          description: 'Поля: actualRaw (факт сырого веса, г), actualCooked (факт готового веса, г), name, portions, portionSize, plannedRaw',
+        },
+      },
+      required: ['planId', 'ingredientId', 'patch'],
+    },
+  },
+  {
+    name: 'cooking_plan_delete_ingredient',
+    description: 'Удалить продукт из плана готовки. Требует подтверждения.',
+    input_schema: {
+      type: 'object',
+      properties: { planId: { type: 'string' }, ingredientId: { type: 'string' }, confirmed: { type: 'boolean' } },
+      required: ['planId', 'ingredientId'],
     },
   },
 ];
@@ -8359,13 +9169,14 @@ const VOICE_AGENT_TOOLS = [
 function buildVoiceAgentSystemPrompt() {
   const domainList = Object.entries(VOICE_DATA_DOMAINS).map(([k, v]) => `  • ${k} — ${v.label}`).join('\n');
   const navList = Object.entries(VOICE_NAV_LABELS).map(([k, v]) => `  • ${k} — ${v}`).join('\n');
+  const writeList = Object.entries(WRITE_REGISTRY).map(([k, v]) => `  • ${k} — ${v.label}${v.requireConfirm ? ' (финансовое — подтверждение)' : ''}`).join('\n');
   const todayStr = dateToLocalStr(new Date());
 
-  return `Ты голосовой помощник приложения Jarvis. Отвечай кратко и по-русски, разговорным языком — ответ озвучивается вслух, а не читается.
+  return `Ты ассистент приложения Jarvis. Отвечай кратко и по-русски, разговорным языком.
 
 СЕГОДНЯ: ${todayStr}
 
-У тебя есть инструменты, покрывающие весь проект:
+У тебя есть инструменты, покрывающие весь проект — всё то же самое, что пользователь делает руками:
 
 1. get_data(domain) — прочитать актуальные данные раздела. Разделы:
 ${domainList}
@@ -8373,36 +9184,119 @@ ${domainList}
 2. navigate(target, focus_id?) — открыть раздел на экране пользователя. Разделы:
 ${navList}
 
-3. add_task(section, name, ...) — добавить регулярное дело в «По дому» или «Босс».
+3. create_record(collection, fields) / update_record(collection, id, patch) / delete_record(collection, id) — добавить/изменить/удалить запись. Коллекции:
+${writeList}
+
+4. Канбан-доска «Задачи» (house_tasks) устроена отдельно от прочих разделов — свои инструменты: kanban_create_task, kanban_update_task, kanban_delete_task, kanban_move_task, kanban_add_comment, kanban_delete_comment, kanban_add_subtask, kanban_toggle_subtask.
+
+5. log_diet_compliance(date, level) / log_checklist_answer(date, fieldId, option) — отметки по дням (один раз на дату — вызов заменяет предыдущую отметку на эту дату, если она была).
+
+6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и готового веса), cooking_plan_delete_ingredient.
+
+ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task) и любая запись в финансовые разделы (помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
 - Не отвечай по памяти на вопросы о данных пользователя — всегда сначала get_data по нужному разделу.
+- Перед созданием/изменением записи по незнакомой структуре сначала вызови get_data по этому разделу, чтобы увидеть форму существующих записей (имена полей, форматы).
 - Если просят открыть/показать раздел — вызови navigate и коротко подтверди («Открываю»).
-- Если данных нет или вопрос не по теме проекта — так и скажи, не выдумывай.`;
+- Если данных нет или вопрос не по теме проекта — так и скажи, не выдумывай.
+- Никогда не удаляй и не меняй финансовые данные без подтверждения, даже если пользователь говорит это как бы между делом.`;
 }
 
 function executeVoiceTool(name, input, nav, data) {
+  input = input || {};
+  const noop = (output) => ({ output, data });
+  const applied = (result, output) => {
+    if (result.error) return noop({ error: result.error });
+    nav.setData(result.data);
+    return { output: output || { ok: true }, data: result.data };
+  };
+
   if (name === 'get_data') {
-    const domain = VOICE_DATA_DOMAINS[input?.domain];
-    if (!domain) return { error: 'unknown_domain' };
-    return domain.get(data);
+    const domain = VOICE_DATA_DOMAINS[input.domain];
+    if (!domain) return noop({ error: 'unknown_domain' });
+    return noop(domain.get(data));
   }
   if (name === 'navigate') {
-    const target = VOICE_NAV_TARGETS[input?.target];
-    if (!target) return { error: 'unknown_target' };
+    const target = VOICE_NAV_TARGETS[input.target];
+    if (!target) return noop({ error: 'unknown_target' });
     nav.setTab(target.tab);
     if (target.houseTab !== undefined) nav.setHouseTab(target.houseTab);
     if (target.plannerTab !== undefined) nav.setPlannerTab(target.plannerTab);
     if (target.miscTab !== undefined) nav.setMiscTab(target.miscTab);
-    nav.setVoiceFocus(target.focusable && input?.focus_id ? { target: input.target, id: input.focus_id } : null);
-    return { ok: true };
+    nav.setVoiceFocus(target.focusable && input.focus_id ? { target: input.target, id: input.focus_id } : null);
+    return noop({ ok: true });
   }
-  if (name === 'add_task') {
-    applyVoiceTask(input, nav.setData);
-    return { ok: true };
+
+  if (name === 'create_record' || name === 'update_record' || name === 'delete_record') {
+    const reg = WRITE_REGISTRY[input.collection];
+    if (!reg) return noop({ error: 'unknown_collection' });
+    const isDelete = name === 'delete_record';
+    const needsConfirm = isDelete || !!reg.requireConfirm;
+    if (needsConfirm && !input.confirmed) {
+      const verb = isDelete ? 'удалить' : name === 'create_record' ? 'добавить' : 'изменить';
+      return noop({ needs_confirmation: true, message: `Нужно подтверждение пользователя, чтобы ${verb}: ${reg.label}.` });
+    }
+    if (name === 'create_record') {
+      const result = createRecordGeneric(data, input.collection, input.fields);
+      return applied(result, result.error ? undefined : { ok: true, id: result.record.id });
+    }
+    if (name === 'update_record') {
+      return applied(updateRecordGeneric(data, input.collection, input.id, input.patch));
+    }
+    return applied(deleteRecordGeneric(data, input.collection, input.id));
   }
-  return { error: 'unknown_tool' };
+
+  if (name === 'kanban_create_task') {
+    const result = kanbanCreateTask(data, input.columnId, {
+      title: input.title, priority: input.priority || 'none',
+      description: input.description || '', dueDate: input.dueDate || '',
+    });
+    return applied(result, result.error ? undefined : { ok: true, id: result.task.id });
+  }
+  if (name === 'kanban_update_task') {
+    return applied(kanbanUpdateTask(data, input.taskId, input.patch || {}));
+  }
+  if (name === 'kanban_delete_task') {
+    if (!input.confirmed) return noop({ needs_confirmation: true, message: 'Нужно подтверждение пользователя, чтобы удалить задачу канбана.' });
+    return applied(kanbanDeleteTask(data, input.taskId));
+  }
+  if (name === 'kanban_move_task') {
+    return applied(kanbanMoveTask(data, input.taskId, input.columnId));
+  }
+  if (name === 'kanban_add_comment') {
+    return applied(kanbanAddComment(data, input.taskId, input.text));
+  }
+  if (name === 'kanban_delete_comment') {
+    return applied(kanbanDeleteComment(data, input.taskId, input.commentId));
+  }
+  if (name === 'kanban_add_subtask') {
+    return applied(kanbanAddSubtask(data, input.taskId, input.text));
+  }
+  if (name === 'kanban_toggle_subtask') {
+    return applied(kanbanToggleSubtask(data, input.taskId, input.subtaskId, input.done));
+  }
+  if (name === 'log_diet_compliance') {
+    return applied(logDietCompliance(data, input.date, input.level));
+  }
+  if (name === 'log_checklist_answer') {
+    return applied(logChecklistAnswer(data, input.date, input.fieldId, input.option));
+  }
+  if (name === 'cooking_plan_add_ingredient') {
+    const result = cookingPlanAddIngredient(data, input.planId, {
+      name: input.name, portions: input.portions, portionSize: input.portionSize, plannedRaw: input.plannedRaw,
+    });
+    return applied(result, result.error ? undefined : { ok: true, id: result.ingredient.id });
+  }
+  if (name === 'cooking_plan_update_ingredient') {
+    return applied(cookingPlanUpdateIngredient(data, input.planId, input.ingredientId, input.patch || {}));
+  }
+  if (name === 'cooking_plan_delete_ingredient') {
+    if (!input.confirmed) return noop({ needs_confirmation: true, message: 'Нужно подтверждение пользователя, чтобы удалить продукт из плана готовки.' });
+    return applied(cookingPlanDeleteIngredient(data, input.planId, input.ingredientId));
+  }
+  return noop({ error: 'unknown_tool' });
 }
 
 // Многошаговый цикл tool-use: модель может вызвать несколько инструментов
@@ -8410,19 +9304,36 @@ function executeVoiceTool(name, input, nav, data) {
 // прежде чем дать финальный текстовый ответ. data — снимок на момент начала
 // разговора: инструменты навигации/добавления это не смущает (они читают
 // данные только чтобы найти id и не нуждаются в собственных правках задним числом).
+// Провайдер решает пресет, назначенный функции "voiceAssistant" в Настройках
+// → Ассистент — у Claude и OpenAI разный формат tool-calling, поэтому ниже
+// два отдельных цикла на общем наборе инструментов/executeVoiceTool.
 async function runVoiceAgent(messages, settings, data, nav, maxSteps = 6) {
-  const key = (settings?.voiceApiKey || '').trim();
-  if (!key) throw new Error('no_key');
-  const model = (settings?.voiceModel || '').trim() || 'claude-sonnet-4-6';
-  const system = buildVoiceAgentSystemPrompt();
-  let convo = messages.map(m => ({ role: m.role, content: m.content }));
+  const preset = resolveAiPreset(settings, 'voiceAssistant');
+  if (!preset || !preset.apiKey) throw new Error('no_key');
+  const provider = preset.provider === 'openai' ? 'openai' : 'claude';
+  const model = (preset.model || '').trim() || AI_PROVIDER_DEFAULT_MODEL[provider];
+  const convo = messages.map(m => ({ role: m.role, content: m.content }));
+  return provider === 'openai'
+    ? runVoiceAgentOpenAI(convo, preset.apiKey, model, data, nav, maxSteps)
+    : runVoiceAgentClaude(convo, preset.apiKey, model, data, nav, maxSteps);
+}
 
+// Возвращают { text, pendingConfirmation }. data — снимок на момент начала
+// разговора; executeVoiceTool возвращает { output, data } на каждый вызов —
+// data threading нужен, чтобы create/update/delete в одном раунде видели
+// друг друга (создали запись → тут же спросили её обратно), а не только тот
+// снимок, с которого раунд начался. pendingConfirmation = хотя бы один вызов
+// в этом раунде вернул needs_confirmation — тогда VoiceButton не сбрасывает
+// историю после ответа, чтобы следующее «да» продолжило тот же разговор.
+async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
+  const system = buildVoiceAgentSystemPrompt();
+  let pendingConfirmation = false;
   for (let step = 0; step < maxSteps; step++) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': key,
+        'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
@@ -8437,88 +9348,79 @@ async function runVoiceAgent(messages, settings, data, nav, maxSteps = 6) {
     const toolUses = content.filter(b => b.type === 'tool_use');
     const text = content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
 
-    if (!toolUses.length) return text || 'Готово';
+    if (!toolUses.length) return { text: text || 'Готово', pendingConfirmation };
 
     convo.push({ role: 'assistant', content });
     convo.push({
       role: 'user',
       content: toolUses.map(tu => {
         let output;
-        try { output = executeVoiceTool(tu.name, tu.input, nav, data); }
-        catch (e) { output = { error: e.message }; }
+        try {
+          const result = executeVoiceTool(tu.name, tu.input, nav, data);
+          data = result.data;
+          output = result.output;
+        } catch (e) { output = { error: e.message }; }
+        if (output && output.needs_confirmation) pendingConfirmation = true;
         return { type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(output) };
       }),
     });
   }
-  return 'Не разобрался за отведённое число шагов — попробуйте переформулировать.';
+  return { text: 'Не разобрался за отведённое число шагов — попробуйте переформулировать.', pendingConfirmation };
 }
 
-function buildVoiceSystemPrompt(appData) {
-  const DAY_NAMES = ['вс','пн','вт','ср','чт','пт','сб'];
-  const PERIOD_NAMES = { morning: 'утро', evening: 'вечер', allday: 'весь день' };
-  const FREQ_LABELS = { daily:'каждый день', every2:'каждые 2 дня', every3:'каждые 3 дня', weekly:'раз в неделю', biweekly:'раз в 2 нед', monthly:'раз в месяц', custom:'своя' };
+// Те же инструменты (input_schema — обычный JSON Schema, подходит и OpenAI как
+// есть), но формат запроса/ответа function-calling у OpenAI другой: tool_calls
+// плечом к плечу с текстом в одном сообщении assistant, результаты — отдельными
+// сообщениями role:"tool" с tool_call_id, а не одним user-сообщением как у Claude.
+async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps) {
+  const system = buildVoiceAgentSystemPrompt();
+  const tools = VOICE_AGENT_TOOLS.map(t => ({
+    type: 'function',
+    function: { name: t.name, description: t.description, parameters: t.input_schema },
+  }));
+  const oaiMessages = [{ role: 'system', content: system }, ...convo];
+  let pendingConfirmation = false;
 
-  const today = new Date();
-  const todayStr = dateToLocalStr(today);
-  const todayDayName = DAY_NAMES[today.getDay()];
+  for (let step = 0; step < maxSteps; step++) {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify({ model, max_completion_tokens: 800, messages: oaiMessages, tools }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || `OpenAI API ${res.status}`);
+    }
+    const resp = await res.json();
+    const message = resp.choices?.[0]?.message || {};
+    const toolCalls = message.tool_calls || [];
 
-  const chores = (appData.chores || []).filter(c => !c.archived);
-  const bossTasks = (appData.bossTasks || []).filter(t => !t.archived);
+    if (!toolCalls.length) return { text: message.content || 'Готово', pendingConfirmation };
 
-  const choreLines = chores.length
-    ? chores.map(c => {
-        const next = getChoreNextDate(c);
-        const nextStr = isChoreDueToday(c) ? 'СЕГОДНЯ' : dateToLocalStr(next);
-        const freq = FREQ_LABELS[c.frequency] || c.frequency;
-        const custom = c.frequency === 'custom' ? ` (${c.customDays} дн)` : '';
-        return `  • ${c.name} | ${freq}${custom} | последний раз: ${c.lastDone || 'никогда'} | следующий: ${nextStr}`;
-      }).join('\n')
-    : '  (пусто)';
-
-  const bossLines = bossTasks.length
-    ? bossTasks.map(t => {
-        const days = (t.days || []).map(d => DAY_NAMES[d]).join(',');
-        return `  • ${t.name} | ${PERIOD_NAMES[t.period] || t.period} | дни: ${days}`;
-      }).join('\n')
-    : '  (пусто)';
-
-  return `Ты голосовой помощник приложения Jarvis. Отвечай кратко, по-русски.
-
-СЕГОДНЯ: ${todayStr} (${todayDayName})
-
-РАЗДЕЛ "ПО ДОМУ" — регулярные домашние дела:
-${choreLines}
-
-РАЗДЕЛ "БОСС" — задачи по расписанию:
-${bossLines}
-
-ТЫ УМЕЕШЬ:
-1. Ответить на любой вопрос о делах пользователя (что сегодня, что просрочено, когда последний раз, что на этой неделе и т.д.)
-2. Добавить новое дело в один из разделов
-
-ФОРМАТ ОТВЕТА — только JSON, без markdown, без пояснений:
-
-Ответить на вопрос:
-{"action":"answer","text":"краткий разговорный ответ на русском"}
-
-Добавить в "По дому":
-{"action":"add","section":"chores","name":"...","frequency":"daily|every2|every3|weekly|biweekly|monthly|custom","customDays":null}
-
-Добавить в "Босс":
-{"action":"add","section":"boss","name":"...","period":"morning|evening|allday","days":[1,2,3,4,5]}
-
-Уточнить (если непонятно):
-{"action":"clarify","question":"короткий вопрос"}`;
+    oaiMessages.push({ role: 'assistant', content: message.content || null, tool_calls: toolCalls });
+    for (const tc of toolCalls) {
+      let input = {};
+      try { input = JSON.parse(tc.function?.arguments || '{}'); } catch (_) { /* оставляем {} */ }
+      let output;
+      try {
+        const result = executeVoiceTool(tc.function?.name, input, nav, data);
+        data = result.data;
+        output = result.output;
+      } catch (e) { output = { error: e.message }; }
+      if (output && output.needs_confirmation) pendingConfirmation = true;
+      oaiMessages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(output) });
+    }
+  }
+  return { text: 'Не разобрался за отведённое число шагов — попробуйте переформулировать.', pendingConfirmation };
 }
 
-async function callAI(messages, settings, appData, systemPromptOverride, maxTokens = 400) {
-  const systemPrompt = systemPromptOverride || buildVoiceSystemPrompt(appData || {});
-  const provider = settings.voiceProvider || 'claude';
-  const key = (settings.voiceApiKey || '').trim();
-  if (!key) throw new Error('no_key');
 
-  const model = (settings.voiceModel || '').trim() ||
-    (provider === 'claude' ? 'claude-sonnet-4-6' : 'gpt-4o');
+async function callAI(messages, settings, systemPrompt, maxTokens = 400, functionKey = 'voiceAssistant') {
+  const preset = resolveAiPreset(settings, functionKey);
+  if (!preset || !preset.apiKey) throw new Error('no_key');
+  const provider = preset.provider === 'openai' ? 'openai' : 'claude';
+  const key = preset.apiKey;
+  const model = (preset.model || '').trim() || AI_PROVIDER_DEFAULT_MODEL[provider];
 
   if (provider === 'claude') {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -8552,7 +9454,7 @@ async function callAI(messages, settings, appData, systemPromptOverride, maxToke
       },
       body: JSON.stringify({
         model,
-        max_tokens: maxTokens,
+        max_completion_tokens: maxTokens,
         messages: [{ role: 'system', content: systemPrompt }, ...messages],
       }),
     });
@@ -8567,8 +9469,8 @@ async function callAI(messages, settings, appData, systemPromptOverride, maxToke
 }
 
 // ============== ЗДОРОВЬЕ: РАСПОЗНАВАНИЕ ДОКУМЕНТА ЧЕРЕЗ ИИ ==============
-// Переиспользует ту же connectivity (callAI, settings.voiceProvider/voiceApiKey),
-// что и голосовой ассистент — второй ключ ИИ заводить не нужно.
+// Переиспользует общий callAI и набор ключей, назначенный функции
+// "healthExtract" в Настройках → Ассистент.
 
 const HEALTH_EXTRACT_SYSTEM_PROMPT = `Ты помогаешь заполнить карточку приёма у врача в приложении учёта здоровья по присланному документу (результат осмотра/обследования, выписка, заключение).
 Извлеки из документа только то, что там реально написано — ничего не придумывай и не дополняй медицинскими предположениями. Если какого-то поля в документе нет — оставь пустую строку или пустой массив.
@@ -8604,7 +9506,7 @@ function isHealthDocPdf(file) {
 // (несколько страниц, сфотографированных по очереди); PDF допускается только один за раз.
 async function extractHealthEventFromDocument(files, settings) {
   const fileList = Array.isArray(files) ? files : [files];
-  const provider = settings?.voiceProvider || 'claude';
+  const provider = resolveAiPreset(settings, 'healthExtract')?.provider || 'claude';
   const hasPdf = fileList.some(isHealthDocPdf);
   if (hasPdf && fileList.length > 1) {
     throw new Error('PDF можно приложить только один файл за раз — для нескольких страниц сфотографируйте их и загрузите как изображения.');
@@ -8636,7 +9538,7 @@ async function extractHealthEventFromDocument(files, settings) {
 
   let parsed;
   try {
-    parsed = await callAI(messages, settings, null, HEALTH_EXTRACT_SYSTEM_PROMPT);
+    parsed = await callAI(messages, settings, HEALTH_EXTRACT_SYSTEM_PROMPT, 400, 'healthExtract');
   } catch (e) {
     if (e.message === 'no_key') throw new Error('Сначала укажите API-ключ ИИ в Настройках → Ассистент');
     throw new Error(e.message?.includes('JSON') ? 'ИИ вернул нераспознаваемый ответ, попробуйте ещё раз' : (e.message || 'Не удалось распознать документ'));
@@ -8667,36 +9569,6 @@ async function extractHealthEventFromDocument(files, settings) {
   };
 }
 
-function applyVoiceTask(parsed, setData) {
-  if (parsed.section === 'chores') {
-    setData(d => ({
-      ...d,
-      chores: [...(d.chores || []), {
-        id: crypto.randomUUID(),
-        name: parsed.name,
-        frequency: parsed.frequency || 'weekly',
-        customDays: parsed.customDays || null,
-        notify: false,
-        notifyTime: '09:00',
-        archived: false,
-        updatedAt: Date.now(),
-      }],
-    }));
-  } else if (parsed.section === 'boss') {
-    setData(d => ({
-      ...d,
-      bossTasks: [...(d.bossTasks || []), {
-        id: crypto.randomUUID(),
-        name: parsed.name,
-        period: parsed.period || 'morning',
-        days: parsed.days || [1, 2, 3, 4, 5],
-        archived: false,
-        updatedAt: Date.now(),
-      }],
-    }));
-  }
-}
-
 let _currentAudio = null;
 
 function speak(text, settings) {
@@ -8704,7 +9576,8 @@ function speak(text, settings) {
   if (_currentAudio) { _currentAudio.pause(); _currentAudio = null; }
   window.speechSynthesis?.cancel();
 
-  const key = (settings?.voiceApiKey || '').trim();
+  const ttsPreset = resolveTtsPreset(settings);
+  const key = (ttsPreset?.apiKey || '').trim();
   if (key) {
     // OpenAI TTS — returns promise that resolves when audio finishes
     const voice = settings?.voiceTtsVoice || 'nova';
@@ -8765,66 +9638,27 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     setMessages(newMessages);
     setPhase('processing');
 
-    const provider = settings?.voiceProvider || 'claude';
-    // Полный доступ ко всему проекту (чтение любых разделов + навигация)
-    // требует настоящего tool-calling — сейчас это умеет только ветка Claude.
-    // OpenAI пока остаётся на старом однократном JSON-протоколе ниже
-    // (умеет добавлять дела и отвечать по «По дому»/«Боссу»).
-    if (provider === 'claude') {
-      try {
-        const nav = { setData, setTab, setPlannerTab, setMiscTab, setHouseTab, setVoiceFocus };
-        const answerStr = await runVoiceAgent(newMessages, settings, data, nav);
-        setAnswerText(answerStr);
-        setPhase('answered');
-        await speak(answerStr, settings);
-        setPhase('idle');
-        setMessages([]);
-      } catch (e) {
-        const msg = e.message === 'no_key'
-          ? 'Настройте API-ключ в Настройках → Ассистент'
-          : `Ошибка: ${e.message}`;
-        setErrorMsg(msg);
-        setPhase('error');
-        setTimeout(() => setPhase('idle'), 4000);
-      }
-      return;
-    }
-
+    // Полный доступ ко всему проекту (чтение любых разделов + навигация) —
+    // tool-calling работает на обоих провайдерах, какой назначен функции
+    // "voiceAssistant" в Настройках → Ассистент, тот и используется.
     try {
-      const parsed = await callAI(newMessages, settings, data);
-      if (parsed.action === 'add') {
-        applyVoiceTask(parsed, setData);
-        const name = parsed.name || 'задача';
-        setLastAdded(name);
-        speak(`Добавлено: ${name}`, settings);
-        setPhase('success');
-        setTimeout(() => { setPhase('idle'); setMessages([]); }, 2500);
-      } else if (parsed.action === 'answer') {
-        const answerStr = parsed.text || 'Готово';
-        setAnswerText(answerStr);
-        setPhase('answered');
-        await speak(answerStr, settings);
-        setPhase('idle');
-        setMessages([]);
-      } else if (parsed.action === 'clarify') {
-        const q = parsed.question || 'Уточните запрос';
-        const updatedMessages = [...newMessages, { role: 'assistant', content: q }];
-        setClarifyQuestion(q);
-        setMessages(updatedMessages);
-        setPhase('clarifying');
-        await speak(q, settings);
-        startRecording(updatedMessages);
-      } else {
-        setErrorMsg('Непонятный ответ ИИ. Попробуйте ещё раз.');
-        setPhase('error');
-        setTimeout(() => setPhase('idle'), 3000);
-      }
+      const nav = { setData, setTab, setPlannerTab, setMiscTab, setHouseTab, setVoiceFocus };
+      const { text: answerStr, pendingConfirmation } = await runVoiceAgent(newMessages, settings, data, nav);
+      setAnswerText(answerStr);
+      setPhase('answered');
+      await speak(answerStr, settings);
+      setPhase('idle');
+      // Ожидание подтверждения (удаление/финансовая запись) — не сбрасываем
+      // разговор: следующее нажатие микрофона должно продолжить его тем же
+      // «да»/«нет», а не начать новый вопрос с чистого листа.
+      setMessages(pendingConfirmation ? [...newMessages, { role: 'assistant', content: answerStr }] : []);
     } catch (e) {
       const msg = e.message === 'no_key'
-        ? 'Настройте API-ключ в Настройках → Ассистент'
+        ? 'Настройте набор ключей ИИ для ассистента в Настройках → Ассистент'
         : `Ошибка: ${e.message}`;
       setErrorMsg(msg);
       setPhase('error');
+      setMessages([]);
       setTimeout(() => setPhase('idle'), 4000);
     }
   };
@@ -8873,15 +9707,17 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
 
   const handleMainButton = () => {
     if (phase === 'idle') {
-      const key = (settings?.voiceApiKey || '').trim();
-      if (!key) {
-        setErrorMsg('Настройте API-ключ в Настройках → Ассистент');
+      const preset = resolveAiPreset(settings, 'voiceAssistant');
+      if (!preset || !preset.apiKey) {
+        setErrorMsg('Настройте набор ключей ИИ для ассистента в Настройках → Ассистент');
         setPhase('error');
         setTimeout(() => setPhase('idle'), 4000);
         return;
       }
-      setMessages([]);
-      startRecording([]);
+      // messages обычно [] — но останется непустым после раунда с
+      // ожиданием подтверждения (см. processTranscript), тогда это нажатие
+      // продолжает тот же разговор, а не начинает новый с нуля.
+      startRecording(messages);
     } else if (phase === 'recording') {
       // Manual early stop — triggers onend which calls processTranscript
       if (recogRef.current) recogRef.current.stop();
@@ -12666,15 +13502,22 @@ const monthlyNotesMonths = (data) => [...new Set((data.budgetMonthlyNotes || [])
 const financeAppUrl = (user) =>
   user && user.financeToken ? `${window.location.origin}/pf/${user.financeToken}/` : '';
 
-function BudgetView({ data, setData }) {
+function BudgetView({ data, setData, onDirtyChange }) {
   const [budgetTab, setBudgetTab] = useState('monthly');
   const [showUsers, setShowUsers] = useState(false);
   // Открытый на редактирование план бюджета живёт черновиком, пока его не
   // сохранят кнопкой «Сохранить план бюджета» — уход со вкладки «Планы» без
   // сохранения молча стёр бы правки, поэтому переключение вкладки/пользователя
   // здесь спрашивает подтверждение, пока в редакторе плана есть несохранённые
-  // изменения (см. onDirtyChange у BudgetPlansView).
+  // изменения (см. onDirtyChange у BudgetPlansView). Тот же флаг всплывает
+  // наверх в App через onDirtyChange — так уход со всей вкладки «Бюджет»
+  // (шапка/навигация, кнопка «Назад», авто-переход на бездействии) тоже
+  // спрашивает подтверждение вместо того, чтобы молча закрыть черновик.
   const [plansDirty, setPlansDirty] = useState(false);
+  useEffect(() => { onDirtyChange && onDirtyChange(plansDirty); }, [plansDirty]);
+  // Раздел «Бюджет» размонтируется целиком при уходе на другую вкладку —
+  // сбрасываем флаг наверху, иначе он остался бы «висеть» как true.
+  useEffect(() => () => { onDirtyChange && onDirtyChange(false); }, []);
   const confirmLeavePlans = () =>
     !plansDirty || confirm('В открытом плане бюджета есть несохранённые изменения. Уйти без сохранения?');
   const switchBudgetTab = (id) => { if (id !== budgetTab && confirmLeavePlans()) setBudgetTab(id); };
@@ -25788,7 +26631,7 @@ const gymNormalizeImportedExercise = (e, dayId, order) => ({
 
 async function extractGymDaysFromImages(files, settings) {
   const list = Array.isArray(files) ? files : [files];
-  const provider = settings?.voiceProvider || 'claude';
+  const provider = resolveAiPreset(settings, 'gymExtract')?.provider || 'claude';
   const hasPdf = list.some(isHealthDocPdf);
   if (hasPdf && list.length > 1) {
     throw new Error('PDF можно приложить только один за раз — несколько страниц сфотографируйте и загрузите картинками.');
@@ -25820,7 +26663,7 @@ async function extractGymDaysFromImages(files, settings) {
 
   let parsed;
   try {
-    parsed = await callAI(messages, settings, null, GYM_DAY_EXTRACT_SYSTEM_PROMPT, 8000);
+    parsed = await callAI(messages, settings, GYM_DAY_EXTRACT_SYSTEM_PROMPT, 8000, 'gymExtract');
   } catch (e) {
     if (e.message === 'no_key') throw new Error('Сначала укажите API-ключ ИИ в Настройках → Ассистент');
     throw new Error(e.message?.includes('JSON') ? 'ИИ вернул нераспознаваемый ответ, попробуйте ещё раз' : (e.message || 'Не удалось распознать изображение'));
@@ -25984,6 +26827,7 @@ const MISC_APPS = [
   { id: 'cards',    label: 'Карты',      icon: 'creditCard', color: '#1d4ed8' },
   { id: 'gym',      label: 'GYM',        icon: 'dumbbell',   color: '#0d9488' },
   { id: 'english',  label: 'English',    icon: 'book',       color: '#0f766e' },
+  { id: 'quiz',     label: 'Своя игра',  icon: 'quiz',       color: '#b45309' },
   { id: 'cars',     label: 'Автомобиль', icon: 'car',        color: '#6d28d9' },
   { id: 'settings', label: 'Настройки',  icon: 'settings',   color: '#4b5563' },
 ];
@@ -26049,6 +26893,714 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
       )}
       {sub === 'wishlist' && <WishlistView data={data} setData={setData} />}
       {sub === 'gym' && <GymView data={data} setData={setData} />}
+      {sub === 'quiz' && <QuizView data={data} setData={setData} />}
+    </div>
+  );
+}
+
+// ============== СВОЯ ИГРА ==============
+// Игру собирает владелец: категории → вопросы («Деньги за 100») → варианты
+// ответа с отметкой верного. Играют не здесь, а по ПУБЛИЧНОЙ ссылке
+// /game/<token> — отдельной странице quiz.html, которой хватает
+// /api/game/<token>. Счёт команд ведётся там же и хранится на сервере
+// (коллекция quizPlays, id = токен ссылки), поэтому в приложении он виден
+// «как есть» — с одной кнопкой сброса перед новой партией.
+
+const QUIZ_ACCENT = '#b45309';
+const QUIZ_DEFAULT_POINTS = [100, 200, 300, 400, 500];
+
+const quizGameUrl = (g) =>
+  g && g.shareToken ? `${window.location.origin}/game/${g.shareToken}` : '';
+
+// Вторая ссылка — на составление вопросов: её дают тому, кто помогает собрать
+// игру. Токен отдельный: игроки по ссылке на партию вопросы править не могут,
+// а помощник не видит счёт и не может отозвать игровую ссылку.
+const quizEditUrl = (g) =>
+  g && g.editToken ? `${window.location.origin}/game-edit/${g.editToken}` : '';
+
+const newQuizOption = () => ({ id: crypto.randomUUID(), text: '', correct: false });
+
+const newQuizQuestion = (points = 100) => ({
+  id: crypto.randomUUID(),
+  points,
+  text: '',
+  options: [newQuizOption(), newQuizOption()],
+});
+
+const newQuizCategory = (name = '') => ({
+  id: crypto.randomUUID(),
+  name,
+  questions: QUIZ_DEFAULT_POINTS.map(p => newQuizQuestion(p)),
+});
+
+const newQuizGame = () => ({
+  id: crypto.randomUUID(),
+  title: '',
+  description: '',
+  categories: [newQuizCategory()],
+  shareToken: makePlannerToken(),
+  shareEnabled: true,
+  editToken: makePlannerToken(),
+  editEnabled: true,
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+});
+
+// На поле попадает только вопрос с текстом: недописанную клетку игроку
+// показывать нечего. Тот же фильтр стоит на сервере (quiz_public_payload),
+// поэтому счётчики в приложении совпадают с тем, что видно по ссылке.
+const quizQuestionReady = (q) => !!String((q && q.text) || '').trim();
+
+const quizReadyQuestions = (cat) => ((cat && cat.questions) || []).filter(quizQuestionReady);
+
+const quizGameQuestionCount = (g) =>
+  ((g && g.categories) || []).reduce((n, c) => n + quizReadyQuestions(c).length, 0);
+
+const quizGameCategoryCount = (g) =>
+  ((g && g.categories) || []).filter(c => quizReadyQuestions(c).length > 0).length;
+
+const quizPlayFor = (data, g) =>
+  (data.quizPlays || []).find(s => s && g && s.id === g.shareToken) || null;
+
+// Партия привязана к ТОКЕНУ ссылки, а не к игре: перевыпустили ссылку —
+// старая запись счёта уже ни к чему не относится, а удалили игру — тем более.
+// Убираем такие записи вместе с тумбстоном, иначе сервер вернёт их обратно
+// следующей же синхронизацией и они останутся в данных навсегда.
+const dropQuizPlays = (d, keep) => {
+  const list = d.quizPlays || [];
+  const doomed = list.filter(s => !keep(s));
+  let deletedIds = d.deletedIds;
+  doomed.forEach(s => { deletedIds = withDeletedId({ ...d, deletedIds }, 'quizPlays', s.id); });
+  return { quizPlays: list.filter(keep), deletedIds };
+};
+
+const quizPoints = (raw) => {
+  const n = parseInt(String(raw ?? '').replace(/[^\d-]/g, ''), 10);
+  return Number.isFinite(n) ? n : 0;
+};
+
+function QuizView({ data, setData }) {
+  const games = data.quizGames || [];
+  const [draft, setDraft] = useState(null);   // редактируемая копия игры
+  const [openId, setOpenId] = useState(null);
+
+  // Игру могли удалить на другом устройстве — не показываем пустой экран.
+  useEffect(() => {
+    if (openId && !games.some(g => g.id === openId)) setOpenId(null);
+  }, [games, openId]);
+
+  const saveGame = (game) => {
+    setData(d => {
+      const list = d.quizGames || [];
+      const exists = list.some(g => g.id === game.id);
+      return {
+        ...d,
+        quizGames: exists ? list.map(g => g.id === game.id ? game : g) : [...list, game],
+      };
+    });
+    setDraft(null);
+    setOpenId(game.id);
+  };
+
+  const updateGame = (id, patch) => {
+    setData(d => ({
+      ...d,
+      quizGames: (d.quizGames || []).map(g => g.id === id ? { ...g, ...patch } : g),
+    }));
+  };
+
+  const removeGame = (game) => {
+    if (!confirm(`Удалить игру «${game.title || 'без названия'}»?\n\nСсылка перестанет работать, счёт команд тоже удалится.`)) return;
+    setData(d => {
+      const { quizPlays, deletedIds } = dropQuizPlays(
+        d, s => s.id !== game.shareToken && s.gameId !== game.id);
+      return {
+        ...d,
+        quizGames: (d.quizGames || []).filter(g => g.id !== game.id),
+        quizPlays,
+        deletedIds: withDeletedId({ ...d, deletedIds }, 'quizGames', game.id),
+      };
+    });
+    setOpenId(null);
+  };
+
+  const regenerateToken = (game) => {
+    setData(d => {
+      const { quizPlays, deletedIds } = dropQuizPlays(
+        d, s => s.id !== game.shareToken && s.gameId !== game.id);
+      return {
+        ...d,
+        quizGames: (d.quizGames || []).map(g =>
+          g.id === game.id ? { ...g, shareToken: makePlannerToken(), shareEnabled: true } : g),
+        quizPlays,
+        deletedIds,
+      };
+    });
+  };
+
+  const regenerateEditToken = (game) => {
+    updateGame(game.id, { editToken: makePlannerToken(), editEnabled: true });
+  };
+
+  // Сброс перед новой партией: обнуляем счёт и снимаем отметки «сыгран».
+  // Пишем в ту же коллекцию, что и страница игры — синхронизация разрулит
+  // по updatedAt, как и с любой другой записью.
+  const resetPlay = (game) => {
+    if (!confirm('Обнулить счёт команд и открыть все вопросы заново?')) return;
+    setData(d => {
+      const list = d.quizPlays || [];
+      const cur = list.find(s => s.id === game.shareToken);
+      const entry = {
+        id: game.shareToken,
+        gameId: game.id,
+        teams: ((cur && cur.teams) || []).map(t => ({ ...t, score: 0 })),
+        answered: [],
+        updatedAt: Date.now(),
+      };
+      return {
+        ...d,
+        quizPlays: cur ? list.map(s => s.id === game.shareToken ? entry : s) : [...list, entry],
+      };
+    });
+  };
+
+  if (draft) {
+    return (
+      <QuizEditor
+        initial={draft.game}
+        latest={games.find(g => g.id === draft.game.id) || null}
+        isNew={draft.isNew}
+        onCancel={() => setDraft(null)}
+        onSave={saveGame}
+      />
+    );
+  }
+
+  const open = games.find(g => g.id === openId);
+  if (open) {
+    return (
+      <QuizGameDetail
+        game={open}
+        play={quizPlayFor(data, open)}
+        onBack={() => setOpenId(null)}
+        onEdit={() => setDraft({ game: open, isNew: false })}
+        onDelete={() => removeGame(open)}
+        onUpdate={patch => updateGame(open.id, patch)}
+        onRegenerate={() => regenerateToken(open)}
+        onRegenerateEdit={() => regenerateEditToken(open)}
+        onResetPlay={() => resetPlay(open)}
+      />
+    );
+  }
+
+  const sorted = [...games].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  return (
+    <div>
+      <button
+        onClick={() => setDraft({ game: newQuizGame(), isNew: true })}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-4"
+      >
+        <Icon name="plus" size={18} />
+        Новая игра
+      </button>
+
+      {sorted.length === 0 ? (
+        <EmptyState
+          title="Игр пока нет"
+          text="Создайте категории и вопросы — игроки откроют игру по ссылке"
+        />
+      ) : (
+        <div className="space-y-2">
+          {sorted.map(g => {
+            const play = quizPlayFor(data, g);
+            const teams = (play && play.teams) || [];
+            return (
+              <button
+                key={g.id}
+                onClick={() => setOpenId(g.id)}
+                className="w-full text-left bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 flex items-center gap-3"
+              >
+                <div
+                  className="w-10 h-10 rounded-xl flex items-center justify-center text-white flex-shrink-0"
+                  style={{ background: QUIZ_ACCENT }}
+                >
+                  <Icon name="quiz" size={20} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium truncate">{g.title || 'Без названия'}</div>
+                  <div className="text-xs text-[var(--text-subtle)] truncate">
+                    {[
+                      `${quizGameCategoryCount(g)} кат. · ${quizGameQuestionCount(g)} вопр.`,
+                      teams.length ? `${teams.length} ${plannerPlural(teams.length, 'команда', 'команды', 'команд')}` : '',
+                      g.shareEnabled === false ? 'ссылка отключена' : '',
+                    ].filter(Boolean).join(' · ')}
+                  </div>
+                </div>
+                <Icon name="chevronRight" size={18} />
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Карточка «ссылка + копировать + поделиться». Их на экране две — на саму игру
+// и на составление вопросов, — и ведут себя они одинаково.
+function QuizShareBlock({ title, url, enabled, note, offNote, openLabel, canOpen, onToggle, onRegenerate, shareTitle }) {
+  const [copied, setCopied] = useState(false);
+
+  const copyLink = async () => {
+    const ok = await copyToClipboard(url);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } else {
+      prompt('Скопируйте ссылку вручную:', url);
+    }
+  };
+
+  const shareLink = async () => {
+    try {
+      await navigator.share({ title: shareTitle, text: shareTitle, url });
+    } catch (_) {}
+  };
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+      <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)] mb-3">{title}</div>
+      <div className="flex items-center gap-2">
+        <input
+          readOnly
+          value={url}
+          onFocus={e => e.target.select()}
+          className="flex-1 min-w-0 text-xs !py-2 !px-3 text-[var(--text-muted)]"
+          style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
+        />
+        <button
+          onClick={copyLink}
+          className="btn-secondary !py-2 !px-3 text-sm flex items-center gap-1.5 flex-shrink-0"
+          title="Скопировать ссылку"
+        >
+          <Icon name={copied ? 'check' : 'copy'} size={14} />
+          <span className="hidden sm:inline">{copied ? 'Скопировано' : 'Копировать'}</span>
+        </button>
+        {typeof navigator !== 'undefined' && navigator.share && (
+          <button onClick={shareLink} className="btn-secondary !py-2 !px-3 flex-shrink-0" title="Поделиться">
+            <Icon name="share" size={14} />
+          </button>
+        )}
+      </div>
+      <div className={`text-[11px] mt-2 ${enabled ? 'text-[var(--text-subtle)]' : 'text-red-500'}`}>
+        {enabled ? note : offNote}
+      </div>
+      <div className="flex items-center gap-3 mt-3 flex-wrap">
+        {enabled && canOpen && (
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1.5"
+          >
+            <Icon name="externalLink" size={14} /> {openLabel}
+          </a>
+        )}
+        <button onClick={onToggle} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)]">
+          {enabled ? 'Отключить ссылку' : 'Включить ссылку'}
+        </button>
+        <button onClick={onRegenerate} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)]">
+          Новая ссылка
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function QuizGameDetail({ game, play, onBack, onEdit, onDelete, onUpdate, onRegenerate, onRegenerateEdit, onResetPlay }) {
+  const shareOn = game.shareEnabled !== false;
+  const editOn = game.editEnabled !== false;
+  const shareUrl = quizGameUrl(game);
+  const editUrl = quizEditUrl(game);
+
+  // Игры, созданные до появления второй ссылки, токена редактирования не
+  // имеют — заводим его при первом открытии карточки, чтобы ссылка была не
+  // пустой строкой, а рабочей.
+  useEffect(() => {
+    if (!game.editToken) onUpdate({ editToken: makePlannerToken(), editEnabled: true });
+  }, [game.id, game.editToken]);
+  const teams = [...((play && play.teams) || [])].sort((a, b) => (b.score || 0) - (a.score || 0));
+  const total = quizGameQuestionCount(game);
+  // Считаем только те отметки, которым на поле соответствует живой вопрос:
+  // вопрос могли удалить после партии, и «сыграно 7 из 5» выглядело бы дико.
+  const answeredIds = new Set((play && play.answered) || []);
+  const answered = (game.categories || []).reduce(
+    (n, c) => n + quizReadyQuestions(c).filter(q => answeredIds.has(q.id)).length, 0);
+
+  const regenerateToken = () => {
+    if (!confirm('Сделать новую ссылку на игру?\n\nСтарая перестанет работать, а счёт текущей партии потеряется.')) return;
+    onRegenerate();
+  };
+
+  const regenerateEditToken = () => {
+    if (!confirm('Сделать новую ссылку на составление вопросов?\n\nСтарая перестанет работать — помощнику придётся прислать новую.')) return;
+    onRegenerateEdit();
+  };
+
+  return (
+    <div className="fade-in space-y-4">
+      <div className="flex items-center gap-3">
+        <button onClick={onBack} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]">
+          <Icon name="chevronLeft" size={20} />
+        </button>
+        <div className="flex-1 min-w-0">
+          <div className="font-display text-2xl truncate">{game.title || 'Без названия'}</div>
+          <div className="text-xs text-[var(--text-subtle)] truncate">
+            {quizGameCategoryCount(game)} кат. · {total} вопр. · сыграно {answered}
+          </div>
+        </div>
+        <button onClick={onEdit} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={16} /></button>
+        <button onClick={onDelete} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={16} /></button>
+      </div>
+
+      <QuizShareBlock
+        title="Ссылка для игры"
+        url={shareUrl}
+        enabled={shareOn}
+        shareTitle={game.title || 'Своя игра'}
+        openLabel="Открыть игру"
+        canOpen={total > 0}
+        note="По ссылке открывается поле с категориями и вопросами. Счёт команд ведут там же — меняется он только по ссылке, сама игра по ней не редактируется."
+        offNote="Ссылка отключена — сейчас она не откроется ни у кого. Включите её, чтобы снова играть."
+        onToggle={() => onUpdate({ shareEnabled: !shareOn })}
+        onRegenerate={regenerateToken}
+      />
+
+      <QuizShareBlock
+        title="Ссылка для составления вопросов"
+        url={editUrl}
+        enabled={editOn}
+        shareTitle={`Вопросы для игры «${game.title || 'Своя игра'}»`}
+        openLabel="Открыть редактор"
+        canOpen
+        note="По этой ссылке другой человек добавляет и правит категории, вопросы и варианты ответа — удобно, когда игру собираете вдвоём. Ни счёт команд, ни ссылка на партию по ней недоступны."
+        offNote="Редактирование по ссылке отключено — сейчас она не откроется ни у кого."
+        onToggle={() => onUpdate({ editEnabled: !editOn })}
+        onRegenerate={regenerateEditToken}
+      />
+
+      {total === 0 && (
+        <div className="text-sm text-red-500 bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+          В игре нет ни одного заполненного вопроса — по ссылке будет пустое поле.
+          Откройте редактор и впишите тексты вопросов.
+        </div>
+      )}
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div className="text-xs uppercase tracking-wider text-[var(--text-subtle)]">Счёт</div>
+          {(teams.length > 0 || answered > 0) && (
+            <button onClick={onResetPlay} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]">
+              Сбросить
+            </button>
+          )}
+        </div>
+        {teams.length === 0 ? (
+          <div className="text-sm text-[var(--text-subtle)]">
+            Команды добавляются на странице игры — по ссылке, кнопкой «Команды».
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {teams.map((t, i) => (
+              <div key={t.id} className="flex items-center gap-3">
+                <div className="w-6 text-center text-xs text-[var(--text-subtle)]">{i + 1}</div>
+                <div className="flex-1 min-w-0 truncate text-sm">{t.name || 'Команда'}</div>
+                <div className="font-display text-lg" style={{ color: QUIZ_ACCENT }}>{t.score || 0}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {(game.categories || []).filter(c => quizReadyQuestions(c).length > 0).map(c => (
+        <div key={c.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+          <div className="font-medium mb-3">{c.name || 'Без названия'}</div>
+          <div className="flex flex-wrap gap-2">
+            {quizReadyQuestions(c).map(q => (
+              <span
+                key={q.id}
+                className="px-3 py-1.5 rounded-lg text-sm border border-[var(--border)] text-[var(--text-muted)]"
+              >
+                {q.points}
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Редактор игры. Правки живут в локальном черновике и уезжают в data только
+// по «Сохранить» — иначе недописанная клетка сразу появлялась бы на поле у
+// игроков, открывших ссылку прямо сейчас.
+function QuizEditor({ initial, latest, isNew, onCancel, onSave }) {
+  const [game, setGame] = useState(() => JSON.parse(JSON.stringify(initial)));
+  const [openCat, setOpenCat] = useState(() => ((initial.categories || [])[0] || {}).id || null);
+
+  const patchCategory = (catId, fn) => setGame(g => ({
+    ...g,
+    categories: (g.categories || []).map(c => c.id === catId ? fn(c) : c),
+  }));
+
+  const patchQuestion = (catId, qId, fn) => patchCategory(catId, c => ({
+    ...c,
+    questions: (c.questions || []).map(q => q.id === qId ? fn(q) : q),
+  }));
+
+  const addCategory = () => {
+    const cat = newQuizCategory();
+    setGame(g => ({ ...g, categories: [...(g.categories || []), cat] }));
+    setOpenCat(cat.id);
+  };
+
+  const removeCategory = (cat) => {
+    if (!confirm(`Удалить категорию «${cat.name || 'без названия'}» вместе с вопросами?`)) return;
+    setGame(g => ({ ...g, categories: (g.categories || []).filter(c => c.id !== cat.id) }));
+  };
+
+  const addQuestion = (cat) => {
+    // Следующая клетка по шагу цены: 100, 200, … — как в обычной «Своей игре».
+    const last = (cat.questions || [])[(cat.questions || []).length - 1];
+    const next = last ? quizPoints(last.points) + 100 : 100;
+    patchCategory(cat.id, c => ({ ...c, questions: [...(c.questions || []), newQuizQuestion(next)] }));
+  };
+
+  const removeQuestion = (cat, q) => {
+    patchCategory(cat.id, c => ({ ...c, questions: (c.questions || []).filter(x => x.id !== q.id) }));
+  };
+
+  const addOption = (cat, q) => {
+    patchQuestion(cat.id, q.id, x => ({ ...x, options: [...(x.options || []), newQuizOption()] }));
+  };
+
+  const removeOption = (cat, q, opt) => {
+    patchQuestion(cat.id, q.id, x => ({ ...x, options: (x.options || []).filter(o => o.id !== opt.id) }));
+  };
+
+  // Верный вариант ровно один: отмечая новый, снимаем отметку с прежнего.
+  const markCorrect = (cat, q, optId) => {
+    patchQuestion(cat.id, q.id, x => ({
+      ...x,
+      options: (x.options || []).map(o => ({ ...o, correct: o.id === optId ? !o.correct : false })),
+    }));
+  };
+
+  const submit = () => {
+    const title = String(game.title || '').trim();
+    if (!title) { alert('Впишите название игры.'); return; }
+
+    // Пока редактор был открыт, вопросы мог прислать помощник по ссылке
+    // редактирования: сохранение перезапишет игру целиком, поэтому спрашиваем.
+    // latest приезжает из data, которую синхронизация обновляет сама.
+    const freshTs = latest && typeof latest.updatedAt === 'number' ? latest.updatedAt : 0;
+    const draftTs = typeof initial.updatedAt === 'number' ? initial.updatedAt : 0;
+    if (freshTs > draftTs && !confirm(
+      'Пока вы правили игру, вопросы изменились по ссылке для составления вопросов.\n\n' +
+      'Сохранить свою версию? Присланные вопросы будут заменены тем, что на экране.')) return;
+
+    // Чистим черновик: пустые варианты и вопросы без текста на поле не нужны,
+    // категория без единого готового вопроса — тоже.
+    const categories = (game.categories || []).map(c => ({
+      ...c,
+      name: String(c.name || '').trim(),
+      questions: (c.questions || [])
+        .filter(quizQuestionReady)
+        .map(q => ({
+          ...q,
+          points: quizPoints(q.points),
+          text: String(q.text || '').trim(),
+          options: (q.options || [])
+            .filter(o => String(o.text || '').trim())
+            .map(o => ({ ...o, text: String(o.text || '').trim(), correct: !!o.correct })),
+        })),
+    })).filter(c => c.questions.length > 0);
+
+    if (categories.length === 0) {
+      alert('Нужен хотя бы один вопрос с текстом — иначе играть будет не во что.');
+      return;
+    }
+    const noCorrect = categories.some(c => c.questions.some(
+      q => q.options.length > 0 && !q.options.some(o => o.correct)));
+    if (noCorrect && !confirm('В некоторых вопросах не отмечен верный вариант. Всё равно сохранить?')) return;
+
+    onSave({
+      ...game,
+      title,
+      description: String(game.description || '').trim(),
+      categories,
+      shareToken: game.shareToken || makePlannerToken(),
+      shareEnabled: game.shareEnabled !== false,
+      editToken: game.editToken || makePlannerToken(),
+      editEnabled: game.editEnabled !== false,
+      createdAt: game.createdAt || Date.now(),
+      updatedAt: Date.now(),
+    });
+  };
+
+  return (
+    <div className="fade-in space-y-4">
+      <div className="flex items-center gap-3">
+        <button onClick={onCancel} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]">
+          <Icon name="chevronLeft" size={20} />
+        </button>
+        <div className="font-display text-2xl flex-1 min-w-0 truncate">
+          {isNew ? 'Новая игра' : 'Редактирование'}
+        </div>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 space-y-3">
+        <div>
+          <label>Название игры</label>
+          <input
+            value={game.title || ''}
+            onChange={e => setGame(g => ({ ...g, title: e.target.value }))}
+            placeholder="Например: Новый год 2026"
+            maxLength={80}
+          />
+        </div>
+        <div>
+          <label>Описание (необязательно)</label>
+          <input
+            value={game.description || ''}
+            onChange={e => setGame(g => ({ ...g, description: e.target.value }))}
+            placeholder="Пара слов для игроков"
+            maxLength={200}
+          />
+        </div>
+      </div>
+
+      {(game.categories || []).map((cat, ci) => {
+        const isOpen = openCat === cat.id;
+        const ready = quizReadyQuestions(cat).length;
+        return (
+          <div key={cat.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+            <div className="flex items-center gap-2 p-3">
+              <button
+                onClick={() => setOpenCat(isOpen ? null : cat.id)}
+                className="p-1 text-[var(--text-subtle)] flex-shrink-0"
+                aria-label={isOpen ? 'Свернуть' : 'Развернуть'}
+              >
+                <span className={`block transition-transform ${isOpen ? 'rotate-180' : ''}`}>
+                  <Icon name="chevronDown" size={18} />
+                </span>
+              </button>
+              <input
+                value={cat.name || ''}
+                onChange={e => patchCategory(cat.id, c => ({ ...c, name: e.target.value }))}
+                placeholder={`Категория ${ci + 1} — например «Деньги»`}
+                maxLength={60}
+                className="flex-1 min-w-0 !py-2"
+              />
+              <span className="text-xs text-[var(--text-subtle)] flex-shrink-0">{ready}</span>
+              <button
+                onClick={() => removeCategory(cat)}
+                className="p-2 rounded-lg text-[var(--text-muted)] hover:text-red-500 flex-shrink-0"
+              >
+                <Icon name="trash" size={16} />
+              </button>
+            </div>
+
+            {isOpen && (
+              <div className="border-t border-[var(--border)] p-3 space-y-3">
+                {(cat.questions || []).map(q => (
+                  <div key={q.id} className="border border-[var(--border)] rounded-xl p-3 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-[var(--text-subtle)] flex-shrink-0">за</span>
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        value={q.points}
+                        onChange={e => patchQuestion(cat.id, q.id, x => ({ ...x, points: e.target.value }))}
+                        className="!py-2 !px-3 w-24 flex-shrink-0"
+                      />
+                      <div className="flex-1" />
+                      <button
+                        onClick={() => removeQuestion(cat, q)}
+                        className="p-2 rounded-lg text-[var(--text-muted)] hover:text-red-500 flex-shrink-0"
+                      >
+                        <Icon name="trash" size={15} />
+                      </button>
+                    </div>
+
+                    <textarea
+                      value={q.text || ''}
+                      onChange={e => patchQuestion(cat.id, q.id, x => ({ ...x, text: e.target.value }))}
+                      placeholder="Текст вопроса"
+                      rows={2}
+                      maxLength={600}
+                      style={{ resize: 'vertical' }}
+                    />
+
+                    <div className="space-y-2">
+                      {(q.options || []).map(o => (
+                        <div key={o.id} className="flex items-center gap-2">
+                          <button
+                            onClick={() => markCorrect(cat, q, o.id)}
+                            className={`check-box flex-shrink-0 ${o.correct ? 'checked' : ''}`}
+                            style={{ width: 24, height: 24, borderRadius: 999 }}
+                            title="Верный ответ"
+                          >
+                            <Icon name="check" size={13} />
+                          </button>
+                          <input
+                            value={o.text || ''}
+                            onChange={e => patchQuestion(cat.id, q.id, x => ({
+                              ...x,
+                              options: (x.options || []).map(y => y.id === o.id ? { ...y, text: e.target.value } : y),
+                            }))}
+                            placeholder="Вариант ответа"
+                            maxLength={200}
+                            className="flex-1 min-w-0 !py-2"
+                          />
+                          <button
+                            onClick={() => removeOption(cat, q, o)}
+                            className="p-2 rounded-lg text-[var(--text-muted)] hover:text-red-500 flex-shrink-0"
+                          >
+                            <Icon name="x" size={15} />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        onClick={() => addOption(cat, q)}
+                        className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1.5"
+                      >
+                        <Icon name="plus" size={14} /> Вариант ответа
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                <button onClick={() => addQuestion(cat)} className="btn-secondary w-full flex items-center justify-center gap-2">
+                  <Icon name="plus" size={16} /> Вопрос
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      <button onClick={addCategory} className="btn-secondary w-full flex items-center justify-center gap-2">
+        <Icon name="plus" size={16} /> Категория
+      </button>
+
+      <div className="flex gap-3">
+        <button onClick={onCancel} className="btn-secondary flex-1">Отмена</button>
+        <button onClick={submit} className="btn-primary flex-1">
+          {isNew ? 'Создать игру' : 'Сохранить'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -26374,10 +27926,11 @@ const wishlistParseAIResponse = (text) => {
 };
 
 async function wishlistParseScreenshot(base64, mediaType, settings) {
-  const provider = settings.voiceProvider || 'claude';
-  const key = (settings.voiceApiKey || '').trim();
-  if (!key) throw new Error('no_key');
-  const model = (settings.voiceModel || '').trim() || (provider === 'claude' ? 'claude-sonnet-4-6' : 'gpt-4o');
+  const preset = resolveAiPreset(settings, 'wishlistScreenshot');
+  if (!preset || !preset.apiKey) throw new Error('no_key');
+  const provider = preset.provider === 'openai' ? 'openai' : 'claude';
+  const key = preset.apiKey;
+  const model = (preset.model || '').trim() || AI_PROVIDER_DEFAULT_MODEL[provider];
 
   let text;
   if (provider === 'claude') {
@@ -26413,7 +27966,7 @@ async function wishlistParseScreenshot(base64, mediaType, settings) {
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
       body: JSON.stringify({
         model,
-        max_tokens: 500,
+        max_completion_tokens: 500,
         messages: [{
           role: 'user',
           content: [
@@ -27523,6 +29076,31 @@ function LoyaltyCardsView({ data, setData, focusId, onFocusConsumed }) {
 
 // Экран показа карты на кассе: белый фон и чёрный код независимо от темы —
 // сканеру нужен контраст, а тёмная тема его убивает.
+// Ссылка на штрихкод карты для гео-автоматизации (iOS Shortcuts: Личная
+// автоматизация → Location → «Получить содержимое URL»). Дёргает эту ссылку
+// без открытия приложения — сервер сам рисует штрихкод и шлёт его в Telegram.
+function CardShortcutLink({ card }) {
+  const [copied, setCopied] = useState(false);
+  const url = `${window.location.origin}/api/cards/${card.id}/send-telegram`;
+
+  const copyLink = async () => {
+    const ok = await copyToClipboard(url);
+    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
+    else prompt('Скопируйте ссылку вручную:', url);
+  };
+
+  return (
+    <button
+      onClick={copyLink}
+      className="btn-secondary !py-2 !px-3 text-sm flex items-center gap-1.5"
+      title="Ссылка для автоматизации iOS (Shortcuts → Location)"
+    >
+      <Icon name={copied ? 'check' : 'copy'} size={14} />
+      <span>{copied ? 'Скопировано' : 'Скопировать ссылку для Shortcuts'}</span>
+    </button>
+  );
+}
+
 function LoyaltyCardScreen({ card, onClose, onEdit }) {
   const [showPhoto, setShowPhoto] = useState(false);
   const built = useMemo(() => cardBarcode(card.code, card.format), [card.code, card.format]);
@@ -27588,6 +29166,8 @@ function LoyaltyCardScreen({ card, onClose, onEdit }) {
               Поднимите яркость экрана, если сканер не считывает
             </div>
           )}
+
+          {card.id && !built.error && <CardShortcutLink card={card} />}
 
           {card.note && (
             <div className="text-sm text-black/60 text-center max-w-md whitespace-pre-wrap break-words">{card.note}</div>

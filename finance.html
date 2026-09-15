@@ -40,6 +40,11 @@
   --radius: 18px;
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
+  /* Высота экранной клавиатуры и видимой части экрана — их проставляет JS по
+     visualViewport. Листы прижаты к низу, и без этого клавиатура iOS накрывала
+     нижнюю часть карточки правки вместе с кнопкой «Сохранить». */
+  --kb: 0px;
+  --vvh: 100vh;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
@@ -718,7 +723,7 @@ body { padding-top: var(--safe-t); }
   justify-content: center;
   z-index: 40;
   padding: 12px;
-  padding-bottom: calc(12px + var(--safe-b));
+  padding-bottom: calc(12px + var(--safe-b) + var(--kb));
 }
 .overlay.show { display: flex; animation: fadeIn .15s ease; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -728,7 +733,7 @@ body { padding-top: var(--safe-t); }
   background: var(--surface);
   border-radius: 20px;
   padding: 16px;
-  max-height: 70vh;
+  max-height: min(70vh, calc(var(--vvh) - 24px));
   overflow: auto;
   box-shadow: var(--shadow);
   animation: sheetUp .2s ease;
@@ -1745,6 +1750,10 @@ body { padding-top: var(--safe-t); }
       try { await loadPopular(); renderCats(); } catch (_) {}
     } catch (e) {
       toast(e.message || 'Ошибка удаления', 'error');
+    } finally {
+      // Кнопка живёт в общем листе, а не пересоздаётся вместе со списком:
+      // не вернув её в рабочее состояние, после первого же удаления
+      // «Удалить операцию» переставало нажиматься до перезагрузки страницы.
       btn.disabled = false;
     }
   }
@@ -1882,11 +1891,37 @@ body { padding-top: var(--safe-t); }
     loadBudget();
   });
 
+  // Экранная клавиатура на iOS не сдвигает position:fixed — она просто
+  // накрывает нижнюю часть экрана. Листы прижаты к низу, поэтому пока
+  // клавиатура открыта, кнопки «Сохранить»/«Удалить» оказывались под ней.
+  // Отдаём её высоту в CSS: лист поднимается над клавиатурой и ужимается
+  // до видимой части экрана.
+  const vv = window.visualViewport;
+  if (vv) {
+    const syncKeyboard = () => {
+      const hidden = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      const root = document.documentElement.style;
+      root.setProperty('--kb', Math.round(hidden) + 'px');
+      root.setProperty('--vvh', Math.round(vv.height) + 'px');
+    };
+    vv.addEventListener('resize', syncKeyboard);
+    vv.addEventListener('scroll', syncKeyboard);
+    syncKeyboard();
+  }
+
   // Физическая клавиатура (десктоп / bluetooth)
   window.addEventListener('keydown', (e) => {
+    // Пока открыт любой лист (правка операции, выбор счёта, напоминание) или
+    // курсор стоит в поле ввода — цифры, запятая и Backspace принадлежат ЕМУ,
+    // а не калькулятору суммы. Без этого в карточке правки не набиралась ни
+    // сумма (цифры улетали в главный счётчик), ни назначение платежа: обработчик
+    // гасил нажатие через preventDefault ещё до того, как оно доходило до поля.
+    if (document.querySelector('.overlay.show')) return;
+    const ae = document.activeElement;
+    if (ae && (ae.isContentEditable
+               || ['INPUT', 'TEXTAREA', 'SELECT'].includes(ae.tagName))) return;
     if (!$('logFlow').classList.contains('active')) return;
     if (!$('screenAmount').classList.contains('active')) return;
-    if (document.activeElement === $('catSearch')) return;
     if (e.key >= '0' && e.key <= '9') { pressKey(e.key); e.preventDefault(); }
     else if (e.key === ',' || e.key === '.') { pressKey(','); e.preventDefault(); }
     else if (e.key === 'Backspace') { pressKey('back'); e.preventDefault(); }

@@ -69,7 +69,7 @@ FREQ_DAYS = {
 SPA_ROUTES = {
     "/mybody", "/budget", "/supplements", "/meals", "/weather",
     "/house", "/cars", "/holidays", "/settings", "/planner", "/health",
-    "/misc", "/wishlist", "/cards", "/gym",
+    "/misc", "/wishlist", "/cards", "/gym", "/quiz",
 }
 
 # Deep-link routes that get their OWN <link rel="manifest"> (and Apple home-
@@ -119,7 +119,15 @@ def route_is_public(route: str) -> bool:
         return True
     if token_from_route(route, "/e/") or token_from_route(route, "/trip/"):
         return True
+    if token_from_route(route, "/game/") or token_from_route(route, "/game-edit/"):
+        return True
     if _route_token_prefix_public(route, "/api/event/") or _route_token_prefix_public(route, "/api/camping-trip/"):
+        return True
+    if _route_token_prefix_public(route, "/api/game/") or _route_token_prefix_public(route, "/api/game-edit/"):
+        return True
+    # Ссылка на штрихкод карты для iOS Shortcuts (гео-триггер бьёт по ней без
+    # сессии) — id карты тут и есть пропуск, как token у событий/поездок.
+    if _route_token_prefix_public(route, "/api/cards/"):
         return True
     return False
 
@@ -280,6 +288,273 @@ def send_message(token: str, chat_id: int, text: str):
     tg_post(token, "sendMessage", {
         "chat_id": chat_id, "text": text, "parse_mode": "HTML",
     })
+
+
+def send_photo(token: str, chat_id: int, filename: str, data: bytes, caption: str = "") -> bool:
+    if not requests:
+        return False
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{token}/sendPhoto",
+            data={"chat_id": chat_id, "caption": caption},
+            files={"photo": (filename, data, "image/png")},
+            timeout=60,
+        )
+        return r.ok
+    except Exception as e:
+        print(f"  [sendPhoto] {e}")
+        return False
+
+
+# ── штрихкоды карт лояльности ────────────────────────────────────────────────
+# Тот же принцип и те же кодировщики, что и в разделе «Карты» на клиенте
+# (index (9).html, cardBarcode/cardAutoFormat) — портированы на Python, чтобы
+# отправить готовую картинку штрихкода в Telegram по гео-триггеру (iOS
+# Shortcuts), не открывая веб-страницу. QR здесь не реализован — сценарий
+# рассчитан на обычные 1D-штрихкоды карт магазинов.
+
+BC_EAN_L = ['0001101', '0011001', '0010011', '0111101', '0100011',
+            '0110001', '0101111', '0111011', '0110111', '0001011']
+BC_EAN_G = ['0100111', '0110011', '0011011', '0100001', '0011101',
+            '0111001', '0000101', '0010001', '0001001', '0010111']
+BC_EAN_R = [s.translate({48: 49, 49: 48}) for s in BC_EAN_L]
+BC_EAN13_PARITY = ['LLLLLL', 'LLGLGG', 'LLGGLG', 'LLGGGL', 'LGLLGG',
+                    'LGGLLG', 'LGGGLL', 'LGLGLG', 'LGLGGL', 'LGGLGL']
+
+
+def bc_ean_check_digit(body: str) -> int:
+    total, weight = 0, 3
+    for ch in reversed(body):
+        total += int(ch) * weight
+        weight = 1 if weight == 3 else 3
+    return (10 - total % 10) % 10
+
+
+def bc_ean13(digits: str) -> str:
+    body = digits[:12]
+    parity = BC_EAN13_PARITY[int(body[0])]
+    out = '101'
+    for i in range(1, 7):
+        out += (BC_EAN_L if parity[i - 1] == 'L' else BC_EAN_G)[int(body[i])]
+    out += '01010'
+    for d in body[7:] + str(bc_ean_check_digit(body)):
+        out += BC_EAN_R[int(d)]
+    return out + '101'
+
+
+def bc_ean8(digits: str) -> str:
+    body = digits[:7]
+    out = '101'
+    for d in body[:4]:
+        out += BC_EAN_L[int(d)]
+    out += '01010'
+    for d in body[4:] + str(bc_ean_check_digit(body)):
+        out += BC_EAN_R[int(d)]
+    return out + '101'
+
+
+def bc_upca(digits: str) -> str:
+    body = digits[:11]
+    out = '101'
+    for d in body[:6]:
+        out += BC_EAN_L[int(d)]
+    out += '01010'
+    for d in body[6:] + str(bc_ean_check_digit(body)):
+        out += BC_EAN_R[int(d)]
+    return out + '101'
+
+
+BC_C128 = ['11011001100', '11001101100', '11001100110', '10010011000', '10010001100', '10001001100', '10011001000', '10011000100', '10001100100', '11001001000', '11001000100', '11000100100', '10110011100', '10011011100', '10011001110', '10111001100', '10011101100', '10011100110', '11001110010', '11001011100', '11001001110', '11011100100', '11001110100', '11101101110', '11101001100', '11100101100', '11100100110', '11101100100', '11100110100', '11100110010', '11011011000', '11011000110', '11000110110', '10100011000', '10001011000', '10001000110', '10110001000', '10001101000', '10001100010', '11010001000', '11000101000', '11000100010', '10110111000', '10110001110', '10001101110', '10111011000', '10111000110', '10001110110', '11101110110', '11010001110', '11000101110', '11011101000', '11011100010', '11011101110', '11101011000', '11101000110', '11100010110', '11101101000', '11101100010', '11100011010', '11101111010', '11001000010', '11110001010', '10100110000', '10100001100', '10010110000', '10010000110', '10000101100', '10000100110', '10110010000', '10110000100', '10011010000', '10011000010', '10000110100', '10000110010', '11000010010', '11001010000', '11110111010', '11000010100', '10001111010', '10100111100', '10010111100', '10010011110', '10111100100', '10011110100', '10011110010', '11110100100', '11110010100', '11110010010', '11011011110', '11011110110', '11110110110', '10101111000', '10100011110', '10001011110', '10111101000', '10111100010', '11110101000', '11110100010', '10111011110', '10111101110', '11101011110', '11110101110', '11010000100', '11010010000', '11010011100']
+BC_C128_STOP = '1100011101011'
+
+
+def bc_c128b(ch: str):
+    c = ord(ch)
+    return c - 32 if 32 <= c <= 126 else None
+
+
+def bc_digit_run(s: str, i: int) -> int:
+    n = 0
+    while i + n < len(s) and s[i + n].isdigit():
+        n += 1
+    return n
+
+
+def bc_code128(text: str):
+    for ch in text:
+        if bc_c128b(ch) is None:
+            return None
+    codes = []
+    i = 0
+    run0 = bc_digit_run(text, 0)
+    if len(text) and run0 % 2 == 0 and (run0 > 0 if run0 == len(text) else run0 >= 4):
+        mode = 'C'
+        codes.append(105)
+    else:
+        mode = 'B'
+        codes.append(104)
+    while i < len(text):
+        run = bc_digit_run(text, i)
+        if mode == 'C':
+            if run >= 2:
+                codes.append(int(text[i:i + 2]))
+                i += 2
+                continue
+            codes.append(100)
+            mode = 'B'
+            continue
+        even_run = run - (run % 2)
+        at_end = (i + run == len(text))
+        if even_run >= 6 or (at_end and run >= 4 and run % 2 == 0):
+            codes.append(99)
+            mode = 'C'
+            continue
+        codes.append(bc_c128b(text[i]))
+        i += 1
+    total = codes[0]
+    for k in range(1, len(codes)):
+        total += k * codes[k]
+    codes.append(total % 103)
+    return ''.join(BC_C128[c] for c in codes) + BC_C128_STOP
+
+
+BC_C39 = {
+    '0': 'nnnwwnwnn', '1': 'wnnwnnnnw', '2': 'nnwwnnnnw', '3': 'wnwwnnnnn', '4': 'nnnwwnnnw',
+    '5': 'wnnwwnnnn', '6': 'nnwwwnnnn', '7': 'nnnwnnwnw', '8': 'wnnwnnwnn', '9': 'nnwwnnwnn',
+    'A': 'wnnnnwnnw', 'B': 'nnwnnwnnw', 'C': 'wnwnnwnnn', 'D': 'nnnnwwnnw', 'E': 'wnnnwwnnn',
+    'F': 'nnwnwwnnn', 'G': 'nnnnnwwnw', 'H': 'wnnnnwwnn', 'I': 'nnwnnwwnn', 'J': 'nnnnwwwnn',
+    'K': 'wnnnnnnww', 'L': 'nnwnnnnww', 'M': 'wnwnnnnwn', 'N': 'nnnnwnnww', 'O': 'wnnnwnnwn',
+    'P': 'nnwnwnnwn', 'Q': 'nnnnnnwww', 'R': 'wnnnnnwwn', 'S': 'nnwnnnwwn', 'T': 'nnnnwnwwn',
+    'U': 'wwnnnnnnw', 'V': 'nwwnnnnnw', 'W': 'wwwnnnnnn', 'X': 'nwnnwnnnw', 'Y': 'wwnnwnnnn',
+    'Z': 'nwwnwnnnn', '-': 'nwnnnnwnw', '.': 'wwnnnnwnn', ' ': 'nwwnnnwnn', '$': 'nwnwnwnnn',
+    '/': 'nwnwnnnwn', '+': 'nwnnnwnwn', '%': 'nnnwnwnwn', '*': 'nwnnwnwnn',
+}
+
+
+def bc_code39(text: str):
+    parts = []
+    for ch in '*' + text.upper() + '*':
+        pat = BC_C39.get(ch)
+        if not pat:
+            return None
+        s = ''
+        for idx, w in enumerate(pat):
+            s += ('1' if idx % 2 == 0 else '0') * (3 if w == 'w' else 1)
+        parts.append(s)
+    return '0'.join(parts)
+
+
+BC_ITF = ['nnwwn', 'wnnnw', 'nwnnw', 'wwnnn', 'nnwnw',
+          'wnwnn', 'nwwnn', 'nnnww', 'wnnwn', 'nwnwn']
+
+
+def bc_itf(digits: str) -> str:
+    code = digits
+    if len(code) % 2:
+        code = '0' + code
+    out = '1010'
+    for i in range(0, len(code), 2):
+        bars, spaces = BC_ITF[int(code[i])], BC_ITF[int(code[i + 1])]
+        for j in range(5):
+            out += '1' * (3 if bars[j] == 'w' else 1)
+            out += '0' * (3 if spaces[j] == 'w' else 1)
+    return out + '11101'
+
+
+def bc_check_ok(digits: str) -> bool:
+    return int(digits[-1]) == bc_ean_check_digit(digits[:-1])
+
+
+def card_auto_format(code: str) -> str:
+    s = (code or '').strip()
+    if re.fullmatch(r'\d{13}', s):
+        return 'ean13' if bc_check_ok(s) else 'code128'
+    if re.fullmatch(r'\d{12}', s):
+        return 'upca' if bc_check_ok(s) else 'code128'
+    if re.fullmatch(r'\d{8}', s):
+        return 'ean8' if bc_check_ok(s) else 'code128'
+    if re.fullmatch(r'[\x20-\x7e]+', s):
+        return 'code128'
+    return 'qr'
+
+
+def card_barcode_bits(code: str, fmt: str) -> tuple:
+    """Возвращает (bits, actual_format) для 1D-штрихкода карты или бросает
+    ValueError с человекочитаемым сообщением — как cardBarcode на клиенте."""
+    s = (code or '').strip()
+    if not s:
+        raise ValueError('Номер не указан')
+    fmt = card_auto_format(s) if (not fmt or fmt == 'auto') else fmt
+    digits = re.sub(r'\D', '', s)
+    if fmt == 'ean13':
+        if len(digits) < 12:
+            raise ValueError('Для EAN-13 нужно 12–13 цифр')
+        return bc_ean13(digits), fmt
+    if fmt == 'ean8':
+        if len(digits) < 7:
+            raise ValueError('Для EAN-8 нужно 7–8 цифр')
+        return bc_ean8(digits), fmt
+    if fmt == 'upca':
+        if len(digits) < 11:
+            raise ValueError('Для UPC-A нужно 11–12 цифр')
+        return bc_upca(digits), fmt
+    if fmt == 'itf':
+        if not digits:
+            raise ValueError('ITF кодирует только цифры')
+        return bc_itf(digits), fmt
+    if fmt == 'code39':
+        bits = bc_code39(s)
+        if not bits:
+            raise ValueError('Code 39 не поддерживает эти символы')
+        return bits, fmt
+    if fmt == 'qr':
+        raise ValueError('QR-коды пока не поддерживаются для отправки в Telegram')
+    bits = bc_code128(s)
+    if not bits:
+        raise ValueError('Code 128 не поддерживает эти символы')
+    return bits, 'code128'
+
+
+BARCODE_QUIET = 12  # тихая зона по краям, в модулях — как BARCODE_QUIET в index (9).html
+
+
+def _png_encode(width: int, height: int, row: bytes) -> bytes:
+    """Минимальный PNG-энкодер (8-бит grayscale, одна и та же строка на все
+    высоты) — без Pillow/внешних библиотек, только zlib из стандартной
+    библиотеки."""
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack('>I', len(data)) + tag + data + struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff)
+
+    sig = b'\x89PNG\r\n\x1a\n'
+    ihdr = struct.pack('>IIBBBBB', width, height, 8, 0, 0, 0, 0)
+    raw = bytearray()
+    filtered_row = b'\x00' + row
+    for _ in range(height):
+        raw.extend(filtered_row)
+    idat = zlib.compress(bytes(raw), 6)
+    return sig + chunk(b'IHDR', ihdr) + chunk(b'IDAT', idat) + chunk(b'IEND', b'')
+
+
+def render_barcode_png(bits: str, module: int = 4, height: int = 220) -> bytes:
+    """Штрихкод как BarcodeStripes в index (9).html — чёрные полосы на белом
+    фоне с тихой зоной по краям, растрированные в PNG."""
+    width = (len(bits) + BARCODE_QUIET * 2) * module
+    row = bytearray(b'\xff' * width)
+    for i, b in enumerate(bits):
+        if b == '1':
+            x0 = (BARCODE_QUIET + i) * module
+            row[x0:x0 + module] = b'\x00' * module
+    return _png_encode(width, height, bytes(row))
+
+
+def find_loyalty_card(app_data: dict, card_id: str):
+    for c in app_data.get('loyaltyCards', []) or []:
+        if isinstance(c, dict) and c.get('id') == card_id:
+            return c
+    return None
 
 
 # ── diet compliance (Соблюдение) ─────────────────────────────────────────────
@@ -923,6 +1198,1083 @@ def handle_checklist_callback(token: str, cq: dict):
         send_message(token, chat_id, f"✅ <b>Чек-лист за {human_date(date_iso)} заполнен!</b>")
 
 
+# ── Текстовый ассистент в Telegram ──────────────────────────────────────────
+# Тот же принцип, что у голосовой кнопки в index (9).html: LLM с tool-calling
+# поверх данных приложения — сама решает, что прочитать и куда отправить
+# пользователя. Только здесь у бота нет экрана, поэтому «навигация» — это
+# ссылка на раздел сайта, а не переключение вкладки. Ключ и модель берём из
+# тех же настроек ассистента, что и браузерная кнопка (settings.voiceApiKey/
+# voiceModel) — они уже синхронизируются между устройствами.
+
+ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
+
+# Наборы ключей ИИ (settings.aiPresets/aiAssignments) — то же самое, что и в
+# index (9).html: несколько ключей/провайдеров можно завести сразу и
+# назначить каждой функции проекта свой (AI_FUNCTIONS). Тут используется
+# только "voiceAssistant" (общий с кнопкой-микрофоном в браузере), остальные
+# функции — распознавание документов и т.п. — работают на клиенте.
+AI_FUNCTIONS = ["voiceAssistant", "healthExtract", "gymExtract", "wishlistScreenshot"]
+AI_PROVIDER_DEFAULT_MODEL = {"claude": "claude-sonnet-5", "openai": "gpt-4o"}
+
+
+def _ensure_ai_presets(settings: dict) -> dict:
+    """Разовая миграция со старой единой пары voiceProvider/voiceApiKey/voiceModel —
+    зеркалит ensureAiPresets() в index (9).html. Ничего не сохраняет: клиент
+    рано или поздно сам допишет aiPresets в синхронизируемые данные, а до
+    этого момента сервер просто считает пресет на лету из старых полей."""
+    if settings.get("aiPresets"):
+        return settings
+    key = (settings.get("voiceApiKey") or "").strip()
+    if not key:
+        return settings
+    provider = "openai" if settings.get("voiceProvider") == "openai" else "claude"
+    preset = {
+        "id": str(uuid.uuid4()),
+        "name": "OpenAI (из старых настроек)" if provider == "openai" else "Claude (из старых настроек)",
+        "provider": provider,
+        "apiKey": key,
+        "model": settings.get("voiceModel") or "",
+    }
+    s = dict(settings)
+    s["aiPresets"] = [preset]
+    s["aiAssignments"] = {k: preset["id"] for k in AI_FUNCTIONS}
+    return s
+
+
+def resolve_ai_preset(settings: dict, function_key: str):
+    s = _ensure_ai_presets(settings or {})
+    presets = s.get("aiPresets") or []
+    if not presets:
+        return None
+    assigned_id = (s.get("aiAssignments") or {}).get(function_key)
+    for p in presets:
+        if p.get("id") == assigned_id:
+            return p
+    return presets[0]
+
+
+def _assistant_budget_slice(app: dict) -> dict:
+    active = app.get("activeBudgetUserId")
+    return (app.get("budgetByUser") or {}).get(active) or {}
+
+
+# domain → (человеческое описание, функция чтения из app-данных). Те же
+# разделы и подписи, что в VOICE_DATA_DOMAINS в index (9).html — чтобы у
+# голосового и текстового ассистента было одно и то же меню возможностей.
+ASSISTANT_DATA_DOMAINS = {
+    "house_boss": ("Задачи «Босс» по расписанию",
+        lambda app: [t for t in app.get("bossTasks", []) if not t.get("archived")]),
+    "house_cleaning": ("Регулярные дела по дому",
+        lambda app: [c for c in app.get("chores", []) if not c.get("archived")]),
+    "house_tasks": ("Канбан-доска задач",
+        lambda app: (app.get("kanban") or {}).get("columns", [])),
+    "cars": ("Автомобили и история обслуживания (когда, что, за сколько)",
+        lambda app: {
+            "cars": [c for c in app.get("cars", []) if not c.get("archived")],
+            "serviceRecords": app.get("serviceRecords", [])[-150:],
+        }),
+    "health": ("Здоровье: хронические состояния и события",
+        lambda app: {
+            "conditions": app.get("healthConditions", []),
+            "events": app.get("healthEvents", [])[-150:],
+        }),
+    "budget": ("Бюджет активного пользователя: вкладки По месяцу/ДДС/Накопления/Постоянные/Спортпит/Долги/Планы — план и факт по категориям и доходам, расходы, доходы, долги, накопления, ДДС, регулярные платежи, спортпит, заметки по месяцам, именные планы (поездки/мероприятия)",
+        lambda app: {
+            "categories": _assistant_budget_slice(app).get("budgetCategories", []),
+            "recurringCategories": _assistant_budget_slice(app).get("budgetRecurringCategories", []),
+            "planCategories": _assistant_budget_slice(app).get("budgetPlanCategories", []),
+            "planValues": _assistant_budget_slice(app).get("budgetPlanValues", {}),
+            "factValues": _assistant_budget_slice(app).get("budgetFactValues", {}),
+            "incomeSources": _assistant_budget_slice(app).get("budgetIncomeSources", []),
+            "incomeValues": _assistant_budget_slice(app).get("budgetIncomeValues", {}),
+            "incomeFactValues": _assistant_budget_slice(app).get("budgetIncomeFactValues", {}),
+            "expenses": _assistant_budget_slice(app).get("budgetExpenses", [])[-200:],
+            "savingsTransactions": _assistant_budget_slice(app).get("savingsTransactions", [])[-100:],
+            "recurring": _assistant_budget_slice(app).get("budgetRecurring", []),
+            "supplements": _assistant_budget_slice(app).get("budgetSupplements", []),
+            "supplementAssignments": _assistant_budget_slice(app).get("budgetSupplementAssignments", {}),
+            "debts": _assistant_budget_slice(app).get("budgetDebts", []),
+            "debtTransactions": _assistant_budget_slice(app).get("debtTransactions", [])[-100:],
+            "cashflowAccounts": _assistant_budget_slice(app).get("budgetCashflowAccounts", []),
+            "cashflowOps": _assistant_budget_slice(app).get("budgetCashflowOps", [])[-200:],
+            "monthlyNotes": _assistant_budget_slice(app).get("budgetMonthlyNotes", []),
+            "plans": _assistant_budget_slice(app).get("budgetPlans", []),
+        }),
+    "cards": ("Карты лояльности магазинов",
+        lambda app: [{k: v for k, v in c.items() if k not in ("photo", "code")}
+                     for c in app.get("loyaltyCards", [])]),
+    "gym": ("GYM: программы, дни, упражнения, журнал тренировок",
+        lambda app: {
+            "programs": app.get("gymPrograms", []), "days": app.get("gymDays", []),
+            "exercises": app.get("gymExercises", []), "sessions": app.get("gymSessions", [])[-40:],
+        }),
+    "wishlist": ("Хотелки",
+        lambda app: {"categories": app.get("wishlistCategories", []), "items": app.get("wishlistItems", [])}),
+    "planner": ("Планировщик: события, друзья-участники, личные планы, праздники/дни рождения",
+        lambda app: {
+            "events": app.get("plannerEvents", []), "friends": app.get("plannerFriends", []),
+            "plans": app.get("plannerPlans", []),
+            "holidays": [h for h in app.get("holidays", []) if not h.get("archived")],
+        }),
+    "camping": ("Кемпинг: справочник вещей и поездки со сборами",
+        lambda app: {
+            "items": app.get("campingItems", []), "categories": app.get("campingCategories", []),
+            "trips": app.get("campingTrips", []),
+        }),
+    "meals": ("Питание: вкладки План/Готовка/Контейнеры/Счётчик/Закупка — рационы, планы готовки, контейнеры для взвешивания, остаток порций, БАДы, списки покупок",
+        lambda app: {
+            "meals": app.get("meals", [])[-30:],  # вкладка «План»
+            "cookingPlans": app.get("cookingPlans", [])[-30:],  # вкладка «Готовка» — отдельная сущность от meals
+            "containers": app.get("containers", []),  # вкладка «Контейнеры»
+            "rationStock": app.get("rationStock", 0),  # вкладка «Счётчик»
+            "supplements": app.get("supplements", []),
+            "dietLog": app.get("dietLog", [])[-30:], "shoppingLists": app.get("shoppingLists", []),
+        }),
+    "body": ("Тело: история замеров и веса, режимы (диета/тренировки), целевые значения",
+        lambda app: {
+            "entries": app.get("bodyEntries", [])[-60:],
+            "modes": app.get("bodyModes", []), "activeModeId": app.get("activeBodyModeId"),
+            "fieldTargets": app.get("bodyFieldTargets", {}), "progressStartDate": app.get("bodyProgressStartDate", ""),
+        }),
+    "supplements": ("БАДы: обычный и тренировочный список, журнал приёма по дням (утро/вечер/тренировка)",
+        lambda app: {
+            "supplements": app.get("supplements", []),
+            "workoutSupplements": app.get("workoutSupplements", []),
+            # taken — объект вида "<дата>_<период>_<id>": true, растёт бесконечно;
+            # отдаём только последние ~30 дней, иначе токены на историю за годы.
+            "taken": {
+                k: v for k, v in (app.get("taken") or {}).items()
+                if k.split("_")[0] >= (today_msk() - timedelta(days=30)).isoformat()
+            },
+        }),
+    "checklist": ("Ежедневный чек-лист: поля и журнал ответов",
+        lambda app: {
+            "fields": [f for f in app.get("dailyChecklistFields", []) if not f.get("archived")],
+            "log": app.get("dailyChecklistLog", [])[-30:],
+        }),
+}
+
+# target → (подпись, относительный путь сайта). Подвкладки вроде houseTab не
+# зашиты в URL (как и в браузерном ассистенте) — ссылка открывает верхнюю
+# вкладку, дальше пользователь сам доходит до нужного места в пару тапов.
+ASSISTANT_NAV_TARGETS = {
+    "home": ("Главный экран", "/"),
+    "body": ("Тело/вес", "/mybody"),
+    "budget": ("Бюджет", "/budget"),
+    "supplements": ("БАДы", "/supplements"),
+    "meals": ("Питание", "/meals"),
+    "weather": ("Погода", "/weather"),
+    "health": ("Здоровье", "/health"),
+    "house_boss": ("Дела — Босс", "/house"),
+    "house_tasks": ("Дела — Задачи (канбан)", "/house"),
+    "house_cleaning": ("Дела — По дому", "/house"),
+    "planner_plans": ("Планировщик — Мои планы", "/planner"),
+    "planner_holidays": ("Планировщик — Праздники", "/holidays"),
+    "planner_events": ("Планировщик — События", "/planner"),
+    "planner_camping": ("Планировщик — Кемпинг", "/planner"),
+    "misc_home": ("Прочее", "/misc"),
+    "wishlist": ("Хотелки", "/wishlist"),
+    "cards": ("Карты лояльности", "/cards"),
+    "gym": ("GYM", "/gym"),
+    "cars": ("Автомобили и обслуживание", "/cars"),
+    "english": ("English", "/misc"),
+    "settings": ("Настройки", "/settings"),
+}
+
+# ── Текстовый ассистент: универсальная запись данных ────────────────────────
+# Зеркалит WRITE_REGISTRY/executeVoiceTool в index (9).html (та же разведка
+# по коду легла в основу обеих реализаций) — коллекций больше двадцати, почти
+# все id-массивы с одним паттерном (апсерт по id, hard delete + tombstone,
+# иногда каскад на дочерние записи), поэтому три общих инструмента вместо
+# одного на раздел. В отличие от браузера (где данные иммутабельны и правки
+# идут через setData), здесь app — обычный dict, который можно мутировать на
+# месте и сохранить через save_app_data после каждого успешного вызова.
+
+BUDGET_SCOPED_COLLECTIONS = {
+    "budgetExpenses", "budgetRecurring", "savingsTransactions",
+    "budgetDebts", "debtTransactions", "budgetCashflowAccounts", "budgetCashflowOps",
+    "budgetMonthlyNotes",
+}
+
+
+def _collection_array(app: dict, key: str) -> list:
+    if key in BUDGET_SCOPED_COLLECTIONS:
+        uid = app.get("activeBudgetUserId")
+        slice_ = (app.get("budgetByUser") or {}).get(uid)
+        if slice_ is None:
+            return []
+        return slice_.setdefault(key, [])
+    return app.setdefault(key, [])
+
+
+def _set_collection_array(app: dict, key: str, arr: list):
+    if key in BUDGET_SCOPED_COLLECTIONS:
+        uid = app.get("activeBudgetUserId")
+        app.setdefault("budgetByUser", {}).setdefault(uid, {})[key] = arr
+    else:
+        app[key] = arr
+
+
+def _cascade_delete_planner_event(app: dict, event_id: str):
+    # Гостевые коллекции (ответы/комментарии/список покупок и т.д.) ассистент
+    # не читает и не пишет напрямую, но при удалении события строки должны
+    # уйти вместе с ним — иначе это утечка данных в файле.
+    for key in ("plannerResponses", "plannerComments", "plannerGuests",
+                "plannerExpenses", "plannerPayments", "plannerShoppingItems"):
+        arr = app.get(key)
+        if arr:
+            arr[:] = [r for r in arr if r.get("eventId") != event_id]
+
+
+def _cascade_delete_checklist_field(app: dict, field_id: str):
+    for entry in app.get("dailyChecklistLog") or []:
+        answers = entry.get("answers")
+        if answers and field_id in answers:
+            del answers[field_id]
+
+
+# label — для сообщений; create_defaults — поля новой записи по умолчанию
+# (id/updatedAt добавляются отдельно). require_confirm — запись финансовая,
+# create/update тоже просят подтверждения (delete требует его всегда и для
+# всех коллекций). cascade_delete — при удалении рекурсивно удалить записи,
+# где record[field] == id. cascade_orphan — вместо удаления обнулить
+# record[field]. cascade_strip — убрать id из списка record[field].
+# custom_cascade_delete — когда каскад не укладывается в эти три формы.
+# tombstone=False — коллекция без списка удалений (нет таких в этом реестре,
+# оставлено для симметрии с JS-версией).
+WRITE_REGISTRY = {
+    "chores": {
+        "label": "Регулярное дело «По дому»",
+        "create_defaults": lambda: {"frequency": "weekly", "customDays": None, "notify": False, "notifyTime": "09:00", "archived": False},
+    },
+    "bossTasks": {
+        "label": "Задача «Босс»",
+        "create_defaults": lambda: {"period": "morning", "days": [1, 2, 3, 4, 5], "archived": False},
+    },
+    "cars": {
+        "label": "Автомобиль",
+        "create_defaults": lambda: {"archived": False},
+        "cascade_delete": [{"collection": "serviceRecords", "field": "carId"}],
+    },
+    "serviceRecords": {"label": "Запись об обслуживании автомобиля", "create_defaults": lambda: {}},
+    "healthConditions": {
+        "label": "Состояние здоровья",
+        "create_defaults": lambda: {"tags": []},
+        "cascade_orphan": [{"collection": "healthEvents", "field": "conditionId"}],
+    },
+    "healthEvents": {"label": "Событие здоровья (визит/болезнь/процедура)", "create_defaults": lambda: {"tags": [], "medications": []}},
+    "loyaltyCards": {"label": "Карта лояльности магазина", "create_defaults": lambda: {"format": "auto"}},
+    "gymPrograms": {
+        "label": "Программа тренировок GYM",
+        "create_defaults": lambda: {},
+        "cascade_delete": [{"collection": "gymDays", "field": "programId"}],
+    },
+    "gymDays": {
+        "label": "Тренировочный день GYM",
+        "create_defaults": lambda: {"order": 0},
+        "cascade_delete": [{"collection": "gymExercises", "field": "dayId"}],
+    },
+    "gymExercises": {"label": "Упражнение GYM", "create_defaults": lambda: {"mode": "groups", "groups": [], "order": 0}},
+    "gymSessions": {"label": "Тренировка (журнал GYM)", "create_defaults": lambda: {"sets": []}},
+    "wishlistCategories": {
+        "label": "Список хотелок",
+        "create_defaults": lambda: {},
+        "cascade_orphan": [{"collection": "wishlistItems", "field": "categoryId"}],
+    },
+    "wishlistItems": {"label": "Хотелка", "create_defaults": lambda: {"bought": False}},
+    "plannerFriends": {
+        "label": "Друг-участник планировщика",
+        "create_defaults": lambda: {},
+        "cascade_strip": [{"collection": "plannerEvents", "field": "participantIds"}],
+    },
+    "plannerEvents": {
+        "label": "Событие планировщика",
+        "create_defaults": lambda: {"participantIds": [], "participantMode": "list", "confirmed": False},
+        "custom_cascade_delete": _cascade_delete_planner_event,
+    },
+    "plannerPlans": {"label": "Личный план в планировщике", "create_defaults": lambda: {}},
+    "campingCategories": {
+        "label": "Категория кемпинг-вещей",
+        "create_defaults": lambda: {},
+        "cascade_orphan": [{"collection": "campingItems", "field": "categoryId"}],
+    },
+    "campingItems": {"label": "Кемпинг-вещь (справочник)", "create_defaults": lambda: {"isBag": False}},
+    "campingTrips": {"label": "Кемпинг-поездка", "create_defaults": lambda: {"packing": {"bags": [], "items": []}}},
+    "meals": {"label": "Рацион (приём пищи)", "create_defaults": lambda: {"breakfast": [], "snack": [], "lunch": [], "dinner": [], "archived": False}},
+    "supplements": {"label": "БАД (обычный список)", "create_defaults": lambda: {"form": "Таблетки", "frequency": "daily_morning", "archived": False}},
+    "workoutSupplements": {"label": "БАД (тренировочный список)", "create_defaults": lambda: {"form": "Таблетки", "frequency": "daily_morning", "archived": False}},
+    "bodyEntries": {"label": "Замер тела", "create_defaults": lambda: {"values": {}}},
+    "holidays": {
+        "label": "Праздник/день рождения (раздел Планировщик → Праздники)",
+        "create_defaults": lambda: {"type": "birthday", "date": "", "birthYear": "", "notify": True, "reminders": []},
+    },
+    "dailyChecklistFields": {
+        "label": "Поле ежедневного чек-листа",
+        "create_defaults": lambda: {"options": [], "archived": False},
+        "custom_cascade_delete": _cascade_delete_checklist_field,
+    },
+    "shoppingLists": {"label": "Список покупок", "create_defaults": lambda: {"selections": []}},
+    "cookingPlans": {"label": "План готовки (раздел Питание → Готовка)", "create_defaults": lambda: {"ingredients": []}},
+    "containers": {"label": "Контейнер для взвешивания (раздел Питание → Контейнеры)", "create_defaults": lambda: {"weight": "", "comment": ""}},
+    "budgetExpenses": {
+        "label": "Накопление (финансовая цель)",
+        "require_confirm": True,
+        "create_defaults": lambda: {"archived": False},
+        "cascade_delete": [{"collection": "savingsTransactions", "field": "expenseId"}],
+    },
+    "savingsTransactions": {"label": "Операция по накоплению", "require_confirm": True, "create_defaults": lambda: {}},
+    "budgetRecurring": {"label": "Регулярный платёж", "require_confirm": True, "create_defaults": lambda: {"archived": False}},
+    "budgetDebts": {
+        "label": "Долг",
+        "require_confirm": True,
+        "create_defaults": lambda: {"closed": False},
+        "cascade_delete": [{"collection": "debtTransactions", "field": "debtId"}],
+    },
+    "debtTransactions": {"label": "Операция по долгу", "require_confirm": True, "create_defaults": lambda: {}},
+    "budgetCashflowAccounts": {
+        "label": "Счёт ДДС",
+        "require_confirm": True,
+        "create_defaults": lambda: {},
+        "cascade_delete": [{"collection": "budgetCashflowOps", "field": "accountId"}],
+    },
+    "budgetCashflowOps": {"label": "Операция ДДС (расход/доход)", "require_confirm": True, "create_defaults": lambda: {"source": "manual"}},
+    "budgetMonthlyNotes": {
+        "label": "Заметка «Выводы по месяцу» (раздел Бюджет → По месяцу)",
+        "create_defaults": lambda: {"month": "", "sort": 0},
+    },
+}
+
+
+def create_record_generic(app: dict, collection: str, fields: dict) -> dict:
+    reg = WRITE_REGISTRY.get(collection)
+    if not reg:
+        return {"error": "unknown_collection"}
+    record = {**reg["create_defaults"](), **(fields or {}), "id": str(uuid.uuid4()), "updatedAt": int(time.time() * 1000)}
+    arr = _collection_array(app, collection)
+    arr.append(record)
+    _set_collection_array(app, collection, arr)
+    return {"ok": True, "id": record["id"]}
+
+
+def update_record_generic(app: dict, collection: str, record_id: str, patch: dict) -> dict:
+    reg = WRITE_REGISTRY.get(collection)
+    if not reg:
+        return {"error": "unknown_collection"}
+    arr = _collection_array(app, collection)
+    for i, r in enumerate(arr):
+        if r.get("id") == record_id:
+            arr[i] = {**r, **(patch or {}), "id": record_id, "updatedAt": int(time.time() * 1000)}
+            _set_collection_array(app, collection, arr)
+            return {"ok": True}
+    return {"error": "not_found"}
+
+
+def _delete_record_cascade(app: dict, collection: str, record_id: str):
+    reg = WRITE_REGISTRY.get(collection)
+    if not reg:
+        return
+    custom = reg.get("custom_cascade_delete")
+    if custom:
+        custom(app, record_id)
+    else:
+        for c in reg.get("cascade_orphan", []):
+            for r in _collection_array(app, c["collection"]):
+                if r.get(c["field"]) == record_id:
+                    r[c["field"]] = ""
+        for c in reg.get("cascade_strip", []):
+            for r in _collection_array(app, c["collection"]):
+                v = r.get(c["field"])
+                if isinstance(v, list) and record_id in v:
+                    r[c["field"]] = [x for x in v if x != record_id]
+        for c in reg.get("cascade_delete", []):
+            child_ids = [r.get("id") for r in _collection_array(app, c["collection"]) if r.get(c["field"]) == record_id]
+            for cid in child_ids:
+                _delete_record_cascade(app, c["collection"], cid)
+    arr = _collection_array(app, collection)
+    arr[:] = [r for r in arr if r.get("id") != record_id]
+    if reg.get("tombstone", True):
+        app.setdefault("deletedIds", {}).setdefault(collection, {})[str(record_id)] = int(time.time() * 1000)
+
+
+def delete_record_generic(app: dict, collection: str, record_id: str) -> dict:
+    reg = WRITE_REGISTRY.get(collection)
+    if not reg:
+        return {"error": "unknown_collection"}
+    if not any(r.get("id") == record_id for r in _collection_array(app, collection)):
+        return {"error": "not_found"}
+    _delete_record_cascade(app, collection, record_id)
+    return {"ok": True}
+
+
+# ── Канбан: не плоский id-массив (задачи вложены в колонки), свои функции ──
+DEFAULT_KANBAN_COLUMNS = [
+    {"id": "col-1", "title": "К выполнению", "tasks": []},
+    {"id": "col-2", "title": "В работе", "tasks": []},
+    {"id": "col-3", "title": "Готово", "tasks": []},
+]
+
+
+def _kanban_columns(app: dict) -> list:
+    kanban = app.get("kanban")
+    if kanban and kanban.get("columns"):
+        return kanban["columns"]
+    return DEFAULT_KANBAN_COLUMNS
+
+
+def _find_kanban_task(app: dict, task_id: str):
+    for col in _kanban_columns(app):
+        for t in col.get("tasks", []):
+            if t.get("id") == task_id:
+                return t, col
+    return None, None
+
+
+def _stamp_kanban_column(col: dict):
+    col["updatedAt"] = int(time.time() * 1000)
+
+
+def kanban_create_task(app: dict, column_id: str, fields: dict) -> dict:
+    columns = _kanban_columns(app)
+    target = next((c for c in columns if c.get("id") == column_id), None)
+    if not target:
+        return {"error": "unknown_column"}
+    task = {
+        "id": str(uuid.uuid4()), "title": fields.get("title", ""), "startDate": "",
+        "dueDate": fields.get("dueDate", ""), "priority": fields.get("priority") or "none",
+        "description": fields.get("description", ""), "subtasks": [], "comments": [],
+        "createdAt": datetime.utcnow().isoformat(),
+    }
+    target.setdefault("tasks", []).insert(0, task)
+    _stamp_kanban_column(target)
+    app.setdefault("kanban", {})["columns"] = columns
+    return {"ok": True, "id": task["id"]}
+
+
+def kanban_update_task(app: dict, task_id: str, patch: dict) -> dict:
+    task, col = _find_kanban_task(app, task_id)
+    if not task:
+        return {"error": "task_not_found"}
+    task.update(patch or {})
+    _stamp_kanban_column(col)
+    return {"ok": True}
+
+
+def kanban_delete_task(app: dict, task_id: str) -> dict:
+    task, col = _find_kanban_task(app, task_id)
+    if not task:
+        return {"error": "task_not_found"}
+    col["tasks"] = [t for t in col.get("tasks", []) if t.get("id") != task_id]
+    _stamp_kanban_column(col)
+    return {"ok": True}
+
+
+def kanban_move_task(app: dict, task_id: str, target_column_id: str) -> dict:
+    columns = _kanban_columns(app)
+    target_col = next((c for c in columns if c.get("id") == target_column_id), None)
+    if not target_col:
+        return {"error": "unknown_column"}
+    task, col = _find_kanban_task(app, task_id)
+    if not task:
+        return {"error": "task_not_found"}
+    if col.get("id") == target_column_id:
+        return {"ok": True}
+    col["tasks"] = [t for t in col.get("tasks", []) if t.get("id") != task_id]
+    _stamp_kanban_column(col)
+    target_col.setdefault("tasks", []).insert(0, task)
+    _stamp_kanban_column(target_col)
+    return {"ok": True}
+
+
+def kanban_add_comment(app: dict, task_id: str, text: str) -> dict:
+    task, col = _find_kanban_task(app, task_id)
+    if not task:
+        return {"error": "task_not_found"}
+    comment = {"id": str(uuid.uuid4()), "text": text, "createdAt": datetime.utcnow().isoformat()}
+    task.setdefault("comments", []).append(comment)
+    _stamp_kanban_column(col)
+    return {"ok": True, "id": comment["id"]}
+
+
+def kanban_delete_comment(app: dict, task_id: str, comment_id: str) -> dict:
+    task, col = _find_kanban_task(app, task_id)
+    if not task:
+        return {"error": "task_not_found"}
+    task["comments"] = [c for c in task.get("comments", []) if c.get("id") != comment_id]
+    _stamp_kanban_column(col)
+    return {"ok": True}
+
+
+def kanban_add_subtask(app: dict, task_id: str, text: str) -> dict:
+    task, col = _find_kanban_task(app, task_id)
+    if not task:
+        return {"error": "task_not_found"}
+    subtask = {"id": str(uuid.uuid4()), "text": text, "done": False}
+    task.setdefault("subtasks", []).append(subtask)
+    _stamp_kanban_column(col)
+    return {"ok": True, "id": subtask["id"]}
+
+
+def kanban_toggle_subtask(app: dict, task_id: str, subtask_id: str, done) -> dict:
+    task, col = _find_kanban_task(app, task_id)
+    if not task:
+        return {"error": "task_not_found"}
+    for s in task.get("subtasks", []):
+        if s.get("id") == subtask_id:
+            s["done"] = bool(done) if done is not None else not s.get("done")
+            _stamp_kanban_column(col)
+            return {"ok": True}
+    return {"error": "subtask_not_found"}
+
+
+# ── Ингредиенты плана готовки: вложены в cookingPlans[].ingredients, поэтому
+# не подходят под общий create/update/delete_record (та же причина, что у
+# канбана) — свои функции поверх найденного плана.
+def _find_cooking_plan(app: dict, plan_id: str):
+    for p in app.get("cookingPlans") or []:
+        if p.get("id") == plan_id:
+            return p
+    return None
+
+
+def cooking_plan_add_ingredient(app: dict, plan_id: str, fields: dict) -> dict:
+    plan = _find_cooking_plan(app, plan_id)
+    if not plan:
+        return {"error": "plan_not_found"}
+    ingredient = {
+        "id": str(uuid.uuid4()), "name": "", "portions": "", "portionSize": "",
+        "actualRaw": None, "actualCooked": None,
+        **{k: v for k, v in (fields or {}).items() if v is not None},
+    }
+    plan.setdefault("ingredients", []).append(ingredient)
+    plan["updatedAt"] = int(time.time() * 1000)
+    return {"ok": True, "id": ingredient["id"]}
+
+
+def cooking_plan_update_ingredient(app: dict, plan_id: str, ingredient_id: str, patch: dict) -> dict:
+    plan = _find_cooking_plan(app, plan_id)
+    if not plan:
+        return {"error": "plan_not_found"}
+    for ing in plan.get("ingredients", []):
+        if ing.get("id") == ingredient_id:
+            ing.update(patch or {})
+            plan["updatedAt"] = int(time.time() * 1000)
+            return {"ok": True}
+    return {"error": "ingredient_not_found"}
+
+
+def cooking_plan_delete_ingredient(app: dict, plan_id: str, ingredient_id: str) -> dict:
+    plan = _find_cooking_plan(app, plan_id)
+    if not plan:
+        return {"error": "plan_not_found"}
+    ingredients = plan.get("ingredients", [])
+    if not any(i.get("id") == ingredient_id for i in ingredients):
+        return {"error": "ingredient_not_found"}
+    plan["ingredients"] = [i for i in ingredients if i.get("id") != ingredient_id]
+    plan["updatedAt"] = int(time.time() * 1000)
+    return {"ok": True}
+
+
+# ── Дневные логи (dietLog, dailyChecklistLog): один ряд на дату — апсерт
+# заменяет запись за эту дату целиком, а не добавляет новую.
+def log_diet_compliance(app: dict, date: str, level: str) -> dict:
+    log = [e for e in app.get("dietLog", []) if e.get("date") != date]
+    log.append({"id": str(uuid.uuid4()), "date": date, "level": level, "updatedAt": int(time.time() * 1000)})
+    app["dietLog"] = log
+    return {"ok": True}
+
+
+def log_checklist_answer(app: dict, date: str, field_id: str, option: str) -> dict:
+    existing = next((e for e in app.get("dailyChecklistLog", []) if e.get("date") == date), None)
+    answers = dict(existing.get("answers") or {}) if existing else {}
+    answers[field_id] = option
+    log = [e for e in app.get("dailyChecklistLog", []) if e.get("date") != date]
+    log.append({
+        "id": (existing or {}).get("id") or str(uuid.uuid4()),
+        "date": date, "answers": answers, "updatedAt": int(time.time() * 1000),
+    })
+    app["dailyChecklistLog"] = log
+    return {"ok": True}
+
+
+ASSISTANT_TOOLS = [
+    {
+        "name": "get_data",
+        "description": "Прочитать актуальные данные пользователя из одного раздела приложения. Вызывай перед тем как отвечать на вопрос по конкретному разделу — не отвечай по памяти.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"domain": {"type": "string", "enum": list(ASSISTANT_DATA_DOMAINS.keys())}},
+            "required": ["domain"],
+        },
+    },
+    {
+        "name": "navigate",
+        "description": "Дать пользователю ссылку на раздел сайта.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"target": {"type": "string", "enum": list(ASSISTANT_NAV_TARGETS.keys())}},
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "create_record",
+        "description": "Добавить новую запись в один из разделов проекта.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string", "enum": list(WRITE_REGISTRY.keys())},
+                "fields": {"type": "object", "description": "Поля новой записи — сначала вызови get_data по этому же разделу, чтобы увидеть форму существующих записей."},
+                "confirmed": {"type": "boolean", "description": "true только после того как пользователь явно подтвердил — обязательно для финансовых разделов."},
+            },
+            "required": ["collection", "fields"],
+        },
+    },
+    {
+        "name": "update_record",
+        "description": "Изменить поля существующей записи по id.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string", "enum": list(WRITE_REGISTRY.keys())},
+                "id": {"type": "string"},
+                "patch": {"type": "object", "description": "Только те поля, которые нужно изменить."},
+                "confirmed": {"type": "boolean"},
+            },
+            "required": ["collection", "id", "patch"],
+        },
+    },
+    {
+        "name": "delete_record",
+        "description": "Удалить запись по id. Всегда требует явного подтверждения пользователя.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "collection": {"type": "string", "enum": list(WRITE_REGISTRY.keys())},
+                "id": {"type": "string"},
+                "confirmed": {"type": "boolean"},
+            },
+            "required": ["collection", "id"],
+        },
+    },
+    {
+        "name": "kanban_create_task",
+        "description": "Создать задачу на канбан-доске «Задачи» (раздел house_tasks).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "columnId": {"type": "string", "description": "id колонки из get_data(\"house_tasks\")"},
+                "title": {"type": "string"},
+                "priority": {"type": "string", "enum": ["none", "low", "medium", "high"]},
+                "description": {"type": "string"},
+                "dueDate": {"type": "string"},
+            },
+            "required": ["columnId", "title"],
+        },
+    },
+    {
+        "name": "kanban_update_task",
+        "description": "Изменить поля задачи канбана (title/priority/description/dueDate/closed и т.п.) — для комментариев и подзадач есть отдельные инструменты.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"taskId": {"type": "string"}, "patch": {"type": "object"}},
+            "required": ["taskId", "patch"],
+        },
+    },
+    {
+        "name": "kanban_delete_task",
+        "description": "Удалить задачу канбана. Требует подтверждения.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"taskId": {"type": "string"}, "confirmed": {"type": "boolean"}},
+            "required": ["taskId"],
+        },
+    },
+    {
+        "name": "kanban_move_task",
+        "description": "Переместить задачу канбана в другую колонку.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"taskId": {"type": "string"}, "columnId": {"type": "string"}},
+            "required": ["taskId", "columnId"],
+        },
+    },
+    {
+        "name": "kanban_add_comment",
+        "description": "Добавить комментарий к задаче канбана.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"taskId": {"type": "string"}, "text": {"type": "string"}},
+            "required": ["taskId", "text"],
+        },
+    },
+    {
+        "name": "kanban_delete_comment",
+        "description": "Удалить комментарий у задачи канбана.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"taskId": {"type": "string"}, "commentId": {"type": "string"}},
+            "required": ["taskId", "commentId"],
+        },
+    },
+    {
+        "name": "kanban_add_subtask",
+        "description": "Добавить подзадачу к задаче канбана.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"taskId": {"type": "string"}, "text": {"type": "string"}},
+            "required": ["taskId", "text"],
+        },
+    },
+    {
+        "name": "kanban_toggle_subtask",
+        "description": "Отметить подзадачу канбана выполненной/невыполненной.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"taskId": {"type": "string"}, "subtaskId": {"type": "string"}, "done": {"type": "boolean"}},
+            "required": ["taskId", "subtaskId"],
+        },
+    },
+    {
+        "name": "log_diet_compliance",
+        "description": "Отметить соблюдение диеты за конкретный день.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "YYYY-MM-DD"},
+                "level": {"type": "string", "enum": ["much_below", "below", "on_plan", "above", "much_above", "mini_cheat", "cheat"]},
+            },
+            "required": ["date", "level"],
+        },
+    },
+    {
+        "name": "log_checklist_answer",
+        "description": "Отметить ответ ежедневного чек-листа (раздел checklist) за конкретный день.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "YYYY-MM-DD"},
+                "fieldId": {"type": "string", "description": "id поля из get_data(\"checklist\")"},
+                "option": {"type": "string"},
+            },
+            "required": ["date", "fieldId", "option"],
+        },
+    },
+    {
+        "name": "cooking_plan_add_ingredient",
+        "description": "Добавить продукт в план готовки (раздел Питание → Готовка).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "planId": {"type": "string", "description": "id плана из get_data(\"meals\").cookingPlans"},
+                "name": {"type": "string"},
+                "portions": {"type": "number", "description": "Число порций — вместе с portionSize задаёт план сырого веса в граммах"},
+                "portionSize": {"type": "number", "description": "Грамм на порцию"},
+                "plannedRaw": {"type": "number", "description": "План сырого веса в граммах напрямую, если не через порции"},
+            },
+            "required": ["planId", "name"],
+        },
+    },
+    {
+        "name": "cooking_plan_update_ingredient",
+        "description": "Изменить план/факт продукта в плане готовки — например «Запиши гречка сырое факт 650», «У курицы готовое 1500». Сначала get_data(\"meals\"), чтобы найти id продукта по названию.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "planId": {"type": "string"},
+                "ingredientId": {"type": "string", "description": "id продукта из get_data(\"meals\").cookingPlans[].ingredients"},
+                "patch": {
+                    "type": "object",
+                    "description": "Поля: actualRaw (факт сырого веса, г), actualCooked (факт готового веса, г), name, portions, portionSize, plannedRaw",
+                },
+            },
+            "required": ["planId", "ingredientId", "patch"],
+        },
+    },
+    {
+        "name": "cooking_plan_delete_ingredient",
+        "description": "Удалить продукт из плана готовки. Требует подтверждения.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"planId": {"type": "string"}, "ingredientId": {"type": "string"}, "confirmed": {"type": "boolean"}},
+            "required": ["planId", "ingredientId"],
+        },
+    },
+]
+
+def build_assistant_system_prompt() -> str:
+    domain_list = "\n".join(f"  • {k} — {label}" for k, (label, _) in ASSISTANT_DATA_DOMAINS.items())
+    nav_list = "\n".join(f"  • {k} — {label}" for k, (label, _) in ASSISTANT_NAV_TARGETS.items())
+    write_list = "\n".join(
+        f"  • {k} — {v['label']}" + (" (финансовое — подтверждение)" if v.get("require_confirm") else "")
+        for k, v in WRITE_REGISTRY.items()
+    )
+    return (
+        "Ты ассистент приложения Jarvis, отвечаешь в Telegram. "
+        "Отвечай кратко и по-русски, обычным текстом без markdown-разметки и JSON — сообщение уходит как есть.\n\n"
+        f"СЕГОДНЯ: {today_msk().isoformat()}\n\n"
+        "У тебя есть инструменты, покрывающие весь проект — всё то же самое, что пользователь делает руками:\n\n"
+        f"1. get_data(domain) — прочитать актуальные данные раздела. Разделы:\n{domain_list}\n\n"
+        f"2. navigate(target) — дать пользователю ссылку на раздел сайта. Разделы:\n{nav_list}\n\n"
+        f"3. create_record(collection, fields) / update_record(collection, id, patch) / delete_record(collection, id) — добавить/изменить/удалить запись. Коллекции:\n{write_list}\n\n"
+        "4. Канбан-доска «Задачи» (house_tasks) устроена отдельно от прочих разделов — свои инструменты: "
+        "kanban_create_task, kanban_update_task, kanban_delete_task, kanban_move_task, kanban_add_comment, "
+        "kanban_delete_comment, kanban_add_subtask, kanban_toggle_subtask.\n\n"
+        "5. log_diet_compliance(date, level) / log_checklist_answer(date, fieldId, option) — отметки по дням "
+        "(один раз на дату — вызов заменяет предыдущую отметку на эту дату, если она была).\n\n"
+        "6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — "
+        "свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и "
+        "готового веса), cooking_plan_delete_ingredient.\n\n"
+        "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
+        "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
+        "— вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми "
+        "словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ ответ (не вызывай "
+        "инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением "
+        "(«да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.\n\n"
+        "Правила:\n"
+        "- Сначала вызови нужные инструменты, потом дай один короткий финальный ответ.\n"
+        "- Не отвечай по памяти на вопросы о данных пользователя — всегда сначала get_data по нужному разделу.\n"
+        "- Перед созданием/изменением записи по незнакомой структуре сначала вызови get_data по этому разделу, "
+        "чтобы увидеть форму существующих записей (имена полей, форматы).\n"
+        "- Если просят открыть/показать раздел — вызови navigate.\n"
+        "- Если данных нет или вопрос не по теме проекта — так и скажи, не выдумывай.\n"
+        "- Никогда не удаляй и не меняй финансовые данные без подтверждения, даже если пользователь говорит это "
+        "как бы между делом."
+    )
+
+
+def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str) -> dict:
+    inp = inp or {}
+    if name == "get_data":
+        entry = ASSISTANT_DATA_DOMAINS.get(inp.get("domain"))
+        if not entry:
+            return {"error": "unknown_domain"}
+        return entry[1](app)
+    if name == "navigate":
+        entry = ASSISTANT_NAV_TARGETS.get(inp.get("target"))
+        if not entry:
+            return {"error": "unknown_target"}
+        label, path = entry
+        url = (site_url.rstrip("/") + path) if site_url else None
+        return {"ok": True, "label": label, "url": url}
+
+    if name in ("create_record", "update_record", "delete_record"):
+        reg = WRITE_REGISTRY.get(inp.get("collection"))
+        if not reg:
+            return {"error": "unknown_collection"}
+        is_delete = name == "delete_record"
+        needs_confirm = is_delete or bool(reg.get("require_confirm"))
+        if needs_confirm and not inp.get("confirmed"):
+            verb = "удалить" if is_delete else ("добавить" if name == "create_record" else "изменить")
+            return {"needs_confirmation": True, "message": f"Нужно подтверждение пользователя, чтобы {verb}: {reg['label']}."}
+        if name == "create_record":
+            result = create_record_generic(app, inp.get("collection"), inp.get("fields") or {})
+        elif name == "update_record":
+            result = update_record_generic(app, inp.get("collection"), inp.get("id"), inp.get("patch") or {})
+        else:
+            result = delete_record_generic(app, inp.get("collection"), inp.get("id"))
+        if result.get("ok"):
+            save_app_data(app)
+        return result
+
+    if name == "kanban_delete_task" and not inp.get("confirmed"):
+        return {"needs_confirmation": True, "message": "Нужно подтверждение пользователя, чтобы удалить задачу канбана."}
+    if name == "cooking_plan_delete_ingredient" and not inp.get("confirmed"):
+        return {"needs_confirmation": True, "message": "Нужно подтверждение пользователя, чтобы удалить продукт из плана готовки."}
+
+    misc_write_calls = {
+        "kanban_create_task": lambda: kanban_create_task(app, inp.get("columnId"), {
+            "title": inp.get("title"), "priority": inp.get("priority"),
+            "description": inp.get("description"), "dueDate": inp.get("dueDate"),
+        }),
+        "kanban_update_task": lambda: kanban_update_task(app, inp.get("taskId"), inp.get("patch") or {}),
+        "kanban_delete_task": lambda: kanban_delete_task(app, inp.get("taskId")),
+        "kanban_move_task": lambda: kanban_move_task(app, inp.get("taskId"), inp.get("columnId")),
+        "kanban_add_comment": lambda: kanban_add_comment(app, inp.get("taskId"), inp.get("text")),
+        "kanban_delete_comment": lambda: kanban_delete_comment(app, inp.get("taskId"), inp.get("commentId")),
+        "kanban_add_subtask": lambda: kanban_add_subtask(app, inp.get("taskId"), inp.get("text")),
+        "kanban_toggle_subtask": lambda: kanban_toggle_subtask(app, inp.get("taskId"), inp.get("subtaskId"), inp.get("done")),
+        "log_diet_compliance": lambda: log_diet_compliance(app, inp.get("date"), inp.get("level")),
+        "log_checklist_answer": lambda: log_checklist_answer(app, inp.get("date"), inp.get("fieldId"), inp.get("option")),
+        "cooking_plan_add_ingredient": lambda: cooking_plan_add_ingredient(app, inp.get("planId"), {
+            "name": inp.get("name"), "portions": inp.get("portions"),
+            "portionSize": inp.get("portionSize"), "plannedRaw": inp.get("plannedRaw"),
+        }),
+        "cooking_plan_update_ingredient": lambda: cooking_plan_update_ingredient(
+            app, inp.get("planId"), inp.get("ingredientId"), inp.get("patch") or {}),
+        "cooking_plan_delete_ingredient": lambda: cooking_plan_delete_ingredient(app, inp.get("planId"), inp.get("ingredientId")),
+    }
+    if name in misc_write_calls:
+        result = misc_write_calls[name]()
+        if result.get("ok"):
+            save_app_data(app)
+        return result
+
+    return {"error": "unknown_tool"}
+
+
+# Память разговора — только в процессе, на время жизни контейнера. Это чат-
+# ассистент, а не журнал переписки: после рестарта каждый чат начинается заново.
+# Хранится только чистый текст (роль user/assistant) — служебные ходы
+# tool-calling каждого раунда живут только в локальной копии внутри
+# _assistant_loop_claude/_openai и в историю не попадают: иначе при смене
+# провайдера в середине переписки в истории оказался бы чужой формат.
+_assistant_convo: dict = {}
+_ASSISTANT_MAX_TURNS = 16
+_ASSISTANT_MAX_STEPS = 6
+
+
+class _AssistantError(Exception):
+    pass
+
+
+def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, site_url: str):
+    """Прогоняет tool-use цикл Claude поверх локальной копии истории.
+    Возвращает (текст ответа | None, список ссылок navigate). None — агент не
+    уложился в отведённые шаги. Ошибки HTTP/сети — как _AssistantError."""
+    system = build_assistant_system_prompt()
+    convo = list(history)
+    nav_links = []
+    for _ in range(_ASSISTANT_MAX_STEPS):
+        try:
+            r = requests.post(
+                ANTHROPIC_MESSAGES_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+                json={
+                    "model": model, "max_tokens": 800, "system": system,
+                    "messages": convo, "tools": ASSISTANT_TOOLS,
+                },
+                timeout=30,
+            )
+        except Exception as e:
+            raise _AssistantError(f"Ошибка связи с ИИ: {e}")
+        if not r.ok:
+            try:
+                err = r.json().get("error", {}).get("message")
+            except Exception:
+                err = None
+            raise _AssistantError(f"Ошибка ИИ: {err or r.status_code}")
+
+        resp = r.json()
+        content = resp.get("content", [])
+        tool_uses = [b for b in content if b.get("type") == "tool_use"]
+        texts = "\n".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
+        if not tool_uses:
+            return texts or "Готово", nav_links
+
+        convo.append({"role": "assistant", "content": content})
+        tool_results = []
+        for tu in tool_uses:
+            try:
+                output = execute_assistant_tool(tu.get("name"), tu.get("input"), app, site_url)
+            except Exception as e:
+                output = {"error": str(e)}
+            if tu.get("name") == "navigate" and output.get("url"):
+                nav_links.append((output.get("label"), output["url"]))
+            tool_results.append({
+                "type": "tool_result", "tool_use_id": tu.get("id"),
+                "content": json.dumps(output, ensure_ascii=False),
+            })
+        convo.append({"role": "user", "content": tool_results})
+    return None, nav_links
+
+
+def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, site_url: str):
+    """То же самое поверх OpenAI function calling — другой формат запроса и
+    ответа (tool_calls в сообщении assistant, результаты — отдельными
+    сообщениями role:"tool"), но те же инструменты и та же семантика."""
+    system = build_assistant_system_prompt()
+    tools = [
+        {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
+        for t in ASSISTANT_TOOLS
+    ]
+    convo = [{"role": "system", "content": system}] + list(history)
+    nav_links = []
+    for _ in range(_ASSISTANT_MAX_STEPS):
+        try:
+            r = requests.post(
+                OPENAI_CHAT_URL,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+                json={"model": model, "max_completion_tokens": 800, "messages": convo, "tools": tools},
+                timeout=30,
+            )
+        except Exception as e:
+            raise _AssistantError(f"Ошибка связи с ИИ: {e}")
+        if not r.ok:
+            try:
+                err = r.json().get("error", {}).get("message")
+            except Exception:
+                err = None
+            raise _AssistantError(f"Ошибка ИИ: {err or r.status_code}")
+
+        resp = r.json()
+        choices = resp.get("choices") or [{}]
+        message = choices[0].get("message") or {}
+        tool_calls = message.get("tool_calls") or []
+        if not tool_calls:
+            return message.get("content") or "Готово", nav_links
+
+        convo.append({"role": "assistant", "content": message.get("content"), "tool_calls": tool_calls})
+        for tc in tool_calls:
+            fn = tc.get("function") or {}
+            try:
+                inp = json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                inp = {}
+            try:
+                output = execute_assistant_tool(fn.get("name"), inp, app, site_url)
+            except Exception as e:
+                output = {"error": str(e)}
+            if fn.get("name") == "navigate" and output.get("url"):
+                nav_links.append((output.get("label"), output["url"]))
+            convo.append({"role": "tool", "tool_call_id": tc.get("id"), "content": json.dumps(output, ensure_ascii=False)})
+    return None, nav_links
+
+
+def handle_assistant_message(token: str, chat_id, text: str):
+    app = load_app_data()
+    settings = app.get("settings") or {}
+    preset = resolve_ai_preset(settings, "voiceAssistant")
+    api_key = (preset or {}).get("apiKey", "").strip()
+    if not api_key:
+        send_message(
+            token, chat_id,
+            "Ассистенту не назначен набор ключей ИИ. В приложении: Настройки → Ассистент — "
+            "добавьте набор ключей (Claude или OpenAI) и назначьте его функции «Ассистент».",
+        )
+        return
+    provider = "openai" if preset.get("provider") == "openai" else "claude"
+    model = (preset.get("model") or "").strip() or AI_PROVIDER_DEFAULT_MODEL[provider]
+    site_url = (settings.get("publicUrl") or "").strip()
+
+    history = _assistant_convo.setdefault(chat_id, [])
+    history.append({"role": "user", "content": text})
+
+    loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
+    try:
+        answer, nav_links = loop_fn(history, api_key, model, app, site_url)
+    except _AssistantError as e:
+        del history[:]
+        send_message(token, chat_id, str(e))
+        return
+
+    if answer is None:
+        del history[:]
+        send_message(token, chat_id, "Не разобрался за отведённое число шагов — попробуйте переформулировать.")
+        return
+
+    history.append({"role": "assistant", "content": answer})
+    del history[:-_ASSISTANT_MAX_TURNS]
+
+    reply = html.escape(answer)
+    for label, url in nav_links:
+        reply += f'\n\n<a href="{html.escape(url)}">Открыть: {html.escape(label)}</a>'
+    send_message(token, chat_id, reply)
+
+
 # ── update-poller loop ───────────────────────────────────────────────────────
 # Long-polls Telegram continuously so inline-button presses (diet answers) and new
 # subscribers are handled within ~1s, independent of the minute-aligned notifier.
@@ -975,10 +2327,20 @@ def updates_loop():
                 "lastName": from_user.get("last_name", ""),
                 "username": from_user.get("username", ""),
             }
-            if cid not in subs["chat_ids"]:
+            is_new = cid not in subs["chat_ids"]
+            if is_new:
                 subs["chat_ids"].append(cid)
                 print(f"  New subscriber: {cid}")
                 send_message(token, cid, WELCOME_TEXT)
+            text = (msg.get("text") or "").strip()
+            # Всё, что не /команда — обращение к ассистенту (get_data/navigate/
+            # add_task поверх данных проекта). В отдельном потоке: цикл tool-use
+            # может занять несколько секунд, а держать им long-poll нельзя —
+            # это задержит ответы диет-опросникам и остальным подписчикам.
+            if text and not text.startswith("/"):
+                threading.Thread(
+                    target=handle_assistant_message, args=(token, cid, text), daemon=True,
+                ).start()
         if changed:
             save_subscribers(subs)
 
@@ -1623,6 +2985,286 @@ def camping_trip_public_payload(app: dict, trip: dict) -> dict:
         "items": goods,
         "serverNow": int(time.time() * 1000),
     }
+
+
+# ── Своя игра: публичная ссылка на игру ────────────────────────────────────
+# Игрок открывает /game/<token> — отдельную страницу quiz.html, которая ходит
+# только в /api/game/<token>: поле с категориями и вопросами одной игры плюс
+# общий счёт команд. Сам счёт живёт на сервере (quizPlays, id = токен игры),
+# поэтому ведущий может открыть ссылку на ноутбуке, а считать очки с телефона —
+# у всех одно и то же поле. Правка самой игры возможна только в приложении:
+# по ссылке меняется ТОЛЬКО счёт и отметки «вопрос сыгран».
+QUIZ_PAGE_FILE = DIR / "quiz.html"
+
+QUIZ_EDIT_PAGE_FILE = DIR / "quiz-edit.html"
+
+MAX_QUIZ_BODY       = 64 * 1024
+MAX_QUIZ_EDIT_BODY  = 512 * 1024      # вопросы одной игры целиком
+MAX_QUIZ_CATEGORIES = 20
+MAX_QUIZ_QUESTIONS  = 30              # на категорию
+MAX_QUIZ_OPTIONS    = 10              # вариантов ответа на вопрос
+MAX_QUIZ_CAT_NAME   = 60
+MAX_QUIZ_TEXT       = 600
+MAX_QUIZ_OPTION     = 200
+MAX_QUIZ_POINTS     = 1_000_000
+MAX_QUIZ_TEAMS      = 30
+MAX_QUIZ_TEAM_NAME  = 40
+MAX_QUIZ_ANSWERED   = 2000            # сыгранных вопросов на одну игру
+MAX_QUIZ_SCORE      = 10_000_000      # потолок вменяемого счёта
+
+
+def quiz_int(value, default: int = 0) -> int:
+    """Число из данных, которые редактировал человек: '300', 300, 300.0.
+    Не-число превращается в default, а не роняет отдачу всей игры."""
+    try:
+        return int(float(str(value).replace(",", ".").strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def find_quiz_game(app: dict, token: str) -> dict | None:
+    """Игра с активной публичной ссылкой. Отключённая ссылка (shareEnabled
+    = false) работает как «игра не найдена» — та же логика, что у событий."""
+    for g in (app.get("quizGames") or []):
+        if not isinstance(g, dict):
+            continue
+        if str(g.get("shareToken") or "") != token:
+            continue
+        return g if g.get("shareEnabled", True) else None
+    return None
+
+
+def find_quiz_game_by_edit_token(app: dict, token: str) -> dict | None:
+    """Игра, открытая по ссылке на РЕДАКТИРОВАНИЕ вопросов. Токен отдельный от
+    игрового: его дают тому, кто помогает придумывать вопросы, и отзывают
+    независимо от ссылки на партию (editEnabled = false → «не найдено»)."""
+    for g in (app.get("quizGames") or []):
+        if not isinstance(g, dict):
+            continue
+        if str(g.get("editToken") or "") != token:
+            continue
+        return g if g.get("editEnabled", True) else None
+    return None
+
+
+def quiz_clean_id(raw) -> str:
+    """id из браузера редактора: годится только короткая «безопасная» строка,
+    всё остальное заменяем своим uuid — идти с ним в данные всё равно нельзя."""
+    s = str(raw or "").strip()
+    if s and len(s) <= 64 and re.match(r"^[A-Za-z0-9_-]+$", s):
+        return s
+    return str(uuid.uuid4())
+
+
+def quiz_sanitize_categories(raw) -> list:
+    """Категории и вопросы, присланные по ссылке редактирования. Всё режется
+    по длине и количеству: страницу открывает любой, у кого есть ссылка, и
+    записанное ложится в общий файл данных владельца."""
+    categories = []
+    for c in (raw or [])[:MAX_QUIZ_CATEGORIES]:
+        if not isinstance(c, dict):
+            continue
+        questions = []
+        for q in (c.get("questions") or [])[:MAX_QUIZ_QUESTIONS]:
+            if not isinstance(q, dict):
+                continue
+            options, correct_seen = [], False
+            for o in (q.get("options") or [])[:MAX_QUIZ_OPTIONS]:
+                if not isinstance(o, dict):
+                    continue
+                text = str(o.get("text") or "").strip()[:MAX_QUIZ_OPTION]
+                if not text:
+                    continue
+                # Верный вариант ровно один — как и в редакторе приложения.
+                correct = bool(o.get("correct")) and not correct_seen
+                correct_seen = correct_seen or correct
+                options.append({"id": quiz_clean_id(o.get("id")), "text": text, "correct": correct})
+            questions.append({
+                "id": quiz_clean_id(q.get("id")),
+                "points": max(-MAX_QUIZ_POINTS, min(MAX_QUIZ_POINTS, quiz_int(q.get("points")))),
+                "text": str(q.get("text") or "").strip()[:MAX_QUIZ_TEXT],
+                "options": options,
+            })
+        categories.append({
+            "id": quiz_clean_id(c.get("id")),
+            "name": " ".join(str(c.get("name") or "").split())[:MAX_QUIZ_CAT_NAME],
+            "questions": questions,
+        })
+    return categories
+
+
+def quiz_edit_payload(game: dict) -> dict:
+    """Полный срез игры для редактора: в отличие от игрового поля, сюда идут
+    и пустые заготовки вопросов — человек как раз пришёл их заполнять."""
+    categories = []
+    for c in (game.get("categories") or []):
+        if not isinstance(c, dict):
+            continue
+        questions = []
+        for q in (c.get("questions") or []):
+            if not isinstance(q, dict):
+                continue
+            questions.append({
+                "id": str(q.get("id") or ""),
+                "points": quiz_int(q.get("points")),
+                "text": str(q.get("text") or ""),
+                "options": [
+                    {"id": str(o.get("id") or ""), "text": str(o.get("text") or ""), "correct": bool(o.get("correct"))}
+                    for o in (q.get("options") or []) if isinstance(o, dict)
+                ],
+            })
+        categories.append({
+            "id": str(c.get("id") or ""),
+            "name": str(c.get("name") or ""),
+            "questions": questions,
+        })
+    return {
+        "game": {
+            "id": game.get("id"),
+            "title": str(game.get("title") or "").strip() or "Своя игра",
+            "description": str(game.get("description") or ""),
+            "updatedAt": quiz_int(game.get("updatedAt")),
+        },
+        "categories": categories,
+        "limits": {
+            "categories": MAX_QUIZ_CATEGORIES,
+            "questions": MAX_QUIZ_QUESTIONS,
+            "options": MAX_QUIZ_OPTIONS,
+            "catName": MAX_QUIZ_CAT_NAME,
+            "text": MAX_QUIZ_TEXT,
+            "option": MAX_QUIZ_OPTION,
+        },
+        "serverNow": int(time.time() * 1000),
+    }
+
+
+def quiz_edit_save(token: str, categories_raw) -> tuple[int, dict]:
+    """Запись вопросов по ссылке редактирования. Меняются ТОЛЬКО категории и
+    вопросы: ни название игры, ни токены, ни счёт партии по этой ссылке
+    недоступны. updatedAt новее локальной копии — значит правка помощника
+    переживёт ближайшую синхронизацию с приложением владельца."""
+    if not isinstance(categories_raw, list):
+        return 400, {"error": "invalid categories"}
+    categories = quiz_sanitize_categories(categories_raw)
+    with APP_DATA_LOCK:
+        app = load_app_data() if APP_DATA_FILE.exists() else {}
+        game = find_quiz_game_by_edit_token(app, token)
+        if game is None:
+            return 404, {"error": "game not found"}
+        game["categories"] = categories
+        game["updatedAt"] = int(time.time() * 1000)
+        save_app_data(app)
+        return 200, quiz_edit_payload(game)
+
+
+def quiz_play_state(app: dict, token: str) -> dict:
+    """Счёт и сыгранные вопросы одной игры. Хранится отдельной коллекцией
+    quizPlays (id = токен ссылки), чтобы записи игроков по ссылке и правки
+    самой игры в приложении не затирали друг друга при синхронизации."""
+    for s in (app.get("quizPlays") or []):
+        if isinstance(s, dict) and str(s.get("id") or "") == token:
+            return {
+                "teams": [t for t in (s.get("teams") or []) if isinstance(t, dict)],
+                "answered": [str(q) for q in (s.get("answered") or [])],
+                "updatedAt": quiz_int(s.get("updatedAt")),
+            }
+    return {"teams": [], "answered": [], "updatedAt": 0}
+
+
+def quiz_public_payload(app: dict, game: dict) -> dict:
+    """Публичный срез ОДНОЙ игры: категории, вопросы с вариантами ответа и
+    текущий счёт. Пустые (недозаполненные) вопросы и варианты отбрасываются —
+    на поле не должно быть клеток, за которыми ничего нет."""
+    categories = []
+    for c in (game.get("categories") or []):
+        if not isinstance(c, dict):
+            continue
+        questions = []
+        for q in (c.get("questions") or []):
+            if not isinstance(q, dict):
+                continue
+            text = str(q.get("text") or "").strip()
+            if not text:
+                continue
+            options = [
+                {
+                    "id": str(o.get("id") or ""),
+                    "text": str(o.get("text") or "").strip(),
+                    "correct": bool(o.get("correct")),
+                }
+                for o in (q.get("options") or [])
+                if isinstance(o, dict) and str(o.get("text") or "").strip()
+            ]
+            questions.append({
+                "id": str(q.get("id") or ""),
+                "points": quiz_int(q.get("points")),
+                "text": text,
+                "options": options,
+            })
+        if questions:
+            categories.append({
+                "id": str(c.get("id") or ""),
+                "name": str(c.get("name") or "").strip() or "Без названия",
+                "questions": questions,
+            })
+
+    state = quiz_play_state(app, str(game.get("shareToken") or ""))
+    return {
+        "game": {
+            "id": game.get("id"),
+            "title": str(game.get("title") or "").strip() or "Своя игра",
+            "description": str(game.get("description") or ""),
+        },
+        "categories": categories,
+        "teams": state["teams"],
+        "answered": state["answered"],
+        "serverNow": int(time.time() * 1000),
+    }
+
+
+def quiz_save_state(token: str, teams_raw, answered_raw) -> tuple[int, dict]:
+    """Запись счёта по публичной ссылке. Всё, что пришло из браузера,
+    обрезается по длине и количеству: страницу открывает любой, у кого есть
+    ссылка, поэтому объём чужих данных в файле должен быть ограничен."""
+    teams = []
+    for t in (teams_raw or [])[:MAX_QUIZ_TEAMS]:
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id") or "").strip()[:64]
+        if not tid:
+            continue
+        score = max(-MAX_QUIZ_SCORE, min(MAX_QUIZ_SCORE, quiz_int(t.get("score"))))
+        teams.append({
+            "id": tid,
+            "name": " ".join(str(t.get("name") or "").split())[:MAX_QUIZ_TEAM_NAME],
+            "score": score,
+        })
+
+    answered, seen = [], set()
+    for q in (answered_raw or [])[:MAX_QUIZ_ANSWERED]:
+        qid = str(q or "").strip()[:64]
+        if qid and qid not in seen:
+            seen.add(qid)
+            answered.append(qid)
+
+    with APP_DATA_LOCK:
+        app = load_app_data() if APP_DATA_FILE.exists() else {}
+        game = find_quiz_game(app, token)
+        if game is None:
+            return 404, {"error": "game not found"}
+        plays = [s for s in (app.get("quizPlays") or []) if isinstance(s, dict)]
+        entry = {
+            "id": token,
+            "gameId": game.get("id"),
+            "teams": teams,
+            "answered": answered,
+            "updatedAt": int(time.time() * 1000),
+        }
+        exists = any(str(s.get("id") or "") == token for s in plays)
+        app["quizPlays"] = ([s if str(s.get("id") or "") != token else entry for s in plays]
+                            if exists else [*plays, entry])
+        save_app_data(app)
+        return 200, quiz_public_payload(app, game)
 
 
 # ── Личные финансы: PWA быстрого ввода операций (ДДС) ──────────────────────
@@ -2942,6 +4584,32 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif token_from_route(route, "/trip/"):
             # Гостевая страница чек-листа поездки — тоже отдельный файл.
             self._serve_trip_page()
+        elif token_from_route(route, "/game/"):
+            # Публичная страница «Своей игры» — отдельный файл, не SPA.
+            self._serve_quiz_page()
+        elif token_from_route(route, "/game-edit/"):
+            # Страница «внеси вопросы» — тоже отдельный файл, не SPA.
+            self._serve_quiz_edit_page()
+        elif token_from_route(route, "/api/game-edit/"):
+            token = token_from_route(route, "/api/game-edit/")
+            with APP_DATA_LOCK:
+                app = load_app_data() if APP_DATA_FILE.exists() else {}
+                game = find_quiz_game_by_edit_token(app, token)
+                payload = quiz_edit_payload(game) if game else None
+            if payload is None:
+                self._json(404, {"error": "game not found"})
+            else:
+                self._json(200, payload)
+        elif token_from_route(route, "/api/game/"):
+            token = token_from_route(route, "/api/game/")
+            with APP_DATA_LOCK:
+                app = load_app_data() if APP_DATA_FILE.exists() else {}
+                game = find_quiz_game(app, token)
+                payload = quiz_public_payload(app, game) if game else None
+            if payload is None:
+                self._json(404, {"error": "game not found"})
+            else:
+                self._json(200, payload)
         elif self.path.split("?", 1)[0].startswith("/pf/"):
             # Мобильное приложение личных финансов — отдельная страница.
             self._pf_page(self.path.split("?", 1)[0])
@@ -3080,6 +4748,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._event_shopping_delete(token_from_route(route, "/api/event/", "/shopping-delete"))
         elif token_from_route(route, "/api/event/", "/shopping-toggle"):
             self._event_shopping_toggle(token_from_route(route, "/api/event/", "/shopping-toggle"))
+        elif token_from_route(route, "/api/game-edit/"):
+            self._quiz_edit(token_from_route(route, "/api/game-edit/"))
+        elif token_from_route(route, "/api/game/", "/state"):
+            self._quiz_state(token_from_route(route, "/api/game/", "/state"))
         elif route.startswith("/api/pf/"):
             self._pf_post(route)
         elif self.path == "/api/config":
@@ -3259,6 +4931,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                     self._json(409, {"error": "backup already in progress"})
             except Exception as e:
                 self._json(500, {"error": str(e)})
+        elif token_from_route(route, "/api/cards/", "/send-telegram"):
+            self._card_send_telegram(token_from_route(route, "/api/cards/", "/send-telegram"))
         else:
             self.send_response(404)
             self.end_headers()
@@ -3668,6 +5342,80 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"camping-trip.html not found")
+
+    def _serve_quiz_page(self):
+        try:
+            content = QUIZ_PAGE_FILE.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("X-Robots-Tag", "noindex, nofollow")
+            self.send_header("Cache-Control", "no-store")
+            self._cors()
+            self.end_headers()
+            self.wfile.write(content)
+        except FileNotFoundError:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"quiz.html not found")
+
+    def _serve_quiz_edit_page(self):
+        try:
+            content = QUIZ_EDIT_PAGE_FILE.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("X-Robots-Tag", "noindex, nofollow")
+            self.send_header("Cache-Control", "no-store")
+            self._cors()
+            self.end_headers()
+            self.wfile.write(content)
+        except FileNotFoundError:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"quiz-edit.html not found")
+
+    def _quiz_edit(self, token: str):
+        """Вопросы, присланные по ссылке редактирования."""
+        length = self._content_length()
+        if length is None:
+            self._json(411, {"error": "Content-Length required"})
+            return
+        if length > MAX_QUIZ_EDIT_BODY:
+            self._json(413, {"error": "payload too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length))
+        except Exception:
+            self._json(400, {"error": "invalid json"})
+            return
+        if not isinstance(payload, dict):
+            self._json(400, {"error": "invalid json"})
+            return
+        code, body = quiz_edit_save(token, payload.get("categories"))
+        self._json(code, body)
+
+    def _quiz_state(self, token: str):
+        """Счёт команд и сыгранные вопросы по публичной ссылке. Пропуск —
+        сам токен: игру ведут те, кому ведущий прислал ссылку, отдельных
+        участников у неё нет. Сама игра по ссылке не меняется."""
+        length = self._content_length()
+        if length is None:
+            self._json(411, {"error": "Content-Length required"})
+            return
+        if length > MAX_QUIZ_BODY:
+            self._json(413, {"error": "payload too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length))
+        except Exception:
+            self._json(400, {"error": "invalid json"})
+            return
+        if not isinstance(payload, dict):
+            self._json(400, {"error": "invalid json"})
+            return
+        code, body = quiz_save_state(token, payload.get("teams"), payload.get("answered"))
+        self._json(code, body)
 
     def _pf_page(self, raw_path: str):
         """Страница приложения и её манифест.
@@ -4272,6 +6020,41 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             self.wfile.write(b"index (9).html not found")
+
+    def _card_send_telegram(self, card_id: str):
+        """Рисует штрихкод карты лояльности и шлёт его фото всем Telegram-
+        подписчикам — для гео-триггера через iOS Shortcuts (Личная
+        автоматизация → Location → 'Получить содержимое URL')."""
+        app_data = load_app_data()
+        card = find_loyalty_card(app_data, card_id)
+        if not card:
+            self._json(404, {"error": "card not found"})
+            return
+        code = str(card.get("code") or "").strip()
+        if not code:
+            self._json(400, {"error": "card has no code"})
+            return
+        try:
+            bits, _fmt = card_barcode_bits(code, card.get("format") or "auto")
+        except ValueError as e:
+            self._json(400, {"error": str(e)})
+            return
+        token = get_token()
+        if not token:
+            self._json(400, {"error": "Telegram bot token not configured"})
+            return
+        subs = load_subscribers()
+        chat_ids = subs.get("chat_ids", [])
+        if not chat_ids:
+            self._json(400, {"error": "no telegram subscribers"})
+            return
+        png = render_barcode_png(bits)
+        name = str(card.get("name") or "Карта").strip() or "Карта"
+        sent = sum(1 for cid in chat_ids if send_photo(token, cid, f"{name}.png", png, caption=name))
+        if not sent:
+            self._json(502, {"error": "telegram send failed"})
+            return
+        self._json(200, {"ok": True, "sent": sent})
 
     def _content_length(self):
         """Parsed Content-Length, or None when missing/malformed. Body-reading
