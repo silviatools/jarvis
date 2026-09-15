@@ -237,6 +237,7 @@ const DEFAULT_SETTINGS = {
   gymVoice: true,        // озвучивание подходов и отдыха на тренировке
   gymBackgroundAudio: false, // звук с погашенным экраном (ценой чужой музыки)
   gymHandsFree: false,   // голосовой ввод подходов на тренировке
+  gymMicRest: true,      // слушать микрофон и на отдыхе (ради «пропустить отдых»)
   notifyRouting: {},
   backupReminder: { enabled: false, frequency: 'weekly', time: '03:00', dayOfWeek: 0, dayOfMonth: 1 },
   lastBackupSentAt: '',
@@ -1109,6 +1110,11 @@ const Icon = ({ name, size = 22 }) => {
     volume: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>,
     volumeOff: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="m16 9 5 6M21 9l-5 6"/></svg>,
     play: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 4.5v15l13-7.5z"/></svg>,
+    pause: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 4v16M16 4v16"/></svg>,
+    skipBack: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 5v14L8 12zM5 5v14"/></svg>,
+    skipForward: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 5v14l11-7zM19 5v14"/></svg>,
+    music: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>,
+    shuffle: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>,
     timer: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/></svg>,
     barChart: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18M7 21V10M12 21V4M17 21v-7"/></svg>,
     archive: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/></svg>,
@@ -1326,6 +1332,7 @@ const PATH_TAB_MAP = {
   '/wishlist': 'misc',
   '/cards': 'misc',
   '/gym': 'misc',
+  '/music': 'misc',
   '/quiz': 'misc',
   '/cars': 'misc',
   '/settings': 'misc',
@@ -1338,8 +1345,8 @@ const TAB_PATH_MAP = Object.fromEntries(Object.entries(PATH_TAB_MAP).map(([p, t]
 const PLANNER_SUB_BY_PATH = { '/holidays': 'holidays' };
 const PLANNER_PATH_BY_SUB = { holidays: '/holidays' };
 
-const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/quiz': 'quiz', '/cars': 'cars', '/settings': 'settings' };
-const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', quiz: '/quiz', cars: '/cars', settings: '/settings' };
+const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/music': 'music', '/quiz': 'quiz', '/cars': 'cars', '/settings': 'settings' };
+const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', music: '/music', quiz: '/quiz', cars: '/cars', settings: '/settings' };
 
 // Routes that get their own Add-to-Home-Screen shortcut manifest (mirrors
 // SHORTCUT_MANIFESTS in jarvis.py). The server only sets the right
@@ -22775,6 +22782,477 @@ function CampingPackingEditor({ catalogItems, categories, initial, onSave, onClo
   );
 }
 
+// ============== МУЗЫКА ==============
+// Свой плеер поверх обычного <audio>. Он живёт вне дерева React — иначе музыка
+// обрывалась бы на каждом переходе между разделами, — а компоненты подписаны
+// на его состояние.
+//
+// Зачем вообще своя музыка, когда есть Apple Music: на iOS аудиосессия одна на
+// всех, и чужое приложение мы ни приглушить под объявление, ни удержать при
+// работающем микрофоне не можем. Своим воспроизведением управляем полностью:
+// приседаем под речь и сигналы, а если система всё же ставит трек на паузу
+// (например, на старте распознавания) — поднимаем его обратно сами.
+const MUSIC_STATE_KEY = 'jarvis_music_v1';
+
+const jarvisMusic = (() => {
+  let audio = null;
+  let tracks = [];
+  let order = [];            // порядок воспроизведения (с учётом перемешивания)
+  let pos = -1;              // позиция в order
+  let wantPlaying = false;
+  let ducks = 0;             // сколько причин приглушить звук сейчас
+  let duckTimer = null;
+  let resumeTries = 0;
+  let loading = false;
+  let error = '';
+  let volume = 0.8;
+  let shuffle = true;
+  let snap = {};
+  const subs = new Set();
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(MUSIC_STATE_KEY) || '{}');
+    if (typeof saved.volume === 'number') volume = Math.max(0, Math.min(1, saved.volume));
+    if (typeof saved.shuffle === 'boolean') shuffle = saved.shuffle;
+  } catch (_) {}
+
+  const persist = () => {
+    try { localStorage.setItem(MUSIC_STATE_KEY, JSON.stringify({ volume, shuffle })); } catch (_) {}
+  };
+
+  const current = () => (pos >= 0 && pos < order.length ? order[pos] : null);
+
+  const build = () => {
+    snap = {
+      tracks,
+      track: current(),
+      playing: !!(audio && !audio.paused && wantPlaying),
+      position: audio ? audio.currentTime || 0 : 0,
+      duration: audio && isFinite(audio.duration) ? audio.duration : 0,
+      volume,
+      shuffle,
+      ducked: ducks > 0,
+      loading,
+      error,
+    };
+  };
+  build();
+
+  const emit = () => { build(); subs.forEach(fn => { try { fn(); } catch (_) {} }); };
+
+  // Плавное приседание: резкий скачок громкости слышен сильнее, чем сама речь.
+  const applyVolume = () => {
+    if (!audio) return;
+    const target = ducks > 0 ? volume * 0.15 : volume;
+    if (duckTimer) { clearInterval(duckTimer); duckTimer = null; }
+    const step = () => {
+      const now = audio.volume;
+      const diff = target - now;
+      if (Math.abs(diff) < 0.02) {
+        audio.volume = target;
+        clearInterval(duckTimer);
+        duckTimer = null;
+        return;
+      }
+      audio.volume = Math.max(0, Math.min(1, now + diff * 0.35));
+    };
+    duckTimer = setInterval(step, 40);
+    step();
+  };
+
+  const ensure = () => {
+    if (audio) return audio;
+    audio = new Audio();
+    audio.preload = 'metadata';
+    audio.volume = volume;
+    audio.addEventListener('ended', () => next(true));
+    audio.addEventListener('play', () => { resumeTries = 0; emit(); });
+    audio.addEventListener('playing', emit);
+    audio.addEventListener('pause', () => {
+      emit();
+      // Система остановила воспроизведение сама (микрофон, звонок, смена
+      // маршрута звука) — поднимаем обратно, но не больше трёх раз подряд,
+      // иначе получится война с пользователем, который нажал «пауза».
+      if (!wantPlaying || document.visibilityState !== 'visible') return;
+      if (resumeTries >= 3) return;
+      resumeTries += 1;
+      setTimeout(() => {
+        if (wantPlaying && audio && audio.paused) audio.play().catch(() => {});
+      }, 400);
+    });
+    audio.addEventListener('error', () => {
+      error = 'Трек не проигрывается';
+      emit();
+    });
+    let lastTick = 0;
+    audio.addEventListener('timeupdate', () => {
+      // Секундного разрешения хватает, а перерисовывать экран 4 раза в секунду
+      // на тренировке ни к чему.
+      const now = Date.now();
+      if (now - lastTick < 900) return;
+      lastTick = now;
+      emit();
+    });
+    audio.addEventListener('loadedmetadata', emit);
+    return audio;
+  };
+
+  const mediaSession = () => {
+    if (!navigator.mediaSession) return;
+    const t = current();
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: t ? t.name : 'Jarvis',
+        artist: 'Jarvis',
+        album: 'Тренировка',
+      });
+      navigator.mediaSession.setActionHandler('play', () => toggle(true));
+      navigator.mediaSession.setActionHandler('pause', () => toggle(false));
+      navigator.mediaSession.setActionHandler('nexttrack', () => next());
+      navigator.mediaSession.setActionHandler('previoustrack', () => prev());
+    } catch (_) {}
+  };
+
+  const shuffled = (list) => {
+    const out = [...list];
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  };
+
+  const rebuildOrder = (startId) => {
+    order = shuffle ? shuffled(tracks) : [...tracks];
+    if (startId) {
+      const at = order.findIndex(t => t.id === startId);
+      if (at > 0) { const [t] = order.splice(at, 1); order.unshift(t); }
+    }
+    pos = order.length ? 0 : -1;
+  };
+
+  const start = () => {
+    const t = current();
+    if (!t) return;
+    const el = ensure();
+    error = '';
+    el.src = `/api/music/${encodeURIComponent(t.id)}`;
+    el.volume = ducks > 0 ? volume * 0.15 : volume;
+    wantPlaying = true;
+    resumeTries = 0;
+    el.play().catch(() => {
+      // Без жеста iOS воспроизведение не пустит — сообщаем честно, а не молчим
+      error = 'Нажмите ещё раз — браузер требует касания экрана';
+      emit();
+    });
+    mediaSession();
+    emit();
+  };
+
+  const next = (auto) => {
+    if (!order.length) return;
+    pos = (pos + 1) % order.length;
+    if (auto && pos === 0 && !shuffle) { /* прошли круг — играем заново */ }
+    start();
+  };
+
+  const prev = () => {
+    if (!order.length) return;
+    // Первые секунды трека «назад» — это начало текущего, как в любом плеере
+    if (audio && audio.currentTime > 3) { audio.currentTime = 0; return; }
+    pos = (pos - 1 + order.length) % order.length;
+    start();
+  };
+
+  const toggle = (force) => {
+    const el = ensure();
+    const want = force === undefined ? !(wantPlaying && !el.paused) : force;
+    if (want) {
+      if (!el.src) { playRandom(); return; }
+      wantPlaying = true;
+      resumeTries = 0;
+      el.play().catch(() => {});
+    } else {
+      wantPlaying = false;
+      el.pause();
+    }
+    emit();
+  };
+
+  const playRandom = () => {
+    if (!tracks.length) return;
+    const pick = tracks[Math.floor(Math.random() * tracks.length)];
+    rebuildOrder(pick.id);
+    start();
+  };
+
+  return {
+    subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
+    snapshot: () => snap,
+    async load(force) {
+      if (loading || (tracks.length && !force)) return tracks;
+      loading = true; emit();
+      try {
+        const r = await fetch('/api/music', { credentials: 'same-origin' });
+        const j = await r.json();
+        tracks = Array.isArray(j.tracks) ? j.tracks : [];
+        error = '';
+        // Очередь пересобираем, сохранив текущий трек
+        const playingId = (current() || {}).id;
+        rebuildOrder(playingId);
+        if (playingId && !tracks.some(t => t.id === playingId)) { pos = tracks.length ? 0 : -1; }
+      } catch (_) {
+        error = 'Не удалось получить список треков';
+      }
+      loading = false;
+      emit();
+      return tracks;
+    },
+    play(id) { rebuildOrder(id); start(); },
+    playRandom,
+    toggle,
+    next: () => next(false),
+    prev,
+    seek(sec) { if (audio) { audio.currentTime = Math.max(0, sec); emit(); } },
+    setVolume(v) {
+      volume = Math.max(0, Math.min(1, v));
+      persist();
+      applyVolume();
+      emit();
+    },
+    setShuffle(on) {
+      shuffle = !!on;
+      persist();
+      rebuildOrder((current() || {}).id);
+      emit();
+    },
+    // Приседание считаем по количеству причин: речь и сигнал могут наложиться,
+    // и тот, кто закончил первым, не должен вернуть громкость за обоих.
+    duck(on) {
+      ducks = Math.max(0, ducks + (on ? 1 : -1));
+      applyVolume();
+      emit();
+    },
+    stop() {
+      wantPlaying = false;
+      if (audio) { audio.pause(); }
+      emit();
+    },
+    isPlaying: () => !!(audio && !audio.paused && wantPlaying),
+    hasTracks: () => tracks.length > 0,
+    // На iOS 16.4+ у страницы есть свой режим аудиосессии. play-and-record —
+    // это «пишем с микрофона и одновременно играем», иначе система вправе
+    // счесть запись прерыванием воспроизведения.
+    audioSession(recording) {
+      try {
+        if (navigator.audioSession) navigator.audioSession.type = recording ? 'play-and-record' : 'playback';
+      } catch (_) {}
+    },
+  };
+})();
+
+// Приседание с автоподъёмом: если речь оборвалась и её onend не пришёл,
+// громкость всё равно вернётся, а не останется приглушённой навсегда.
+const jarvisMusicDuck = (ms = 12000) => {
+  let done = false;
+  jarvisMusic.duck(true);
+  const release = () => { if (done) return; done = true; jarvisMusic.duck(false); };
+  setTimeout(release, ms);
+  return release;
+};
+
+const useMusic = () => React.useSyncExternalStore(jarvisMusic.subscribe, jarvisMusic.snapshot, jarvisMusic.snapshot);
+
+const musicTime = (sec) => {
+  const s = Math.max(0, Math.floor(sec || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+const musicSize = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} МБ`;
+
+const MUSIC_EXT_OK = ['mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac'];
+
+// Компактная панель управления — та же и в разделе, и на экране тренировки.
+function MusicBar({ compact }) {
+  const m = useMusic();
+  if (!m.track && !m.tracks.length) return null;
+  const btn = 'w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0';
+  return (
+    <div className={`bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-3 py-2.5 ${compact ? 'mb-4' : ''}`}>
+      <div className="flex items-center gap-2">
+        <button onClick={() => jarvisMusic.prev()} className={btn} style={{ color: 'var(--text-muted)' }}>
+          <Icon name="skipBack" size={17} />
+        </button>
+        <button
+          onClick={() => jarvisMusic.toggle()}
+          className={btn + ' text-white'}
+          style={{ background: GYM_ACCENT }}
+        >
+          <Icon name={m.playing ? 'pause' : 'play'} size={18} />
+        </button>
+        <button onClick={() => jarvisMusic.next()} className={btn} style={{ color: 'var(--text-muted)' }}>
+          <Icon name="skipForward" size={17} />
+        </button>
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-medium truncate">{m.track ? m.track.name : 'Ничего не играет'}</div>
+          <div className="text-[11px] text-[var(--text-subtle)] flex items-center gap-1.5">
+            {m.duration ? `${musicTime(m.position)} / ${musicTime(m.duration)}` : (m.error || 'готов')}
+            {m.ducked && <span style={{ color: GYM_ACCENT }}>· тише</span>}
+          </div>
+        </div>
+        <button
+          onClick={() => jarvisMusic.playRandom()}
+          className={btn}
+          style={{ color: 'var(--text-muted)' }}
+          title="Случайный трек"
+        >
+          <Icon name="shuffle" size={16} />
+        </button>
+      </div>
+      {!compact && (
+        <div className="flex items-center gap-2 mt-2">
+          <input
+            type="range" min="0" max={Math.max(1, Math.floor(m.duration))} value={Math.floor(m.position)}
+            onChange={e => jarvisMusic.seek(Number(e.target.value))}
+            className="flex-1"
+          />
+          <Icon name="volume" size={14} />
+          <input
+            type="range" min="0" max="100" value={Math.round(m.volume * 100)}
+            onChange={e => jarvisMusic.setVolume(Number(e.target.value) / 100)}
+            className="w-24"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MusicView() {
+  const m = useMusic();
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const fileRef = useRef(null);
+
+  useEffect(() => { jarvisMusic.load(); }, []);
+
+  const upload = async (files) => {
+    const list = Array.from(files || []);
+    if (!list.length) return;
+    setErr('');
+    for (let i = 0; i < list.length; i++) {
+      const file = list[i];
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      if (!MUSIC_EXT_OK.includes(ext)) { setErr(`«${file.name}» — такой формат не поддерживается`); continue; }
+      setBusy(`${i + 1} из ${list.length}: ${file.name}`);
+      try {
+        const name = file.name.replace(/\.[^.]+$/, '').slice(0, 120);
+        const r = await fetch(`/api/music?ext=${ext}&name=${encodeURIComponent(name)}`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: file,
+        });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          setErr(j.error === 'file too large' ? `«${file.name}» больше 40 МБ` : `«${file.name}» не загрузился`);
+        }
+      } catch (_) {
+        setErr(`«${file.name}» не загрузился — нет связи с сервером`);
+      }
+    }
+    setBusy('');
+    await jarvisMusic.load(true);
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
+  const remove = async (track) => {
+    if (!confirm(`Удалить «${track.name}»?`)) return;
+    try {
+      await fetch(`/api/music/${encodeURIComponent(track.id)}`, { method: 'DELETE', credentials: 'same-origin' });
+      await jarvisMusic.load(true);
+    } catch (_) { setErr('Не удалось удалить'); }
+  };
+
+  return (
+    <div className="fade-in pb-10">
+      <MusicBar />
+
+      <div className="mt-4 flex items-center gap-2">
+        <button
+          onClick={() => fileRef.current && fileRef.current.click()}
+          className="flex-1 py-2.5 rounded-xl text-white text-sm font-medium flex items-center justify-center gap-2"
+          style={{ background: GYM_ACCENT }}
+        >
+          <Icon name="upload" size={16} /> Загрузить треки
+        </button>
+        <button
+          onClick={() => jarvisMusic.setShuffle(!m.shuffle)}
+          className="px-3 py-2.5 rounded-xl text-sm border"
+          style={m.shuffle
+            ? { background: GYM_ACCENT, color: '#fff', borderColor: GYM_ACCENT }
+            : { borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+        >
+          <Icon name="shuffle" size={15} />
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.flac"
+          multiple
+          className="hidden"
+          onChange={e => upload(e.target.files)}
+        />
+      </div>
+      {busy && <div className="mt-2 text-[13px] text-[var(--text-muted)]">Загружаю {busy}…</div>}
+      {(err || m.error) && <div className="mt-2 text-[13px] text-red-500">{err || m.error}</div>}
+
+      <div className="mt-4 space-y-2">
+        {m.tracks.length === 0 && !m.loading && (
+          <div className="text-[13px] text-[var(--text-subtle)] text-center py-8">
+            Пока пусто. Загрузите свои mp3 — они лягут на сервер и будут играть
+            даже при погашенном экране.
+          </div>
+        )}
+        {m.tracks.map(t => {
+          const active = m.track && m.track.id === t.id;
+          return (
+            <div
+              key={t.id}
+              data-track={t.id}
+              className="bg-[var(--surface)] border rounded-2xl px-3 py-2.5 flex items-center gap-3"
+              style={{ borderColor: active ? GYM_ACCENT : 'var(--border)' }}
+            >
+              <button
+                onClick={() => (active && m.playing ? jarvisMusic.toggle(false) : jarvisMusic.play(t.id))}
+                className="w-9 h-9 rounded-xl flex items-center justify-center text-white flex-shrink-0"
+                style={{ background: active ? GYM_ACCENT : 'var(--border-strong)' }}
+              >
+                <Icon name={active && m.playing ? 'pause' : 'play'} size={16} />
+              </button>
+              <div className="flex-1 min-w-0">
+                <div className="text-[14px] truncate">{t.name}</div>
+                <div className="text-[11px] text-[var(--text-subtle)]">
+                  {musicSize(t.size)}{t.builtin ? ' · демо' : ''}
+                </div>
+              </div>
+              {!t.builtin && (
+                <button onClick={() => remove(t)} className="text-red-300 flex-shrink-0"><Icon name="trash" size={15} /></button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-6 text-[12px] text-[var(--text-subtle)] leading-relaxed">
+        Треки хранятся на сервере Джарвиса, поэтому доступны с любого устройства.
+        Пока музыка играет, страница держит аудиосессию: сигналы таймера и
+        объявления слышны поверх неё, а экран можно гасить. Под речь громкость
+        приседает сама.
+      </div>
+    </div>
+  );
+}
+
 // ============== GYM ==============
 // Тренировки: Программа → Тренировочные дни → Упражнения → настройки подходов.
 // Хранение — обычные top-level id-массивы (gymPrograms / gymDays /
@@ -23274,8 +23752,11 @@ const gymSay = (text, enabled = true) => {
     const u = new SpeechSynthesisUtterance(String(text).replace(/([!?])\s*\./g, '$1'));
     u.lang = 'ru-RU';
     u.rate = 1.05;
-    u.onend = () => { gymSpeechEndedAt = Date.now(); };
-    u.onerror = () => { gymSpeechEndedAt = Date.now(); };
+    // Музыку из Джарвиса приседаем на время фразы: перекрикивать её синтез
+    // всё равно не станет, а объявление про подход пропускать нельзя.
+    const unduck = jarvisMusic.isPlaying() ? jarvisMusicDuck() : null;
+    u.onend = () => { gymSpeechEndedAt = Date.now(); if (unduck) unduck(); };
+    u.onerror = () => { gymSpeechEndedAt = Date.now(); if (unduck) unduck(); };
     gymSpeechEndedAt = Date.now();
     // Голос выбираем отдельным try: без русского голоса фраза всё равно должна
     // прозвучать (u.lang её вытянет), а не потеряться из-за него целиком.
@@ -23423,6 +23904,12 @@ const gymSound = (() => {
     },
     cue(count = 1, enabled = true, background = false) {
       if (!enabled) return;
+      // Сигнал короткий, но под музыку его легко пропустить — приседаем на
+      // время серии писков с небольшим запасом.
+      if (jarvisMusic.isPlaying()) {
+        const unduck = jarvisMusicDuck(2000);
+        setTimeout(unduck, 400 + count * 300);
+      }
       if (!background) { mixedBeep(count); return; }
       try {
         const el = cueEl(count);
@@ -24103,6 +24590,7 @@ function GymView({ data, setData }) {
         onToggleVoice={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymVoice: on } }))}
         onToggleBackgroundAudio={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymBackgroundAudio: on } }))}
         onToggleHandsFree={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymHandsFree: on } }))}
+        onToggleMicRest={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymMicRest: on } }))}
         onSave={saveSession}
         onDelete={deleteSession}
         onExit={() => { setSessionId(''); setScreen('day'); }}
@@ -25266,12 +25754,16 @@ function GymSessionSummary({ session, exercises, sessions, onClose }) {
   );
 }
 
-function GymSessionView({ session, day, exercises, sessions, settings, onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onSave, onDelete, onExit, onFinished }) {
+function GymSessionView({ session, day, exercises, sessions, settings, onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onToggleMicRest, onSave, onDelete, onExit, onFinished }) {
   const voiceOn = (settings || {}).gymVoice !== false;
   // Режим «звук с погашенным экраном» забирает аудиовыход у чужого плеера,
   // поэтому включается только вручную.
   const bgAudio = !!(settings || {}).gymBackgroundAudio;
   const handsFree = !!(settings || {}).gymHandsFree;
+  // Микрофон на отдыхе можно выключить: пока он слушает, iOS держит
+  // аудиосессию в режиме записи, и на Bluetooth-наушниках это слышно по звуку.
+  const micRest = (settings || {}).gymMicRest !== false;
+  const music = useMusic();
   // «Применяется к следующему подходу»: включённый посреди подхода режим не
   // перехватывает тот, что уже делаешь, — микрофон поднимется со следующего.
   // Если режим был включён до старта тренировки, ждать нечего.
@@ -25331,7 +25823,10 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   // «пропустить отдых». Запись подхода в это время игнорируется — разбирает
   // это voiceHandler, ему видно, идёт отдых или нет.
   useEffect(() => {
-    if (!handsFree || !armed || !gymListener.supported()) {
+    // На отдыхе микрофон можно отключить настройкой: тогда он не держит
+    // аудиосессию в режиме записи и музыка звучит без оговорок, а отдых
+    // пропускается кнопкой.
+    if (!handsFree || !armed || (resting && !micRest) || !gymListener.supported()) {
       gymListener.stop();
       setListening(false);
       return;
@@ -25356,9 +25851,21 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       gymListener.stop();
       setListening(false);
     };
-  }, [handsFree, armed, visibleAt]);
+  }, [handsFree, armed, visibleAt, micRest, micRest ? false : resting]);
 
   useEffect(() => () => gymListener.stop(), []);
+
+  // Список треков нужен прямо на тренировке — кнопкой «случайный трек».
+  useEffect(() => { jarvisMusic.load(); }, []);
+
+  // Пока включены свободные руки, страница пишет и играет одновременно. На
+  // iOS 16.4+ это надо объявить явно, иначе система вправе счесть запись
+  // прерыванием музыки и остановить воспроизведение.
+  useEffect(() => {
+    if (!handsFree) return;
+    jarvisMusic.audioSession(true);
+    return () => jarvisMusic.audioSession(false);
+  }, [handsFree]);
 
   // Перезапись не должна висеть вечно: иначе числа, сказанные через полчаса,
   // ушли бы в исправление давнего подхода вместо записи нового.
@@ -25915,7 +26422,19 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
         </div>
       </div>
 
-      {voiceOn && (
+      {/* Музыка из Джарвиса: пока она играет, аудиосессия наша — сигналы и речь
+          идут поверх неё, а экран можно гасить, поэтому отдельный тумблер
+          «звук с погашенным экраном» в это время не нужен. */}
+      {music.playing ? <MusicBar compact /> : (music.tracks.length > 0 && (
+        <button
+          onClick={() => jarvisMusic.playRandom()}
+          className="w-full mb-4 py-2.5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[14px] flex items-center justify-center gap-2"
+        >
+          <Icon name="music" size={16} /> Включить случайный трек
+        </button>
+      ))}
+
+      {voiceOn && !music.playing && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 mb-4 flex items-center gap-3">
           <div className="flex-1 min-w-0">
             <div className="text-[14px]">Звук с погашенным экраном</div>
@@ -25972,9 +26491,24 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
                   : !armed
                   ? 'Включится со следующего подхода'
                   : resting
-                    ? 'Идёт отдых. Скажите «пропустить отдых», «повтори» или «перезапись»'
+                    ? (micRest
+                      ? 'Идёт отдых. Скажите «пропустить отдых», «повтори» или «перезапись»'
+                      : 'Идёт отдых. Микрофон выключен — пропустить отдых можно кнопкой')
                     : voiceHint}
           </div>
+          {handsFree && (
+            <button
+              onClick={() => onToggleMicRest(!micRest)}
+              className="mt-1.5 text-[11px] px-2 py-1 rounded-full border"
+              style={micRest
+                ? { borderColor: GYM_ACCENT, color: GYM_ACCENT }
+                : { borderColor: 'var(--border)', color: 'var(--text-subtle)' }}
+            >
+              {/* Пока микрофон слушает, iOS держит запись, и на Bluetooth это
+                  слышно по звуку музыки. Выключатель — на случай, если слышно. */}
+              {micRest ? 'Микрофон слушает и на отдыхе' : 'На отдыхе микрофон молчит'}
+            </button>
+          )}
         </div>
         <Toggle
           checked={handsFree}
@@ -26844,6 +27378,7 @@ const MISC_APPS = [
   { id: 'wishlist', label: 'Хотелки',    icon: 'heart',      color: '#be185d' },
   { id: 'cards',    label: 'Карты',      icon: 'creditCard', color: '#1d4ed8' },
   { id: 'gym',      label: 'GYM',        icon: 'dumbbell',   color: '#0d9488' },
+  { id: 'music',    label: 'Музыка',     icon: 'music',      color: '#9333ea' },
   { id: 'english',  label: 'English',    icon: 'book',       color: '#0f766e' },
   { id: 'quiz',     label: 'Своя игра',  icon: 'quiz',       color: '#b45309' },
   { id: 'cars',     label: 'Автомобиль', icon: 'car',        color: '#6d28d9' },
@@ -26911,6 +27446,7 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
       )}
       {sub === 'wishlist' && <WishlistView data={data} setData={setData} />}
       {sub === 'gym' && <GymView data={data} setData={setData} />}
+      {sub === 'music' && <MusicView />}
       {sub === 'quiz' && <QuizView data={data} setData={setData} />}
     </div>
   );
