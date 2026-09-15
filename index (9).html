@@ -237,6 +237,7 @@ const DEFAULT_SETTINGS = {
   gymVoice: true,        // озвучивание подходов и отдыха на тренировке
   gymBackgroundAudio: false, // звук с погашенным экраном (ценой чужой музыки)
   gymHandsFree: false,   // голосовой ввод подходов на тренировке
+  voiceWakeMode: false,  // постоянная прослушка «Джарвис, ...» (пока вкладка открыта)
   notifyRouting: {},
   backupReminder: { enabled: false, frequency: 'weekly', time: '03:00', dayOfWeek: 0, dayOfMonth: 1 },
   lastBackupSentAt: '',
@@ -4053,6 +4054,9 @@ function VoiceAssistantSettings({ data, setData }) {
           <li>Скажите что нужно — вопрос, дело или «открой раздел ...»</li>
           <li>Ассистент ответит и озвучит ответ</li>
         </ol>
+        <p className="text-xs text-[var(--text-subtle)] mt-3">
+          Кнопка «Джарвис: выкл» рядом с микрофоном включает постоянную прослушку — скажите «Джарвис, …» и команду одной фразой, без нажатий. Работает, только пока вкладка открыта и экран не гаснет (полноценный always-on wake word, как в колонках, в браузере невозможен).
+        </p>
         <p className="text-xs text-[var(--text-subtle)] mt-3">
           Тот же ассистент отвечает и в Telegram-боте: напишите ему любое сообщение (не команду) — он читает и меняет данные всего проекта и присылает ссылки на разделы. Использует тот же набор ключей, что назначен функции «Ассистент» выше.
         </p>
@@ -9567,6 +9571,11 @@ async function extractHealthEventFromDocument(files, settings) {
 }
 
 let _currentAudio = null;
+// Момент, когда синтез в последний раз замолчал — тот же приём, что у
+// gymSpeechEndedAt в GYM: распознавание отдаёт фразу с задержкой, и без
+// этой отметки микрофон в режиме ожидания активации слышит и принимает
+// за команду собственный же ответ ассистента.
+let voiceSpeechEndedAt = 0;
 
 function speak(text, settings) {
   // Stop any currently playing audio
@@ -9593,15 +9602,16 @@ function speak(text, settings) {
       const audio = new Audio(url);
       _currentAudio = audio;
       return new Promise(resolve => {
-        audio.onended = () => { URL.revokeObjectURL(url); _currentAudio = null; resolve(); };
-        audio.onerror = () => { URL.revokeObjectURL(url); _currentAudio = null; resolve(); };
-        audio.play().catch(resolve);
+        const done = () => { URL.revokeObjectURL(url); _currentAudio = null; voiceSpeechEndedAt = Date.now(); resolve(); };
+        audio.onended = done;
+        audio.onerror = done;
+        audio.play().catch(done);
       });
-    }).catch(() => Promise.resolve());
+    }).catch(() => { voiceSpeechEndedAt = Date.now(); return Promise.resolve(); });
   }
 
   // Fallback: browser SpeechSynthesis — returns promise that resolves when done
-  if (!window.speechSynthesis) return Promise.resolve();
+  if (!window.speechSynthesis) { voiceSpeechEndedAt = Date.now(); return Promise.resolve(); }
   const u = new SpeechSynthesisUtterance(text);
   u.lang = 'ru-RU';
   u.rate = 1.05;
@@ -9609,11 +9619,127 @@ function speak(text, settings) {
   const ruVoice = voices.find(v => v.lang.startsWith('ru'));
   if (ruVoice) u.voice = ruVoice;
   return new Promise(resolve => {
-    u.onend = resolve;
-    u.onerror = resolve;
+    const done = () => { voiceSpeechEndedAt = Date.now(); resolve(); };
+    u.onend = done;
+    u.onerror = done;
     window.speechSynthesis.speak(u);
   });
 }
+
+// ── Режим ожидания активации («Джарвис, …») ─────────────────────────────────
+// Настоящий always-on wake word (слушает с погашенным экраном/свёрнутой
+// вкладкой) в браузере невозможен — iOS и Android забирают микрофон, как
+// только страница уходит в фон. Это — постоянное прослушивание, пока вкладка
+// открыта и активна: та же связка приёмов, что уже проверена в GYM
+// (gymListener) — свой SpeechRecognition, а не общий с этим модулем, потому
+// что жизненный цикл другой (перезапускается сам, а не по одному нажатию).
+const VOICE_WAKE_WORD_RE = /^\s*(эй[,]?\s*)?(окей[,]?\s*)?джарвис[а-яё]*[,!.]?\s*/i;
+
+// null — фраза не начиналась с будящего слова, игнорируем. '' — сказали
+// только «Джарвис» без команды следом.
+function stripWakeWord(text) {
+  const m = VOICE_WAKE_WORD_RE.exec(text || '');
+  if (!m) return null;
+  return text.slice(m[0].length).trim();
+}
+
+const voiceWakeListener = (() => {
+  const SR = () => window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null;
+  let wanted = false;
+  let handler = null;
+  let onState = null;
+  let onDenied = null;
+  let startedAt = 0;
+  let gotResult = false;
+  let quickFails = 0;
+  let blocked = false;
+  let denials = 0;
+
+  const ensure = () => {
+    if (rec) return rec;
+    const C = SR();
+    if (!C) return null;
+    rec = new C();
+    rec.lang = 'ru-RU';
+    rec.interimResults = false;
+    rec.continuous = false; // Safari непрерывный режим всё равно не держит
+    rec.maxAlternatives = 3;
+    rec.onstart = () => {
+      startedAt = Date.now();
+      gotResult = false;
+      blocked = false;
+      denials = 0;
+      if (onState) onState(true);
+    };
+    rec.onresult = (e) => {
+      // Пока ассистент говорит сам — не слушаем, иначе примем собственный
+      // ответ за новую команду. Хвост в 1.5с гасит и задержку распознавания.
+      if (window.speechSynthesis && window.speechSynthesis.speaking) return;
+      if (Date.now() - voiceSpeechEndedAt < 1500) return;
+      gotResult = true;
+      const variants = [];
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        for (let j = 0; j < r.length; j++) variants.push(r[j].transcript);
+      }
+      if (handler && variants.length) handler(variants);
+    };
+    rec.onerror = (e) => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        // wanted не сбрасываем — режим остаётся включённым, микрофон
+        // поднимется сам следующим циклом или по первому касанию экрана.
+        blocked = true;
+        denials += 1;
+        if (onDenied) onDenied(denials);
+      }
+    };
+    rec.onend = () => {
+      if (onState) onState(false);
+      if (!wanted) return;
+      const lasted = Date.now() - startedAt;
+      quickFails = (gotResult || lasted > 3000) ? 0 : quickFails + 1;
+      const delay = blocked
+        ? Math.min(2000 * Math.pow(2, Math.max(0, denials - 1)), 20000)
+        : Math.min(250 * Math.pow(2, Math.max(0, quickFails - 1)), 5000);
+      setTimeout(() => {
+        if (!wanted) return;
+        try { rec.start(); } catch (_) {
+          try { if (rec.abort) rec.abort(); } catch (__) {}
+          rec = null;
+          const fresh = ensure();
+          if (fresh) { try { fresh.start(); } catch (__) {} }
+        }
+      }, delay);
+    };
+    return rec;
+  };
+
+  return {
+    supported: () => !!SR(),
+    start(h, state, denied) {
+      let r = ensure();
+      if (!r) return;
+      handler = h; onState = state; onDenied = denied;
+      wanted = true;
+      quickFails = 0;
+      try {
+        r.start();
+      } catch (_) {
+        try { if (r.abort) r.abort(); else r.stop(); } catch (__) {}
+        rec = null;
+        r = ensure();
+        if (r) { try { r.start(); } catch (__) {} }
+      }
+    },
+    stop() {
+      wanted = false;
+      if (!rec) return;
+      try { rec.stop(); } catch (_) {}
+    },
+    blocked: () => blocked,
+  };
+})();
 
 function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTab, setHouseTab, setVoiceFocus }) {
   const [phase, setPhase] = useState('idle'); // idle|recording|processing|clarifying|success|answered|error
@@ -9623,8 +9749,14 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
   const [lastAdded, setLastAdded] = useState('');
   const [answerText, setAnswerText] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [wakeListening, setWakeListening] = useState(false);
   const recogRef = React.useRef(null);
   const transcriptRef = React.useRef(''); // kept in sync for onend closure
+  // voiceWakeListener живёт дольше одного рендера — обработчик читает отсюда,
+  // а не из замыкания над messages, иначе после первого запуска слушателя
+  // видел бы только тот messages, что был на момент запуска.
+  const messagesRef = React.useRef([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
 
   const processTranscript = async (text, existingMessages) => {
     if (!text) {
@@ -9702,6 +9834,43 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     setTranscript('');
   };
 
+  // Постоянная прослушка «Джарвис, ...»: активна только пока кнопка простаивает
+  // (phase idle) и включена в настройках — на время ручной записи/обработки
+  // всегда уступает место обычному потоку, иначе два SpeechRecognition
+  // одновременно начнут бороться за микрофон.
+  useEffect(() => {
+    if (phase !== 'idle' || !settings?.voiceWakeMode || !voiceWakeListener.supported()) {
+      voiceWakeListener.stop();
+      setWakeListening(false);
+      return;
+    }
+    if (!resolveAiPreset(settings, 'voiceAssistant')?.apiKey) return;
+    voiceWakeListener.start(
+      (variants) => {
+        const match = variants.map(stripWakeWord).find(v => v !== null);
+        if (!match) return; // ни один вариант не начинался с «Джарвис», либо слово сказано без команды
+        processTranscript(match, messagesRef.current);
+      },
+      setWakeListening,
+      () => {}, // отказ в доступе — виден по индикатору кнопки, повторные попытки идут сами
+    );
+    return () => voiceWakeListener.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, settings?.voiceWakeMode]);
+
+  const toggleWakeMode = () => {
+    if (!voiceWakeListener.supported()) {
+      setErrorMsg('Браузер не поддерживает постоянное распознавание речи');
+      setPhase('error');
+      setTimeout(() => setPhase('idle'), 3000);
+      return;
+    }
+    setData(d => ({
+      ...d,
+      settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), voiceWakeMode: !d.settings?.voiceWakeMode, updatedAt: Date.now() },
+    }));
+  };
+
   const handleMainButton = () => {
     if (phase === 'idle') {
       const preset = resolveAiPreset(settings, 'voiceAssistant');
@@ -9711,6 +9880,9 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
         setTimeout(() => setPhase('idle'), 4000);
         return;
       }
+      // Ручной тап всегда перехватывает микрофон — иначе рискуем запустить
+      // второй SpeechRecognition поверх ещё живого wake-слушателя.
+      voiceWakeListener.stop();
       // messages обычно [] — но останется непустым после раунда с
       // ожиданием подтверждения (см. processTranscript), тогда это нажатие
       // продолжает тот же разговор, а не начинает новый с нуля.
@@ -9808,6 +9980,25 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
             </div>
           )}
         </div>
+      )}
+
+      {/* Постоянная прослушка «Джарвис, ...» — переключатель, виден только
+          пока панель ответа закрыта, чтобы не загромождать её в разгар диалога. */}
+      {!showPanel && (
+        <button
+          onClick={toggleWakeMode}
+          className={`px-3 py-1.5 rounded-full text-xs font-medium shadow flex items-center gap-1.5 transition-all ${
+            settings?.voiceWakeMode
+              ? (wakeListening ? 'bg-blue-500 text-white' : voiceWakeListener.blocked() ? 'bg-red-500 text-white' : 'bg-amber-500 text-white')
+              : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'
+          }`}
+          title="Постоянная прослушка «Джарвис, ...» — пока вкладка открыта и экран не гаснет"
+        >
+          <span className={`w-1.5 h-1.5 rounded-full inline-block ${wakeListening ? 'bg-white animate-pulse' : 'bg-current opacity-60'}`}></span>
+          {settings?.voiceWakeMode
+            ? (wakeListening ? 'Жду «Джарвис»' : voiceWakeListener.blocked() ? 'Нет доступа к микрофону' : 'Включаю...')
+            : 'Джарвис: выкл'}
+        </button>
       )}
 
       {/* Main button */}
