@@ -63,13 +63,76 @@ FREQ_DAYS = {
     "weekly": 7, "biweekly": 14, "monthly": 30,
 }
 
+# ── Музыка ─────────────────────────────────────────────────────────────────
+# Загруженные треки лежат на диске рядом с данными, демонстрационные — в
+# репозитории. Отдаются одним маршрутом: Safari всё равно запрашивает файл
+# кусками, и для него важнее поддержка Range, чем откуда взялся файл.
+MUSIC_EXT = {"mp3": "audio/mpeg", "m4a": "audio/mp4", "aac": "audio/aac",
+             "wav": "audio/wav", "ogg": "audio/ogg", "opus": "audio/ogg",
+             "flac": "audio/flac"}
+MUSIC_DEMO = {
+    "demo-warmup.mp3": "Демо — Разминка",
+    "demo-drive.mp3": "Демо — Рабочий подход",
+}
+
+def MUSIC_DIR():
+    return DATA_DIR / "music"
+
+def MUSIC_DEMO_DIR():
+    return DIR / "assets" / "music"
+
+def music_safe_name(name: str) -> bool:
+    return bool(name) and "/" not in name and "\\" not in name and ".." not in name
+
+def music_index() -> dict:
+    path = MUSIC_DIR() / "index.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+def music_save_index(index: dict):
+    MUSIC_DIR().mkdir(parents=True, exist_ok=True)
+    (MUSIC_DIR() / "index.json").write_text(
+        json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def music_list() -> list:
+    tracks = []
+    for filename, title in MUSIC_DEMO.items():
+        path = MUSIC_DEMO_DIR() / filename
+        if path.exists():
+            tracks.append({"id": filename, "name": title, "size": path.stat().st_size,
+                           "builtin": True, "at": 0})
+    index = music_index()
+    if MUSIC_DIR().exists():
+        for path in sorted(MUSIC_DIR().glob("*")):
+            if path.name == "index.json" or not path.is_file():
+                continue
+            meta = index.get(path.name) or {}
+            tracks.append({
+                "id": path.name,
+                "name": meta.get("name") or path.stem,
+                "size": meta.get("size") or path.stat().st_size,
+                "at": meta.get("at") or int(path.stat().st_mtime * 1000),
+                "builtin": False,
+            })
+    return tracks
+
+def music_path(filename: str):
+    if filename in MUSIC_DEMO:
+        return MUSIC_DEMO_DIR() / filename
+    return MUSIC_DIR() / filename
+
 # Clean-URL deep links (e.g. /mybody) → serve the SPA, which reads the path
 # client-side and jumps straight to the matching tab. Keep in sync with
 # PATH_TAB_MAP in index (9).html.
 SPA_ROUTES = {
     "/mybody", "/budget", "/supplements", "/meals", "/weather",
     "/house", "/cars", "/holidays", "/settings", "/planner", "/health",
-    "/misc", "/wishlist", "/cards", "/gym", "/quiz",
+    "/misc", "/wishlist", "/cards", "/gym", "/music", "/quiz",
 }
 
 # Deep-link routes that get their OWN <link rel="manifest"> (and Apple home-
@@ -1377,6 +1440,7 @@ ASSISTANT_NAV_TARGETS = {
     "wishlist": ("Хотелки", "/wishlist"),
     "cards": ("Карты лояльности", "/cards"),
     "gym": ("GYM", "/gym"),
+    "music": ("Музыка", "/music"),
     "cars": ("Автомобили и обслуживание", "/cars"),
     "english": ("English", "/misc"),
     "settings": ("Настройки", "/settings"),
@@ -4546,6 +4610,23 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(200, {"ok": True})
             else:
                 self._json(404, {"error": "not found"})
+        elif self.path.startswith("/api/music/"):
+            filename = self.path[len("/api/music/"):].split("?", 1)[0]
+            if not music_safe_name(filename):
+                self._json(400, {"error": "invalid"})
+                return
+            if filename in MUSIC_DEMO:
+                self._json(400, {"error": "built-in track"})
+                return
+            path = MUSIC_DIR() / filename
+            if not path.exists():
+                self._json(404, {"error": "not found"})
+                return
+            path.unlink()
+            index = music_index()
+            index.pop(filename, None)
+            music_save_index(index)
+            self._json(200, {"ok": True})
         elif route.startswith("/api/pf/"):
             self._pf_delete(route)
         else:
@@ -4703,6 +4784,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self.wfile.write(content)
             else:
                 self._json(404, {"error": "not found"})
+        elif route == "/api/music":
+            self._json(200, {"tracks": music_list()})
+        elif self.path.startswith("/api/music/"):
+            self._serve_track(self.path[len("/api/music/"):].split("?", 1)[0])
         elif self.path == "/api/data":
             if APP_DATA_FILE.exists():
                 try:
@@ -4824,6 +4909,33 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             files_dir.mkdir(parents=True, exist_ok=True)
             (files_dir / filename).write_bytes(body)
             self._json(200, {"filename": filename})
+        elif self.path.startswith("/api/music"):
+            import uuid as _uuid
+            query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            ext = (query.get("ext") or ["mp3"])[0].lower()[:4]
+            if ext not in MUSIC_EXT:
+                self._json(400, {"error": "unsupported format"})
+                return
+            name = (query.get("name") or [""])[0][:120].strip() or f"Трек {ext}"
+            length = self._content_length()
+            MAX_TRACK = 40 * 1024 * 1024   # ~40 минут mp3 при 128 кбит/с
+            if length is None:
+                self._json(411, {"error": "Content-Length required"})
+                return
+            if length > MAX_TRACK:
+                self._json(413, {"error": "file too large"})
+                return
+            body = self.rfile.read(length)
+            if not body:
+                self._json(400, {"error": "empty body"})
+                return
+            filename = str(_uuid.uuid4()) + "." + ext
+            MUSIC_DIR().mkdir(parents=True, exist_ok=True)
+            (MUSIC_DIR() / filename).write_bytes(body)
+            index = music_index()
+            index[filename] = {"name": name, "at": int(time.time() * 1000), "size": len(body)}
+            music_save_index(index)
+            self._json(200, {"id": filename, "name": name, "size": len(body)})
         elif self.path == "/api/data":
             length = self._content_length()
             if length is None:
@@ -6082,6 +6194,64 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         self._cors()
         self.end_headers()
         self.wfile.write(body)
+
+    def _serve_track(self, filename: str):
+        """Аудио с поддержкой Range. Safari без 206-ответа трек просто не играет:
+        он всегда начинает с запроса куска, а не файла целиком."""
+        if not music_safe_name(filename):
+            self._json(400, {"error": "invalid"})
+            return
+        path = music_path(filename)
+        if not path.exists() or not path.is_file():
+            self._json(404, {"error": "not found"})
+            return
+        ext = path.suffix.lstrip(".").lower()
+        ctype = MUSIC_EXT.get(ext, "application/octet-stream")
+        size = path.stat().st_size
+        start, end = 0, size - 1
+        rng = self.headers.get("Range", "")
+        partial = False
+        m = re.match(r"bytes=(\d*)-(\d*)", rng.strip()) if rng else None
+        if m:
+            raw_start, raw_end = m.group(1), m.group(2)
+            if raw_start:
+                start = int(raw_start)
+                if raw_end:
+                    end = min(int(raw_end), size - 1)
+            elif raw_end:
+                # «последние N байт»
+                start = max(0, size - int(raw_end))
+            if start > end or start >= size:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            partial = True
+        length = end - start + 1
+        try:
+            self.send_response(206 if partial else 200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(length))
+            if partial:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            self.send_header("Cache-Control", "private, max-age=86400")
+            self._cors()
+            self.end_headers()
+            if self.command == "HEAD":
+                return
+            with path.open("rb") as fh:
+                fh.seek(start)
+                left = length
+                while left > 0:
+                    chunk = fh.read(min(256 * 1024, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass   # плеер перемотал или закрыл вкладку — это норма
 
     def log_message(self, fmt, *args):
         if args and len(args) > 1 and str(args[1]) not in ("200", "304"):

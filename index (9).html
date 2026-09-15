@@ -238,6 +238,7 @@ const DEFAULT_SETTINGS = {
   gymBackgroundAudio: false, // звук с погашенным экраном (ценой чужой музыки)
   gymHandsFree: false,   // голосовой ввод подходов на тренировке
   voiceWakeMode: false,  // постоянная прослушка «Джарвис, ...» (пока вкладка открыта)
+  gymMicRest: true,      // слушать микрофон и на отдыхе (ради «пропустить отдых»)
   notifyRouting: {},
   backupReminder: { enabled: false, frequency: 'weekly', time: '03:00', dayOfWeek: 0, dayOfMonth: 1 },
   lastBackupSentAt: '',
@@ -252,6 +253,7 @@ const AI_FUNCTIONS = [
   { key: 'healthExtract', label: 'Здоровье — распознавание документов' },
   { key: 'gymExtract', label: 'GYM — распознавание программы тренировок' },
   { key: 'wishlistScreenshot', label: 'Хотелки — распознавание товара по скриншоту' },
+  { key: 'cashflowStatementExtract', label: 'ДДС — сверка счёта с банковской выпиской' },
 ];
 
 const AI_PROVIDER_DEFAULT_MODEL = { claude: 'claude-sonnet-5', openai: 'gpt-4o' };
@@ -1110,6 +1112,11 @@ const Icon = ({ name, size = 22 }) => {
     volume: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>,
     volumeOff: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="m16 9 5 6M21 9l-5 6"/></svg>,
     play: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 4.5v15l13-7.5z"/></svg>,
+    pause: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 4v16M16 4v16"/></svg>,
+    skipBack: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 5v14L8 12zM5 5v14"/></svg>,
+    skipForward: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 5v14l11-7zM19 5v14"/></svg>,
+    music: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>,
+    shuffle: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>,
     timer: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/></svg>,
     barChart: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18M7 21V10M12 21V4M17 21v-7"/></svg>,
     archive: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4"/></svg>,
@@ -1327,6 +1334,7 @@ const PATH_TAB_MAP = {
   '/wishlist': 'misc',
   '/cards': 'misc',
   '/gym': 'misc',
+  '/music': 'misc',
   '/quiz': 'misc',
   '/cars': 'misc',
   '/settings': 'misc',
@@ -1339,8 +1347,8 @@ const TAB_PATH_MAP = Object.fromEntries(Object.entries(PATH_TAB_MAP).map(([p, t]
 const PLANNER_SUB_BY_PATH = { '/holidays': 'holidays' };
 const PLANNER_PATH_BY_SUB = { holidays: '/holidays' };
 
-const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/quiz': 'quiz', '/cars': 'cars', '/settings': 'settings' };
-const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', quiz: '/quiz', cars: '/cars', settings: '/settings' };
+const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/music': 'music', '/quiz': 'quiz', '/cars': 'cars', '/settings': 'settings' };
+const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', music: '/music', quiz: '/quiz', cars: '/cars', settings: '/settings' };
 
 // Routes that get their own Add-to-Home-Screen shortcut manifest (mirrors
 // SHORTCUT_MANIFESTS in jarvis.py). The server only sets the right
@@ -7625,6 +7633,9 @@ function FillTab({rawData,ai}){
   };
 
   const pool=rawData?getPool():[];const avail=count>0?Math.min(count,pool.length):pool.length;
+  // Показываем список слов в порядке, никак не связанном с порядком предложений —
+  // иначе слово #N в списке всегда отвечает предложению #N, и подсказка не нужна.
+  const shuffledWords=useMemo(()=>[...words].sort(()=>Math.random()-.5),[words]);
 
   return(
     <div className="space-y-5 pb-8">
@@ -7646,7 +7657,7 @@ function FillTab({rawData,ai}){
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4">
           <div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-3">Words in this batch</div>
           <div className="flex flex-wrap gap-2">
-            {words.map((w,i)=><span key={i} className={`px-2.5 py-1 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-sm ${hideWords?'blur-sm select-none':''}`}>{w.en}</span>)}
+            {shuffledWords.map((w,i)=><span key={i} className={`px-2.5 py-1 bg-[var(--bg)] border border-[var(--border)] rounded-lg text-sm ${hideWords?'blur-sm select-none':''}`}>{w.en}</span>)}
           </div>
         </div>
       )}
@@ -13336,6 +13347,12 @@ const addMonthsStr = (ym, n) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 };
 
+const lastDayOfMonthStr = (ym) => {
+  if (!ym) return '';
+  const [y, m] = ym.split('-').map(Number);
+  return dateToLocalStr(new Date(y, m, 0));
+};
+
 const monthsBetweenStr = (start, end) => {
   if (!start || !end) return 0;
   const [sy, sm] = start.split('-').map(Number);
@@ -13663,12 +13680,220 @@ const cashflowFactMaps = (ops) => {
   return { expense, income };
 };
 
+// ── ДДС: сверка счёта с банковской выпиской ─────────────────────────────────
+// Для случаев, когда баланс на карте разошёлся с тем, что показывает ДДС:
+// пользователь грузит PDF/фото банковской выписки, ИИ переносит из неё список
+// операций в JSON, а дальше они сопоставляются с тем, что уже внесено в ДДС —
+// плюс со связанными операциями Накоплений/Долгов (деньги те же, с той же
+// карты, см. cashflowAccountBalance выше).
+const CASHFLOW_STATEMENT_EXTRACT_SYSTEM_PROMPT = `Ты читаешь банковскую выписку по счёту/карте (справка о движении средств, история операций) и переносишь из неё все операции в JSON.
+Верни СТРОГО валидный JSON без markdown-разметки и пояснений, ровно такой структуры:
+{"transactions":[{"date":"YYYY-MM-DD","amount":0,"description":""}],"totalIncome":0,"totalExpense":0}
+Пояснения:
+- Перечисли ВСЕ строки операций со всех страниц документа, включая мелкие (кэшбэк, комиссии, возвраты) — ничего не пропускай и не суммируй похожие строки вместе.
+- date: дата операции (если в выписке отдельно есть дата списания/проведения — бери именно дату операции) в формате YYYY-MM-DD.
+- amount: сумма операции В ВАЛЮТЕ КАРТЫ ровно со знаком, как в выписке — отрицательная для расхода/списания, положительная для пополнения/дохода/возврата. Число, без пробелов и символа валюты.
+- description: краткое описание операции как в колонке "Описание операции" (например название магазина или получателя), без даты и номера карты.
+- totalIncome/totalExpense: итоговые суммы пополнений и расходов, если они прямо указаны в конце выписки (оба числа положительные), иначе посчитай их сам как сумму положительных/отрицательных операций.`;
+
+// files: один File (PDF) или массив File — несколько фото одной выписки по
+// порядку (как в распознавании документов здоровья/GYM, см. extractHealthEventFromDocument).
+async function extractCashflowStatementTransactions(files, settings) {
+  const fileList = Array.isArray(files) ? files : [files];
+  const provider = resolveAiPreset(settings, 'cashflowStatementExtract')?.provider || 'claude';
+  const hasPdf = fileList.some(isHealthDocPdf);
+  if (hasPdf && fileList.length > 1) {
+    throw new Error('PDF можно приложить только один файл за раз — для нескольких страниц сфотографируйте их и загрузите как изображения.');
+  }
+  if (hasPdf && provider !== 'claude') {
+    throw new Error('Распознавание PDF работает только с провайдером Claude — переключите его в Настройках → Ассистент, либо сфотографируйте выписку и загрузите как изображение(я).');
+  }
+
+  const docBlocks = await Promise.all(fileList.map(async (file) => {
+    const isPdf = isHealthDocPdf(file);
+    const base64 = await fileToBase64(file);
+    if (isPdf) {
+      return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } };
+    }
+    const mediaType = HEALTH_DOC_MEDIA_TYPES.includes(file.type) ? file.type : 'image/jpeg';
+    return provider === 'openai'
+      ? { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } }
+      : { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } };
+  }));
+
+  const promptText = fileList.length > 1
+    ? 'Это несколько страниц одной выписки по порядку — прочитай их как единое целое и заполни один JSON согласно инструкции.'
+    : 'Перенеси все операции из этой выписки в JSON согласно инструкции.';
+
+  const messages = [{
+    role: 'user',
+    content: [...docBlocks, { type: 'text', text: promptText }],
+  }];
+
+  let parsed;
+  try {
+    parsed = await callAI(messages, settings, CASHFLOW_STATEMENT_EXTRACT_SYSTEM_PROMPT, 8000, 'cashflowStatementExtract');
+  } catch (e) {
+    if (e.message === 'no_key') throw new Error('Сначала укажите API-ключ ИИ в Настройках → Ассистент');
+    throw new Error(e.message?.includes('JSON') ? 'ИИ вернул нераспознаваемый ответ, попробуйте ещё раз' : (e.message || 'Не удалось распознать выписку'));
+  }
+
+  const transactions = (Array.isArray(parsed?.transactions) ? parsed.transactions : [])
+    .map(t => ({
+      id: crypto.randomUUID(),
+      date: /^\d{4}-\d{2}-\d{2}$/.test(t?.date || '') ? t.date : '',
+      amount: Number(t?.amount),
+      description: String(t?.description ?? '').trim().slice(0, 200),
+    }))
+    .filter(t => t.date && Number.isFinite(t.amount) && t.amount !== 0);
+
+  if (!transactions.length) throw new Error('Не нашлось ни одной операции в выписке — попробуйте другой файл или снимок покрупнее');
+
+  return {
+    transactions,
+    totalIncome: Number.isFinite(Number(parsed?.totalIncome))
+      ? Number(parsed.totalIncome)
+      : transactions.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0),
+    totalExpense: Number.isFinite(Number(parsed?.totalExpense))
+      ? Number(parsed.totalExpense)
+      : -transactions.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0),
+  };
+}
+
+// Все движения денег по конкретному счёту с точки зрения приложения: обычные
+// операции ДДС плюс отмеченные пополнения Накоплений и платежи/пополнения
+// Долгов на этот же счёт — ровно то же множество, что складывает
+// cashflowAccountBalance() в баланс счёта.
+const cashflowAppMovesForAccount = (data, accountId) => {
+  const moves = [];
+  cashflowOpsOf(data).forEach(op => {
+    if (op.accountId !== accountId || !op.date) return;
+    const amt = Number(op.amount) || 0;
+    if (!amt) return;
+    moves.push({
+      id: op.id, kind: 'op', date: op.date,
+      signedAmount: op.direction === 'in' ? amt : -amt,
+      label: op.purpose || '', raw: op,
+    });
+  });
+  (data.savingsTransactions || []).forEach(t => {
+    if (!t || t.accountId !== accountId || !t.date) return;
+    const amt = Number(t.amount) || 0;
+    if (!amt) return;
+    moves.push({
+      id: t.id, kind: 'savings', date: t.date,
+      signedAmount: t.type === 'income' ? -amt : amt,
+      label: 'Накопления', raw: t,
+    });
+  });
+  (data.debtTransactions || []).forEach(t => {
+    if (!t || t.accountId !== accountId || !t.date) return;
+    if (t.cashflowDirection !== 'in' && t.cashflowDirection !== 'out') return;
+    const amt = Number(t.amount) || 0;
+    if (!amt) return;
+    moves.push({
+      id: t.id, kind: 'debt', date: t.date,
+      signedAmount: t.cashflowDirection === 'in' ? amt : -amt,
+      label: 'Долг', raw: t,
+    });
+  });
+  return moves;
+};
+
+const daysBetweenIso = (a, b) => {
+  const da = new Date(`${a}T00:00:00`);
+  const db = new Date(`${b}T00:00:00`);
+  const diff = (da - db) / 86400000;
+  return Number.isFinite(diff) ? Math.round(diff) : Infinity;
+};
+
+// Приблизительное сопоставление строк выписки с движениями в приложении: по
+// сумме (точно) и дате (в пределах toleranceDays — дата операции в приложении
+// может на день-два отличаться от даты в выписке). Жадный алгоритм: сперва
+// сопоставляются пары с наименьшей разницей в датах, каждая строка и каждое
+// движение используются не больше одного раза. То, что не нашло пару, —
+// кандидаты в «не внесено» (есть в выписке) и «лишнее» (есть в приложении).
+const matchStatementToAppMoves = (stmtTxns, appMoves, toleranceDays = 3) => {
+  const candidates = [];
+  stmtTxns.forEach((s, si) => {
+    appMoves.forEach((m, mi) => {
+      if (Math.abs(s.amount - m.signedAmount) > 0.01) return;
+      const dayDiff = Math.abs(daysBetweenIso(s.date, m.date));
+      if (dayDiff > toleranceDays) return;
+      candidates.push({ si, mi, dayDiff });
+    });
+  });
+  candidates.sort((a, b) => a.dayDiff - b.dayDiff);
+  const usedS = new Set(), usedM = new Set();
+  candidates.forEach(c => {
+    if (usedS.has(c.si) || usedM.has(c.mi)) return;
+    usedS.add(c.si); usedM.add(c.mi);
+  });
+  return {
+    unmatchedStatement: stmtTxns.filter((_, i) => !usedS.has(i)),
+    unmatchedApp: appMoves.filter((_, i) => !usedM.has(i)),
+  };
+};
+
 const formatRubExact = (n) => {
   const num = Number(n) || 0;
   return new Intl.NumberFormat('ru-RU', {
     minimumFractionDigits: Number.isInteger(num) ? 0 : 2,
     maximumFractionDigits: 2,
   }).format(num);
+};
+
+// ── ДДС: выписка по счёту за период (скачивание) ────────────────────────────
+// CSV, а не JSON/что-то ещё — открывается в Excel/Google Таблицах без плясок.
+// ';' как разделитель и BOM в начале — так Excel в русской локали не путает
+// кодировку и не пытается склеить колонки в одну по запятым внутри сумм.
+const csvEscapeCell = (v) => {
+  const s = String(v ?? '');
+  return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+const csvRow = (cells) => cells.map(csvEscapeCell).join(';');
+
+const buildCashflowStatementCsv = ({ accountName, from, to, openingBalance, closingBalance, moves, artById }) => {
+  const fmtDate = (d) => (d || '').split('-').reverse().join('.');
+  const sorted = [...moves].sort((a, b) => b.date.localeCompare(a.date));
+  const income = sorted.filter(m => m.signedAmount > 0).reduce((s, m) => s + m.signedAmount, 0);
+  const expense = -sorted.filter(m => m.signedAmount < 0).reduce((s, m) => s + m.signedAmount, 0);
+  const kindLabel = (m) => m.kind === 'op'
+    ? (artById[m.raw.categoryId]?.label || 'Статья удалена')
+    : (m.kind === 'savings' ? 'Накопления' : 'Долг');
+
+  const lines = [
+    csvRow(['Выписка ДДС']),
+    csvRow(['Счёт', accountName]),
+    csvRow(['Период', `${fmtDate(from)} — ${fmtDate(to)}`]),
+    csvRow(['Баланс на начало периода, ₽', formatRubExact(openingBalance)]),
+    '',
+    csvRow(['Дата', 'Направление', 'Статья', 'Назначение', 'Сумма, ₽']),
+    ...sorted.map(m => csvRow([
+      fmtDate(m.date),
+      m.signedAmount > 0 ? 'Приход' : 'Расход',
+      kindLabel(m),
+      m.kind === 'op' ? (m.label || '') : '',
+      formatRubExact(Math.abs(m.signedAmount)),
+    ])),
+    '',
+    csvRow(['Баланс на конец периода, ₽', formatRubExact(closingBalance)]),
+    csvRow(['Приход за период, ₽', formatRubExact(income)]),
+    csvRow(['Расход за период, ₽', formatRubExact(expense)]),
+  ];
+  return '﻿' + lines.join('\r\n');
+};
+
+const downloadTextFile = (filename, text, mime = 'text/csv;charset=utf-8') => {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 };
 
 // Адрес приложения — С завершающим слэшем: только по нему относительная
@@ -14680,6 +14905,8 @@ function BudgetCashflowView({ data, setData, userId }) {
   const [editingOp,  setEditingOp]  = useState(null);   // объект операции или {} для новой
   const [showAccounts, setShowAccounts] = useState(false);
   const [copied,     setCopied]     = useState(false);
+  const [reconcileAccountId, setReconcileAccountId] = useState(null); // сверка счёта с выпиской
+  const [showExport, setShowExport] = useState(false); // скачать выписку ДДС за период
 
   const accounts = data.budgetCashflowAccounts || [];
   const ops      = cashflowOpsOf(data);
@@ -14800,10 +15027,16 @@ function BudgetCashflowView({ data, setData, userId }) {
               Первоначальный баланс + операции. Эти же счета видны в приложении на телефоне.
             </div>
           </div>
-          <button onClick={() => setShowAccounts(true)}
-            className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors whitespace-nowrap">
-            Настроить
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowExport(true)} disabled={!accounts.length}
+              className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5">
+              <Icon name="download" size={14} /> Выписка
+            </button>
+            <button onClick={() => setShowAccounts(true)}
+              className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors whitespace-nowrap">
+              Настроить
+            </button>
+          </div>
         </div>
 
         {accounts.length === 0 ? (
@@ -14823,6 +15056,10 @@ function BudgetCashflowView({ data, setData, userId }) {
                   <div className="text-[11px] text-[var(--text-subtle)] mt-0.5">
                     старт: {formatRubExact(a.initialBalance || 0)} ₽
                   </div>
+                  <button onClick={() => setReconcileAccountId(a.id)}
+                    className="text-[11px] text-[var(--text-muted)] hover:text-[var(--text)] underline mt-1.5">
+                    Сверить с выпиской
+                  </button>
                 </div>
               );
             })}
@@ -15011,6 +15248,29 @@ function BudgetCashflowView({ data, setData, userId }) {
           articles={articles}
           onSave={saveOp}
           onClose={() => setEditingOp(null)}
+        />
+      )}
+
+      {reconcileAccountId && (
+        <CashflowReconcileModal
+          data={data}
+          setData={setData}
+          accounts={accounts}
+          articles={articles}
+          initialAccountId={reconcileAccountId}
+          onClose={() => setReconcileAccountId(null)}
+          onEditOp={(op) => { setReconcileAccountId(null); setEditingOp({ ...op }); }}
+          onDeleteOp={deleteOp}
+        />
+      )}
+
+      {showExport && (
+        <CashflowExportModal
+          data={data}
+          accounts={accounts}
+          articles={articles}
+          initialAccountId={accFilter || accounts[0]?.id || ''}
+          onClose={() => setShowExport(false)}
         />
       )}
     </div>
@@ -15422,6 +15682,360 @@ function CashflowOpModal({ op, accounts, articles, onSave, onClose }) {
         <button onClick={submit} disabled={!valid}
           className="btn-primary flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
           Сохранить
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+// Сверка счёта с банковской выпиской: для случаев, когда баланс на карте
+// разошёлся с тем, что показывает ДДС. Пользователь вводит фактический
+// баланс с карты (дельта считается сразу) и грузит выписку — ИИ читает из
+// неё операции, а дальше они приблизительно сопоставляются с тем, что уже
+// записано в ДДС/Накоплениях/Долгах на этот счёт (см. matchStatementToAppMoves).
+// Ничего не применяется автоматически — только подсказки, что стоит добавить
+// или перепроверить.
+function CashflowReconcileModal({ data, setData, accounts, articles, initialAccountId, onClose, onEditOp, onDeleteOp }) {
+  const [accountId, setAccountId] = useState(initialAccountId || accounts[0]?.id || '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [statement, setStatement] = useState(null); // { transactions, totalIncome, totalExpense, fileName }
+  const [actualBalance, setActualBalance] = useState('');
+  const [addingFor, setAddingFor] = useState(''); // id строки выписки, для которой сейчас выбирают статью
+  const [addCategoryId, setAddCategoryId] = useState('');
+
+  const account = accounts.find(a => a.id === accountId) || null;
+  const allOps = cashflowOpsOf(data);
+  const appBalance = account ? cashflowAccountBalance(account, allOps, data.savingsTransactions, data.debtTransactions) : 0;
+
+  const actualNum = actualBalance === '' ? null : parseFloat(String(actualBalance).replace(/\s/g, '').replace(',', '.'));
+  const delta = actualNum != null && Number.isFinite(actualNum) ? actualNum - appBalance : null;
+
+  const appMoves = useMemo(() => accountId ? cashflowAppMovesForAccount(data, accountId) : [], [data, accountId]);
+  const match = useMemo(() => statement ? matchStatementToAppMoves(statement.transactions, appMoves, 3) : null, [statement, appMoves]);
+
+  const changeAccount = (id) => {
+    setAccountId(id);
+    setStatement(null);
+    setError('');
+    setAddingFor('');
+  };
+
+  const handleFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    setError('');
+    if (files.some(f => !isHealthDocPdf(f) && !f.type.startsWith('image/'))) {
+      setError('Поддерживаются изображения и PDF');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await extractCashflowStatementTransactions(files, data.settings);
+      setStatement({ ...res, fileName: files[0].name });
+    } catch (err) {
+      setError(err.message || 'Не удалось распознать выписку');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const groupedArticlesFor = (dir) => articles.filter(a => a.direction === dir).reduce((acc, a) => {
+    (acc[a.group || '—'] = acc[a.group || '—'] || []).push(a);
+    return acc;
+  }, {});
+
+  const confirmAdd = (row) => {
+    if (!addCategoryId || !accountId) return;
+    setData(d => ({
+      ...d,
+      budgetCashflowOps: [...(d.budgetCashflowOps || []), {
+        id: crypto.randomUUID(),
+        date: row.date,
+        direction: row.amount > 0 ? 'in' : 'out',
+        amount: Math.round(Math.abs(row.amount) * 100) / 100,
+        accountId,
+        categoryId: addCategoryId,
+        purpose: row.description || '',
+        source: 'statement',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }],
+    }));
+    setAddingFor('');
+    setAddCategoryId('');
+  };
+
+  const kindLabel = (kind) => kind === 'savings' ? 'Накопления' : kind === 'debt' ? 'Долг' : 'Операция';
+
+  return (
+    <Modal title="Сверка с выпиской" onClose={onClose} wide>
+      <div className="space-y-5">
+        {accounts.length > 1 && (
+          <div>
+            <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Счёт</label>
+            <select value={accountId} onChange={e => changeAccount(e.target.value)}
+              className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm">
+              {accounts.map(a => <option key={a.id} value={a.id}>{a.name || 'Счёт'}</option>)}
+            </select>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3.5 py-3">
+            <div className="text-xs text-[var(--text-subtle)]">Баланс в приложении</div>
+            <div className="text-lg font-semibold tabular-nums mt-0.5">{formatRubExact(appBalance)} ₽</div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Баланс по факту (с карты)</label>
+            <input value={actualBalance} onChange={e => setActualBalance(e.target.value)} inputMode="decimal" placeholder="0"
+              className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+          </div>
+        </div>
+
+        {delta != null && (Math.abs(delta) > 0.01 ? (
+          <div className={`rounded-xl border px-3.5 py-2.5 text-sm ${delta > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-700'}`}>
+            Дельта: {delta > 0 ? '+' : '−'}{formatRubExact(Math.abs(delta))} ₽ — {delta > 0 ? 'на карте больше, чем в приложении' : 'в приложении больше, чем на карте'}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-3.5 py-2.5 text-sm">
+            Баланс сходится 🎉
+          </div>
+        ))}
+
+        {!statement ? (
+          <div>
+            <label className={`btn-primary inline-flex items-center gap-1.5 text-sm cursor-pointer ${busy || !accountId ? 'opacity-60 pointer-events-none' : ''}`}>
+              <Icon name="upload" size={16} />
+              {busy ? 'Распознаю…' : 'Загрузить выписку'}
+              <input type="file" accept=".pdf,image/*" multiple className="hidden" onChange={handleFiles} disabled={busy || !accountId} />
+            </label>
+            <div className="text-xs text-[var(--text-subtle)] mt-2">
+              PDF или фото выписки из банка — ИИ прочитает список операций и сравнит их с тем, что записано в ДДС
+              (плюс со связанными операциями Накоплений и Долгов на этот счёт).
+            </div>
+            {error && <div className="text-sm text-red-500 mt-2">{error}</div>}
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-2 text-xs text-[var(--text-subtle)]">
+              <div>Выписка: {statement.fileName} · {statement.transactions.length} {pluralRu(statement.transactions.length, ['операция', 'операции', 'операций'])}</div>
+              <button onClick={() => { setStatement(null); setError(''); setAddingFor(''); }} className="text-[var(--text-muted)] hover:text-[var(--text)] underline">
+                Загрузить другую
+              </button>
+            </div>
+
+            <div>
+              <div className="font-medium text-sm mb-2">
+                Похоже, не внесено в ДДС
+                {match.unmatchedStatement.length > 0 && <span className="text-[var(--text-subtle)] font-normal"> ({match.unmatchedStatement.length})</span>}
+              </div>
+              {match.unmatchedStatement.length === 0 ? (
+                <div className="text-sm text-[var(--text-subtle)]">Все операции выписки нашлись в ДДС.</div>
+              ) : (
+                <div className="space-y-2">
+                  {[...match.unmatchedStatement].sort((a, b) => b.date.localeCompare(a.date)).map(row => (
+                    <div key={row.id} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-sm truncate">{row.description || '—'}</div>
+                          <div className="text-xs text-[var(--text-subtle)]">{row.date.split('-').reverse().join('.')}</div>
+                        </div>
+                        <div className={`text-sm font-semibold tabular-nums whitespace-nowrap ${row.amount > 0 ? 'text-emerald-600' : 'text-[var(--text)]'}`}>
+                          {row.amount > 0 ? '+' : '−'}{formatRubExact(Math.abs(row.amount))} ₽
+                        </div>
+                      </div>
+                      {addingFor === row.id ? (
+                        <div className="flex items-center gap-2 mt-2 flex-wrap">
+                          <select value={addCategoryId} onChange={e => setAddCategoryId(e.target.value)}
+                            className="flex-1 min-w-[10rem] bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1.5 text-xs">
+                            <option value="">Статья…</option>
+                            {Object.entries(groupedArticlesFor(row.amount > 0 ? 'in' : 'out')).map(([group, items]) => (
+                              <optgroup key={group} label={group}>
+                                {items.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+                              </optgroup>
+                            ))}
+                          </select>
+                          <button onClick={() => confirmAdd(row)} disabled={!addCategoryId}
+                            className="btn-primary text-xs px-3 py-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
+                            Добавить
+                          </button>
+                          <button onClick={() => { setAddingFor(''); setAddCategoryId(''); }} className="text-xs text-[var(--text-muted)]">
+                            Отмена
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => { setAddingFor(row.id); setAddCategoryId(''); }}
+                          className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] mt-1.5 underline">
+                          Добавить операцию в ДДС
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div className="font-medium text-sm mb-2">
+                Есть в ДДС, нет в выписке
+                {match.unmatchedApp.length > 0 && <span className="text-[var(--text-subtle)] font-normal"> ({match.unmatchedApp.length})</span>}
+              </div>
+              {match.unmatchedApp.length === 0 ? (
+                <div className="text-sm text-[var(--text-subtle)]">Все операции ДДС нашлись в выписке.</div>
+              ) : (
+                <div className="space-y-2">
+                  {[...match.unmatchedApp].sort((a, b) => b.date.localeCompare(a.date)).map(move => (
+                    <div key={`${move.kind}_${move.id}`} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-sm truncate">{move.label || kindLabel(move.kind)}</div>
+                        <div className="text-xs text-[var(--text-subtle)]">
+                          {move.date.split('-').reverse().join('.')}
+                          {move.kind !== 'op' && ` · смотрите на вкладке «${move.kind === 'savings' ? 'Накопления' : 'Долги'}»`}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <div className={`text-sm font-semibold tabular-nums ${move.signedAmount > 0 ? 'text-emerald-600' : 'text-[var(--text)]'}`}>
+                          {move.signedAmount > 0 ? '+' : '−'}{formatRubExact(Math.abs(move.signedAmount))} ₽
+                        </div>
+                        {move.kind === 'op' && (
+                          <>
+                            <button onClick={() => onEditOp(move.raw)} className="p-1 text-[var(--text-muted)] hover:text-[var(--text)]" title="Изменить">
+                              <Icon name="edit" size={14} />
+                            </button>
+                            <button onClick={() => onDeleteOp(move.id)} className="p-1 text-[var(--text-muted)] hover:text-red-500" title="Удалить">
+                              <Icon name="trash" size={14} />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="text-xs text-[var(--text-subtle)]">
+              Сопоставление приблизительное — по сумме и дате в пределах ±3 дней. Прежде чем добавлять или удалять операции, проверяйте их по описанию.
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
+        <button onClick={onClose} className="btn-secondary flex-1">Закрыть</button>
+      </div>
+    </Modal>
+  );
+}
+
+// Скачать выписку ДДС по счёту за выбранный период (CSV) — со строками
+// «Баланс на начало периода» и «Баланс на конец периода», которые считаются
+// той же cashflowAccountBalance(), что и баланс счёта на экране, только
+// с операциями, отфильтрованными по датам «до начала периода» и «по конец
+// периода включительно» — гарантированно совпадает с тем, что видно в ДДС.
+function CashflowExportModal({ data, accounts, articles, initialAccountId, onClose }) {
+  const [accountId, setAccountId] = useState(initialAccountId || accounts[0]?.id || '');
+  const [from, setFrom] = useState(`${getCurrentMonthStr()}-01`);
+  const [to,   setTo]   = useState(getTodayKey());
+
+  const account = accounts.find(a => a.id === accountId) || null;
+  const artById = useMemo(() => Object.fromEntries(articles.map(a => [a.id, a])), [articles]);
+  const rangeValid = !!(account && from && to && from <= to);
+
+  const setPreset = (rangeFrom, rangeTo) => { setFrom(rangeFrom); setTo(rangeTo); };
+  const presets = [
+    ['Этот месяц', () => setPreset(`${getCurrentMonthStr()}-01`, getTodayKey())],
+    ['Прошлый месяц', () => { const m = addMonthsStr(getCurrentMonthStr(), -1); setPreset(`${m}-01`, lastDayOfMonthStr(m)); }],
+    ['Этот год', () => setPreset(`${new Date().getFullYear()}-01-01`, getTodayKey())],
+  ];
+
+  const download = () => {
+    if (!rangeValid) return;
+    const allOps    = cashflowOpsOf(data);
+    const allSavTx  = data.savingsTransactions || [];
+    const allDebtTx = data.debtTransactions || [];
+
+    const opening = cashflowAccountBalance(
+      account,
+      allOps.filter(o => o.date && o.date < from),
+      allSavTx.filter(t => t.date && t.date < from),
+      allDebtTx.filter(t => t.date && t.date < from),
+    );
+    const closing = cashflowAccountBalance(
+      account,
+      allOps.filter(o => o.date && o.date <= to),
+      allSavTx.filter(t => t.date && t.date <= to),
+      allDebtTx.filter(t => t.date && t.date <= to),
+    );
+    const periodMoves = cashflowAppMovesForAccount(data, accountId).filter(m => m.date >= from && m.date <= to);
+
+    const csv = buildCashflowStatementCsv({
+      accountName: account.name || 'Счёт', from, to,
+      openingBalance: opening, closingBalance: closing,
+      moves: periodMoves, artById,
+    });
+    downloadTextFile(`Выписка ДДС ${account.name || 'Счёт'} ${from} - ${to}.csv`, csv);
+    onClose();
+  };
+
+  return (
+    <Modal title="Выписка ДДС" onClose={onClose}>
+      <div className="space-y-4">
+        {!accounts.length ? (
+          <div className="text-sm text-[var(--text-subtle)]">Сначала заведите счёт.</div>
+        ) : (
+          <>
+            {accounts.length > 1 && (
+              <div>
+                <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Счёт</label>
+                <select value={accountId} onChange={e => setAccountId(e.target.value)}
+                  className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm">
+                  {accounts.map(a => <option key={a.id} value={a.id}>{a.name || 'Счёт'}</option>)}
+                </select>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">С</label>
+                <input type="date" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)}
+                  className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">По</label>
+                <input type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)}
+                  className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 flex-wrap">
+              {presets.map(([label, fn]) => (
+                <button key={label} type="button" onClick={fn}
+                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5">
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {!rangeValid && from > to && (
+              <div className="text-xs text-red-500">Дата «С» позже даты «По»</div>
+            )}
+
+            <div className="text-xs text-[var(--text-subtle)]">
+              CSV со списком операций за период (включая связанные операции Накоплений и Долгов на этот счёт)
+              и балансами на начало и конец периода — так же считаются, как баланс счёта на экране.
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
+        <button onClick={onClose} className="btn-secondary">Отмена</button>
+        <button onClick={download} disabled={!rangeValid}
+          className="btn-primary flex-1 inline-flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
+          <Icon name="download" size={16} /> Скачать CSV
         </button>
       </div>
     </Modal>
@@ -22963,6 +23577,477 @@ function CampingPackingEditor({ catalogItems, categories, initial, onSave, onClo
   );
 }
 
+// ============== МУЗЫКА ==============
+// Свой плеер поверх обычного <audio>. Он живёт вне дерева React — иначе музыка
+// обрывалась бы на каждом переходе между разделами, — а компоненты подписаны
+// на его состояние.
+//
+// Зачем вообще своя музыка, когда есть Apple Music: на iOS аудиосессия одна на
+// всех, и чужое приложение мы ни приглушить под объявление, ни удержать при
+// работающем микрофоне не можем. Своим воспроизведением управляем полностью:
+// приседаем под речь и сигналы, а если система всё же ставит трек на паузу
+// (например, на старте распознавания) — поднимаем его обратно сами.
+const MUSIC_STATE_KEY = 'jarvis_music_v1';
+
+const jarvisMusic = (() => {
+  let audio = null;
+  let tracks = [];
+  let order = [];            // порядок воспроизведения (с учётом перемешивания)
+  let pos = -1;              // позиция в order
+  let wantPlaying = false;
+  let ducks = 0;             // сколько причин приглушить звук сейчас
+  let duckTimer = null;
+  let resumeTries = 0;
+  let loading = false;
+  let error = '';
+  let volume = 0.8;
+  let shuffle = true;
+  let snap = {};
+  const subs = new Set();
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(MUSIC_STATE_KEY) || '{}');
+    if (typeof saved.volume === 'number') volume = Math.max(0, Math.min(1, saved.volume));
+    if (typeof saved.shuffle === 'boolean') shuffle = saved.shuffle;
+  } catch (_) {}
+
+  const persist = () => {
+    try { localStorage.setItem(MUSIC_STATE_KEY, JSON.stringify({ volume, shuffle })); } catch (_) {}
+  };
+
+  const current = () => (pos >= 0 && pos < order.length ? order[pos] : null);
+
+  const build = () => {
+    snap = {
+      tracks,
+      track: current(),
+      playing: !!(audio && !audio.paused && wantPlaying),
+      position: audio ? audio.currentTime || 0 : 0,
+      duration: audio && isFinite(audio.duration) ? audio.duration : 0,
+      volume,
+      shuffle,
+      ducked: ducks > 0,
+      loading,
+      error,
+    };
+  };
+  build();
+
+  const emit = () => { build(); subs.forEach(fn => { try { fn(); } catch (_) {} }); };
+
+  // Плавное приседание: резкий скачок громкости слышен сильнее, чем сама речь.
+  const applyVolume = () => {
+    if (!audio) return;
+    const target = ducks > 0 ? volume * 0.15 : volume;
+    if (duckTimer) { clearInterval(duckTimer); duckTimer = null; }
+    const step = () => {
+      const now = audio.volume;
+      const diff = target - now;
+      if (Math.abs(diff) < 0.02) {
+        audio.volume = target;
+        clearInterval(duckTimer);
+        duckTimer = null;
+        return;
+      }
+      audio.volume = Math.max(0, Math.min(1, now + diff * 0.35));
+    };
+    duckTimer = setInterval(step, 40);
+    step();
+  };
+
+  const ensure = () => {
+    if (audio) return audio;
+    audio = new Audio();
+    audio.preload = 'metadata';
+    audio.volume = volume;
+    audio.addEventListener('ended', () => next(true));
+    audio.addEventListener('play', () => { resumeTries = 0; emit(); });
+    audio.addEventListener('playing', emit);
+    audio.addEventListener('pause', () => {
+      emit();
+      // Система остановила воспроизведение сама (микрофон, звонок, смена
+      // маршрута звука) — поднимаем обратно, но не больше трёх раз подряд,
+      // иначе получится война с пользователем, который нажал «пауза».
+      if (!wantPlaying || document.visibilityState !== 'visible') return;
+      if (resumeTries >= 3) return;
+      resumeTries += 1;
+      setTimeout(() => {
+        if (wantPlaying && audio && audio.paused) audio.play().catch(() => {});
+      }, 400);
+    });
+    audio.addEventListener('error', () => {
+      error = 'Трек не проигрывается';
+      emit();
+    });
+    let lastTick = 0;
+    audio.addEventListener('timeupdate', () => {
+      // Секундного разрешения хватает, а перерисовывать экран 4 раза в секунду
+      // на тренировке ни к чему.
+      const now = Date.now();
+      if (now - lastTick < 900) return;
+      lastTick = now;
+      emit();
+    });
+    audio.addEventListener('loadedmetadata', emit);
+    return audio;
+  };
+
+  const mediaSession = () => {
+    if (!navigator.mediaSession) return;
+    const t = current();
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: t ? t.name : 'Jarvis',
+        artist: 'Jarvis',
+        album: 'Тренировка',
+      });
+      navigator.mediaSession.setActionHandler('play', () => toggle(true));
+      navigator.mediaSession.setActionHandler('pause', () => toggle(false));
+      navigator.mediaSession.setActionHandler('nexttrack', () => next());
+      navigator.mediaSession.setActionHandler('previoustrack', () => prev());
+    } catch (_) {}
+  };
+
+  const shuffled = (list) => {
+    const out = [...list];
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  };
+
+  const rebuildOrder = (startId) => {
+    order = shuffle ? shuffled(tracks) : [...tracks];
+    if (startId) {
+      const at = order.findIndex(t => t.id === startId);
+      if (at > 0) { const [t] = order.splice(at, 1); order.unshift(t); }
+    }
+    pos = order.length ? 0 : -1;
+  };
+
+  const start = () => {
+    const t = current();
+    if (!t) return;
+    const el = ensure();
+    error = '';
+    el.src = `/api/music/${encodeURIComponent(t.id)}`;
+    el.volume = ducks > 0 ? volume * 0.15 : volume;
+    wantPlaying = true;
+    resumeTries = 0;
+    el.play().catch(() => {
+      // Без жеста iOS воспроизведение не пустит — сообщаем честно, а не молчим
+      error = 'Нажмите ещё раз — браузер требует касания экрана';
+      emit();
+    });
+    mediaSession();
+    emit();
+  };
+
+  const next = (auto) => {
+    if (!order.length) return;
+    pos = (pos + 1) % order.length;
+    if (auto && pos === 0 && !shuffle) { /* прошли круг — играем заново */ }
+    start();
+  };
+
+  const prev = () => {
+    if (!order.length) return;
+    // Первые секунды трека «назад» — это начало текущего, как в любом плеере
+    if (audio && audio.currentTime > 3) { audio.currentTime = 0; return; }
+    pos = (pos - 1 + order.length) % order.length;
+    start();
+  };
+
+  const toggle = (force) => {
+    const el = ensure();
+    const want = force === undefined ? !(wantPlaying && !el.paused) : force;
+    if (want) {
+      if (!el.src) { playRandom(); return; }
+      wantPlaying = true;
+      resumeTries = 0;
+      el.play().catch(() => {});
+    } else {
+      wantPlaying = false;
+      el.pause();
+    }
+    emit();
+  };
+
+  const playRandom = () => {
+    if (!tracks.length) return;
+    const pick = tracks[Math.floor(Math.random() * tracks.length)];
+    rebuildOrder(pick.id);
+    start();
+  };
+
+  return {
+    subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
+    snapshot: () => snap,
+    async load(force) {
+      if (loading || (tracks.length && !force)) return tracks;
+      loading = true; emit();
+      try {
+        const r = await fetch('/api/music', { credentials: 'same-origin' });
+        const j = await r.json();
+        tracks = Array.isArray(j.tracks) ? j.tracks : [];
+        error = '';
+        // Очередь пересобираем, сохранив текущий трек
+        const playingId = (current() || {}).id;
+        rebuildOrder(playingId);
+        if (playingId && !tracks.some(t => t.id === playingId)) { pos = tracks.length ? 0 : -1; }
+      } catch (_) {
+        error = 'Не удалось получить список треков';
+      }
+      loading = false;
+      emit();
+      return tracks;
+    },
+    play(id) { rebuildOrder(id); start(); },
+    playRandom,
+    toggle,
+    next: () => next(false),
+    prev,
+    seek(sec) { if (audio) { audio.currentTime = Math.max(0, sec); emit(); } },
+    setVolume(v) {
+      volume = Math.max(0, Math.min(1, v));
+      persist();
+      applyVolume();
+      emit();
+    },
+    setShuffle(on) {
+      shuffle = !!on;
+      persist();
+      rebuildOrder((current() || {}).id);
+      emit();
+    },
+    // Приседание считаем по количеству причин: речь и сигнал могут наложиться,
+    // и тот, кто закончил первым, не должен вернуть громкость за обоих.
+    duck(on) {
+      ducks = Math.max(0, ducks + (on ? 1 : -1));
+      applyVolume();
+      emit();
+    },
+    stop() {
+      wantPlaying = false;
+      if (audio) { audio.pause(); }
+      emit();
+    },
+    isPlaying: () => !!(audio && !audio.paused && wantPlaying),
+    hasTracks: () => tracks.length > 0,
+    // На iOS 16.4+ у страницы есть свой режим аудиосессии. play-and-record —
+    // это «пишем с микрофона и одновременно играем», иначе система вправе
+    // счесть запись прерыванием воспроизведения.
+    audioSession(recording) {
+      try {
+        if (navigator.audioSession) navigator.audioSession.type = recording ? 'play-and-record' : 'playback';
+      } catch (_) {}
+    },
+  };
+})();
+
+// Приседание с автоподъёмом: если речь оборвалась и её onend не пришёл,
+// громкость всё равно вернётся, а не останется приглушённой навсегда.
+const jarvisMusicDuck = (ms = 12000) => {
+  let done = false;
+  jarvisMusic.duck(true);
+  const release = () => { if (done) return; done = true; jarvisMusic.duck(false); };
+  setTimeout(release, ms);
+  return release;
+};
+
+const useMusic = () => React.useSyncExternalStore(jarvisMusic.subscribe, jarvisMusic.snapshot, jarvisMusic.snapshot);
+
+const musicTime = (sec) => {
+  const s = Math.max(0, Math.floor(sec || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+const musicSize = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} МБ`;
+
+const MUSIC_EXT_OK = ['mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac'];
+
+// Компактная панель управления — та же и в разделе, и на экране тренировки.
+function MusicBar({ compact }) {
+  const m = useMusic();
+  if (!m.track && !m.tracks.length) return null;
+  const btn = 'w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0';
+  return (
+    <div className={`bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-3 py-2.5 ${compact ? 'mb-4' : ''}`}>
+      <div className="flex items-center gap-2">
+        <button onClick={() => jarvisMusic.prev()} className={btn} style={{ color: 'var(--text-muted)' }}>
+          <Icon name="skipBack" size={17} />
+        </button>
+        <button
+          onClick={() => jarvisMusic.toggle()}
+          className={btn + ' text-white'}
+          style={{ background: GYM_ACCENT }}
+        >
+          <Icon name={m.playing ? 'pause' : 'play'} size={18} />
+        </button>
+        <button onClick={() => jarvisMusic.next()} className={btn} style={{ color: 'var(--text-muted)' }}>
+          <Icon name="skipForward" size={17} />
+        </button>
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-medium truncate">{m.track ? m.track.name : 'Ничего не играет'}</div>
+          <div className="text-[11px] text-[var(--text-subtle)] flex items-center gap-1.5">
+            {m.duration ? `${musicTime(m.position)} / ${musicTime(m.duration)}` : (m.error || 'готов')}
+            {m.ducked && <span style={{ color: GYM_ACCENT }}>· тише</span>}
+          </div>
+        </div>
+        <button
+          onClick={() => jarvisMusic.playRandom()}
+          className={btn}
+          style={{ color: 'var(--text-muted)' }}
+          title="Случайный трек"
+        >
+          <Icon name="shuffle" size={16} />
+        </button>
+      </div>
+      {!compact && (
+        <div className="flex items-center gap-2 mt-2">
+          <input
+            type="range" min="0" max={Math.max(1, Math.floor(m.duration))} value={Math.floor(m.position)}
+            onChange={e => jarvisMusic.seek(Number(e.target.value))}
+            className="flex-1"
+          />
+          <Icon name="volume" size={14} />
+          <input
+            type="range" min="0" max="100" value={Math.round(m.volume * 100)}
+            onChange={e => jarvisMusic.setVolume(Number(e.target.value) / 100)}
+            className="w-24"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MusicView() {
+  const m = useMusic();
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const fileRef = useRef(null);
+
+  useEffect(() => { jarvisMusic.load(); }, []);
+
+  const upload = async (files) => {
+    const list = Array.from(files || []);
+    if (!list.length) return;
+    setErr('');
+    for (let i = 0; i < list.length; i++) {
+      const file = list[i];
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      if (!MUSIC_EXT_OK.includes(ext)) { setErr(`«${file.name}» — такой формат не поддерживается`); continue; }
+      setBusy(`${i + 1} из ${list.length}: ${file.name}`);
+      try {
+        const name = file.name.replace(/\.[^.]+$/, '').slice(0, 120);
+        const r = await fetch(`/api/music?ext=${ext}&name=${encodeURIComponent(name)}`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: file,
+        });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          setErr(j.error === 'file too large' ? `«${file.name}» больше 40 МБ` : `«${file.name}» не загрузился`);
+        }
+      } catch (_) {
+        setErr(`«${file.name}» не загрузился — нет связи с сервером`);
+      }
+    }
+    setBusy('');
+    await jarvisMusic.load(true);
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
+  const remove = async (track) => {
+    if (!confirm(`Удалить «${track.name}»?`)) return;
+    try {
+      await fetch(`/api/music/${encodeURIComponent(track.id)}`, { method: 'DELETE', credentials: 'same-origin' });
+      await jarvisMusic.load(true);
+    } catch (_) { setErr('Не удалось удалить'); }
+  };
+
+  return (
+    <div className="fade-in pb-10">
+      <MusicBar />
+
+      <div className="mt-4 flex items-center gap-2">
+        <button
+          onClick={() => fileRef.current && fileRef.current.click()}
+          className="flex-1 py-2.5 rounded-xl text-white text-sm font-medium flex items-center justify-center gap-2"
+          style={{ background: GYM_ACCENT }}
+        >
+          <Icon name="upload" size={16} /> Загрузить треки
+        </button>
+        <button
+          onClick={() => jarvisMusic.setShuffle(!m.shuffle)}
+          className="px-3 py-2.5 rounded-xl text-sm border"
+          style={m.shuffle
+            ? { background: GYM_ACCENT, color: '#fff', borderColor: GYM_ACCENT }
+            : { borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+        >
+          <Icon name="shuffle" size={15} />
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.flac"
+          multiple
+          className="hidden"
+          onChange={e => upload(e.target.files)}
+        />
+      </div>
+      {busy && <div className="mt-2 text-[13px] text-[var(--text-muted)]">Загружаю {busy}…</div>}
+      {(err || m.error) && <div className="mt-2 text-[13px] text-red-500">{err || m.error}</div>}
+
+      <div className="mt-4 space-y-2">
+        {m.tracks.length === 0 && !m.loading && (
+          <div className="text-[13px] text-[var(--text-subtle)] text-center py-8">
+            Пока пусто. Загрузите свои mp3 — они лягут на сервер и будут играть
+            даже при погашенном экране.
+          </div>
+        )}
+        {m.tracks.map(t => {
+          const active = m.track && m.track.id === t.id;
+          return (
+            <div
+              key={t.id}
+              data-track={t.id}
+              className="bg-[var(--surface)] border rounded-2xl px-3 py-2.5 flex items-center gap-3"
+              style={{ borderColor: active ? GYM_ACCENT : 'var(--border)' }}
+            >
+              <button
+                onClick={() => (active && m.playing ? jarvisMusic.toggle(false) : jarvisMusic.play(t.id))}
+                className="w-9 h-9 rounded-xl flex items-center justify-center text-white flex-shrink-0"
+                style={{ background: active ? GYM_ACCENT : 'var(--border-strong)' }}
+              >
+                <Icon name={active && m.playing ? 'pause' : 'play'} size={16} />
+              </button>
+              <div className="flex-1 min-w-0">
+                <div className="text-[14px] truncate">{t.name}</div>
+                <div className="text-[11px] text-[var(--text-subtle)]">
+                  {musicSize(t.size)}{t.builtin ? ' · демо' : ''}
+                </div>
+              </div>
+              {!t.builtin && (
+                <button onClick={() => remove(t)} className="text-red-300 flex-shrink-0"><Icon name="trash" size={15} /></button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-6 text-[12px] text-[var(--text-subtle)] leading-relaxed">
+        Треки хранятся на сервере Джарвиса, поэтому доступны с любого устройства.
+        Пока музыка играет, страница держит аудиосессию: сигналы таймера и
+        объявления слышны поверх неё, а экран можно гасить. Под речь громкость
+        приседает сама.
+      </div>
+    </div>
+  );
+}
+
 // ============== GYM ==============
 // Тренировки: Программа → Тренировочные дни → Упражнения → настройки подходов.
 // Хранение — обычные top-level id-массивы (gymPrograms / gymDays /
@@ -23462,8 +24547,11 @@ const gymSay = (text, enabled = true) => {
     const u = new SpeechSynthesisUtterance(String(text).replace(/([!?])\s*\./g, '$1'));
     u.lang = 'ru-RU';
     u.rate = 1.05;
-    u.onend = () => { gymSpeechEndedAt = Date.now(); };
-    u.onerror = () => { gymSpeechEndedAt = Date.now(); };
+    // Музыку из Джарвиса приседаем на время фразы: перекрикивать её синтез
+    // всё равно не станет, а объявление про подход пропускать нельзя.
+    const unduck = jarvisMusic.isPlaying() ? jarvisMusicDuck() : null;
+    u.onend = () => { gymSpeechEndedAt = Date.now(); if (unduck) unduck(); };
+    u.onerror = () => { gymSpeechEndedAt = Date.now(); if (unduck) unduck(); };
     gymSpeechEndedAt = Date.now();
     // Голос выбираем отдельным try: без русского голоса фраза всё равно должна
     // прозвучать (u.lang её вытянет), а не потеряться из-за него целиком.
@@ -23611,6 +24699,12 @@ const gymSound = (() => {
     },
     cue(count = 1, enabled = true, background = false) {
       if (!enabled) return;
+      // Сигнал короткий, но под музыку его легко пропустить — приседаем на
+      // время серии писков с небольшим запасом.
+      if (jarvisMusic.isPlaying()) {
+        const unduck = jarvisMusicDuck(2000);
+        setTimeout(unduck, 400 + count * 300);
+      }
       if (!background) { mixedBeep(count); return; }
       try {
         const el = cueEl(count);
@@ -23716,7 +24810,11 @@ const gymParseVoicePhrase = (raw) => {
     }
     return { cmd: 'rewrite' };
   }
-  if (/(столько же|как в плане|по плану|как обычно|так же)/.test(t)) return { cmd: 'log' };
+  // «Также» — повтор прошлого СДЕЛАННОГО подхода. На слух «также» и «так же»
+  // не отличить, поэтому обе формы (и близкое «то же самое») — одна команда.
+  if (/(^|\s)(также|так же|тоже|то же( самое)?)(\s|$)/.test(t)) return { cmd: 'sameLast' };
+  // А это — «как в плане»: цифры берутся из программы, а не из прошлого подхода.
+  if (/(столько же|как в плане|по плану|как обычно)/.test(t)) return { cmd: 'log' };
 
   // Упражнения без веса (пресс, подтягивания, планка): «без веса 15»,
   // «своим весом 15». Вес принудительно нулевой, даже если в плане он есть.
@@ -24287,6 +25385,7 @@ function GymView({ data, setData }) {
         onToggleVoice={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymVoice: on } }))}
         onToggleBackgroundAudio={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymBackgroundAudio: on } }))}
         onToggleHandsFree={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymHandsFree: on } }))}
+        onToggleMicRest={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymMicRest: on } }))}
         onSave={saveSession}
         onDelete={deleteSession}
         onExit={() => { setSessionId(''); setScreen('day'); }}
@@ -25450,12 +26549,16 @@ function GymSessionSummary({ session, exercises, sessions, onClose }) {
   );
 }
 
-function GymSessionView({ session, day, exercises, sessions, settings, onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onSave, onDelete, onExit, onFinished }) {
+function GymSessionView({ session, day, exercises, sessions, settings, onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onToggleMicRest, onSave, onDelete, onExit, onFinished }) {
   const voiceOn = (settings || {}).gymVoice !== false;
   // Режим «звук с погашенным экраном» забирает аудиовыход у чужого плеера,
   // поэтому включается только вручную.
   const bgAudio = !!(settings || {}).gymBackgroundAudio;
   const handsFree = !!(settings || {}).gymHandsFree;
+  // Микрофон на отдыхе можно выключить: пока он слушает, iOS держит
+  // аудиосессию в режиме записи, и на Bluetooth-наушниках это слышно по звуку.
+  const micRest = (settings || {}).gymMicRest !== false;
+  const music = useMusic();
   // «Применяется к следующему подходу»: включённый посреди подхода режим не
   // перехватывает тот, что уже делаешь, — микрофон поднимется со следующего.
   // Если режим был включён до старта тренировки, ждать нечего.
@@ -25515,7 +26618,10 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   // «пропустить отдых». Запись подхода в это время игнорируется — разбирает
   // это voiceHandler, ему видно, идёт отдых или нет.
   useEffect(() => {
-    if (!handsFree || !armed || !gymListener.supported()) {
+    // На отдыхе микрофон можно отключить настройкой: тогда он не держит
+    // аудиосессию в режиме записи и музыка звучит без оговорок, а отдых
+    // пропускается кнопкой.
+    if (!handsFree || !armed || (resting && !micRest) || !gymListener.supported()) {
       gymListener.stop();
       setListening(false);
       return;
@@ -25540,9 +26646,21 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
       gymListener.stop();
       setListening(false);
     };
-  }, [handsFree, armed, visibleAt]);
+  }, [handsFree, armed, visibleAt, micRest, micRest ? false : resting]);
 
   useEffect(() => () => gymListener.stop(), []);
+
+  // Список треков нужен прямо на тренировке — кнопкой «случайный трек».
+  useEffect(() => { jarvisMusic.load(); }, []);
+
+  // Пока включены свободные руки, страница пишет и играет одновременно. На
+  // iOS 16.4+ это надо объявить явно, иначе система вправе счесть запись
+  // прерыванием музыки и остановить воспроизведение.
+  useEffect(() => {
+    if (!handsFree) return;
+    jarvisMusic.audioSession(true);
+    return () => jarvisMusic.audioSession(false);
+  }, [handsFree]);
 
   // Перезапись не должна висеть вечно: иначе числа, сказанные через полчаса,
   // ушли бы в исправление давнего подхода вместо записи нового.
@@ -25664,6 +26782,9 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     };
     const exists = logged.some(s => s.id === rec.id);
     const nextSets = exists ? logged.map(s => s.id === rec.id ? rec : s) : [...logged, rec];
+    // Записано голосом — поля строки должны показать сказанное, даже если в них
+    // до этого что-то набрали руками: иначе на экране одно, в тренировке другое.
+    if (override) setDrafts(d => ({ ...d, [`${ex.id}:${i}`]: { weight: String(rec.weight || ''), reps: String(rec.reps) } }));
 
     const remaining = (e) => {
       const total = Math.max(planRowsOf(e).length, extra[e.id] || 0);
@@ -25867,6 +26988,13 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   };
 
   const lastLogged = () => [...logged].sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null;
+  // Прошлый подход для «также»: по этому же упражнению, а если по нему ещё
+  // ничего не записано — последний записанный вообще.
+  const lastLoggedOf = (exId) => {
+    const mine = logged.filter(s => s.exerciseId === exId);
+    const pool = mine.length ? mine : logged;
+    return [...pool].sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null;
+  };
   const saySetFact = (w, r) => (w
     ? `${gymRound1(w)} на ${r}`
     : `${r} ${gymPlural(r, 'повторение', 'повторения', 'повторений')} своим весом`);
@@ -25879,9 +27007,15 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     const w = weight !== undefined ? weight : gymNum(last.weight);
     const r = reps !== undefined ? reps : gymInt(last.reps, 0);
     if (!r) { say('Не понял, повторите'); return; }
+    const was = saySetFact(gymNum(last.weight), gymInt(last.reps, 0));
     onSave({ ...session, sets: logged.map(s => (s.id === last.id ? { ...s, weight: w, reps: r } : s)) });
+    // Поля строки подхода показывают черновик, если он есть: без этого в них
+    // остались бы старые цифры, хотя в тренировке записаны уже новые.
+    setDrafts(d => ({ ...d, [`${last.exerciseId}:${last.setIndex || 0}`]: { weight: String(w), reps: String(r) } }));
     setRewriting(false);
-    say(`Перезаписал, ${saySetFact(w, r)}`);
+    // Проговариваем замену целиком: на слух важно убедиться, что исправлен
+    // именно тот подход и именно на то, что было сказано.
+    say(`Вместо ${was} записал ${saySetFact(w, r)}`);
   };
 
   // Подход, который предстоит сделать: первый незаписанный в упражнении.
@@ -25902,8 +27036,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     const t = row ? gymRowTarget(row, pctBaseOf(ex)) : null;
     const noWeight = !t || t.body || t.empty || (!t.min && !t.max);
     return noWeight
-      ? 'Скажите «15» — вес не нужен. Ещё: «столько же», «повтори», «перезапись», «отмена»'
-      : 'Скажите «25 на 12». Ещё: «столько же», «повтори», «перезапись», «отмена»';
+      ? 'Скажите «15» — вес не нужен. Ещё: «также», «повтори», «перезапись», «отмена»'
+      : 'Скажите «25 на 12». Ещё: «также» — как в прошлом подходе, «повтори», «перезапись», «отмена»';
   })();
 
   const rowCount = (ex) => {
@@ -25969,7 +27103,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     // Во время отдыха слушаем только команды: числа в это время — либо чужой
     // разговор, либо хвост собственной озвучки, записывать их нельзя. Исключение
     // — начатая перезапись: там числа как раз и ждём.
-    if (resting && !rewriting && parsed && parsed.cmd === 'log') parsed = null;
+    if (resting && !rewriting && parsed && (parsed.cmd === 'log' || parsed.cmd === 'sameLast')) parsed = null;
     if (resting && parsed && parsed.cmd === 'skipRest' && !parsed.explicit) parsed = null;
     if (resting && !parsed) { setHeard(''); return; }
 
@@ -26024,16 +27158,23 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     // Не названное голосом берём из плана — «столько же» и «12» работают
     // именно за счёт этого.
     const draft = draftRow(ex, i);
-    const weight = parsed.weight !== undefined ? parsed.weight : gymNum(draft.weight);
-    const reps = parsed.reps !== undefined ? parsed.reps : gymInt(draft.reps, 0);
+    // «Также» — цифры прошлого сделанного подхода: сначала смотрим этот же
+    // снаряд, и только если по нему ещё ничего нет — последний подход вообще.
+    const prev = parsed.cmd === 'sameLast' ? lastLoggedOf(ex.id) : null;
+    const weight = prev ? gymNum(prev.weight)
+      : (parsed.weight !== undefined ? parsed.weight : gymNum(draft.weight));
+    const reps = prev ? gymInt(prev.reps, 0)
+      : (parsed.reps !== undefined ? parsed.reps : gymInt(draft.reps, 0));
     if (!reps) return;
 
     logSet(ex, i, {
       weight,
       reps,
-      confirm: weight
-        ? `Записал, ${gymRound1(weight)} на ${reps}`
-        : `Записал, ${reps} ${gymPlural(reps, 'повторение', 'повторения', 'повторений')}`,
+      // «Также» цифр не называет — поэтому их обязательно проговариваем в
+      // ответ: иначе непонятно, что именно ушло в тренировку.
+      confirm: (parsed.cmd === 'sameLast' ? 'Записал так же' : 'Записал') + (weight
+        ? `, ${gymRound1(weight)} на ${reps}`
+        : `, ${reps} ${gymPlural(reps, 'повторение', 'повторения', 'повторений')}`),
     });
   };
 
@@ -26076,7 +27217,19 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
         </div>
       </div>
 
-      {voiceOn && (
+      {/* Музыка из Джарвиса: пока она играет, аудиосессия наша — сигналы и речь
+          идут поверх неё, а экран можно гасить, поэтому отдельный тумблер
+          «звук с погашенным экраном» в это время не нужен. */}
+      {music.playing ? <MusicBar compact /> : (music.tracks.length > 0 && (
+        <button
+          onClick={() => jarvisMusic.playRandom()}
+          className="w-full mb-4 py-2.5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[14px] flex items-center justify-center gap-2"
+        >
+          <Icon name="music" size={16} /> Включить случайный трек
+        </button>
+      ))}
+
+      {voiceOn && !music.playing && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 mb-4 flex items-center gap-3">
           <div className="flex-1 min-w-0">
             <div className="text-[14px]">Звук с погашенным экраном</div>
@@ -26133,9 +27286,24 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
                   : !armed
                   ? 'Включится со следующего подхода'
                   : resting
-                    ? 'Идёт отдых. Скажите «пропустить отдых», «повтори» или «перезапись»'
+                    ? (micRest
+                      ? 'Идёт отдых. Скажите «пропустить отдых», «повтори» или «перезапись»'
+                      : 'Идёт отдых. Микрофон выключен — пропустить отдых можно кнопкой')
                     : voiceHint}
           </div>
+          {handsFree && (
+            <button
+              onClick={() => onToggleMicRest(!micRest)}
+              className="mt-1.5 text-[11px] px-2 py-1 rounded-full border"
+              style={micRest
+                ? { borderColor: GYM_ACCENT, color: GYM_ACCENT }
+                : { borderColor: 'var(--border)', color: 'var(--text-subtle)' }}
+            >
+              {/* Пока микрофон слушает, iOS держит запись, и на Bluetooth это
+                  слышно по звуку музыки. Выключатель — на случай, если слышно. */}
+              {micRest ? 'Микрофон слушает и на отдыхе' : 'На отдыхе микрофон молчит'}
+            </button>
+          )}
         </div>
         <Toggle
           checked={handsFree}
@@ -27005,6 +28173,7 @@ const MISC_APPS = [
   { id: 'wishlist', label: 'Хотелки',    icon: 'heart',      color: '#be185d' },
   { id: 'cards',    label: 'Карты',      icon: 'creditCard', color: '#1d4ed8' },
   { id: 'gym',      label: 'GYM',        icon: 'dumbbell',   color: '#0d9488' },
+  { id: 'music',    label: 'Музыка',     icon: 'music',      color: '#9333ea' },
   { id: 'english',  label: 'English',    icon: 'book',       color: '#0f766e' },
   { id: 'quiz',     label: 'Своя игра',  icon: 'quiz',       color: '#b45309' },
   { id: 'cars',     label: 'Автомобиль', icon: 'car',        color: '#6d28d9' },
@@ -27072,6 +28241,7 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
       )}
       {sub === 'wishlist' && <WishlistView data={data} setData={setData} />}
       {sub === 'gym' && <GymView data={data} setData={setData} />}
+      {sub === 'music' && <MusicView />}
       {sub === 'quiz' && <QuizView data={data} setData={setData} />}
     </div>
   );
