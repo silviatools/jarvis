@@ -252,6 +252,7 @@ const AI_FUNCTIONS = [
   { key: 'healthExtract', label: 'Здоровье — распознавание документов' },
   { key: 'gymExtract', label: 'GYM — распознавание программы тренировок' },
   { key: 'wishlistScreenshot', label: 'Хотелки — распознавание товара по скриншоту' },
+  { key: 'cashflowStatementExtract', label: 'ДДС — сверка счёта с банковской выпиской' },
 ];
 
 const AI_PROVIDER_DEFAULT_MODEL = { claude: 'claude-sonnet-5', openai: 'gpt-4o' };
@@ -13482,6 +13483,161 @@ const cashflowFactMaps = (ops) => {
   return { expense, income };
 };
 
+// ── ДДС: сверка счёта с банковской выпиской ─────────────────────────────────
+// Для случаев, когда баланс на карте разошёлся с тем, что показывает ДДС:
+// пользователь грузит PDF/фото банковской выписки, ИИ переносит из неё список
+// операций в JSON, а дальше они сопоставляются с тем, что уже внесено в ДДС —
+// плюс со связанными операциями Накоплений/Долгов (деньги те же, с той же
+// карты, см. cashflowAccountBalance выше).
+const CASHFLOW_STATEMENT_EXTRACT_SYSTEM_PROMPT = `Ты читаешь банковскую выписку по счёту/карте (справка о движении средств, история операций) и переносишь из неё все операции в JSON.
+Верни СТРОГО валидный JSON без markdown-разметки и пояснений, ровно такой структуры:
+{"transactions":[{"date":"YYYY-MM-DD","amount":0,"description":""}],"totalIncome":0,"totalExpense":0}
+Пояснения:
+- Перечисли ВСЕ строки операций со всех страниц документа, включая мелкие (кэшбэк, комиссии, возвраты) — ничего не пропускай и не суммируй похожие строки вместе.
+- date: дата операции (если в выписке отдельно есть дата списания/проведения — бери именно дату операции) в формате YYYY-MM-DD.
+- amount: сумма операции В ВАЛЮТЕ КАРТЫ ровно со знаком, как в выписке — отрицательная для расхода/списания, положительная для пополнения/дохода/возврата. Число, без пробелов и символа валюты.
+- description: краткое описание операции как в колонке "Описание операции" (например название магазина или получателя), без даты и номера карты.
+- totalIncome/totalExpense: итоговые суммы пополнений и расходов, если они прямо указаны в конце выписки (оба числа положительные), иначе посчитай их сам как сумму положительных/отрицательных операций.`;
+
+// files: один File (PDF) или массив File — несколько фото одной выписки по
+// порядку (как в распознавании документов здоровья/GYM, см. extractHealthEventFromDocument).
+async function extractCashflowStatementTransactions(files, settings) {
+  const fileList = Array.isArray(files) ? files : [files];
+  const provider = resolveAiPreset(settings, 'cashflowStatementExtract')?.provider || 'claude';
+  const hasPdf = fileList.some(isHealthDocPdf);
+  if (hasPdf && fileList.length > 1) {
+    throw new Error('PDF можно приложить только один файл за раз — для нескольких страниц сфотографируйте их и загрузите как изображения.');
+  }
+  if (hasPdf && provider !== 'claude') {
+    throw new Error('Распознавание PDF работает только с провайдером Claude — переключите его в Настройках → Ассистент, либо сфотографируйте выписку и загрузите как изображение(я).');
+  }
+
+  const docBlocks = await Promise.all(fileList.map(async (file) => {
+    const isPdf = isHealthDocPdf(file);
+    const base64 = await fileToBase64(file);
+    if (isPdf) {
+      return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } };
+    }
+    const mediaType = HEALTH_DOC_MEDIA_TYPES.includes(file.type) ? file.type : 'image/jpeg';
+    return provider === 'openai'
+      ? { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } }
+      : { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } };
+  }));
+
+  const promptText = fileList.length > 1
+    ? 'Это несколько страниц одной выписки по порядку — прочитай их как единое целое и заполни один JSON согласно инструкции.'
+    : 'Перенеси все операции из этой выписки в JSON согласно инструкции.';
+
+  const messages = [{
+    role: 'user',
+    content: [...docBlocks, { type: 'text', text: promptText }],
+  }];
+
+  let parsed;
+  try {
+    parsed = await callAI(messages, settings, CASHFLOW_STATEMENT_EXTRACT_SYSTEM_PROMPT, 8000, 'cashflowStatementExtract');
+  } catch (e) {
+    if (e.message === 'no_key') throw new Error('Сначала укажите API-ключ ИИ в Настройках → Ассистент');
+    throw new Error(e.message?.includes('JSON') ? 'ИИ вернул нераспознаваемый ответ, попробуйте ещё раз' : (e.message || 'Не удалось распознать выписку'));
+  }
+
+  const transactions = (Array.isArray(parsed?.transactions) ? parsed.transactions : [])
+    .map(t => ({
+      id: crypto.randomUUID(),
+      date: /^\d{4}-\d{2}-\d{2}$/.test(t?.date || '') ? t.date : '',
+      amount: Number(t?.amount),
+      description: String(t?.description ?? '').trim().slice(0, 200),
+    }))
+    .filter(t => t.date && Number.isFinite(t.amount) && t.amount !== 0);
+
+  if (!transactions.length) throw new Error('Не нашлось ни одной операции в выписке — попробуйте другой файл или снимок покрупнее');
+
+  return {
+    transactions,
+    totalIncome: Number.isFinite(Number(parsed?.totalIncome))
+      ? Number(parsed.totalIncome)
+      : transactions.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0),
+    totalExpense: Number.isFinite(Number(parsed?.totalExpense))
+      ? Number(parsed.totalExpense)
+      : -transactions.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0),
+  };
+}
+
+// Все движения денег по конкретному счёту с точки зрения приложения: обычные
+// операции ДДС плюс отмеченные пополнения Накоплений и платежи/пополнения
+// Долгов на этот же счёт — ровно то же множество, что складывает
+// cashflowAccountBalance() в баланс счёта.
+const cashflowAppMovesForAccount = (data, accountId) => {
+  const moves = [];
+  cashflowOpsOf(data).forEach(op => {
+    if (op.accountId !== accountId || !op.date) return;
+    const amt = Number(op.amount) || 0;
+    if (!amt) return;
+    moves.push({
+      id: op.id, kind: 'op', date: op.date,
+      signedAmount: op.direction === 'in' ? amt : -amt,
+      label: op.purpose || '', raw: op,
+    });
+  });
+  (data.savingsTransactions || []).forEach(t => {
+    if (!t || t.accountId !== accountId || !t.date) return;
+    const amt = Number(t.amount) || 0;
+    if (!amt) return;
+    moves.push({
+      id: t.id, kind: 'savings', date: t.date,
+      signedAmount: t.type === 'income' ? -amt : amt,
+      label: 'Накопления', raw: t,
+    });
+  });
+  (data.debtTransactions || []).forEach(t => {
+    if (!t || t.accountId !== accountId || !t.date) return;
+    if (t.cashflowDirection !== 'in' && t.cashflowDirection !== 'out') return;
+    const amt = Number(t.amount) || 0;
+    if (!amt) return;
+    moves.push({
+      id: t.id, kind: 'debt', date: t.date,
+      signedAmount: t.cashflowDirection === 'in' ? amt : -amt,
+      label: 'Долг', raw: t,
+    });
+  });
+  return moves;
+};
+
+const daysBetweenIso = (a, b) => {
+  const da = new Date(`${a}T00:00:00`);
+  const db = new Date(`${b}T00:00:00`);
+  const diff = (da - db) / 86400000;
+  return Number.isFinite(diff) ? Math.round(diff) : Infinity;
+};
+
+// Приблизительное сопоставление строк выписки с движениями в приложении: по
+// сумме (точно) и дате (в пределах toleranceDays — дата операции в приложении
+// может на день-два отличаться от даты в выписке). Жадный алгоритм: сперва
+// сопоставляются пары с наименьшей разницей в датах, каждая строка и каждое
+// движение используются не больше одного раза. То, что не нашло пару, —
+// кандидаты в «не внесено» (есть в выписке) и «лишнее» (есть в приложении).
+const matchStatementToAppMoves = (stmtTxns, appMoves, toleranceDays = 3) => {
+  const candidates = [];
+  stmtTxns.forEach((s, si) => {
+    appMoves.forEach((m, mi) => {
+      if (Math.abs(s.amount - m.signedAmount) > 0.01) return;
+      const dayDiff = Math.abs(daysBetweenIso(s.date, m.date));
+      if (dayDiff > toleranceDays) return;
+      candidates.push({ si, mi, dayDiff });
+    });
+  });
+  candidates.sort((a, b) => a.dayDiff - b.dayDiff);
+  const usedS = new Set(), usedM = new Set();
+  candidates.forEach(c => {
+    if (usedS.has(c.si) || usedM.has(c.mi)) return;
+    usedS.add(c.si); usedM.add(c.mi);
+  });
+  return {
+    unmatchedStatement: stmtTxns.filter((_, i) => !usedS.has(i)),
+    unmatchedApp: appMoves.filter((_, i) => !usedM.has(i)),
+  };
+};
+
 const formatRubExact = (n) => {
   const num = Number(n) || 0;
   return new Intl.NumberFormat('ru-RU', {
@@ -14499,6 +14655,7 @@ function BudgetCashflowView({ data, setData, userId }) {
   const [editingOp,  setEditingOp]  = useState(null);   // объект операции или {} для новой
   const [showAccounts, setShowAccounts] = useState(false);
   const [copied,     setCopied]     = useState(false);
+  const [reconcileAccountId, setReconcileAccountId] = useState(null); // сверка счёта с выпиской
 
   const accounts = data.budgetCashflowAccounts || [];
   const ops      = cashflowOpsOf(data);
@@ -14642,6 +14799,10 @@ function BudgetCashflowView({ data, setData, userId }) {
                   <div className="text-[11px] text-[var(--text-subtle)] mt-0.5">
                     старт: {formatRubExact(a.initialBalance || 0)} ₽
                   </div>
+                  <button onClick={() => setReconcileAccountId(a.id)}
+                    className="text-[11px] text-[var(--text-muted)] hover:text-[var(--text)] underline mt-1.5">
+                    Сверить с выпиской
+                  </button>
                 </div>
               );
             })}
@@ -14830,6 +14991,19 @@ function BudgetCashflowView({ data, setData, userId }) {
           articles={articles}
           onSave={saveOp}
           onClose={() => setEditingOp(null)}
+        />
+      )}
+
+      {reconcileAccountId && (
+        <CashflowReconcileModal
+          data={data}
+          setData={setData}
+          accounts={accounts}
+          articles={articles}
+          initialAccountId={reconcileAccountId}
+          onClose={() => setReconcileAccountId(null)}
+          onEditOp={(op) => { setReconcileAccountId(null); setEditingOp({ ...op }); }}
+          onDeleteOp={deleteOp}
         />
       )}
     </div>
@@ -15242,6 +15416,248 @@ function CashflowOpModal({ op, accounts, articles, onSave, onClose }) {
           className="btn-primary flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
           Сохранить
         </button>
+      </div>
+    </Modal>
+  );
+}
+
+// Сверка счёта с банковской выпиской: для случаев, когда баланс на карте
+// разошёлся с тем, что показывает ДДС. Пользователь вводит фактический
+// баланс с карты (дельта считается сразу) и грузит выписку — ИИ читает из
+// неё операции, а дальше они приблизительно сопоставляются с тем, что уже
+// записано в ДДС/Накоплениях/Долгах на этот счёт (см. matchStatementToAppMoves).
+// Ничего не применяется автоматически — только подсказки, что стоит добавить
+// или перепроверить.
+function CashflowReconcileModal({ data, setData, accounts, articles, initialAccountId, onClose, onEditOp, onDeleteOp }) {
+  const [accountId, setAccountId] = useState(initialAccountId || accounts[0]?.id || '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [statement, setStatement] = useState(null); // { transactions, totalIncome, totalExpense, fileName }
+  const [actualBalance, setActualBalance] = useState('');
+  const [addingFor, setAddingFor] = useState(''); // id строки выписки, для которой сейчас выбирают статью
+  const [addCategoryId, setAddCategoryId] = useState('');
+
+  const account = accounts.find(a => a.id === accountId) || null;
+  const allOps = cashflowOpsOf(data);
+  const appBalance = account ? cashflowAccountBalance(account, allOps, data.savingsTransactions, data.debtTransactions) : 0;
+
+  const actualNum = actualBalance === '' ? null : parseFloat(String(actualBalance).replace(/\s/g, '').replace(',', '.'));
+  const delta = actualNum != null && Number.isFinite(actualNum) ? actualNum - appBalance : null;
+
+  const appMoves = useMemo(() => accountId ? cashflowAppMovesForAccount(data, accountId) : [], [data, accountId]);
+  const match = useMemo(() => statement ? matchStatementToAppMoves(statement.transactions, appMoves, 3) : null, [statement, appMoves]);
+
+  const changeAccount = (id) => {
+    setAccountId(id);
+    setStatement(null);
+    setError('');
+    setAddingFor('');
+  };
+
+  const handleFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    setError('');
+    if (files.some(f => !isHealthDocPdf(f) && !f.type.startsWith('image/'))) {
+      setError('Поддерживаются изображения и PDF');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await extractCashflowStatementTransactions(files, data.settings);
+      setStatement({ ...res, fileName: files[0].name });
+    } catch (err) {
+      setError(err.message || 'Не удалось распознать выписку');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const groupedArticlesFor = (dir) => articles.filter(a => a.direction === dir).reduce((acc, a) => {
+    (acc[a.group || '—'] = acc[a.group || '—'] || []).push(a);
+    return acc;
+  }, {});
+
+  const confirmAdd = (row) => {
+    if (!addCategoryId || !accountId) return;
+    setData(d => ({
+      ...d,
+      budgetCashflowOps: [...(d.budgetCashflowOps || []), {
+        id: crypto.randomUUID(),
+        date: row.date,
+        direction: row.amount > 0 ? 'in' : 'out',
+        amount: Math.round(Math.abs(row.amount) * 100) / 100,
+        accountId,
+        categoryId: addCategoryId,
+        purpose: row.description || '',
+        source: 'statement',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }],
+    }));
+    setAddingFor('');
+    setAddCategoryId('');
+  };
+
+  const kindLabel = (kind) => kind === 'savings' ? 'Накопления' : kind === 'debt' ? 'Долг' : 'Операция';
+
+  return (
+    <Modal title="Сверка с выпиской" onClose={onClose} wide>
+      <div className="space-y-5">
+        {accounts.length > 1 && (
+          <div>
+            <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Счёт</label>
+            <select value={accountId} onChange={e => changeAccount(e.target.value)}
+              className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm">
+              {accounts.map(a => <option key={a.id} value={a.id}>{a.name || 'Счёт'}</option>)}
+            </select>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3.5 py-3">
+            <div className="text-xs text-[var(--text-subtle)]">Баланс в приложении</div>
+            <div className="text-lg font-semibold tabular-nums mt-0.5">{formatRubExact(appBalance)} ₽</div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Баланс по факту (с карты)</label>
+            <input value={actualBalance} onChange={e => setActualBalance(e.target.value)} inputMode="decimal" placeholder="0"
+              className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+          </div>
+        </div>
+
+        {delta != null && (Math.abs(delta) > 0.01 ? (
+          <div className={`rounded-xl border px-3.5 py-2.5 text-sm ${delta > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-700'}`}>
+            Дельта: {delta > 0 ? '+' : '−'}{formatRubExact(Math.abs(delta))} ₽ — {delta > 0 ? 'на карте больше, чем в приложении' : 'в приложении больше, чем на карте'}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-3.5 py-2.5 text-sm">
+            Баланс сходится 🎉
+          </div>
+        ))}
+
+        {!statement ? (
+          <div>
+            <label className={`btn-primary inline-flex items-center gap-1.5 text-sm cursor-pointer ${busy || !accountId ? 'opacity-60 pointer-events-none' : ''}`}>
+              <Icon name="upload" size={16} />
+              {busy ? 'Распознаю…' : 'Загрузить выписку'}
+              <input type="file" accept=".pdf,image/*" multiple className="hidden" onChange={handleFiles} disabled={busy || !accountId} />
+            </label>
+            <div className="text-xs text-[var(--text-subtle)] mt-2">
+              PDF или фото выписки из банка — ИИ прочитает список операций и сравнит их с тем, что записано в ДДС
+              (плюс со связанными операциями Накоплений и Долгов на этот счёт).
+            </div>
+            {error && <div className="text-sm text-red-500 mt-2">{error}</div>}
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-2 text-xs text-[var(--text-subtle)]">
+              <div>Выписка: {statement.fileName} · {statement.transactions.length} {pluralRu(statement.transactions.length, ['операция', 'операции', 'операций'])}</div>
+              <button onClick={() => { setStatement(null); setError(''); setAddingFor(''); }} className="text-[var(--text-muted)] hover:text-[var(--text)] underline">
+                Загрузить другую
+              </button>
+            </div>
+
+            <div>
+              <div className="font-medium text-sm mb-2">
+                Похоже, не внесено в ДДС
+                {match.unmatchedStatement.length > 0 && <span className="text-[var(--text-subtle)] font-normal"> ({match.unmatchedStatement.length})</span>}
+              </div>
+              {match.unmatchedStatement.length === 0 ? (
+                <div className="text-sm text-[var(--text-subtle)]">Все операции выписки нашлись в ДДС.</div>
+              ) : (
+                <div className="space-y-2">
+                  {[...match.unmatchedStatement].sort((a, b) => b.date.localeCompare(a.date)).map(row => (
+                    <div key={row.id} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-sm truncate">{row.description || '—'}</div>
+                          <div className="text-xs text-[var(--text-subtle)]">{row.date.split('-').reverse().join('.')}</div>
+                        </div>
+                        <div className={`text-sm font-semibold tabular-nums whitespace-nowrap ${row.amount > 0 ? 'text-emerald-600' : 'text-[var(--text)]'}`}>
+                          {row.amount > 0 ? '+' : '−'}{formatRubExact(Math.abs(row.amount))} ₽
+                        </div>
+                      </div>
+                      {addingFor === row.id ? (
+                        <div className="flex items-center gap-2 mt-2 flex-wrap">
+                          <select value={addCategoryId} onChange={e => setAddCategoryId(e.target.value)}
+                            className="flex-1 min-w-[10rem] bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1.5 text-xs">
+                            <option value="">Статья…</option>
+                            {Object.entries(groupedArticlesFor(row.amount > 0 ? 'in' : 'out')).map(([group, items]) => (
+                              <optgroup key={group} label={group}>
+                                {items.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+                              </optgroup>
+                            ))}
+                          </select>
+                          <button onClick={() => confirmAdd(row)} disabled={!addCategoryId}
+                            className="btn-primary text-xs px-3 py-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
+                            Добавить
+                          </button>
+                          <button onClick={() => { setAddingFor(''); setAddCategoryId(''); }} className="text-xs text-[var(--text-muted)]">
+                            Отмена
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => { setAddingFor(row.id); setAddCategoryId(''); }}
+                          className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] mt-1.5 underline">
+                          Добавить операцию в ДДС
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div className="font-medium text-sm mb-2">
+                Есть в ДДС, нет в выписке
+                {match.unmatchedApp.length > 0 && <span className="text-[var(--text-subtle)] font-normal"> ({match.unmatchedApp.length})</span>}
+              </div>
+              {match.unmatchedApp.length === 0 ? (
+                <div className="text-sm text-[var(--text-subtle)]">Все операции ДДС нашлись в выписке.</div>
+              ) : (
+                <div className="space-y-2">
+                  {[...match.unmatchedApp].sort((a, b) => b.date.localeCompare(a.date)).map(move => (
+                    <div key={`${move.kind}_${move.id}`} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-sm truncate">{move.label || kindLabel(move.kind)}</div>
+                        <div className="text-xs text-[var(--text-subtle)]">
+                          {move.date.split('-').reverse().join('.')}
+                          {move.kind !== 'op' && ` · смотрите на вкладке «${move.kind === 'savings' ? 'Накопления' : 'Долги'}»`}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <div className={`text-sm font-semibold tabular-nums ${move.signedAmount > 0 ? 'text-emerald-600' : 'text-[var(--text)]'}`}>
+                          {move.signedAmount > 0 ? '+' : '−'}{formatRubExact(Math.abs(move.signedAmount))} ₽
+                        </div>
+                        {move.kind === 'op' && (
+                          <>
+                            <button onClick={() => onEditOp(move.raw)} className="p-1 text-[var(--text-muted)] hover:text-[var(--text)]" title="Изменить">
+                              <Icon name="edit" size={14} />
+                            </button>
+                            <button onClick={() => onDeleteOp(move.id)} className="p-1 text-[var(--text-muted)] hover:text-red-500" title="Удалить">
+                              <Icon name="trash" size={14} />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="text-xs text-[var(--text-subtle)]">
+              Сопоставление приблизительное — по сумме и дате в пределах ±3 дней. Прежде чем добавлять или удалять операции, проверяйте их по описанию.
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
+        <button onClick={onClose} className="btn-secondary flex-1">Закрыть</button>
       </div>
     </Modal>
   );
