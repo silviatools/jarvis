@@ -24633,6 +24633,9 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     };
     const exists = logged.some(s => s.id === rec.id);
     const nextSets = exists ? logged.map(s => s.id === rec.id ? rec : s) : [...logged, rec];
+    // Записано голосом — поля строки должны показать сказанное, даже если в них
+    // до этого что-то набрали руками: иначе на экране одно, в тренировке другое.
+    if (override) setDrafts(d => ({ ...d, [`${ex.id}:${i}`]: { weight: String(rec.weight || ''), reps: String(rec.reps) } }));
 
     const remaining = (e) => {
       const total = Math.max(planRowsOf(e).length, extra[e.id] || 0);
@@ -24848,9 +24851,15 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     const w = weight !== undefined ? weight : gymNum(last.weight);
     const r = reps !== undefined ? reps : gymInt(last.reps, 0);
     if (!r) { say('Не понял, повторите'); return; }
+    const was = saySetFact(gymNum(last.weight), gymInt(last.reps, 0));
     onSave({ ...session, sets: logged.map(s => (s.id === last.id ? { ...s, weight: w, reps: r } : s)) });
+    // Поля строки подхода показывают черновик, если он есть: без этого в них
+    // остались бы старые цифры, хотя в тренировке записаны уже новые.
+    setDrafts(d => ({ ...d, [`${last.exerciseId}:${last.setIndex || 0}`]: { weight: String(w), reps: String(r) } }));
     setRewriting(false);
-    say(`Перезаписал, ${saySetFact(w, r)}`);
+    // Проговариваем замену целиком: на слух важно убедиться, что исправлен
+    // именно тот подход и именно на то, что было сказано.
+    say(`Вместо ${was} записал ${saySetFact(w, r)}`);
   };
 
   // Подход, который предстоит сделать: первый незаписанный в упражнении.
