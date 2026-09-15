@@ -13156,6 +13156,12 @@ const addMonthsStr = (ym, n) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 };
 
+const lastDayOfMonthStr = (ym) => {
+  if (!ym) return '';
+  const [y, m] = ym.split('-').map(Number);
+  return dateToLocalStr(new Date(y, m, 0));
+};
+
 const monthsBetweenStr = (start, end) => {
   if (!start || !end) return 0;
   const [sy, sm] = start.split('-').map(Number);
@@ -13644,6 +13650,59 @@ const formatRubExact = (n) => {
     minimumFractionDigits: Number.isInteger(num) ? 0 : 2,
     maximumFractionDigits: 2,
   }).format(num);
+};
+
+// ── ДДС: выписка по счёту за период (скачивание) ────────────────────────────
+// CSV, а не JSON/что-то ещё — открывается в Excel/Google Таблицах без плясок.
+// ';' как разделитель и BOM в начале — так Excel в русской локали не путает
+// кодировку и не пытается склеить колонки в одну по запятым внутри сумм.
+const csvEscapeCell = (v) => {
+  const s = String(v ?? '');
+  return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+const csvRow = (cells) => cells.map(csvEscapeCell).join(';');
+
+const buildCashflowStatementCsv = ({ accountName, from, to, openingBalance, closingBalance, moves, artById }) => {
+  const fmtDate = (d) => (d || '').split('-').reverse().join('.');
+  const sorted = [...moves].sort((a, b) => b.date.localeCompare(a.date));
+  const income = sorted.filter(m => m.signedAmount > 0).reduce((s, m) => s + m.signedAmount, 0);
+  const expense = -sorted.filter(m => m.signedAmount < 0).reduce((s, m) => s + m.signedAmount, 0);
+  const kindLabel = (m) => m.kind === 'op'
+    ? (artById[m.raw.categoryId]?.label || 'Статья удалена')
+    : (m.kind === 'savings' ? 'Накопления' : 'Долг');
+
+  const lines = [
+    csvRow(['Выписка ДДС']),
+    csvRow(['Счёт', accountName]),
+    csvRow(['Период', `${fmtDate(from)} — ${fmtDate(to)}`]),
+    csvRow(['Баланс на начало периода, ₽', formatRubExact(openingBalance)]),
+    '',
+    csvRow(['Дата', 'Направление', 'Статья', 'Назначение', 'Сумма, ₽']),
+    ...sorted.map(m => csvRow([
+      fmtDate(m.date),
+      m.signedAmount > 0 ? 'Приход' : 'Расход',
+      kindLabel(m),
+      m.kind === 'op' ? (m.label || '') : '',
+      formatRubExact(Math.abs(m.signedAmount)),
+    ])),
+    '',
+    csvRow(['Баланс на конец периода, ₽', formatRubExact(closingBalance)]),
+    csvRow(['Приход за период, ₽', formatRubExact(income)]),
+    csvRow(['Расход за период, ₽', formatRubExact(expense)]),
+  ];
+  return '﻿' + lines.join('\r\n');
+};
+
+const downloadTextFile = (filename, text, mime = 'text/csv;charset=utf-8') => {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 };
 
 // Адрес приложения — С завершающим слэшем: только по нему относительная
@@ -14656,6 +14715,7 @@ function BudgetCashflowView({ data, setData, userId }) {
   const [showAccounts, setShowAccounts] = useState(false);
   const [copied,     setCopied]     = useState(false);
   const [reconcileAccountId, setReconcileAccountId] = useState(null); // сверка счёта с выпиской
+  const [showExport, setShowExport] = useState(false); // скачать выписку ДДС за период
 
   const accounts = data.budgetCashflowAccounts || [];
   const ops      = cashflowOpsOf(data);
@@ -14776,10 +14836,16 @@ function BudgetCashflowView({ data, setData, userId }) {
               Первоначальный баланс + операции. Эти же счета видны в приложении на телефоне.
             </div>
           </div>
-          <button onClick={() => setShowAccounts(true)}
-            className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors whitespace-nowrap">
-            Настроить
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowExport(true)} disabled={!accounts.length}
+              className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5">
+              <Icon name="download" size={14} /> Выписка
+            </button>
+            <button onClick={() => setShowAccounts(true)}
+              className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors whitespace-nowrap">
+              Настроить
+            </button>
+          </div>
         </div>
 
         {accounts.length === 0 ? (
@@ -15004,6 +15070,16 @@ function BudgetCashflowView({ data, setData, userId }) {
           onClose={() => setReconcileAccountId(null)}
           onEditOp={(op) => { setReconcileAccountId(null); setEditingOp({ ...op }); }}
           onDeleteOp={deleteOp}
+        />
+      )}
+
+      {showExport && (
+        <CashflowExportModal
+          data={data}
+          accounts={accounts}
+          articles={articles}
+          initialAccountId={accFilter || accounts[0]?.id || ''}
+          onClose={() => setShowExport(false)}
         />
       )}
     </div>
@@ -15658,6 +15734,118 @@ function CashflowReconcileModal({ data, setData, accounts, articles, initialAcco
 
       <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
         <button onClick={onClose} className="btn-secondary flex-1">Закрыть</button>
+      </div>
+    </Modal>
+  );
+}
+
+// Скачать выписку ДДС по счёту за выбранный период (CSV) — со строками
+// «Баланс на начало периода» и «Баланс на конец периода», которые считаются
+// той же cashflowAccountBalance(), что и баланс счёта на экране, только
+// с операциями, отфильтрованными по датам «до начала периода» и «по конец
+// периода включительно» — гарантированно совпадает с тем, что видно в ДДС.
+function CashflowExportModal({ data, accounts, articles, initialAccountId, onClose }) {
+  const [accountId, setAccountId] = useState(initialAccountId || accounts[0]?.id || '');
+  const [from, setFrom] = useState(`${getCurrentMonthStr()}-01`);
+  const [to,   setTo]   = useState(getTodayKey());
+
+  const account = accounts.find(a => a.id === accountId) || null;
+  const artById = useMemo(() => Object.fromEntries(articles.map(a => [a.id, a])), [articles]);
+  const rangeValid = !!(account && from && to && from <= to);
+
+  const setPreset = (rangeFrom, rangeTo) => { setFrom(rangeFrom); setTo(rangeTo); };
+  const presets = [
+    ['Этот месяц', () => setPreset(`${getCurrentMonthStr()}-01`, getTodayKey())],
+    ['Прошлый месяц', () => { const m = addMonthsStr(getCurrentMonthStr(), -1); setPreset(`${m}-01`, lastDayOfMonthStr(m)); }],
+    ['Этот год', () => setPreset(`${new Date().getFullYear()}-01-01`, getTodayKey())],
+  ];
+
+  const download = () => {
+    if (!rangeValid) return;
+    const allOps    = cashflowOpsOf(data);
+    const allSavTx  = data.savingsTransactions || [];
+    const allDebtTx = data.debtTransactions || [];
+
+    const opening = cashflowAccountBalance(
+      account,
+      allOps.filter(o => o.date && o.date < from),
+      allSavTx.filter(t => t.date && t.date < from),
+      allDebtTx.filter(t => t.date && t.date < from),
+    );
+    const closing = cashflowAccountBalance(
+      account,
+      allOps.filter(o => o.date && o.date <= to),
+      allSavTx.filter(t => t.date && t.date <= to),
+      allDebtTx.filter(t => t.date && t.date <= to),
+    );
+    const periodMoves = cashflowAppMovesForAccount(data, accountId).filter(m => m.date >= from && m.date <= to);
+
+    const csv = buildCashflowStatementCsv({
+      accountName: account.name || 'Счёт', from, to,
+      openingBalance: opening, closingBalance: closing,
+      moves: periodMoves, artById,
+    });
+    downloadTextFile(`Выписка ДДС ${account.name || 'Счёт'} ${from} - ${to}.csv`, csv);
+    onClose();
+  };
+
+  return (
+    <Modal title="Выписка ДДС" onClose={onClose}>
+      <div className="space-y-4">
+        {!accounts.length ? (
+          <div className="text-sm text-[var(--text-subtle)]">Сначала заведите счёт.</div>
+        ) : (
+          <>
+            {accounts.length > 1 && (
+              <div>
+                <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Счёт</label>
+                <select value={accountId} onChange={e => setAccountId(e.target.value)}
+                  className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm">
+                  {accounts.map(a => <option key={a.id} value={a.id}>{a.name || 'Счёт'}</option>)}
+                </select>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">С</label>
+                <input type="date" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)}
+                  className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">По</label>
+                <input type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)}
+                  className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 flex-wrap">
+              {presets.map(([label, fn]) => (
+                <button key={label} type="button" onClick={fn}
+                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5">
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {!rangeValid && from > to && (
+              <div className="text-xs text-red-500">Дата «С» позже даты «По»</div>
+            )}
+
+            <div className="text-xs text-[var(--text-subtle)]">
+              CSV со списком операций за период (включая связанные операции Накоплений и Долгов на этот счёт)
+              и балансами на начало и конец периода — так же считаются, как баланс счёта на экране.
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
+        <button onClick={onClose} className="btn-secondary">Отмена</button>
+        <button onClick={download} disabled={!rangeValid}
+          className="btn-primary flex-1 inline-flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
+          <Icon name="download" size={16} /> Скачать CSV
+        </button>
       </div>
     </Modal>
   );
