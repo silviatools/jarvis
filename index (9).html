@@ -23528,7 +23528,11 @@ const gymParseVoicePhrase = (raw) => {
     }
     return { cmd: 'rewrite' };
   }
-  if (/(столько же|как в плане|по плану|как обычно|так же)/.test(t)) return { cmd: 'log' };
+  // «Также» — повтор прошлого СДЕЛАННОГО подхода. На слух «также» и «так же»
+  // не отличить, поэтому обе формы (и близкое «то же самое») — одна команда.
+  if (/(^|\s)(также|так же|тоже|то же( самое)?)(\s|$)/.test(t)) return { cmd: 'sameLast' };
+  // А это — «как в плане»: цифры берутся из программы, а не из прошлого подхода.
+  if (/(столько же|как в плане|по плану|как обычно)/.test(t)) return { cmd: 'log' };
 
   // Упражнения без веса (пресс, подтягивания, планка): «без веса 15»,
   // «своим весом 15». Вес принудительно нулевой, даже если в плане он есть.
@@ -25682,6 +25686,13 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   };
 
   const lastLogged = () => [...logged].sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null;
+  // Прошлый подход для «также»: по этому же упражнению, а если по нему ещё
+  // ничего не записано — последний записанный вообще.
+  const lastLoggedOf = (exId) => {
+    const mine = logged.filter(s => s.exerciseId === exId);
+    const pool = mine.length ? mine : logged;
+    return [...pool].sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null;
+  };
   const saySetFact = (w, r) => (w
     ? `${gymRound1(w)} на ${r}`
     : `${r} ${gymPlural(r, 'повторение', 'повторения', 'повторений')} своим весом`);
@@ -25723,8 +25734,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     const t = row ? gymRowTarget(row, pctBaseOf(ex)) : null;
     const noWeight = !t || t.body || t.empty || (!t.min && !t.max);
     return noWeight
-      ? 'Скажите «15» — вес не нужен. Ещё: «столько же», «повтори», «перезапись», «отмена»'
-      : 'Скажите «25 на 12». Ещё: «столько же», «повтори», «перезапись», «отмена»';
+      ? 'Скажите «15» — вес не нужен. Ещё: «также», «повтори», «перезапись», «отмена»'
+      : 'Скажите «25 на 12». Ещё: «также» — как в прошлом подходе, «повтори», «перезапись», «отмена»';
   })();
 
   const rowCount = (ex) => {
@@ -25790,7 +25801,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     // Во время отдыха слушаем только команды: числа в это время — либо чужой
     // разговор, либо хвост собственной озвучки, записывать их нельзя. Исключение
     // — начатая перезапись: там числа как раз и ждём.
-    if (resting && !rewriting && parsed && parsed.cmd === 'log') parsed = null;
+    if (resting && !rewriting && parsed && (parsed.cmd === 'log' || parsed.cmd === 'sameLast')) parsed = null;
     if (resting && parsed && parsed.cmd === 'skipRest' && !parsed.explicit) parsed = null;
     if (resting && !parsed) { setHeard(''); return; }
 
@@ -25845,16 +25856,23 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
     // Не названное голосом берём из плана — «столько же» и «12» работают
     // именно за счёт этого.
     const draft = draftRow(ex, i);
-    const weight = parsed.weight !== undefined ? parsed.weight : gymNum(draft.weight);
-    const reps = parsed.reps !== undefined ? parsed.reps : gymInt(draft.reps, 0);
+    // «Также» — цифры прошлого сделанного подхода: сначала смотрим этот же
+    // снаряд, и только если по нему ещё ничего нет — последний подход вообще.
+    const prev = parsed.cmd === 'sameLast' ? lastLoggedOf(ex.id) : null;
+    const weight = prev ? gymNum(prev.weight)
+      : (parsed.weight !== undefined ? parsed.weight : gymNum(draft.weight));
+    const reps = prev ? gymInt(prev.reps, 0)
+      : (parsed.reps !== undefined ? parsed.reps : gymInt(draft.reps, 0));
     if (!reps) return;
 
     logSet(ex, i, {
       weight,
       reps,
-      confirm: weight
-        ? `Записал, ${gymRound1(weight)} на ${reps}`
-        : `Записал, ${reps} ${gymPlural(reps, 'повторение', 'повторения', 'повторений')}`,
+      // «Также» цифр не называет — поэтому их обязательно проговариваем в
+      // ответ: иначе непонятно, что именно ушло в тренировку.
+      confirm: (parsed.cmd === 'sameLast' ? 'Записал так же' : 'Записал') + (weight
+        ? `, ${gymRound1(weight)} на ${reps}`
+        : `, ${reps} ${gymPlural(reps, 'повторение', 'повторения', 'повторений')}`),
     });
   };
 
