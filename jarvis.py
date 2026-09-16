@@ -5655,7 +5655,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             account_id = one("account_id")
             direction = one("direction")
             try:
-                limit = max(1, min(500, int(one("limit", "50"))))
+                # Верхняя граница поднята с 500: вкладке «Аналитика» приложения
+                # нужен весь период (месяц/год) одним запросом, а не только
+                # последние операции, как «Недавним» (у них лимит остаётся 50).
+                limit = max(1, min(3000, int(one("limit", "50"))))
             except ValueError:
                 limit = 50
 

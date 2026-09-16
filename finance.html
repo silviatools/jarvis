@@ -462,7 +462,7 @@ body { padding-top: var(--safe-t); }
 .tabbar {
   flex-shrink: 0;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   border-top: 1px solid var(--line);
   background: var(--surface);
   padding-bottom: var(--safe-b);
@@ -615,6 +615,132 @@ body { padding-top: var(--safe-t); }
   font-size: 11px;
   color: var(--muted);
   margin-top: 1px;
+}
+
+/* ── Вкладка «Аналитика»: расходы по статьям + детализация платежей ── */
+.an-range {
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 10px 16px 4px;
+}
+.an-range .field { margin-bottom: 0; }
+
+.bs-value.income { color: var(--income); }
+
+.an-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 16px 12px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.an-cat {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 14px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(27,28,51,.04);
+}
+
+.an-cat-head {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  padding: 12px 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.an-cat-emoji { font-size: 18px; flex-shrink: 0; line-height: 1.3; }
+.an-cat-body { flex: 1; min-width: 0; }
+
+.an-cat-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.an-cat-name {
+  font-weight: 650;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.an-cat-sum {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-weight: 700;
+  font-size: 15px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.an-cat-sub {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.an-cat-sub span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.an-cat-sub span:last-child { flex-shrink: 0; }
+
+.an-bar-track {
+  height: 5px;
+  background: var(--bg);
+  border-radius: 999px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+.an-bar-fill { height: 100%; background: var(--accent-2); border-radius: 999px; }
+
+.an-cat-chev {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+  transition: transform .15s ease;
+}
+.an-cat.open .an-cat-chev { transform: rotate(180deg); }
+
+.an-pay-list { display: none; padding: 0 14px 12px; }
+.an-cat.open .an-pay-list { display: block; }
+
+.an-pay-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.an-pay-date { color: var(--muted); font-weight: 600; flex-shrink: 0; }
+.an-pay-purpose {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.an-pay-amount {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-weight: 650;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* ── Purpose step ── */
@@ -987,12 +1113,44 @@ body { padding-top: var(--safe-t); }
     <div class="budget-list" id="budgetList"></div>
   </section>
 
+  <!-- Вкладка «Аналитика»: расходы по статьям за месяц/период, по умолчанию
+       текущий месяц, с раскрывающейся детализацией платежей по каждой статье. -->
+  <section class="screen" id="screenAnalytics">
+    <div class="view-toggle" id="anModeToggle">
+      <button type="button" class="vt-btn active" data-an-mode="month">Месяц</button>
+      <button type="button" class="vt-btn" data-an-mode="range">Период</button>
+    </div>
+
+    <div class="budget-month-bar" id="anMonthBar">
+      <button type="button" class="bm-nav" id="anPrevMonth" aria-label="Предыдущий месяц">‹</button>
+      <div class="bm-label" id="anMonthLabel">—</div>
+      <button type="button" class="bm-nav" id="anNextMonth" aria-label="Следующий месяц">›</button>
+    </div>
+
+    <div class="an-range" id="anRangeBar" style="display:none">
+      <div class="field">
+        <label for="anFrom">С</label>
+        <input type="date" id="anFrom">
+      </div>
+      <div class="field">
+        <label for="anTo">По</label>
+        <input type="date" id="anTo">
+      </div>
+    </div>
+
+    <div class="budget-summary" id="anSummary"></div>
+    <div class="an-list" id="anList"></div>
+  </section>
+
   <div class="tabbar" id="tabbar">
     <button type="button" class="tab-btn active" data-tab="log">
       <span class="tab-ico">✏️</span>Учёт
     </button>
     <button type="button" class="tab-btn" data-tab="budget">
       <span class="tab-ico">📊</span>Бюджет
+    </button>
+    <button type="button" class="tab-btn" data-tab="analytics">
+      <span class="tab-ico">📈</span>Аналитика
     </button>
   </div>
 </div>
@@ -1104,6 +1262,14 @@ body { padding-top: var(--safe-t); }
   let activeTab = 'log'; // 'log' | 'budget' — нижняя вкладка
   let budgetMonth = todayISO().slice(0, 7);
   let budgetLoadSeq = 0; // отбрасываем ответ, если за это время уже переключили месяц
+
+  // ── Аналитика: расходы по статьям + детализация платежей ──
+  let analyticsMode = 'month';          // 'month' | 'range'
+  let analyticsMonth = todayISO().slice(0, 7);
+  let analyticsFrom = todayISO().slice(0, 7) + '-01';
+  let analyticsTo = todayISO();
+  let analyticsOpenCat = '';            // id раскрытой статьи, или ''
+  let analyticsLoadSeq = 0;
 
   const $ = (id) => document.getElementById(id);
 
@@ -1502,14 +1668,16 @@ body { padding-top: var(--safe-t); }
   // ── Вкладка «Бюджет»: план / факт / остаток по статьям месяца ──────────────
 
   function setTab(tab) {
-    if (tab !== 'log' && tab !== 'budget') return;
+    if (tab !== 'log' && tab !== 'budget' && tab !== 'analytics') return;
     activeTab = tab;
     $('logFlow').classList.toggle('active', tab === 'log');
     $('screenBudget').classList.toggle('active', tab === 'budget');
+    $('screenAnalytics').classList.toggle('active', tab === 'analytics');
     $('tabbar').querySelectorAll('.tab-btn').forEach(b => {
       b.classList.toggle('active', b.getAttribute('data-tab') === tab);
     });
     if (tab === 'budget') loadBudget();
+    if (tab === 'analytics') loadAnalytics();
   }
 
   function shiftMonth(ym, delta) {
@@ -1581,6 +1749,152 @@ body { padding-top: var(--safe-t); }
       if (seq !== budgetLoadSeq) return;
       $('budgetList').innerHTML = '<div class="empty-hint">Не удалось загрузить</div>';
     }
+  }
+
+  // ── Вкладка «Аналитика»: расходы по статьям + детализация платежей ─────────
+
+  function pluralRu(n, forms) {
+    const n10 = n % 10, n100 = n % 100;
+    if (n10 === 1 && n100 !== 11) return forms[0];
+    if (n10 >= 2 && n10 <= 4 && (n100 < 10 || n100 >= 20)) return forms[1];
+    return forms[2];
+  }
+
+  function categoryEmoji(id) {
+    const c = categories.find(x => x.id === id);
+    return c ? (c.emoji || '') : '';
+  }
+
+  function categoryGroup(id) {
+    const c = categories.find(x => x.id === id);
+    return c ? (c.group_name || '') : '';
+  }
+
+  function analyticsRange() {
+    if (analyticsMode === 'month') {
+      const m = /^(\d{4})-(\d{2})$/.exec(analyticsMonth || '');
+      if (!m) return { from: '', to: '' };
+      const last = new Date(Number(m[1]), Number(m[2]), 0).getDate();
+      return { from: analyticsMonth + '-01', to: `${analyticsMonth}-${pad2(last)}` };
+    }
+    return { from: analyticsFrom, to: analyticsTo };
+  }
+
+  // Группировка расходных операций по статье — та же логика, что и
+  // cashflowAppMovesForAccount()/analyticsExpenseBreakdown() на сайте,
+  // просто на данных, которые уже отдаёт /operations этому приложению.
+  function analyticsBreakdown(ops) {
+    const byCat = new Map();
+    ops.forEach(op => {
+      if (op.direction !== 'out' || !(Number(op.amount) > 0)) return;
+      const key = op.category_id || '__none';
+      if (!byCat.has(key)) byCat.set(key, { id: key, sum: 0, ops: [] });
+      const entry = byCat.get(key);
+      entry.sum += Number(op.amount) || 0;
+      entry.ops.push(op);
+    });
+    const list = [...byCat.values()];
+    list.forEach(e => e.ops.sort((a, b) => (b.date || '').localeCompare(a.date || '')));
+    list.sort((a, b) => b.sum - a.sum);
+    return list;
+  }
+
+  function renderAnalyticsSummary(ops) {
+    let income = 0, expense = 0, expenseCount = 0;
+    ops.forEach(op => {
+      const amt = Number(op.amount) || 0;
+      if (op.direction === 'in') income += amt;
+      else { expense += amt; expenseCount += 1; }
+    });
+    $('anSummary').innerHTML = `
+      <div class="bs-item"><div class="bs-label">Расходы</div><div class="bs-value">${esc(formatMoney(expense))}</div></div>
+      <div class="bs-item"><div class="bs-label">Доходы</div><div class="bs-value income">${esc(formatMoney(income))}</div></div>
+      <div class="bs-item"><div class="bs-label">Платежей</div><div class="bs-value">${expenseCount}</div></div>
+    `;
+  }
+
+  function renderAnalyticsList(breakdown, totalExpense) {
+    const box = $('anList');
+    if (!breakdown.length) {
+      box.innerHTML = '<div class="empty-hint">Расходов за этот период пока нет</div>';
+      return;
+    }
+    const maxSum = breakdown.reduce((m, e) => Math.max(m, e.sum), 0);
+    box.innerHTML = breakdown.map(e => {
+      const first = e.ops[0];
+      const name = first.category_name || categoryName(e.id);
+      const emoji = categoryEmoji(e.id) || (first.kind === 'savings' ? '🏦' : first.kind === 'debt' ? '🤝' : '💸');
+      const group = categoryGroup(e.id);
+      const pct = totalExpense > 0 ? Math.round(e.sum / totalExpense * 100) : 0;
+      const barPct = maxSum > 0 ? Math.round(e.sum / maxSum * 100) : 0;
+      const isOpen = analyticsOpenCat === e.id;
+      const payRows = e.ops.map(op => {
+        const purpose = (op.purpose || op.comment || '').trim();
+        return `<div class="an-pay-row">
+          <span class="an-pay-date">${esc(formatRuDate(op.date))}</span>
+          <span class="an-pay-purpose">${esc(purpose || '—')}</span>
+          <span class="an-pay-amount">${esc(formatMoney(op.amount))}</span>
+        </div>`;
+      }).join('');
+      return `<div class="an-cat${isOpen ? ' open' : ''}" data-cat-id="${escAttr(e.id)}">
+        <button type="button" class="an-cat-head" data-cat-toggle="${escAttr(e.id)}">
+          <span class="an-cat-emoji">${esc(emoji)}</span>
+          <span class="an-cat-body">
+            <span class="an-cat-top">
+              <span class="an-cat-name">${esc(name)}</span>
+              <span class="an-cat-sum">${esc(formatMoney(e.sum))}</span>
+            </span>
+            <span class="an-cat-sub">
+              <span>${esc(group)}</span>
+              <span>${pct}% · ${e.ops.length} ${esc(pluralRu(e.ops.length, ['платёж', 'платежа', 'платежей']))}</span>
+            </span>
+            <span class="an-bar-track"><span class="an-bar-fill" style="width:${barPct}%"></span></span>
+          </span>
+          <span class="an-cat-chev">▾</span>
+        </button>
+        <div class="an-pay-list">${payRows}</div>
+      </div>`;
+    }).join('');
+  }
+
+  async function loadAnalytics() {
+    const { from, to } = analyticsRange();
+    if (analyticsMode === 'month') {
+      $('anMonthLabel').textContent = monthLabel(analyticsMonth) || analyticsMonth;
+    }
+    const seq = ++analyticsLoadSeq;
+    $('anSummary').innerHTML = '';
+    $('anList').innerHTML = '<div class="empty-hint">Загрузка…</div>';
+    if (!from || !to || from > to) {
+      $('anList').innerHTML = '<div class="empty-hint">Некорректный период</div>';
+      return;
+    }
+    try {
+      const qs = new URLSearchParams({ date_from: from, date_to: to, limit: '3000' });
+      const ops = await api(API + '/operations?' + qs.toString());
+      if (seq !== analyticsLoadSeq) return; // период уже переключили — этот ответ устарел
+      const list = ops || [];
+      renderAnalyticsSummary(list);
+      const breakdown = analyticsBreakdown(list);
+      const totalExpense = breakdown.reduce((s, e) => s + e.sum, 0);
+      renderAnalyticsList(breakdown, totalExpense);
+    } catch (e) {
+      if (seq !== analyticsLoadSeq) return;
+      $('anSummary').innerHTML = '';
+      $('anList').innerHTML = '<div class="empty-hint">Не удалось загрузить</div>';
+    }
+  }
+
+  function setAnalyticsMode(mode) {
+    if (mode !== 'month' && mode !== 'range') return;
+    if (mode === analyticsMode) return;
+    analyticsMode = mode;
+    $('anModeToggle').querySelectorAll('.vt-btn').forEach(b => {
+      b.classList.toggle('active', b.getAttribute('data-an-mode') === mode);
+    });
+    $('anMonthBar').style.display = mode === 'month' ? '' : 'none';
+    $('anRangeBar').style.display = mode === 'range' ? '' : 'none';
+    loadAnalytics();
   }
 
   async function repeatRecent(oid) {
@@ -1823,6 +2137,9 @@ body { padding-top: var(--safe-t); }
       settings = sett || {};
       await loadPopular();
 
+      $('anFrom').value = analyticsFrom;
+      $('anTo').value = analyticsTo;
+
       let saved = '';
       try { saved = localStorage.getItem(LS_ACC) || ''; } catch (_) {}
       const fromServer = settings.quick_expense_account_id || '';
@@ -1889,6 +2206,39 @@ body { padding-top: var(--safe-t); }
   $('budgetNextMonth').addEventListener('click', () => {
     budgetMonth = shiftMonth(budgetMonth, 1);
     loadBudget();
+  });
+
+  $('anModeToggle').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-an-mode]');
+    if (!btn) return;
+    setAnalyticsMode(btn.getAttribute('data-an-mode'));
+  });
+  $('anPrevMonth').addEventListener('click', () => {
+    analyticsMonth = shiftMonth(analyticsMonth, -1);
+    loadAnalytics();
+  });
+  $('anNextMonth').addEventListener('click', () => {
+    analyticsMonth = shiftMonth(analyticsMonth, 1);
+    loadAnalytics();
+  });
+  $('anFrom').addEventListener('change', () => {
+    analyticsFrom = $('anFrom').value || analyticsFrom;
+    if (analyticsFrom > analyticsTo) { analyticsTo = analyticsFrom; $('anTo').value = analyticsTo; }
+    loadAnalytics();
+  });
+  $('anTo').addEventListener('change', () => {
+    analyticsTo = $('anTo').value || analyticsTo;
+    if (analyticsTo < analyticsFrom) { analyticsFrom = analyticsTo; $('anFrom').value = analyticsFrom; }
+    loadAnalytics();
+  });
+  $('anList').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-cat-toggle]');
+    if (!btn) return;
+    const id = btn.getAttribute('data-cat-toggle');
+    analyticsOpenCat = analyticsOpenCat === id ? '' : id;
+    $('anList').querySelectorAll('.an-cat').forEach(card => {
+      card.classList.toggle('open', card.getAttribute('data-cat-id') === analyticsOpenCat);
+    });
   });
 
   // Экранная клавиатура на iOS не сдвигает position:fixed — она просто
