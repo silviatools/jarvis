@@ -1242,6 +1242,11 @@ body { padding-top: var(--safe-t); }
   const MONTH_NAMES = ['Январь','Февраль','Март','Апрель','Май','Июнь',
                        'Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
   const PF_DATE_RE_CLIENT = /^\d{4}-\d{2}-\d{2}$/;
+  // Технические статьи «Корректировка расход/доход» (см. ADJUSTMENT_ARTICLES
+  // в jarvis.py) — реальный баланс счёта они двигают (эндпоинт /accounts их
+  // не фильтрует), но в «Аналитику» не должны попадать: это не настоящая
+  // трата/доход, а правка баланса, и она исказила бы разбивку по статьям.
+  const ADJUSTMENT_CATEGORY_IDS = new Set(['__adj_out', '__adj_in']);
 
   let accounts = [];
   let categories = [];
@@ -1873,7 +1878,7 @@ body { padding-top: var(--safe-t); }
       const qs = new URLSearchParams({ date_from: from, date_to: to, limit: '3000' });
       const ops = await api(API + '/operations?' + qs.toString());
       if (seq !== analyticsLoadSeq) return; // период уже переключили — этот ответ устарел
-      const list = ops || [];
+      const list = (ops || []).filter(op => !ADJUSTMENT_CATEGORY_IDS.has(op.category_id));
       renderAnalyticsSummary(list);
       const breakdown = analyticsBreakdown(list);
       const totalExpense = breakdown.reduce((s, e) => s + e.sum, 0);

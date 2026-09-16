@@ -13590,12 +13590,26 @@ const autoMapStatementCategory = (categoryName, targetGroups, savedMappings) => 
   return bestScore >= 2 ? best : '';
 };
 
+// Технические статьи «Корректировка расход/доход» — для случаев вроде
+// сведения баланса счёта с банковской выпиской (см. CashflowReconcileModal),
+// когда нужно поправить баланс, но это не реальная трата/доход. Встроены
+// намертво (не заводятся в «По месяцу» пользователем), поэтому:
+//   • они всегда доступны в выборе статьи ДДС;
+//   • их факт СЧИТАЕТСЯ в балансе счёта (обычная операция ДДС);
+//   • но НЕ входит в «Итого расходы»/«Приход»/«Остаток» на «По месяцу»
+//     (эти суммы считаются только по allCats/incomeSources, куда корректировки
+//     не входят) — см. отдельный блок «Корректировки» в BudgetMonthlyView.
+// ДЕРЖАТЬ В СИНХРОНЕ с ADJUSTMENT_ARTICLES из jarvis.py.
+const ADJUSTMENT_EXPENSE_ID = '__adj_out';
+const ADJUSTMENT_INCOME_ID  = '__adj_in';
+const ADJUSTMENT_GROUP      = 'Корректировки';
+
 // ── ДДС: счета, операции и факт по статьям ──────────────────────────────────
 // Статьи, по которым можно записывать операции ДДС — ровно те строки вкладки
 // «По месяцу», факт по которым ведётся вручную: источники дохода, статьи
 // ручных категорий и категории «Постоянные». Накопления и Долги сюда не
 // входят: их факт считается из платежей на своих вкладках, и запись через
-// ДДС удвоила бы суммы.
+// ДДС удвоила бы суммы. Плюс две технические статьи корректировки (см. выше).
 // ДЕРЖАТЬ В СИНХРОНЕ с pf_articles() из jarvis.py — по этому же списку
 // мобильное приложение /pf/<token> показывает статьи на телефоне.
 const cashflowArticles = (data) => {
@@ -13627,6 +13641,8 @@ const cashflowArticles = (data) => {
       items: activeRecItems.filter(r => r.category === cid).map(r => String(r.name || '').trim()).filter(Boolean),
     });
   });
+  out.push({ id: ADJUSTMENT_EXPENSE_ID, label: 'Корректировка расход', direction: 'out', group: ADJUSTMENT_GROUP, emoji: '🛠️' });
+  out.push({ id: ADJUSTMENT_INCOME_ID,  label: 'Корректировка доход',  direction: 'in',  group: ADJUSTMENT_GROUP, emoji: '🛠️' });
   return out;
 };
 
@@ -14804,6 +14820,63 @@ function BudgetMonthlyView({ data, setData }) {
           </div>
         </div>
       )}
+
+      {/* ── Корректировки: технические статьи баланса счёта ───────────────────
+          Не входят в «Итого расходы»/«Приход»/«Остаток» выше — это не реальная
+          трата/доход, а правка баланса (например, после сверки с выпиской).
+          Баланс самого счёта на вкладке «ДДС» они двигают как любая обычная
+          операция — просто отдельно от «настоящих» план/факт статей. */}
+      <div className="mt-4 bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="text-sm border-collapse" style={{minWidth:`${180 + months.length * monthColWidth}px`}}>
+            <thead>
+              <tr>
+                <th className="sticky left-0 z-10 bg-[var(--bg)] px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] border-b border-r border-[var(--border)]"
+                  style={{minWidth:'180px'}}>
+                  🛠️ Корректировки
+                </th>
+                {months.map((m, i) => (
+                  <th key={m} colSpan={showFact ? 2 : 1}
+                    className={`px-1 py-2.5 text-center text-xs font-semibold uppercase tracking-wide border-b border-l-2 border-[var(--border)] whitespace-nowrap
+                      ${m === curMonth ? 'bg-blue-50 text-blue-700' : 'bg-[var(--bg)] text-[var(--text-subtle)]'}`}
+                    style={{minWidth:`${monthColWidth}px`}}>
+                    {MONTH_NAMES[i]}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                { id: ADJUSTMENT_EXPENSE_ID, label: 'Корректировка расход', direction: 'out', map: ddsFact.expense, color: 'text-[var(--text)]' },
+                { id: ADJUSTMENT_INCOME_ID,  label: 'Корректировка доход',  direction: 'in',  map: ddsFact.income,  color: 'text-emerald-700' },
+              ].map(row => (
+                <tr key={row.id} className="border-b border-[var(--border)] last:border-b-0">
+                  <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm">
+                    <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{row.label}</span>
+                  </td>
+                  {months.map(m => {
+                    const fv = row.map[`${row.id}_${m}`] || 0;
+                    return (
+                      <td key={m} colSpan={showFact ? 2 : 1}
+                        className={`px-1 py-1.5 text-center text-xs whitespace-nowrap ${fv > 0 ? row.color + ' font-medium' : 'text-gray-300 text-[10px]'}`}>
+                        {fv > 0 ? (
+                          <button onClick={() => openFactDetails(row.label, m, opsFromCashflow(row.id, row.direction, m))}
+                            className="hover:underline decoration-dotted underline-offset-2" title="Показать операции">
+                            {formatRub(fv)}
+                          </button>
+                        ) : '—'}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="px-4 py-2 text-[11px] text-[var(--text-subtle)] border-t border-[var(--border)]">
+          Технические статьи для правки баланса счёта — не входят в «Итого расходы», «Приход» и «Остаток» выше, но учитываются в балансе счёта на вкладке «ДДС».
+        </div>
+      </div>
 
       {showSettings && (
         <BudgetPlanSettingsModal data={data} setData={setData} autoCategories={autoCategories} allCatsOrdered={allCats} onClose={() => setShowSettings(false)} />
