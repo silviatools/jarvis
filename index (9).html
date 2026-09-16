@@ -1688,6 +1688,7 @@ function App() {
           {tab === 'supplements' && <SupplementsView data={data} setData={setData} />}
           {tab === 'meals' && <MealsView data={data} setData={setData} mealTab={mealTab} setMealTab={setMealTab} />}
           {tab === 'weather' && <WeatherView settings={data.settings} />}
+          {tab === 'analytics' && <AnalyticsView data={data} setData={setData} />}
           {tab === 'body' && <BodyView data={data} setData={setData} />}
           {tab === 'health' && <HealthView data={data} setData={setData} />}
           {tab === 'planner' && (
@@ -1740,6 +1741,7 @@ function Header({ tab, setTab }) {
     // «Праздники» отдельным разделом больше нет — это вкладка планировщика.
     { id: 'planner',  icon: 'calendar',   label: 'Планировщик'   },
     { id: 'budget',   icon: 'wallet',     label: 'Бюджет'        },
+    { id: 'analytics', icon: 'barChart',   label: 'Аналитика'     },
     { id: 'misc',     icon: 'grid',       label: 'Прочее'        },
   ];
 
@@ -1826,6 +1828,7 @@ function BottomNav({ tab, setTab }) {
     // «Праздники» отдельным разделом больше нет — это вкладка планировщика.
     { id: 'planner',  icon: 'calendar',   label: 'Планировщик'   },
     { id: 'budget',   icon: 'wallet',     label: 'Бюджет'        },
+    { id: 'analytics', icon: 'barChart',   label: 'Аналитика'     },
     { id: 'misc',     icon: 'grid',       label: 'Прочее'        },
   ];
 
@@ -13705,6 +13708,31 @@ const downloadTextFile = (filename, text, mime = 'text/csv;charset=utf-8') => {
   URL.revokeObjectURL(url);
 };
 
+// ── Аналитика: расходы ДДС по статьям за период ─────────────────────────────
+// Источник — те же операции ДДС (budgetCashflowOps), что и вкладка «ДДС»:
+// это единственное место, где расход записан вместе со статьёй, датой и
+// назначением по каждому платежу, а не только суммой за месяц.
+const analyticsExpenseBreakdown = (ops, articles, from, to) => {
+  const artById = Object.fromEntries(articles.map(a => [a.id, a]));
+  const byCategory = new Map();
+  ops.forEach(op => {
+    if (op.direction !== 'out' || !op.date || op.date < from || op.date > to) return;
+    const amt = Number(op.amount) || 0;
+    if (!amt) return;
+    const key = op.categoryId || '__none';
+    if (!byCategory.has(key)) {
+      byCategory.set(key, { categoryId: key, article: artById[key] || null, sum: 0, ops: [] });
+    }
+    const entry = byCategory.get(key);
+    entry.sum += amt;
+    entry.ops.push(op);
+  });
+  const list = [...byCategory.values()];
+  list.forEach(e => e.ops.sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || 0) - (a.createdAt || 0)));
+  list.sort((a, b) => b.sum - a.sum);
+  return list;
+};
+
 // Адрес приложения — С завершающим слэшем: только по нему относительная
 // ссылка на манифест внутри finance.html разрешается в /pf/<token>/manifest.
 // webmanifest. Без слэша iOS при добавлении на экран «Домой» подхватывал
@@ -13723,6 +13751,172 @@ const monthlyNotesMonths = (data) => [...new Set((data.budgetMonthlyNotes || [])
 
 const financeAppUrl = (user) =>
   user && user.financeToken ? `${window.location.origin}/pf/${user.financeToken}/` : '';
+
+// ============== АНАЛИТИКА ==============
+// Расходы ДДС по статьям за месяц/период с раскрывающейся детализацией
+// платежей по каждой статье. Тот же пользователь бюджета и те же данные
+// (budgetCashflowOps), что и вкладка «Бюджет» → «ДДС» — просто другой срез.
+function AnalyticsView({ data, setData }) {
+  const users = data.budgetUsers || [];
+  const activeId = data.activeBudgetUserId || users[0]?.id || DEFAULT_BUDGET_USER_ID;
+  const slice = (data.budgetByUser && data.budgetByUser[activeId]) || emptyBudgetSlice();
+  const scopedData = useMemo(() => ({ ...data, ...slice }), [data, activeId]);
+  const setActiveUser = (id) => setData(d => ({ ...d, activeBudgetUserId: id }));
+
+  const [mode, setMode] = useState('month'); // 'month' | 'range'
+  const [month, setMonth] = useState(getCurrentMonthStr());
+  const [rangeFrom, setRangeFrom] = useState(`${getCurrentMonthStr()}-01`);
+  const [rangeTo, setRangeTo] = useState(getTodayKey());
+  const [openCat, setOpenCat] = useState('');
+
+  const ops = useMemo(() => cashflowOpsOf(scopedData), [scopedData]);
+  const articles = useMemo(() => cashflowArticles(scopedData), [scopedData]);
+
+  const { from, to } = useMemo(() => (
+    mode === 'month'
+      ? { from: `${month}-01`, to: lastDayOfMonthStr(month) }
+      : { from: rangeFrom, to: rangeTo }
+  ), [mode, month, rangeFrom, rangeTo]);
+
+  const breakdown = useMemo(() => analyticsExpenseBreakdown(ops, articles, from, to), [ops, articles, from, to]);
+  const totalExpense = breakdown.reduce((s, e) => s + e.sum, 0);
+  const totalIncome = useMemo(() => ops
+    .filter(o => o.direction === 'in' && o.date && o.date >= from && o.date <= to)
+    .reduce((s, o) => s + (Number(o.amount) || 0), 0), [ops, from, to]);
+  const opsCount = breakdown.reduce((s, e) => s + e.ops.length, 0);
+  const maxSum = breakdown.reduce((m, e) => Math.max(m, e.sum), 0);
+  const canGoNextMonth = month < getCurrentMonthStr();
+
+  return (
+    <div className="space-y-5 fade-in">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="font-display text-2xl">Аналитика</div>
+          <div className="text-xs text-[var(--text-subtle)] mt-1">Расходы по статьям — из вкладки «ДДС»</div>
+        </div>
+        {users.length > 1 && (
+          <select value={activeId} onChange={e => setActiveUser(e.target.value)}
+            className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm font-medium focus:outline-none focus:border-[var(--text)]"
+            aria-label="Пользователь бюджета">
+            {users.map(u => <option key={u.id} value={u.id}>{u.name || 'Без имени'}</option>)}
+          </select>
+        )}
+      </div>
+
+      {/* ── Период ──────────────────────────────────────────────── */}
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
+        <div className="inline-flex bg-[var(--bg)] border border-[var(--border)] rounded-xl p-1 mb-3">
+          {[['month', 'Месяц'], ['range', 'Период']].map(([id, label]) => (
+            <button key={id} onClick={() => setMode(id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${mode === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {mode === 'month' ? (
+          <div className="flex items-center justify-between gap-2">
+            <button onClick={() => setMonth(m => addMonthsStr(m, -1))}
+              className="p-2 rounded-xl border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors">
+              <Icon name="chevronLeft" size={18} />
+            </button>
+            <div className="font-medium text-sm">{formatMonthFull(month)}</div>
+            <button onClick={() => canGoNextMonth && setMonth(m => addMonthsStr(m, 1))} disabled={!canGoNextMonth}
+              className="p-2 rounded-xl border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+              <Icon name="chevronRight" size={18} />
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">С</label>
+              <input type="date" value={rangeFrom} max={rangeTo || undefined} onChange={e => setRangeFrom(e.target.value)}
+                className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">По</label>
+              <input type="date" value={rangeTo} min={rangeFrom || undefined} onChange={e => setRangeTo(e.target.value)}
+                className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Итоги ───────────────────────────────────────────────── */}
+      <div className="grid grid-cols-3 gap-2 sm:gap-3">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-3.5 py-3">
+          <div className="text-[11px] text-[var(--text-subtle)]">Расходы</div>
+          <div className="mt-0.5 text-lg font-semibold tabular-nums">{formatRubExact(totalExpense)} ₽</div>
+        </div>
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-3.5 py-3">
+          <div className="text-[11px] text-[var(--text-subtle)]">Доходы</div>
+          <div className="mt-0.5 text-lg font-semibold tabular-nums text-emerald-600">{formatRubExact(totalIncome)} ₽</div>
+        </div>
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-3.5 py-3">
+          <div className="text-[11px] text-[var(--text-subtle)]">Платежей</div>
+          <div className="mt-0.5 text-lg font-semibold tabular-nums">{opsCount}</div>
+        </div>
+      </div>
+
+      {/* ── По статьям ──────────────────────────────────────────── */}
+      {breakdown.length === 0 ? (
+        <EmptyState title="Пусто" text="Расходов за этот период пока нет" />
+      ) : (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+          <div className="divide-y divide-[var(--border)]">
+            {breakdown.map(entry => {
+              const art = entry.article;
+              const isOpen = openCat === entry.categoryId;
+              const pct = totalExpense > 0 ? Math.round(entry.sum / totalExpense * 100) : 0;
+              const barPct = maxSum > 0 ? Math.round(entry.sum / maxSum * 100) : 0;
+              return (
+                <div key={entry.categoryId}>
+                  <button onClick={() => setOpenCat(isOpen ? '' : entry.categoryId)}
+                    className="w-full text-left px-4 py-3 hover:bg-black/[0.02] transition-colors">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0 flex items-center gap-2">
+                        <span className="text-base flex-shrink-0">{art?.emoji || '💸'}</span>
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium truncate">
+                            {art ? art.label : (entry.categoryId === '__none' ? 'Без статьи' : 'Статья удалена')}
+                          </div>
+                          {art?.group && <div className="text-[11px] text-[var(--text-subtle)] truncate">{art.group}</div>}
+                        </div>
+                      </div>
+                      <div className="text-right flex-shrink-0">
+                        <div className="text-sm font-semibold tabular-nums">{formatRubExact(entry.sum)} ₽</div>
+                        <div className="text-[11px] text-[var(--text-subtle)]">
+                          {pct}% · {entry.ops.length} {pluralRu(entry.ops.length, ['платёж', 'платежа', 'платежей'])}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-2 h-1.5 bg-[var(--bg)] rounded-full overflow-hidden">
+                      <div className="h-full rounded-full bg-[var(--text)]" style={{ width: `${barPct}%` }} />
+                    </div>
+                  </button>
+
+                  {isOpen && (
+                    <div className="px-4 pb-3 space-y-0 bg-[var(--bg)]/40">
+                      {entry.ops.map(op => (
+                        <div key={op.id} className="flex items-center justify-between gap-3 text-sm py-1.5 border-t border-[var(--border)]">
+                          <div className="min-w-0">
+                            <div className="text-[var(--text-muted)]">{(op.date || '').split('-').reverse().join('.')}</div>
+                            {op.purpose && <div className="truncate text-[var(--text-subtle)] text-xs">{op.purpose}</div>}
+                          </div>
+                          <div className="font-medium tabular-nums flex-shrink-0">{formatRubExact(op.amount)} ₽</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function BudgetView({ data, setData, onDirtyChange }) {
   const [budgetTab, setBudgetTab] = useState('monthly');
