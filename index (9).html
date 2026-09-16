@@ -13896,6 +13896,25 @@ const downloadTextFile = (filename, text, mime = 'text/csv;charset=utf-8') => {
   URL.revokeObjectURL(url);
 };
 
+// Адрес приложения — С завершающим слэшем: только по нему относительная
+// ссылка на манифест внутри finance.html разрешается в /pf/<token>/manifest.
+// webmanifest. Без слэша iOS при добавлении на экран «Домой» подхватывал
+// общий манифест сайта и иконка открывала главный экран Jarvis.
+// Выводы одного месяца, в том же порядке, что показывает приложение
+// (сначала по sort, потом по времени создания).
+// ДЕРЖАТЬ В СИНХРОНЕ с pf_reminders() из jarvis.py.
+const monthlyNotesFor = (data, month) => (data.budgetMonthlyNotes || [])
+  .filter(n => n && n.id && n.month === month)
+  .sort((a, b) => (a.sort || 0) - (b.sort || 0) || (a.createdAt || 0) - (b.createdAt || 0));
+
+// Месяцы, на которые выводы вообще заводились — новые сверху.
+const monthlyNotesMonths = (data) => [...new Set((data.budgetMonthlyNotes || [])
+  .filter(n => n && n.id && n.month && String(n.text || '').trim())
+  .map(n => n.month))].sort().reverse();
+
+const financeAppUrl = (user) =>
+  user && user.financeToken ? `${window.location.origin}/pf/${user.financeToken}/` : '';
+
 function BudgetView({ data, setData, onDirtyChange }) {
   const [budgetTab, setBudgetTab] = useState('monthly');
   const [showUsers, setShowUsers] = useState(false);
