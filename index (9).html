@@ -14185,6 +14185,14 @@ function BudgetMonthlyView({ data, setData }) {
   const [editCell,     setEditCell]     = useState(null);
   const [editVal,      setEditVal]      = useState('');
   const [showOverlaps, setShowOverlaps] = useState(false);
+  // Долги/Накопления/Постоянные обычно длинные и меняются реже плановых
+  // статей — по умолчанию свёрнуты, но каждую можно развернуть кликом.
+  const [collapsedCats, setCollapsedCats] = useState(() => new Set(['__debts', '__savings', '__recurring']));
+  const toggleCatCollapse = (id) => setCollapsedCats(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
   const scrollRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -14745,15 +14753,23 @@ function BudgetMonthlyView({ data, setData }) {
                 {/* ── Expense categories ─────────────────────────── */}
                 {allCats.map((cat) => {
                   const isAutoCat = !!cat.isAuto;
+                  const isExpanded = !collapsedCats.has(cat.id);
 
                   return (
                     <React.Fragment key={cat.id}>
                       {/* Category total row */}
                       <tr className="bg-gray-100">
                         <td className="sticky left-0 z-10 bg-gray-100 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs">
-                          {cat.emoji && <span className="mr-1.5">{cat.emoji}</span>}
-                          <span className="uppercase tracking-wide text-[var(--text)]">{cat.label}</span>
-                          {isAutoCat && <span className="ml-2 text-[9px] font-normal opacity-50 normal-case tracking-normal">авто</span>}
+                          <button onClick={() => toggleCatCollapse(cat.id)}
+                            className="w-full flex items-center gap-1 text-left hover:opacity-70 transition-opacity"
+                            title={isExpanded ? 'Свернуть' : 'Развернуть'}>
+                            <span className="flex-shrink-0" style={{ transform: isExpanded ? 'none' : 'rotate(-90deg)', transition: 'transform 0.15s ease' }}>
+                              <Icon name="chevronDown" size={12} />
+                            </span>
+                            {cat.emoji && <span className="mr-0.5">{cat.emoji}</span>}
+                            <span className="uppercase tracking-wide text-[var(--text)]">{cat.label}</span>
+                            {isAutoCat && <span className="ml-1 text-[9px] font-normal opacity-50 normal-case tracking-normal">авто</span>}
+                          </button>
                         </td>
                         {months.map(m => {
                           const t = catTotal(cat, m);
@@ -14779,7 +14795,7 @@ function BudgetMonthlyView({ data, setData }) {
                       </tr>
 
                       {/* Item rows */}
-                      {(cat.items || []).map((item, ii) => (
+                      {isExpanded && (cat.items || []).map((item, ii) => (
                         <tr key={item.id} className={"border-b border-[var(--border)] transition-colors hover:bg-blue-50/20 bg-white"}>
                           <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
                             {!isAutoCat && item.emoji && <span className="mr-1">{item.emoji}</span>}
