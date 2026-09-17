@@ -25295,6 +25295,24 @@ const gymDayTitle = (day, index) => day.title || `${index + 1} день`;
 // Когда синтез договорил. Микрофон, слушающий во время отдыха, должен
 // пропустить хвост собственной фразы приложения: команда «дальше» в ней есть.
 let gymSpeechEndedAt = 0;
+// Что именно приложение сказало последним. Фраза «Рабочий 2. 50 килограмм,
+// 10 повторений» — идеально оформленный отчёт о подходе, и если микрофон
+// расслышит её с задержкой (а под музыку распознавание отдаёт результат
+// сильно позже), тренировка запишет подход, которого не было.
+let gymLastSaid = { text: '', at: 0 };
+
+// Слова, которые говорит только приложение: в отчёте о подходе их не бывает.
+const GYM_APP_WORDS = /рабочий|разминк|отдых|дальше|следующее|записал|перезаписал|рекорд|завершен|поехали|осталось|секунд|минут|процент|повторите/;
+
+const gymIsEcho = (raw) => {
+  if (!gymLastSaid.text || Date.now() - gymLastSaid.at > 25000) return false;
+  const heard = String(raw || '').toLowerCase();
+  const m = heard.match(GYM_APP_WORDS);
+  // Считаем эхом, только если то же слово было и в нашей фразе: команду
+  // «пропустить отдых» от человека это не заденет — там «отдых» сказали мы
+  // же, но такие фразы разбираются раньше, как команда.
+  return !!(m && gymLastSaid.text.includes(m[0]));
+};
 
 const gymSay = (text, enabled = true) => {
   if (!enabled || !text) return;
@@ -25312,6 +25330,7 @@ const gymSay = (text, enabled = true) => {
     u.rate = 1.05;
     // Музыку из Джарвиса приседаем на время фразы: перекрикивать её синтез
     // всё равно не станет, а объявление про подход пропускать нельзя.
+    gymLastSaid = { text: String(text).toLowerCase(), at: Date.now() };
     const unduck = jarvisMusic.isPlaying() ? jarvisMusicDuck() : null;
     u.onend = () => { gymSpeechEndedAt = Date.now(); if (unduck) unduck(); };
     u.onerror = () => { gymSpeechEndedAt = Date.now(); if (unduck) unduck(); };
@@ -25614,10 +25633,17 @@ const gymParseVoicePhrase = (raw) => {
   // Больше двух чисел без единиц — почти наверняка расслышано неверно
   // («двадцать два» иногда приходит как «20 20»). Лучше переспросить.
   if (nums.length > 2) return { cmd: 'log', invalid: true };
-  // Два числа — это вес и повторы, одно — только повторы: для упражнений без
-  // веса достаточно сказать «15», вес подставится из плана (там ноль).
-  if (nums.length === 2) return gymLogPhrase(nums[0], nums[1]);
-  if (nums.length === 1) return gymLogPhrase(undefined, nums[0]);
+  // Два числа — это вес и повторы, но только если между ними есть связка:
+  // «50 на 12». Просто «50 12» — чаще обрывок чужой речи или музыки, чем
+  // подход, и записывать его молча нельзя.
+  if (nums.length === 2) {
+    const linked = /\d+(?:\.\d+)?\s*(?:на|х|x|\*|по)\s*\d/.test(t);
+    return linked ? gymLogPhrase(nums[0], nums[1]) : { cmd: 'log', invalid: true };
+  }
+  // Одно число — это повторы. Годится там, где вес не нужен (пресс, турник);
+  // где вес есть, одинокое число слишком легко поймать из воздуха, поэтому
+  // помечаем и решаем уже на экране тренировки, глядя на план.
+  if (nums.length === 1) return { ...gymLogPhrase(undefined, nums[0]), bare: true };
   return null;
 };
 
@@ -27874,6 +27900,14 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
       heardText = v;
       break;
     }
+    // Приложение само диктует числа («Рабочий 2. 50 килограмм, 10 повторений»),
+    // и под музыку распознавание отдаёт их с большой задержкой — иначе
+    // тренировка запишет подход, которого не было. Проверяем ПОСЛЕ разбора:
+    // в командах («пропустить отдых») те же слова звучат законно.
+    const logLike = parsed && (parsed.cmd === 'log' || parsed.cmd === 'sameLast'
+      || (parsed.cmd === 'rewrite' && parsed.reps !== undefined));
+    if (logLike && variants.some(v => gymIsEcho(v))) { setHeard(''); return; }
+
     // Во время отдыха слушаем только команды: числа в это время — либо чужой
     // разговор, либо хвост собственной озвучки, записывать их нельзя. Исключение
     // — начатая перезапись: там числа как раз и ждём.
@@ -27932,6 +27966,14 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     // Не названное голосом берём из плана — «столько же» и «12» работают
     // именно за счёт этого.
     const draft = draftRow(ex, i);
+    // Одинокое число принимаем только там, где вес не нужен: на упражнении со
+    // штангой «двенадцать», прилетевшее из чужого разговора, стало бы подходом.
+    if (parsed.bare) {
+      const planRow = planRowsOf(ex)[i];
+      const t = planRow ? gymRowTarget(planRow, pctBaseOf(ex)) : null;
+      const noWeight = !t || t.body || t.empty || (!t.min && !t.max);
+      if (!noWeight) { say('Скажите вес и повторения: например, 25 на 12'); return; }
+    }
     // «Также» — цифры прошлого сделанного подхода: сначала смотрим этот же
     // снаряд, и только если по нему ещё ничего нет — последний подход вообще.
     const prev = parsed.cmd === 'sameLast' ? lastLoggedOf(ex.id) : null;
@@ -28103,6 +28145,16 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
                   слышно по звуку музыки. Выключатель — на случай, если слышно. */}
               {micRest ? 'Микрофон слушает и на отдыхе' : 'На отдыхе микрофон молчит'}
             </button>
+          )}
+          {handsFree && micRest && music.playing && (
+            // Bluetooth-наушники умеют либо хорошее звучание, либо микрофон:
+            // профиль один на оба направления. Пока распознавание слушает,
+            // музыка идёт в разговорном качестве — это не наша настройка.
+            <div className="text-[11px] text-[var(--text-subtle)] mt-1 leading-snug">
+              Пока микрофон слушает, Bluetooth-наушники отдают музыку в разговорном
+              качестве. Выключите слушание на отдыхе — и хотя бы отдых будет звучать
+              нормально. Полностью вопрос снимают проводные наушники.
+            </div>
           )}
         </div>
         <Toggle
