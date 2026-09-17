@@ -560,6 +560,16 @@ const DEFAULT_DATA = () => ({
   gymDays: [],
   gymExercises: [],
   gymSessions: [],
+  // Музыка: сами треки лежат файлами на сервере, а плейлисты — обычный
+  // id-массив со списком id треков внутри, поэтому синхронизируются как всё
+  // остальное. Встроенные треки собраны в плейлист по умолчанию.
+  musicPlaylists: [{
+    id: 'pl-builtin-gym',
+    name: 'Зал',
+    trackIds: ['gym-lift.mp3', 'gym-press.mp3', 'gym-push.mp3', 'gym-heavy.mp3', 'gym-cardio.mp3', 'demo-warmup.mp3', 'demo-drive.mp3', 'gym-cooldown.mp3'],
+    createdAt: 0,
+    updatedAt: 0,
+  }],
   deletedIds: {},
   // План обучения English: произвольная заметка, LWW по updatedAt между устройствами
   engStudyPlan: { text: '', updatedAt: 0 },
@@ -23997,11 +24007,16 @@ function CampingPackingEditor({ catalogItems, categories, initial, onSave, onClo
 // приседаем под речь и сигналы, а если система всё же ставит трек на паузу
 // (например, на старте распознавания) — поднимаем его обратно сами.
 const MUSIC_STATE_KEY = 'jarvis_music_v1';
+// Выбранный плейлист держим в этом же устройстве: на тренировке важно, чтобы
+// «включить музыку» сразу играло то же, что и в прошлый раз.
+const MUSIC_QUEUE_KEY = 'jarvis_music_queue_v1';
 
 const jarvisMusic = (() => {
   let audio = null;
   let tracks = [];
   let order = [];            // порядок воспроизведения (с учётом перемешивания)
+  let queueIds = null;       // id треков выбранного плейлиста, null — все
+  let queueName = '';        // название плейлиста для экрана
   let pos = -1;              // позиция в order
   let wantPlaying = false;
   let ducks = 0;             // сколько причин приглушить звук сейчас
@@ -24020,6 +24035,10 @@ const jarvisMusic = (() => {
     if (typeof saved.volume === 'number') volume = Math.max(0, Math.min(1, saved.volume));
     if (typeof saved.shuffle === 'boolean') shuffle = saved.shuffle;
   } catch (_) {}
+  try {
+    const q = JSON.parse(localStorage.getItem(MUSIC_QUEUE_KEY) || 'null');
+    if (q && Array.isArray(q.ids) && q.ids.length) { queueIds = q.ids; queueName = q.name || ''; }
+  } catch (_) {}
 
   const persist = () => {
     try { localStorage.setItem(MUSIC_STATE_KEY, JSON.stringify({ volume, shuffle })); } catch (_) {}
@@ -24035,6 +24054,8 @@ const jarvisMusic = (() => {
       position: audio ? audio.currentTime || 0 : 0,
       duration: audio && isFinite(audio.duration) ? audio.duration : 0,
       volume,
+      queueName,
+      queueIds,
       canVolume: volumeWorks !== false,
       shuffle,
       ducked: ducks > 0,
@@ -24223,13 +24244,26 @@ const jarvisMusic = (() => {
     return out;
   };
 
+  // Очередь — это плейлист (или все треки, если плейлист не выбран). Порядок
+  // строим один раз на включение: иначе «перемешать» тасовало бы список на
+  // каждом переходе к следующему треку.
   const rebuildOrder = (startId) => {
-    order = shuffle ? shuffled(tracks) : [...tracks];
+    const pool = queueIds
+      ? queueIds.map(id => tracks.find(t => t.id === id)).filter(Boolean)
+      : tracks;
+    order = shuffle ? shuffled(pool) : [...pool];
     if (startId) {
       const at = order.findIndex(t => t.id === startId);
       if (at > 0) { const [t] = order.splice(at, 1); order.unshift(t); }
     }
     pos = order.length ? 0 : -1;
+  };
+
+  // Список id плейлиста + его название. null — играем всё подряд.
+  const setQueue = (ids, name) => {
+    queueIds = ids && ids.length ? [...ids] : null;
+    queueName = queueIds ? (name || '') : '';
+    try { localStorage.setItem(MUSIC_QUEUE_KEY, JSON.stringify({ ids: queueIds, name: queueName })); } catch (_) {}
   };
 
   const start = () => {
@@ -24281,9 +24315,13 @@ const jarvisMusic = (() => {
     emit();
   };
 
-  const playRandom = () => {
-    if (!tracks.length) return;
-    const pick = tracks[Math.floor(Math.random() * tracks.length)];
+  const playRandom = (ids, name) => {
+    if (ids !== undefined) setQueue(ids, name);
+    const pool = queueIds
+      ? queueIds.map(id => tracks.find(t => t.id === id)).filter(Boolean)
+      : tracks;
+    if (!pool.length) return;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
     rebuildOrder(pick.id);
     start();
   };
@@ -24310,8 +24348,13 @@ const jarvisMusic = (() => {
       emit();
       return tracks;
     },
-    play(id) { rebuildOrder(id); start(); },
+    play(id, ids, name) {
+      if (ids !== undefined) setQueue(ids, name);
+      rebuildOrder(id);
+      start();
+    },
     playRandom,
+    setQueue,
     toggle,
     next: () => next(false),
     prev,
@@ -24399,8 +24442,9 @@ function MusicBar({ compact }) {
         </button>
         <div className="flex-1 min-w-0">
           <div className="text-[13px] font-medium truncate">{m.track ? m.track.name : 'Ничего не играет'}</div>
-          <div className="text-[11px] text-[var(--text-subtle)] flex items-center gap-1.5">
+          <div className="text-[11px] text-[var(--text-subtle)] flex items-center gap-1.5 truncate">
             {m.duration ? `${musicTime(m.position)} / ${musicTime(m.duration)}` : (m.error || 'готов')}
+            {m.queueName && <span className="truncate">· {m.queueName}</span>}
             {m.ducked && <span style={{ color: GYM_ACCENT }}>· тише</span>}
           </div>
         </div>
@@ -24440,13 +24484,83 @@ function MusicBar({ compact }) {
   );
 }
 
-function MusicView() {
+// Выбор плейлиста: одним списком, с числом треков. Используется и в разделе
+// «Музыка», и на экране тренировки.
+function MusicPlaylistPicker({ playlists, tracks, onPick, onClose, title = 'Что включить' }) {
+  const all = { id: '', name: 'Все треки', trackIds: tracks.map(t => t.id) };
+  const list = [all, ...playlists];
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-3 mb-4">
+      <div className="text-[13px] text-[var(--text-muted)] mb-2 flex items-center justify-between">
+        {title}
+        <button onClick={onClose} className="text-[var(--text-subtle)]"><Icon name="x" size={14} /></button>
+      </div>
+      <div className="space-y-1.5">
+        {list.map(pl => {
+          const count = (pl.trackIds || []).filter(id => tracks.some(t => t.id === id)).length;
+          return (
+            <button
+              key={pl.id || 'all'}
+              onClick={() => onPick(pl)}
+              disabled={!count}
+              className="w-full text-left px-3 py-2 rounded-xl border flex items-center gap-2"
+              style={{ borderColor: 'var(--border)', opacity: count ? 1 : 0.45 }}
+            >
+              <Icon name="music" size={15} />
+              <span className="flex-1 truncate text-[14px]">{pl.name}</span>
+              <span className="text-[12px] text-[var(--text-subtle)]">{count}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MusicView({ data, setData }) {
   const m = useMusic();
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
+  const [editId, setEditId] = useState('');     // плейлист, в котором отмечаем треки
   const fileRef = useRef(null);
+  const playlists = data.musicPlaylists || [];
 
   useEffect(() => { jarvisMusic.load(); }, []);
+
+  const savePlaylist = (pl) => setData(d => ({
+    ...d,
+    musicPlaylists: (d.musicPlaylists || []).some(x => x.id === pl.id)
+      ? (d.musicPlaylists || []).map(x => (x.id === pl.id ? { ...pl, updatedAt: Date.now() } : x))
+      : [...(d.musicPlaylists || []), { ...pl, updatedAt: Date.now() }],
+  }));
+
+  const addPlaylist = () => {
+    const name = (prompt('Название плейлиста') || '').trim();
+    if (!name) return;
+    const pl = { id: crypto.randomUUID(), name, trackIds: [], createdAt: Date.now(), updatedAt: Date.now() };
+    savePlaylist(pl);
+    setEditId(pl.id);
+  };
+
+  const removePlaylist = (pl) => {
+    if (!confirm(`Удалить плейлист «${pl.name}»? Треки останутся.`)) return;
+    setData(d => ({
+      ...d,
+      musicPlaylists: (d.musicPlaylists || []).filter(x => x.id !== pl.id),
+      deletedIds: withDeletedId(d, 'musicPlaylists', pl.id),
+    }));
+    if (editId === pl.id) setEditId('');
+  };
+
+  const toggleTrack = (pl, trackId) => {
+    const has = (pl.trackIds || []).includes(trackId);
+    savePlaylist({
+      ...pl,
+      trackIds: has ? pl.trackIds.filter(x => x !== trackId) : [...(pl.trackIds || []), trackId],
+    });
+  };
+
+  const editing = playlists.find(p => p.id === editId) || null;
 
   const upload = async (files) => {
     const list = Array.from(files || []);
@@ -24519,7 +24633,87 @@ function MusicView() {
       {busy && <div className="mt-2 text-[13px] text-[var(--text-muted)]">Загружаю {busy}…</div>}
       {(err || m.error) && <div className="mt-2 text-[13px] text-red-500">{err || m.error}</div>}
 
-      <div className="mt-4 space-y-2">
+      {/* ── Плейлисты */}
+      <div className="mt-5 flex items-center justify-between">
+        <div className="text-[13px] uppercase tracking-wider text-[var(--text-subtle)]">Плейлисты</div>
+        <button onClick={addPlaylist} className="text-[13px]" style={{ color: GYM_ACCENT }}>+ Плейлист</button>
+      </div>
+      <div className="mt-2 space-y-2">
+        {playlists.length === 0 && (
+          <div className="text-[13px] text-[var(--text-subtle)]">
+            Плейлистов нет — на тренировке будут играть все треки подряд.
+          </div>
+        )}
+        {playlists.map(pl => {
+          const count = (pl.trackIds || []).filter(id => m.tracks.some(t => t.id === id)).length;
+          const active = m.queueName === pl.name;
+          return (
+            <div
+              key={pl.id}
+              data-playlist={pl.id}
+              className="bg-[var(--surface)] border rounded-2xl px-3 py-2.5"
+              style={{ borderColor: active ? GYM_ACCENT : 'var(--border)' }}
+            >
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => jarvisMusic.playRandom(pl.trackIds, pl.name)}
+                  disabled={!count}
+                  className="w-9 h-9 rounded-xl flex items-center justify-center text-white flex-shrink-0"
+                  style={{ background: count ? GYM_ACCENT : 'var(--border-strong)' }}
+                >
+                  <Icon name="play" size={16} />
+                </button>
+                <button onClick={() => setEditId(editId === pl.id ? '' : pl.id)} className="flex-1 min-w-0 text-left">
+                  <div className="text-[14px] truncate">{pl.name}</div>
+                  <div className="text-[11px] text-[var(--text-subtle)]">
+                    {count} {gymPlural(count, 'трек', 'трека', 'треков')}{active ? ' · играет' : ''}
+                  </div>
+                </button>
+                <button
+                  onClick={() => {
+                    const name = (prompt('Название плейлиста', pl.name) || '').trim();
+                    if (name) savePlaylist({ ...pl, name });
+                  }}
+                  className="text-[var(--text-subtle)] flex-shrink-0"
+                ><Icon name="edit" size={15} /></button>
+                <button onClick={() => removePlaylist(pl)} className="text-red-300 flex-shrink-0">
+                  <Icon name="trash" size={15} />
+                </button>
+              </div>
+              {editing && editing.id === pl.id && (
+                <div className="mt-2 pt-2 border-t border-[var(--border)] space-y-1">
+                  <div className="text-[12px] text-[var(--text-subtle)] mb-1">Отметьте треки плейлиста</div>
+                  {m.tracks.map(t => {
+                    const on = (pl.trackIds || []).includes(t.id);
+                    return (
+                      <button
+                        key={t.id}
+                        data-pl-track={t.id}
+                        onClick={() => toggleTrack(pl, t.id)}
+                        className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left"
+                        style={{ background: on ? 'var(--bg)' : 'transparent' }}
+                      >
+                        <span
+                          className="w-4 h-4 rounded flex items-center justify-center flex-shrink-0"
+                          style={on
+                            ? { background: GYM_ACCENT, color: '#fff' }
+                            : { border: '1px solid var(--border-strong)' }}
+                        >
+                          {on && <Icon name="check" size={11} />}
+                        </span>
+                        <span className="text-[13px] truncate">{t.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-5 text-[13px] uppercase tracking-wider text-[var(--text-subtle)]">Все треки</div>
+      <div className="mt-2 space-y-2">
         {m.tracks.length === 0 && !m.loading && (
           <div className="text-[13px] text-[var(--text-subtle)] text-center py-8">
             Пока пусто. Загрузите свои mp3 — они лягут на сервер и будут играть
@@ -25908,6 +26102,7 @@ function GymView({ data, setData }) {
         exercises={exercisesOf(s.dayId)}
         sessions={sessions}
         settings={data.settings}
+        playlists={data.musicPlaylists || []}
         onToggleVoice={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymVoice: on } }))}
         onToggleBackgroundAudio={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymBackgroundAudio: on } }))}
         onToggleHandsFree={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymHandsFree: on } }))}
@@ -27075,7 +27270,7 @@ function GymSessionSummary({ session, exercises, sessions, onClose }) {
   );
 }
 
-function GymSessionView({ session, day, exercises, sessions, settings, onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onToggleMicRest, onSave, onDelete, onExit, onFinished }) {
+function GymSessionView({ session, day, exercises, sessions, settings, playlists = [], onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onToggleMicRest, onSave, onDelete, onExit, onFinished }) {
   const voiceOn = (settings || {}).gymVoice !== false;
   // Режим «звук с погашенным экраном» забирает аудиовыход у чужого плеера,
   // поэтому включается только вручную.
@@ -27085,6 +27280,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
   // аудиосессию в режиме записи, и на Bluetooth-наушниках это слышно по звуку.
   const micRest = (settings || {}).gymMicRest !== false;
   const music = useMusic();
+  const [pickMusic, setPickMusic] = useState(false);
   // «Применяется к следующему подходу»: включённый посреди подхода режим не
   // перехватывает тот, что уже делаешь, — микрофон поднимется со следующего.
   // Если режим был включён до старта тренировки, ждать нечего.
@@ -27747,12 +27943,31 @@ function GymSessionView({ session, day, exercises, sessions, settings, onToggleV
           идут поверх неё, а экран можно гасить, поэтому отдельный тумблер
           «звук с погашенным экраном» в это время не нужен. */}
       {music.playing ? <MusicBar compact /> : (music.tracks.length > 0 && (
-        <button
-          onClick={() => jarvisMusic.playRandom()}
-          className="w-full mb-4 py-2.5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[14px] flex items-center justify-center gap-2"
-        >
-          <Icon name="music" size={16} /> Включить случайный трек
-        </button>
+        pickMusic ? (
+          <MusicPlaylistPicker
+            playlists={playlists}
+            tracks={music.tracks}
+            title="С чего начать"
+            onClose={() => setPickMusic(false)}
+            onPick={(pl) => {
+              setPickMusic(false);
+              // Жест пользователя — самое время занять аудиовыход
+              jarvisMusic.playRandom(pl.id ? pl.trackIds : null, pl.name);
+            }}
+          />
+        ) : (
+          <button
+            onClick={() => {
+              // Один плейлист (или он уже выбран) — включаем сразу, без лишнего шага
+              if (playlists.length === 0) { jarvisMusic.playRandom(null, ''); return; }
+              setPickMusic(true);
+            }}
+            className="w-full mb-4 py-2.5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[14px] flex items-center justify-center gap-2"
+          >
+            <Icon name="music" size={16} />
+            {music.queueName ? `Включить музыку · ${music.queueName}` : 'Включить музыку'}
+          </button>
+        )
       ))}
 
       {voiceOn && !music.playing && (
@@ -28767,7 +28982,7 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
       )}
       {sub === 'wishlist' && <WishlistView data={data} setData={setData} />}
       {sub === 'gym' && <GymView data={data} setData={setData} />}
-      {sub === 'music' && <MusicView />}
+      {sub === 'music' && <MusicView data={data} setData={setData} />}
       {sub === 'quiz' && <QuizView data={data} setData={setData} />}
     </div>
   );

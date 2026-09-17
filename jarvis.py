@@ -70,7 +70,15 @@ FREQ_DAYS = {
 MUSIC_EXT = {"mp3": "audio/mpeg", "m4a": "audio/mp4", "aac": "audio/aac",
              "wav": "audio/wav", "ogg": "audio/ogg", "opus": "audio/ogg",
              "flac": "audio/flac"}
+# Встроенные треки: собственный синтез, лежат в репозитории рядом с кодом.
+# Порядок словаря — порядок в списке раздела «Музыка».
 MUSIC_DEMO = {
+    "gym-lift.mp3": "Разогрев · 104",
+    "gym-press.mp3": "Жим · 128",
+    "gym-push.mp3": "На максимум · 136",
+    "gym-heavy.mp3": "Тяжёлый подход · 92",
+    "gym-cardio.mp3": "Кардио · 150",
+    "gym-cooldown.mp3": "Заминка · 86",
     "demo-warmup.mp3": "Демо — Разминка",
     "demo-drive.mp3": "Демо — Рабочий подход",
 }
