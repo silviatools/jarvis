@@ -9676,6 +9676,14 @@ const voiceWakeListener = (() => {
   let quickFails = 0;
   let blocked = false;
   let denials = 0;
+  // Сторож старта: Safari умеет не ответить на start() вовсе — ни onstart, ни
+  // onerror. Тогда микрофон молча мёртв до перезагрузки страницы, и пользователь
+  // видит просто «свободные руки не работают». Ждём подтверждения старта и,
+  // не дождавшись, пробуем заново.
+  let watchdog = null;
+  let silentFails = 0;
+
+  const clearWatchdog = () => { if (watchdog) { clearTimeout(watchdog); watchdog = null; } };
 
   const ensure = () => {
     if (rec) return rec;
@@ -9687,6 +9695,8 @@ const voiceWakeListener = (() => {
     rec.continuous = false; // Safari непрерывный режим всё равно не держит
     rec.maxAlternatives = 3;
     rec.onstart = () => {
+      clearWatchdog();
+      silentFails = 0;
       startedAt = Date.now();
       gotResult = false;
       blocked = false;
@@ -9755,6 +9765,7 @@ const voiceWakeListener = (() => {
     },
     stop() {
       wanted = false;
+      clearWatchdog();
       if (!rec) return;
       try { rec.stop(); } catch (_) {}
     },
@@ -25663,6 +25674,14 @@ const gymListener = (() => {
   // экрана: из жеста Safari отдаёт микрофон обратно сразу.
   let blocked = false;
   let denials = 0;
+  // Сторож старта: Safari умеет не ответить на start() вовсе — ни onstart, ни
+  // onerror. Тогда микрофон молча мёртв до перезагрузки страницы, и пользователь
+  // видит просто «свободные руки не работают». Ждём подтверждения старта и,
+  // не дождавшись, пробуем заново.
+  let watchdog = null;
+  let silentFails = 0;
+
+  const clearWatchdog = () => { if (watchdog) { clearTimeout(watchdog); watchdog = null; } };
 
   const ensure = () => {
     if (rec) return rec;
@@ -25674,6 +25693,8 @@ const gymListener = (() => {
     rec.continuous = false;   // Safari непрерывный режим всё равно не держит
     rec.maxAlternatives = 3;
     rec.onstart = () => {
+      clearWatchdog();
+      silentFails = 0;
       startedAt = Date.now();
       gotResult = false;
       blocked = false;
@@ -25751,9 +25772,33 @@ const gymListener = (() => {
         r = ensure();
         if (r) { try { r.start(); } catch (__) {} }
       }
+      // Ждём onstart. Не дождались — распознавание не поднялось молча: берём
+      // новый объект, а если и он молчит, просим коснуться экрана (из жеста
+      // Safari отдаёт микрофон надёжнее всего).
+      clearWatchdog();
+      watchdog = setTimeout(() => {
+        watchdog = null;
+        if (!wanted) return;
+        silentFails += 1;
+        if (silentFails <= 2) {
+          try { if (rec && rec.abort) rec.abort(); } catch (__) {}
+          rec = null;
+          const fresh = ensure();
+          if (fresh) { try { fresh.start(); } catch (__) {} }
+          clearWatchdog();
+          watchdog = setTimeout(() => {
+            watchdog = null;
+            if (wanted && onDenied) { blocked = true; onDenied(silentFails); }
+          }, 2500);
+        } else if (onDenied) {
+          blocked = true;
+          onDenied(silentFails);
+        }
+      }, 2500);
     },
     stop() {
       wanted = false;
+      clearWatchdog();
       if (!rec) return;
       try { rec.stop(); } catch (_) {}
     },
@@ -25765,6 +25810,8 @@ const gymListener = (() => {
       blocked = false;
       denials = 0;
       quickFails = 0;
+      silentFails = 0;
+      clearWatchdog();
       wanted = true;
       try { if (rec && rec.abort) rec.abort(); } catch (_) {}
       rec = null;
@@ -27364,6 +27411,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
   const [micBlocked, setMicBlocked] = useState(false);
   // Режим исправления: ждём, что скажут вес и повторы прошлого подхода заново.
   const [rewriting, setRewriting] = useState(false);
+  const micToldRef = useRef(false);
   // Метка последнего возврата к экрану — по ней перезапускается микрофон.
   const [visibleAt, setVisibleAt] = useState(0);
   // Последняя распознанная фраза: показываем как есть — так видно, что именно
@@ -27428,13 +27476,17 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     const t = setTimeout(() => {
       gymListener.start(
         (variants) => voiceHandler.current(variants),
-        (on) => { setListening(on); if (on) setMicBlocked(false); },
-        (count) => {
+        (on) => { setListening(on); if (on) { setMicBlocked(false); micToldRef.current = false; } },
+        () => {
           // Режим НЕ выключаем: на iOS отказ прилетает и просто после возврата
-          // из фона. Говорим об этом один раз, дальше молча ждём касания.
+          // из фона. Говорим об этом один раз за эпизод — отказ и «молчаливый»
+          // старт приходят разными путями, и дважды повторяться незачем.
           setListening(false);
           setMicBlocked(true);
-          if (count === 1) say('Микрофон не отвечает. Коснитесь экрана, чтобы вернуть его');
+          if (!micToldRef.current) {
+            micToldRef.current = true;
+            say('Микрофон не отвечает. Коснитесь экрана, чтобы вернуть его');
+          }
         },
       );
     }, 1200);
@@ -27471,14 +27523,33 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
   }, [rewriting]);
 
   // Микрофон, которому отказали, Safari отдаёт обратно только в пользовательском
-  // жесте. Поэтому ловим ЛЮБОЕ касание экрана тренировки: режим включён —
-  // значит, он должен вернуться сам, без похода в настройки.
+  // жесте. Ловим ЛЮБОЕ касание экрана тренировки — и не только после явного
+  // отказа: если распознавание не поднялось молча (так бывает на свежей
+  // странице и после возврата из фона), со стороны это выглядит одинаково —
+  // «свободные руки не работают».
   useEffect(() => {
-    if (!handsFree || !micBlocked) return;
-    const onTap = () => gymListener.retry();
+    if (!handsFree || !armed || listening) return;
+    let last = 0;
+    const onTap = () => {
+      const now = Date.now();
+      if (now - last < 1500) return;   // одно касание — одна попытка
+      last = now;
+      gymListener.retry();
+    };
     document.addEventListener('pointerdown', onTap);
     return () => document.removeEventListener('pointerdown', onTap);
-  }, [handsFree, micBlocked]);
+  }, [handsFree, armed, listening, micBlocked]);
+
+  // Режим был включён ещё до открытия экрана (например, открыли текущую
+  // тренировку заново) — ждать «следующего подхода» незачем, микрофон нужен
+  // сразу. Ref нужен, чтобы ручное включение тумблера сохранило своё правило
+  // «со следующего подхода».
+  const armInit = useRef(false);
+  useEffect(() => {
+    if (armInit.current) return;
+    armInit.current = true;
+    if (handsFree) setArmed(true);
+  }, [handsFree]);
 
   // Экран доводим до первого подхода нового упражнения — по центру, чтобы
   // сразу видеть и план, и поля ввода. Ждём конца раскрытия: пока карточка
