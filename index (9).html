@@ -24019,7 +24019,9 @@ const jarvisMusic = (() => {
   let queueName = '';        // название плейлиста для экрана
   let pos = -1;              // позиция в order
   let wantPlaying = false;
-  let ducks = 0;             // сколько причин приглушить звук сейчас
+  let started = false;       // включали ли плеер на этой странице хоть раз
+  let ducks = 0;             // причин приглушить сильно (речь)
+  let softDucks = 0;         // причин приглушить чуть-чуть (короткие сигналы)
   let duckTimer = null;
   let resumeTries = 0;
   let loading = false;
@@ -24050,6 +24052,9 @@ const jarvisMusic = (() => {
     snap = {
       tracks,
       track: current(),
+      // Очередь заполняется при загрузке списка, поэтому «есть трек» ещё не
+      // значит «плеер запускали» — для экрана тренировки важно именно второе.
+      started,
       playing: !!(audio && !audio.paused && wantPlaying),
       position: audio ? audio.currentTime || 0 : 0,
       duration: audio && isFinite(audio.duration) ? audio.duration : 0,
@@ -24058,7 +24063,7 @@ const jarvisMusic = (() => {
       queueIds,
       canVolume: volumeWorks !== false,
       shuffle,
-      ducked: ducks > 0,
+      ducked: ducks > 0 || softDucks > 0,
       loading,
       error,
     };
@@ -24084,13 +24089,14 @@ const jarvisMusic = (() => {
     if (!audio) return;
     probeVolume();
     if (!volumeWorks) {
-      // Громкость недоступна — на время объявления глушим совсем. Услышать,
-      // что делать в подходе, важнее, чем не потерять пару секунд музыки.
+      // Громкость недоступна (iOS) — остаётся только полная тишина. Ради
+      // объявления это оправдано, ради короткого сигнала — нет: пикнуть поверх
+      // музыки он и так сможет, а провал звука на секунду слышен куда сильнее.
       audio.muted = ducks > 0;
       return;
     }
     audio.muted = false;
-    const target = ducks > 0 ? volume * 0.15 : volume;
+    const target = ducks > 0 ? volume * 0.15 : (softDucks > 0 ? volume * 0.45 : volume);
     if (duckTimer) { clearInterval(duckTimer); duckTimer = null; }
     const step = () => {
       const now = audio.volume;
@@ -24271,6 +24277,7 @@ const jarvisMusic = (() => {
     if (!t) return;
     const el = ensure();
     error = '';
+    started = true;
     el.src = `/api/music/${encodeURIComponent(t.id)}`;
     el.volume = ducks > 0 ? volume * 0.15 : volume;
     wantPlaying = true;
@@ -24373,8 +24380,10 @@ const jarvisMusic = (() => {
     },
     // Приседание считаем по количеству причин: речь и сигнал могут наложиться,
     // и тот, кто закончил первым, не должен вернуть громкость за обоих.
-    duck(on) {
-      ducks = Math.max(0, ducks + (on ? 1 : -1));
+    // soft — лёгкое приседание под короткий сигнал, а не под фразу.
+    duck(on, soft) {
+      if (soft) softDucks = Math.max(0, softDucks + (on ? 1 : -1));
+      else ducks = Math.max(0, ducks + (on ? 1 : -1));
       applyVolume();
       emit();
     },
@@ -24405,10 +24414,10 @@ const jarvisMusic = (() => {
 
 // Приседание с автоподъёмом: если речь оборвалась и её onend не пришёл,
 // громкость всё равно вернётся, а не останется приглушённой навсегда.
-const jarvisMusicDuck = (ms = 12000) => {
+const jarvisMusicDuck = (ms = 12000, soft = false) => {
   let done = false;
-  jarvisMusic.duck(true);
-  const release = () => { if (done) return; done = true; jarvisMusic.duck(false); };
+  jarvisMusic.duck(true, soft);
+  const release = () => { if (done) return; done = true; jarvisMusic.duck(false, soft); };
   setTimeout(release, ms);
   return release;
 };
@@ -24424,7 +24433,7 @@ const musicSize = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} МБ`;
 const MUSIC_EXT_OK = ['mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'flac'];
 
 // Компактная панель управления — та же и в разделе, и на экране тренировки.
-function MusicBar({ compact }) {
+function MusicBar({ compact, onPlaylist }) {
   const m = useMusic();
   if (!m.track && !m.tracks.length) return null;
   const btn = 'w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0';
@@ -24461,6 +24470,11 @@ function MusicBar({ compact }) {
         >
           <Icon name="shuffle" size={16} />
         </button>
+        {onPlaylist && (
+          <button onClick={onPlaylist} className={btn} style={{ color: 'var(--text-muted)' }} title="Сменить плейлист">
+            <Icon name="music" size={16} />
+          </button>
+        )}
       </div>
       {!compact && (
         <div className="flex items-center gap-2 mt-2">
@@ -25453,11 +25467,12 @@ const gymSound = (() => {
     },
     cue(count = 1, enabled = true, background = false) {
       if (!enabled) return;
-      // Сигнал короткий, но под музыку его легко пропустить — приседаем на
-      // время серии писков с небольшим запасом.
+      // Под сигнал музыка приседает лишь слегка и ровно на время писков:
+      // обратный отсчёт в конце отдыха идёт каждую секунду, и глубокое
+      // приглушение превращало бы его в череду провалов звука.
       if (jarvisMusic.isPlaying()) {
-        const unduck = jarvisMusicDuck(2000);
-        setTimeout(unduck, 400 + count * 300);
+        const unduck = jarvisMusicDuck(1500, true);
+        setTimeout(unduck, 180 + count * 260);
       }
       if (!background) { mixedBeep(count); return; }
       try {
@@ -27979,35 +27994,42 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
       {/* Музыка из Джарвиса: пока она играет, аудиосессия наша — сигналы и речь
           идут поверх неё, а экран можно гасить, поэтому отдельный тумблер
           «звук с погашенным экраном» в это время не нужен. */}
-      {music.playing ? <MusicBar compact /> : (music.tracks.length > 0 && (
-        pickMusic ? (
-          <MusicPlaylistPicker
-            playlists={playlists}
-            tracks={music.tracks}
-            title="С чего начать"
-            onClose={() => setPickMusic(false)}
-            onPick={(pl) => {
-              setPickMusic(false);
-              // Жест пользователя — самое время занять аудиовыход
-              jarvisMusic.playRandom(pl.id ? pl.trackIds : null, pl.name);
-            }}
-          />
-        ) : (
-          <button
-            onClick={() => {
-              // Один плейлист (или он уже выбран) — включаем сразу, без лишнего шага
-              if (playlists.length === 0) { jarvisMusic.playRandom(null, ''); return; }
-              setPickMusic(true);
-            }}
-            className="w-full mb-4 py-2.5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[14px] flex items-center justify-center gap-2"
-          >
-            <Icon name="music" size={16} />
-            {music.queueName ? `Включить музыку · ${music.queueName}` : 'Включить музыку'}
-          </button>
-        )
-      ))}
+      {/* Пока трек не выбран — кнопка запуска. Дальше на её месте живёт плеер:
+          пауза и переключение не должны требовать ухода с экрана тренировки. */}
+      {music.tracks.length > 0 && (
+        <React.Fragment>
+          {pickMusic && (
+            <MusicPlaylistPicker
+              playlists={playlists}
+              tracks={music.tracks}
+              title={music.track ? 'Сменить плейлист' : 'С чего начать'}
+              onClose={() => setPickMusic(false)}
+              onPick={(pl) => {
+                setPickMusic(false);
+                // Жест пользователя — самое время занять аудиовыход
+                jarvisMusic.playRandom(pl.id ? pl.trackIds : null, pl.name);
+              }}
+            />
+          )}
+          {music.started ? (
+            <MusicBar compact onPlaylist={() => setPickMusic(true)} />
+          ) : (!pickMusic && (
+            <button
+              onClick={() => {
+                // Плейлистов нет — включаем сразу, без лишнего шага
+                if (playlists.length === 0) { jarvisMusic.playRandom(null, ''); return; }
+                setPickMusic(true);
+              }}
+              className="w-full mb-4 py-2.5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[14px] flex items-center justify-center gap-2"
+            >
+              <Icon name="music" size={16} />
+              {music.queueName ? `Включить музыку · ${music.queueName}` : 'Включить музыку'}
+            </button>
+          ))}
+        </React.Fragment>
+      )}
 
-      {voiceOn && !music.playing && (
+      {voiceOn && !music.started && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 mb-4 flex items-center gap-3">
           <div className="flex-1 min-w-0">
             <div className="text-[14px]">Звук с погашенным экраном</div>
