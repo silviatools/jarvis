@@ -24388,12 +24388,16 @@ const jarvisMusic = (() => {
     // Кнопки на локскрине живут ровно до тех пор, пока их никто не сбросил.
     // Тренировочный звук их трогает — после него зовём это.
     refreshSession() { if (audio && audio.src) mediaSession(); },
-    // На iOS 16.4+ у страницы есть свой режим аудиосессии. play-and-record —
-    // это «пишем с микрофона и одновременно играем», иначе система вправе
-    // счесть запись прерыванием воспроизведения.
-    audioSession(recording) {
+    // На iOS 16.4+ у страницы есть свой режим аудиосессии:
+    //   'play-and-record' — пишем с микрофона и одновременно играем. Нужен
+    //     ТОЛЬКО когда и правда играет музыка: это разговорный тракт, и синтез
+    //     речи в нём уходит туда же — объявления в наушниках становятся не
+    //     слышны, даже если никакой музыки нет;
+    //   'playback' — просто воспроизведение;
+    //   'auto' — выбор за системой, как было до появления плеера.
+    audioSession(mode) {
       try {
-        if (navigator.audioSession) navigator.audioSession.type = recording ? 'play-and-record' : 'playback';
+        if (navigator.audioSession) navigator.audioSession.type = mode || 'auto';
       } catch (_) {}
     },
   };
@@ -24427,17 +24431,18 @@ function MusicBar({ compact }) {
   return (
     <div className={`bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-3 py-2.5 ${compact ? 'mb-4' : ''}`}>
       <div className="flex items-center gap-2">
-        <button onClick={() => jarvisMusic.prev()} className={btn} style={{ color: 'var(--text-muted)' }}>
+        <button onClick={() => jarvisMusic.prev()} className={btn} title="Предыдущий" style={{ color: 'var(--text-muted)' }}>
           <Icon name="skipBack" size={17} />
         </button>
         <button
           onClick={() => jarvisMusic.toggle()}
           className={btn + ' text-white'}
+          title={m.playing ? 'Пауза' : 'Играть'}
           style={{ background: GYM_ACCENT }}
         >
           <Icon name={m.playing ? 'pause' : 'play'} size={18} />
         </button>
-        <button onClick={() => jarvisMusic.next()} className={btn} style={{ color: 'var(--text-muted)' }}>
+        <button onClick={() => jarvisMusic.next()} className={btn} title="Следующий" style={{ color: 'var(--text-muted)' }}>
           <Icon name="skipForward" size={17} />
         </button>
         <div className="flex-1 min-w-0">
@@ -27404,14 +27409,17 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
   // Список треков нужен прямо на тренировке — кнопкой «случайный трек».
   useEffect(() => { jarvisMusic.load(); }, []);
 
-  // Пока включены свободные руки, страница пишет и играет одновременно. На
-  // iOS 16.4+ это надо объявить явно, иначе система вправе счесть запись
-  // прерыванием музыки и остановить воспроизведение.
+  // Режим аудиосессии переключаем ровно под ситуацию. «Пишем и играем» — это
+  // разговорный тракт: объявления в нём глохнут, поэтому просим его только
+  // когда действительно нужно совместить музыку с микрофоном. Без музыки
+  // отдаём выбор системе — так озвучка звучит как до появления плеера.
   useEffect(() => {
-    if (!handsFree) return;
-    jarvisMusic.audioSession(true);
-    return () => jarvisMusic.audioSession(false);
-  }, [handsFree]);
+    const micOn = handsFree && armed;
+    jarvisMusic.audioSession(
+      music.playing ? (micOn ? 'play-and-record' : 'playback') : 'auto'
+    );
+    return () => jarvisMusic.audioSession('auto');
+  }, [handsFree, armed, music.playing]);
 
   // Перезапись не должна висеть вечно: иначе числа, сказанные через полчаса,
   // ушли бы в исправление давнего подхода вместо записи нового.
