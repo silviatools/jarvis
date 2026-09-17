@@ -22806,6 +22806,7 @@ const jarvisMusic = (() => {
   let loading = false;
   let error = '';
   let volume = 0.8;
+  let volumeWorks = null;    // null — ещё не проверяли, см. probeVolume
   let shuffle = true;
   let snap = {};
   const subs = new Set();
@@ -22830,6 +22831,7 @@ const jarvisMusic = (() => {
       position: audio ? audio.currentTime || 0 : 0,
       duration: audio && isFinite(audio.duration) ? audio.duration : 0,
       volume,
+      canVolume: volumeWorks !== false,
       shuffle,
       ducked: ducks > 0,
       loading,
@@ -22840,9 +22842,29 @@ const jarvisMusic = (() => {
 
   const emit = () => { build(); subs.forEach(fn => { try { fn(); } catch (_) {} }); };
 
-  // Плавное приседание: резкий скачок громкости слышен сильнее, чем сама речь.
+  // iOS не даёт менять громкость медиа из кода: присваивание молча
+  // игнорируется, и читается обратно единица. Поэтому сначала проверяем, а
+  // потом выбираем способ приглушения.
+  const probeVolume = () => {
+    if (volumeWorks !== null || !audio) return;
+    try {
+      const before = audio.volume;
+      audio.volume = 0.5;
+      volumeWorks = Math.abs(audio.volume - 0.5) < 0.01;
+      audio.volume = volumeWorks ? before : 1;
+    } catch (_) { volumeWorks = false; }
+  };
+
   const applyVolume = () => {
     if (!audio) return;
+    probeVolume();
+    if (!volumeWorks) {
+      // Громкость недоступна — на время объявления глушим совсем. Услышать,
+      // что делать в подходе, важнее, чем не потерять пару секунд музыки.
+      audio.muted = ducks > 0;
+      return;
+    }
+    audio.muted = false;
     const target = ducks > 0 ? volume * 0.15 : volume;
     if (duckTimer) { clearInterval(duckTimer); duckTimer = null; }
     const step = () => {
@@ -22865,10 +22887,18 @@ const jarvisMusic = (() => {
     audio = new Audio();
     audio.preload = 'metadata';
     audio.volume = volume;
+    audio.setAttribute('playsinline', '');
+    // Элемент кладём в документ: с оторванным от страницы <audio> iOS не
+    // показывает «Сейчас играет» и не отдаёт кнопки на локскрине и наушниках.
+    try {
+      audio.style.display = 'none';
+      document.body.appendChild(audio);
+    } catch (_) {}
     audio.addEventListener('ended', () => next(true));
-    audio.addEventListener('play', () => { resumeTries = 0; emit(); });
-    audio.addEventListener('playing', emit);
+    audio.addEventListener('play', () => { resumeTries = 0; syncSession(); emit(); });
+    audio.addEventListener('playing', () => { syncSession(); emit(); });
     audio.addEventListener('pause', () => {
+      syncSession();
       emit();
       // Система остановила воспроизведение сама (микрофон, звонок, смена
       // маршрута звука) — поднимаем обратно, но не больше трёх раз подряд,
@@ -22891,25 +22921,92 @@ const jarvisMusic = (() => {
       const now = Date.now();
       if (now - lastTick < 900) return;
       lastTick = now;
+      syncSession();
       emit();
     });
-    audio.addEventListener('loadedmetadata', emit);
+    audio.addEventListener('loadedmetadata', () => { syncSession(); emit(); });
     return audio;
   };
 
+  // Обложка: без картинки iOS показывает в «Сейчас играет» что придётся.
+  // Рисуем её сами — файл в репозитории ради этого держать незачем.
+  const artwork = (() => {
+    let url = null;
+    return () => {
+      if (url !== null) return url;
+      url = '';
+      try {
+        const c = document.createElement('canvas');
+        c.width = c.height = 512;
+        const g = c.getContext('2d');
+        const grad = g.createLinearGradient(0, 0, 512, 512);
+        grad.addColorStop(0, '#0d9488');
+        grad.addColorStop(1, '#0f172a');
+        g.fillStyle = grad;
+        g.fillRect(0, 0, 512, 512);
+        g.fillStyle = '#ffffff';
+        g.textAlign = 'center';
+        g.textBaseline = 'middle';
+        g.font = 'bold 210px -apple-system, system-ui, sans-serif';
+        g.fillText('♪', 256, 245);
+        g.font = '500 52px -apple-system, system-ui, sans-serif';
+        g.fillText('JARVIS', 256, 405);
+        url = c.toDataURL('image/png');
+      } catch (_) { url = ''; }
+      return url;
+    };
+  })();
+
+  // Управление с локскрина, из пункта управления и с наушников. Обработчики
+  // ставим один раз при создании плеера и восстанавливаем, если их кто-то
+  // сбросил: iOS отдаёт кнопки только тому, кто последним их зарегистрировал.
   const mediaSession = () => {
     if (!navigator.mediaSession) return;
     const t = current();
     try {
+      const art = artwork();
       navigator.mediaSession.metadata = new MediaMetadata({
         title: t ? t.name : 'Jarvis',
         artist: 'Jarvis',
-        album: 'Тренировка',
+        album: 'Музыка',
+        artwork: art ? [96, 192, 256, 512].map(sz => ({ src: art, sizes: `${sz}x${sz}`, type: 'image/png' })) : [],
       });
-      navigator.mediaSession.setActionHandler('play', () => toggle(true));
-      navigator.mediaSession.setActionHandler('pause', () => toggle(false));
-      navigator.mediaSession.setActionHandler('nexttrack', () => next());
-      navigator.mediaSession.setActionHandler('previoustrack', () => prev());
+    } catch (_) {}
+    const set = (action, fn) => {
+      try { navigator.mediaSession.setActionHandler(action, fn); } catch (_) {}
+    };
+    set('play', () => toggle(true));
+    set('pause', () => toggle(false));
+    set('stop', () => { wantPlaying = false; if (audio) audio.pause(); syncSession(); emit(); });
+    set('nexttrack', () => next(false));
+    set('previoustrack', () => prev());
+    set('seekbackward', (d) => {
+      if (audio) audio.currentTime = Math.max(0, audio.currentTime - ((d && d.seekOffset) || 10));
+    });
+    set('seekforward', (d) => {
+      if (!audio) return;
+      const max = isFinite(audio.duration) ? audio.duration : audio.currentTime + 10;
+      audio.currentTime = Math.min(max, audio.currentTime + ((d && d.seekOffset) || 10));
+    });
+    set('seekto', (d) => { if (audio && d && typeof d.seekTime === 'number') audio.currentTime = d.seekTime; });
+    syncSession();
+  };
+
+  // Состояние для системного плеера: без него кнопка на локскрине показывает
+  // не то, а полоса прокрутки не движется.
+  const syncSession = () => {
+    if (!navigator.mediaSession) return;
+    try {
+      navigator.mediaSession.playbackState = (audio && !audio.paused) ? 'playing' : 'paused';
+    } catch (_) {}
+    try {
+      if (audio && navigator.mediaSession.setPositionState && isFinite(audio.duration) && audio.duration > 0) {
+        navigator.mediaSession.setPositionState({
+          duration: audio.duration,
+          position: Math.min(Math.max(0, audio.currentTime || 0), audio.duration),
+          playbackRate: audio.playbackRate || 1,
+        });
+      }
     } catch (_) {}
   };
 
@@ -22940,6 +23037,7 @@ const jarvisMusic = (() => {
     el.volume = ducks > 0 ? volume * 0.15 : volume;
     wantPlaying = true;
     resumeTries = 0;
+    probeVolume();
     el.play().catch(() => {
       // Без жеста iOS воспроизведение не пустит — сообщаем честно, а не молчим
       error = 'Нажмите ещё раз — браузер требует касания экрана';
@@ -23040,6 +23138,9 @@ const jarvisMusic = (() => {
     },
     isPlaying: () => !!(audio && !audio.paused && wantPlaying),
     hasTracks: () => tracks.length > 0,
+    // Кнопки на локскрине живут ровно до тех пор, пока их никто не сбросил.
+    // Тренировочный звук их трогает — после него зовём это.
+    refreshSession() { if (audio && audio.src) mediaSession(); },
     // На iOS 16.4+ у страницы есть свой режим аудиосессии. play-and-record —
     // это «пишем с микрофона и одновременно играем», иначе система вправе
     // счесть запись прерыванием воспроизведения.
@@ -23115,12 +23216,20 @@ function MusicBar({ compact }) {
             onChange={e => jarvisMusic.seek(Number(e.target.value))}
             className="flex-1"
           />
-          <Icon name="volume" size={14} />
-          <input
-            type="range" min="0" max="100" value={Math.round(m.volume * 100)}
-            onChange={e => jarvisMusic.setVolume(Number(e.target.value) / 100)}
-            className="w-24"
-          />
+          {m.canVolume ? (
+            <React.Fragment>
+              <Icon name="volume" size={14} />
+              <input
+                type="range" min="0" max="100" value={Math.round(m.volume * 100)}
+                onChange={e => jarvisMusic.setVolume(Number(e.target.value) / 100)}
+                className="w-24"
+              />
+            </React.Fragment>
+          ) : (
+            // На iOS громкость медиа из кода не меняется — честнее сказать это,
+            // чем показывать ползунок, который ничего не делает.
+            <span className="text-[11px] text-[var(--text-subtle)] whitespace-nowrap">громкость — кнопками телефона</span>
+          )}
         </div>
       )}
     </div>
@@ -23246,8 +23355,11 @@ function MusicView() {
       <div className="mt-6 text-[12px] text-[var(--text-subtle)] leading-relaxed">
         Треки хранятся на сервере Джарвиса, поэтому доступны с любого устройства.
         Пока музыка играет, страница держит аудиосессию: сигналы таймера и
-        объявления слышны поверх неё, а экран можно гасить. Под речь громкость
-        приседает сама.
+        объявления слышны поверх неё, экран можно гасить, а плеером можно
+        управлять с локскрина и с наушников.{' '}
+        {m.canVolume
+          ? 'Под речь громкость приседает сама.'
+          : 'Громкость на айфоне задаётся только кнопками телефона, поэтому под объявление музыка коротко замолкает.'}
       </div>
     </div>
   );
@@ -23872,6 +23984,9 @@ const gymSound = (() => {
     // background=false — просто прогреваем Web Audio, чужую музыку не трогаем.
     start(background) {
       if (!background) { audioCtx(); return; }
+      // Музыка уже держит аудиосессию и «Сейчас играет» — свой неслышимый
+      // фон в этом случае только отберёт кнопки у плеера.
+      if (jarvisMusic.isPlaying()) { audioCtx(); return; }
       try {
         if (!keepEl) {
           keepEl = new Audio(gymWavDataUri(gymSilenceSamples()));
@@ -23901,6 +24016,8 @@ const gymSound = (() => {
           navigator.mediaSession.setActionHandler('pause', null);
         } catch (_) {}
       }
+      // Сбросив свои обработчики, мы сняли и кнопки плеера — возвращаем их.
+      jarvisMusic.refreshSession();
     },
     cue(count = 1, enabled = true, background = false) {
       if (!enabled) return;
