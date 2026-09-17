@@ -24562,17 +24562,33 @@ function MusicView({ data, setData }) {
 
   const editing = playlists.find(p => p.id === editId) || null;
 
+  // Расширение берём из имени, а если там мусор — из типа файла: iOS отдаёт
+  // из «Файлов» имена вроде «запись» без точки, а тип при этом честный.
+  const extOf = (file) => {
+    const byName = (file.name.split('.').pop() || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (MUSIC_EXT_OK.includes(byName)) return byName;
+    const byType = {
+      'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a',
+      'audio/aac': 'aac', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/wave': 'wav',
+      'audio/ogg': 'ogg', 'audio/opus': 'opus', 'audio/flac': 'flac', 'audio/x-flac': 'flac',
+    }[(file.type || '').toLowerCase()];
+    return byType || '';
+  };
+
   const upload = async (files) => {
     const list = Array.from(files || []);
     if (!list.length) return;
     setErr('');
     for (let i = 0; i < list.length; i++) {
       const file = list[i];
-      const ext = (file.name.split('.').pop() || '').toLowerCase();
-      if (!MUSIC_EXT_OK.includes(ext)) { setErr(`«${file.name}» — такой формат не поддерживается`); continue; }
-      setBusy(`${i + 1} из ${list.length}: ${file.name}`);
+      const ext = extOf(file);
+      if (!ext) {
+        setErr(`«${file.name}» (${file.type || 'тип неизвестен'}) — не похоже на аудио. Нужны mp3, m4a, aac, wav, ogg, flac`);
+        continue;
+      }
+      setBusy(`${i + 1} из ${list.length}: ${file.name} · ${musicSize(file.size)}`);
       try {
-        const name = file.name.replace(/\.[^.]+$/, '').slice(0, 120);
+        const name = file.name.replace(/\.[^.]+$/, '').slice(0, 120) || file.name;
         const r = await fetch(`/api/music?ext=${ext}&name=${encodeURIComponent(name)}`, {
           method: 'POST',
           credentials: 'same-origin',
@@ -24580,11 +24596,23 @@ function MusicView({ data, setData }) {
           body: file,
         });
         if (!r.ok) {
+          // Показываем, что именно ответил сервер: «не загрузился» без причины
+          // не даёт понять, чинить связь, размер или формат.
           const j = await r.json().catch(() => ({}));
-          setErr(j.error === 'file too large' ? `«${file.name}» больше 40 МБ` : `«${file.name}» не загрузился`);
+          const REASONS = {
+            'file too large': `файл ${musicSize(file.size)}, а можно до ${musicSize(j.limit || 60 * 1024 * 1024)}`,
+            'empty body': 'файл пустой — если он лежит в iCloud, сначала скачайте его на телефон',
+            'unsupported format': 'сервер не принимает такой формат',
+            'Content-Length required': 'передача оборвалась, попробуйте ещё раз',
+            'broken chunked body': 'передача оборвалась, попробуйте ещё раз',
+            'incomplete body': 'файл дошёл не целиком, попробуйте ещё раз',
+            'unauthorized': 'сессия истекла — обновите страницу и войдите заново',
+          };
+          const why = REASONS[j.error] || j.error || `ответ сервера ${r.status}`;
+          setErr(`«${file.name}» не загрузился: ${why}`);
         }
-      } catch (_) {
-        setErr(`«${file.name}» не загрузился — нет связи с сервером`);
+      } catch (e) {
+        setErr(`«${file.name}» не загрузился — связь с сервером оборвалась (${(e && e.message) || 'неизвестно'})`);
       }
     }
     setBusy('');
@@ -24621,10 +24649,11 @@ function MusicView({ data, setData }) {
         >
           <Icon name="shuffle" size={15} />
         </button>
+        {/* accept намеренно не задан: на iOS он гасит в «Файлах» часть треков,
+            у которых система не распознала тип. Формат проверяем после выбора. */}
         <input
           ref={fileRef}
           type="file"
-          accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.flac"
           multiple
           className="hidden"
           onChange={e => upload(e.target.files)}

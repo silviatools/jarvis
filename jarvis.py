@@ -4942,15 +4942,14 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(400, {"error": "unsupported format"})
                 return
             name = (query.get("name") or [""])[0][:120].strip() or f"Трек {ext}"
-            length = self._content_length()
-            MAX_TRACK = 40 * 1024 * 1024   # ~40 минут mp3 при 128 кбит/с
-            if length is None:
-                self._json(411, {"error": "Content-Length required"})
+            MAX_TRACK = 60 * 1024 * 1024   # час mp3 при 128 кбит/с
+            body, err = self._read_upload(MAX_TRACK)
+            if err == "file too large":
+                self._json(413, {"error": "file too large", "limit": MAX_TRACK})
                 return
-            if length > MAX_TRACK:
-                self._json(413, {"error": "file too large"})
+            if err:
+                self._json(400, {"error": err})
                 return
-            body = self.rfile.read(length)
             if not body:
                 self._json(400, {"error": "empty body"})
                 return
@@ -6222,6 +6221,49 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         self._cors()
         self.end_headers()
         self.wfile.write(body)
+
+    def _read_upload(self, max_bytes: int):
+        """Тело запроса с файлом: обычное, с Content-Length, либо chunked —
+        так его переупаковывают некоторые прокси, и тогда длины в заголовках
+        нет вовсе. Возвращает (данные, ошибка)."""
+        te = (self.headers.get("Transfer-Encoding") or "").lower()
+        if "chunked" in te:
+            chunks = []
+            total = 0
+            while True:
+                line = self.rfile.readline(1024).strip()
+                if not line:
+                    return None, "broken chunked body"
+                try:
+                    size = int(line.split(b";", 1)[0], 16)
+                except ValueError:
+                    return None, "broken chunked body"
+                if size == 0:
+                    # Завершающая пустая строка (и возможные трейлеры)
+                    while True:
+                        tail = self.rfile.readline(1024)
+                        if tail in (b"\r\n", b"\n", b""):
+                            break
+                    break
+                total += size
+                if total > max_bytes:
+                    return None, "file too large"
+                chunk = self.rfile.read(size)
+                if len(chunk) != size:
+                    return None, "broken chunked body"
+                chunks.append(chunk)
+                self.rfile.read(2)      # CRLF после куска
+            return b"".join(chunks), None
+
+        length = self._content_length()
+        if length is None:
+            return None, "Content-Length required"
+        if length > max_bytes:
+            return None, "file too large"
+        body = self.rfile.read(length)
+        if len(body) != length:
+            return None, "incomplete body"
+        return body, None
 
     def _serve_track(self, filename: str):
         """Аудио с поддержкой Range. Safari без 206-ответа трек просто не играет:
