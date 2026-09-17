@@ -3367,6 +3367,21 @@ PF_DEFAULT_RECURRING_CATS = [
     {"id": "other",         "emoji": "📌", "label": "Другое"},
 ]
 
+# Технические статьи «Корректировка расход/доход» — правка баланса счёта
+# (например, после сверки с банковской выпиской), а не реальная трата/доход.
+# Встроены намертво, доступны в выборе статьи наравне с обычными, их факт
+# считается в балансе счёта, но НЕ входит в план/факт «По месяцу» — см.
+# pf_budget_rows() ниже (он их не перечисляет) и «Корректировки» в
+# BudgetMonthlyView. ДЕРЖАТЬ В СИНХРОНЕ с cashflowArticles() из index (9).html.
+ADJUSTMENT_EXPENSE_ID = "__adj_out"
+ADJUSTMENT_INCOME_ID = "__adj_in"
+ADJUSTMENT_ARTICLES = [
+    {"id": ADJUSTMENT_EXPENSE_ID, "name": "Корректировка расход", "direction": "out",
+     "group_name": "Корректировки", "emoji": "🛠️"},
+    {"id": ADJUSTMENT_INCOME_ID, "name": "Корректировка доход", "direction": "in",
+     "group_name": "Корректировки", "emoji": "🛠️"},
+]
+
 
 def find_budget_user(app: dict, token: str):
     """(uid, user) пользователя бюджета с активной ссылкой на приложение.
@@ -3514,6 +3529,8 @@ def pf_articles(sl: dict) -> list:
             "emoji": str(c.get("emoji") or "🔄"),
             "items": rec_items_by_cat.get(cid, []),
         })
+
+    arts.extend({**a, "items": []} for a in ADJUSTMENT_ARTICLES)
 
     counts = {}
     for op in _pf_list(sl, "budgetCashflowOps"):
@@ -5655,7 +5672,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             account_id = one("account_id")
             direction = one("direction")
             try:
-                limit = max(1, min(500, int(one("limit", "50"))))
+                # Верхняя граница поднята с 500: вкладке «Аналитика» приложения
+                # нужен весь период (месяц/год) одним запросом, а не только
+                # последние операции, как «Недавним» (у них лимит остаётся 50).
+                limit = max(1, min(3000, int(one("limit", "50"))))
             except ValueError:
                 limit = 50
 

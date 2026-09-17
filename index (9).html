@@ -237,6 +237,7 @@ const DEFAULT_SETTINGS = {
   gymVoice: true,        // озвучивание подходов и отдыха на тренировке
   gymBackgroundAudio: false, // звук с погашенным экраном (ценой чужой музыки)
   gymHandsFree: false,   // голосовой ввод подходов на тренировке
+  voiceWakeMode: false,  // постоянная прослушка «Джарвис, ...» (пока вкладка открыта)
   gymMicRest: true,      // слушать микрофон и на отдыхе (ради «пропустить отдых»)
   notifyRouting: {},
   backupReminder: { enabled: false, frequency: 'weekly', time: '03:00', dayOfWeek: 0, dayOfMonth: 1 },
@@ -252,6 +253,7 @@ const AI_FUNCTIONS = [
   { key: 'healthExtract', label: 'Здоровье — распознавание документов' },
   { key: 'gymExtract', label: 'GYM — распознавание программы тренировок' },
   { key: 'wishlistScreenshot', label: 'Хотелки — распознавание товара по скриншоту' },
+  { key: 'cashflowStatementExtract', label: 'ДДС — сверка счёта с банковской выпиской' },
 ];
 
 const AI_PROVIDER_DEFAULT_MODEL = { claude: 'claude-sonnet-5', openai: 'gpt-4o' };
@@ -4060,6 +4062,9 @@ function VoiceAssistantSettings({ data, setData }) {
           <li>Скажите что нужно — вопрос, дело или «открой раздел ...»</li>
           <li>Ассистент ответит и озвучит ответ</li>
         </ol>
+        <p className="text-xs text-[var(--text-subtle)] mt-3">
+          Кнопка «Джарвис: выкл» рядом с микрофоном включает постоянную прослушку — скажите «Джарвис, …» и команду одной фразой, без нажатий. Работает, только пока вкладка открыта и экран не гаснет (полноценный always-on wake word, как в колонках, в браузере невозможен).
+        </p>
         <p className="text-xs text-[var(--text-subtle)] mt-3">
           Тот же ассистент отвечает и в Telegram-боте: напишите ему любое сообщение (не команду) — он читает и меняет данные всего проекта и присылает ссылки на разделы. Использует тот же набор ключей, что назначен функции «Ассистент» выше.
         </p>
@@ -9577,6 +9582,11 @@ async function extractHealthEventFromDocument(files, settings) {
 }
 
 let _currentAudio = null;
+// Момент, когда синтез в последний раз замолчал — тот же приём, что у
+// gymSpeechEndedAt в GYM: распознавание отдаёт фразу с задержкой, и без
+// этой отметки микрофон в режиме ожидания активации слышит и принимает
+// за команду собственный же ответ ассистента.
+let voiceSpeechEndedAt = 0;
 
 function speak(text, settings) {
   // Stop any currently playing audio
@@ -9603,15 +9613,16 @@ function speak(text, settings) {
       const audio = new Audio(url);
       _currentAudio = audio;
       return new Promise(resolve => {
-        audio.onended = () => { URL.revokeObjectURL(url); _currentAudio = null; resolve(); };
-        audio.onerror = () => { URL.revokeObjectURL(url); _currentAudio = null; resolve(); };
-        audio.play().catch(resolve);
+        const done = () => { URL.revokeObjectURL(url); _currentAudio = null; voiceSpeechEndedAt = Date.now(); resolve(); };
+        audio.onended = done;
+        audio.onerror = done;
+        audio.play().catch(done);
       });
-    }).catch(() => Promise.resolve());
+    }).catch(() => { voiceSpeechEndedAt = Date.now(); return Promise.resolve(); });
   }
 
   // Fallback: browser SpeechSynthesis — returns promise that resolves when done
-  if (!window.speechSynthesis) return Promise.resolve();
+  if (!window.speechSynthesis) { voiceSpeechEndedAt = Date.now(); return Promise.resolve(); }
   const u = new SpeechSynthesisUtterance(text);
   u.lang = 'ru-RU';
   u.rate = 1.05;
@@ -9619,11 +9630,127 @@ function speak(text, settings) {
   const ruVoice = voices.find(v => v.lang.startsWith('ru'));
   if (ruVoice) u.voice = ruVoice;
   return new Promise(resolve => {
-    u.onend = resolve;
-    u.onerror = resolve;
+    const done = () => { voiceSpeechEndedAt = Date.now(); resolve(); };
+    u.onend = done;
+    u.onerror = done;
     window.speechSynthesis.speak(u);
   });
 }
+
+// ── Режим ожидания активации («Джарвис, …») ─────────────────────────────────
+// Настоящий always-on wake word (слушает с погашенным экраном/свёрнутой
+// вкладкой) в браузере невозможен — iOS и Android забирают микрофон, как
+// только страница уходит в фон. Это — постоянное прослушивание, пока вкладка
+// открыта и активна: та же связка приёмов, что уже проверена в GYM
+// (gymListener) — свой SpeechRecognition, а не общий с этим модулем, потому
+// что жизненный цикл другой (перезапускается сам, а не по одному нажатию).
+const VOICE_WAKE_WORD_RE = /^\s*(эй[,]?\s*)?(окей[,]?\s*)?джарвис[а-яё]*[,!.]?\s*/i;
+
+// null — фраза не начиналась с будящего слова, игнорируем. '' — сказали
+// только «Джарвис» без команды следом.
+function stripWakeWord(text) {
+  const m = VOICE_WAKE_WORD_RE.exec(text || '');
+  if (!m) return null;
+  return text.slice(m[0].length).trim();
+}
+
+const voiceWakeListener = (() => {
+  const SR = () => window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null;
+  let wanted = false;
+  let handler = null;
+  let onState = null;
+  let onDenied = null;
+  let startedAt = 0;
+  let gotResult = false;
+  let quickFails = 0;
+  let blocked = false;
+  let denials = 0;
+
+  const ensure = () => {
+    if (rec) return rec;
+    const C = SR();
+    if (!C) return null;
+    rec = new C();
+    rec.lang = 'ru-RU';
+    rec.interimResults = false;
+    rec.continuous = false; // Safari непрерывный режим всё равно не держит
+    rec.maxAlternatives = 3;
+    rec.onstart = () => {
+      startedAt = Date.now();
+      gotResult = false;
+      blocked = false;
+      denials = 0;
+      if (onState) onState(true);
+    };
+    rec.onresult = (e) => {
+      // Пока ассистент говорит сам — не слушаем, иначе примем собственный
+      // ответ за новую команду. Хвост в 1.5с гасит и задержку распознавания.
+      if (window.speechSynthesis && window.speechSynthesis.speaking) return;
+      if (Date.now() - voiceSpeechEndedAt < 1500) return;
+      gotResult = true;
+      const variants = [];
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        for (let j = 0; j < r.length; j++) variants.push(r[j].transcript);
+      }
+      if (handler && variants.length) handler(variants);
+    };
+    rec.onerror = (e) => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        // wanted не сбрасываем — режим остаётся включённым, микрофон
+        // поднимется сам следующим циклом или по первому касанию экрана.
+        blocked = true;
+        denials += 1;
+        if (onDenied) onDenied(denials);
+      }
+    };
+    rec.onend = () => {
+      if (onState) onState(false);
+      if (!wanted) return;
+      const lasted = Date.now() - startedAt;
+      quickFails = (gotResult || lasted > 3000) ? 0 : quickFails + 1;
+      const delay = blocked
+        ? Math.min(2000 * Math.pow(2, Math.max(0, denials - 1)), 20000)
+        : Math.min(250 * Math.pow(2, Math.max(0, quickFails - 1)), 5000);
+      setTimeout(() => {
+        if (!wanted) return;
+        try { rec.start(); } catch (_) {
+          try { if (rec.abort) rec.abort(); } catch (__) {}
+          rec = null;
+          const fresh = ensure();
+          if (fresh) { try { fresh.start(); } catch (__) {} }
+        }
+      }, delay);
+    };
+    return rec;
+  };
+
+  return {
+    supported: () => !!SR(),
+    start(h, state, denied) {
+      let r = ensure();
+      if (!r) return;
+      handler = h; onState = state; onDenied = denied;
+      wanted = true;
+      quickFails = 0;
+      try {
+        r.start();
+      } catch (_) {
+        try { if (r.abort) r.abort(); else r.stop(); } catch (__) {}
+        rec = null;
+        r = ensure();
+        if (r) { try { r.start(); } catch (__) {} }
+      }
+    },
+    stop() {
+      wanted = false;
+      if (!rec) return;
+      try { rec.stop(); } catch (_) {}
+    },
+    blocked: () => blocked,
+  };
+})();
 
 function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTab, setHouseTab, setVoiceFocus }) {
   const [phase, setPhase] = useState('idle'); // idle|recording|processing|clarifying|success|answered|error
@@ -9633,8 +9760,14 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
   const [lastAdded, setLastAdded] = useState('');
   const [answerText, setAnswerText] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [wakeListening, setWakeListening] = useState(false);
   const recogRef = React.useRef(null);
   const transcriptRef = React.useRef(''); // kept in sync for onend closure
+  // voiceWakeListener живёт дольше одного рендера — обработчик читает отсюда,
+  // а не из замыкания над messages, иначе после первого запуска слушателя
+  // видел бы только тот messages, что был на момент запуска.
+  const messagesRef = React.useRef([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
 
   const processTranscript = async (text, existingMessages) => {
     if (!text) {
@@ -9712,6 +9845,43 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     setTranscript('');
   };
 
+  // Постоянная прослушка «Джарвис, ...»: активна только пока кнопка простаивает
+  // (phase idle) и включена в настройках — на время ручной записи/обработки
+  // всегда уступает место обычному потоку, иначе два SpeechRecognition
+  // одновременно начнут бороться за микрофон.
+  useEffect(() => {
+    if (phase !== 'idle' || !settings?.voiceWakeMode || !voiceWakeListener.supported()) {
+      voiceWakeListener.stop();
+      setWakeListening(false);
+      return;
+    }
+    if (!resolveAiPreset(settings, 'voiceAssistant')?.apiKey) return;
+    voiceWakeListener.start(
+      (variants) => {
+        const match = variants.map(stripWakeWord).find(v => v !== null);
+        if (!match) return; // ни один вариант не начинался с «Джарвис», либо слово сказано без команды
+        processTranscript(match, messagesRef.current);
+      },
+      setWakeListening,
+      () => {}, // отказ в доступе — виден по индикатору кнопки, повторные попытки идут сами
+    );
+    return () => voiceWakeListener.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, settings?.voiceWakeMode]);
+
+  const toggleWakeMode = () => {
+    if (!voiceWakeListener.supported()) {
+      setErrorMsg('Браузер не поддерживает постоянное распознавание речи');
+      setPhase('error');
+      setTimeout(() => setPhase('idle'), 3000);
+      return;
+    }
+    setData(d => ({
+      ...d,
+      settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), voiceWakeMode: !d.settings?.voiceWakeMode, updatedAt: Date.now() },
+    }));
+  };
+
   const handleMainButton = () => {
     if (phase === 'idle') {
       const preset = resolveAiPreset(settings, 'voiceAssistant');
@@ -9721,6 +9891,9 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
         setTimeout(() => setPhase('idle'), 4000);
         return;
       }
+      // Ручной тап всегда перехватывает микрофон — иначе рискуем запустить
+      // второй SpeechRecognition поверх ещё живого wake-слушателя.
+      voiceWakeListener.stop();
       // messages обычно [] — но останется непустым после раунда с
       // ожиданием подтверждения (см. processTranscript), тогда это нажатие
       // продолжает тот же разговор, а не начинает новый с нуля.
@@ -9818,6 +9991,25 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
             </div>
           )}
         </div>
+      )}
+
+      {/* Постоянная прослушка «Джарвис, ...» — переключатель, виден только
+          пока панель ответа закрыта, чтобы не загромождать её в разгар диалога. */}
+      {!showPanel && (
+        <button
+          onClick={toggleWakeMode}
+          className={`px-3 py-1.5 rounded-full text-xs font-medium shadow flex items-center gap-1.5 transition-all ${
+            settings?.voiceWakeMode
+              ? (wakeListening ? 'bg-blue-500 text-white' : voiceWakeListener.blocked() ? 'bg-red-500 text-white' : 'bg-amber-500 text-white')
+              : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'
+          }`}
+          title="Постоянная прослушка «Джарвис, ...» — пока вкладка открыта и экран не гаснет"
+        >
+          <span className={`w-1.5 h-1.5 rounded-full inline-block ${wakeListening ? 'bg-white animate-pulse' : 'bg-current opacity-60'}`}></span>
+          {settings?.voiceWakeMode
+            ? (wakeListening ? 'Жду «Джарвис»' : voiceWakeListener.blocked() ? 'Нет доступа к микрофону' : 'Включаю...')
+            : 'Джарвис: выкл'}
+        </button>
       )}
 
       {/* Main button */}
@@ -13155,6 +13347,12 @@ const addMonthsStr = (ym, n) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 };
 
+const lastDayOfMonthStr = (ym) => {
+  if (!ym) return '';
+  const [y, m] = ym.split('-').map(Number);
+  return dateToLocalStr(new Date(y, m, 0));
+};
+
 const monthsBetweenStr = (start, end) => {
   if (!start || !end) return 0;
   const [sy, sm] = start.split('-').map(Number);
@@ -13392,12 +13590,26 @@ const autoMapStatementCategory = (categoryName, targetGroups, savedMappings) => 
   return bestScore >= 2 ? best : '';
 };
 
+// Технические статьи «Корректировка расход/доход» — для случаев вроде
+// сведения баланса счёта с банковской выпиской (см. CashflowReconcileModal),
+// когда нужно поправить баланс, но это не реальная трата/доход. Встроены
+// намертво (не заводятся в «По месяцу» пользователем), поэтому:
+//   • они всегда доступны в выборе статьи ДДС;
+//   • их факт СЧИТАЕТСЯ в балансе счёта (обычная операция ДДС);
+//   • но НЕ входит в «Итого расходы»/«Приход»/«Остаток» на «По месяцу»
+//     (эти суммы считаются только по allCats/incomeSources, куда корректировки
+//     не входят) — см. отдельный блок «Корректировки» в BudgetMonthlyView.
+// ДЕРЖАТЬ В СИНХРОНЕ с ADJUSTMENT_ARTICLES из jarvis.py.
+const ADJUSTMENT_EXPENSE_ID = '__adj_out';
+const ADJUSTMENT_INCOME_ID  = '__adj_in';
+const ADJUSTMENT_GROUP      = 'Корректировки';
+
 // ── ДДС: счета, операции и факт по статьям ──────────────────────────────────
 // Статьи, по которым можно записывать операции ДДС — ровно те строки вкладки
 // «По месяцу», факт по которым ведётся вручную: источники дохода, статьи
 // ручных категорий и категории «Постоянные». Накопления и Долги сюда не
 // входят: их факт считается из платежей на своих вкладках, и запись через
-// ДДС удвоила бы суммы.
+// ДДС удвоила бы суммы. Плюс две технические статьи корректировки (см. выше).
 // ДЕРЖАТЬ В СИНХРОНЕ с pf_articles() из jarvis.py — по этому же списку
 // мобильное приложение /pf/<token> показывает статьи на телефоне.
 const cashflowArticles = (data) => {
@@ -13429,6 +13641,8 @@ const cashflowArticles = (data) => {
       items: activeRecItems.filter(r => r.category === cid).map(r => String(r.name || '').trim()).filter(Boolean),
     });
   });
+  out.push({ id: ADJUSTMENT_EXPENSE_ID, label: 'Корректировка расход', direction: 'out', group: ADJUSTMENT_GROUP, emoji: '🛠️' });
+  out.push({ id: ADJUSTMENT_INCOME_ID,  label: 'Корректировка доход',  direction: 'in',  group: ADJUSTMENT_GROUP, emoji: '🛠️' });
   return out;
 };
 
@@ -13482,12 +13696,240 @@ const cashflowFactMaps = (ops) => {
   return { expense, income };
 };
 
+// Возможные повторы операций ДДС: одинаковые дата + сумма + направление +
+// счёт + статья — типичный след того, что одна и та же трата была занесена
+// дважды (например, сверку с выпиской прогнали по пересекающимся периодам,
+// и часть операций «не нашлась» второй раз и добавилась заново). Группа —
+// только подсказка: настоящее совпадение (тот же кофе в тот же день на ту
+// же сумму) тоже сюда попадёт, решение всегда за пользователем.
+const findDuplicateCashflowOps = (ops) => {
+  const groups = new Map();
+  ops.forEach(op => {
+    if (!op.date || !(Number(op.amount) > 0)) return;
+    const key = [op.date, Number(op.amount).toFixed(2), op.direction, op.accountId || '', op.categoryId || ''].join('|');
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(op);
+  });
+  return [...groups.values()]
+    .filter(g => g.length > 1)
+    .map(g => [...g].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)))
+    .sort((a, b) => b[0].date.localeCompare(a[0].date));
+};
+
+// ── ДДС: сверка счёта с банковской выпиской ─────────────────────────────────
+// Для случаев, когда баланс на карте разошёлся с тем, что показывает ДДС:
+// пользователь грузит PDF/фото банковской выписки, ИИ переносит из неё список
+// операций в JSON, а дальше они сопоставляются с тем, что уже внесено в ДДС —
+// плюс со связанными операциями Накоплений/Долгов (деньги те же, с той же
+// карты, см. cashflowAccountBalance выше).
+const CASHFLOW_STATEMENT_EXTRACT_SYSTEM_PROMPT = `Ты читаешь банковскую выписку по счёту/карте (справка о движении средств, история операций) и переносишь из неё все операции в JSON.
+Верни СТРОГО валидный JSON без markdown-разметки и пояснений, ровно такой структуры:
+{"transactions":[{"date":"YYYY-MM-DD","amount":0,"description":""}],"totalIncome":0,"totalExpense":0}
+Пояснения:
+- Перечисли ВСЕ строки операций со всех страниц документа, включая мелкие (кэшбэк, комиссии, возвраты) — ничего не пропускай и не суммируй похожие строки вместе.
+- date: дата операции (если в выписке отдельно есть дата списания/проведения — бери именно дату операции) в формате YYYY-MM-DD.
+- amount: сумма операции В ВАЛЮТЕ КАРТЫ ровно со знаком, как в выписке — отрицательная для расхода/списания, положительная для пополнения/дохода/возврата. Число, без пробелов и символа валюты.
+- description: краткое описание операции как в колонке "Описание операции" (например название магазина или получателя), без даты и номера карты.
+- totalIncome/totalExpense: итоговые суммы пополнений и расходов, если они прямо указаны в конце выписки (оба числа положительные), иначе посчитай их сам как сумму положительных/отрицательных операций.`;
+
+// files: один File (PDF) или массив File — несколько фото одной выписки по
+// порядку (как в распознавании документов здоровья/GYM, см. extractHealthEventFromDocument).
+async function extractCashflowStatementTransactions(files, settings) {
+  const fileList = Array.isArray(files) ? files : [files];
+  const provider = resolveAiPreset(settings, 'cashflowStatementExtract')?.provider || 'claude';
+  const hasPdf = fileList.some(isHealthDocPdf);
+  if (hasPdf && fileList.length > 1) {
+    throw new Error('PDF можно приложить только один файл за раз — для нескольких страниц сфотографируйте их и загрузите как изображения.');
+  }
+  if (hasPdf && provider !== 'claude') {
+    throw new Error('Распознавание PDF работает только с провайдером Claude — переключите его в Настройках → Ассистент, либо сфотографируйте выписку и загрузите как изображение(я).');
+  }
+
+  const docBlocks = await Promise.all(fileList.map(async (file) => {
+    const isPdf = isHealthDocPdf(file);
+    const base64 = await fileToBase64(file);
+    if (isPdf) {
+      return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } };
+    }
+    const mediaType = HEALTH_DOC_MEDIA_TYPES.includes(file.type) ? file.type : 'image/jpeg';
+    return provider === 'openai'
+      ? { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } }
+      : { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } };
+  }));
+
+  const promptText = fileList.length > 1
+    ? 'Это несколько страниц одной выписки по порядку — прочитай их как единое целое и заполни один JSON согласно инструкции.'
+    : 'Перенеси все операции из этой выписки в JSON согласно инструкции.';
+
+  const messages = [{
+    role: 'user',
+    content: [...docBlocks, { type: 'text', text: promptText }],
+  }];
+
+  let parsed;
+  try {
+    parsed = await callAI(messages, settings, CASHFLOW_STATEMENT_EXTRACT_SYSTEM_PROMPT, 8000, 'cashflowStatementExtract');
+  } catch (e) {
+    if (e.message === 'no_key') throw new Error('Сначала укажите API-ключ ИИ в Настройках → Ассистент');
+    throw new Error(e.message?.includes('JSON') ? 'ИИ вернул нераспознаваемый ответ, попробуйте ещё раз' : (e.message || 'Не удалось распознать выписку'));
+  }
+
+  const transactions = (Array.isArray(parsed?.transactions) ? parsed.transactions : [])
+    .map(t => ({
+      id: crypto.randomUUID(),
+      date: /^\d{4}-\d{2}-\d{2}$/.test(t?.date || '') ? t.date : '',
+      amount: Number(t?.amount),
+      description: String(t?.description ?? '').trim().slice(0, 200),
+    }))
+    .filter(t => t.date && Number.isFinite(t.amount) && t.amount !== 0);
+
+  if (!transactions.length) throw new Error('Не нашлось ни одной операции в выписке — попробуйте другой файл или снимок покрупнее');
+
+  return {
+    transactions,
+    totalIncome: Number.isFinite(Number(parsed?.totalIncome))
+      ? Number(parsed.totalIncome)
+      : transactions.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0),
+    totalExpense: Number.isFinite(Number(parsed?.totalExpense))
+      ? Number(parsed.totalExpense)
+      : -transactions.filter(t => t.amount < 0).reduce((s, t) => s + t.amount, 0),
+  };
+}
+
+// Все движения денег по конкретному счёту с точки зрения приложения: обычные
+// операции ДДС плюс отмеченные пополнения Накоплений и платежи/пополнения
+// Долгов на этот же счёт — ровно то же множество, что складывает
+// cashflowAccountBalance() в баланс счёта.
+const cashflowAppMovesForAccount = (data, accountId) => {
+  const moves = [];
+  cashflowOpsOf(data).forEach(op => {
+    if (op.accountId !== accountId || !op.date) return;
+    const amt = Number(op.amount) || 0;
+    if (!amt) return;
+    moves.push({
+      id: op.id, kind: 'op', date: op.date,
+      signedAmount: op.direction === 'in' ? amt : -amt,
+      label: op.purpose || '', raw: op,
+    });
+  });
+  (data.savingsTransactions || []).forEach(t => {
+    if (!t || t.accountId !== accountId || !t.date) return;
+    const amt = Number(t.amount) || 0;
+    if (!amt) return;
+    moves.push({
+      id: t.id, kind: 'savings', date: t.date,
+      signedAmount: t.type === 'income' ? -amt : amt,
+      label: 'Накопления', raw: t,
+    });
+  });
+  (data.debtTransactions || []).forEach(t => {
+    if (!t || t.accountId !== accountId || !t.date) return;
+    if (t.cashflowDirection !== 'in' && t.cashflowDirection !== 'out') return;
+    const amt = Number(t.amount) || 0;
+    if (!amt) return;
+    moves.push({
+      id: t.id, kind: 'debt', date: t.date,
+      signedAmount: t.cashflowDirection === 'in' ? amt : -amt,
+      label: 'Долг', raw: t,
+    });
+  });
+  return moves;
+};
+
+const daysBetweenIso = (a, b) => {
+  const da = new Date(`${a}T00:00:00`);
+  const db = new Date(`${b}T00:00:00`);
+  const diff = (da - db) / 86400000;
+  return Number.isFinite(diff) ? Math.round(diff) : Infinity;
+};
+
+// Приблизительное сопоставление строк выписки с движениями в приложении: по
+// сумме (точно) и дате (в пределах toleranceDays — дата операции в приложении
+// может на день-два отличаться от даты в выписке). Жадный алгоритм: сперва
+// сопоставляются пары с наименьшей разницей в датах, каждая строка и каждое
+// движение используются не больше одного раза. То, что не нашло пару, —
+// кандидаты в «не внесено» (есть в выписке) и «лишнее» (есть в приложении).
+const matchStatementToAppMoves = (stmtTxns, appMoves, toleranceDays = 3) => {
+  const candidates = [];
+  stmtTxns.forEach((s, si) => {
+    appMoves.forEach((m, mi) => {
+      if (Math.abs(s.amount - m.signedAmount) > 0.01) return;
+      const dayDiff = Math.abs(daysBetweenIso(s.date, m.date));
+      if (dayDiff > toleranceDays) return;
+      candidates.push({ si, mi, dayDiff });
+    });
+  });
+  candidates.sort((a, b) => a.dayDiff - b.dayDiff);
+  const usedS = new Set(), usedM = new Set();
+  candidates.forEach(c => {
+    if (usedS.has(c.si) || usedM.has(c.mi)) return;
+    usedS.add(c.si); usedM.add(c.mi);
+  });
+  return {
+    unmatchedStatement: stmtTxns.filter((_, i) => !usedS.has(i)),
+    unmatchedApp: appMoves.filter((_, i) => !usedM.has(i)),
+  };
+};
+
 const formatRubExact = (n) => {
   const num = Number(n) || 0;
   return new Intl.NumberFormat('ru-RU', {
     minimumFractionDigits: Number.isInteger(num) ? 0 : 2,
     maximumFractionDigits: 2,
   }).format(num);
+};
+
+// ── ДДС: выписка по счёту за период (скачивание) ────────────────────────────
+// CSV, а не JSON/что-то ещё — открывается в Excel/Google Таблицах без плясок.
+// ';' как разделитель и BOM в начале — так Excel в русской локали не путает
+// кодировку и не пытается склеить колонки в одну по запятым внутри сумм.
+const csvEscapeCell = (v) => {
+  const s = String(v ?? '');
+  return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+const csvRow = (cells) => cells.map(csvEscapeCell).join(';');
+
+const buildCashflowStatementCsv = ({ accountName, from, to, openingBalance, closingBalance, moves, artById }) => {
+  const fmtDate = (d) => (d || '').split('-').reverse().join('.');
+  const sorted = [...moves].sort((a, b) => b.date.localeCompare(a.date));
+  const income = sorted.filter(m => m.signedAmount > 0).reduce((s, m) => s + m.signedAmount, 0);
+  const expense = -sorted.filter(m => m.signedAmount < 0).reduce((s, m) => s + m.signedAmount, 0);
+  const kindLabel = (m) => m.kind === 'op'
+    ? (artById[m.raw.categoryId]?.label || 'Статья удалена')
+    : (m.kind === 'savings' ? 'Накопления' : 'Долг');
+
+  const lines = [
+    csvRow(['Выписка ДДС']),
+    csvRow(['Счёт', accountName]),
+    csvRow(['Период', `${fmtDate(from)} — ${fmtDate(to)}`]),
+    csvRow(['Баланс на начало периода, ₽', formatRubExact(openingBalance)]),
+    '',
+    csvRow(['Дата', 'Направление', 'Статья', 'Назначение', 'Сумма, ₽']),
+    ...sorted.map(m => csvRow([
+      fmtDate(m.date),
+      m.signedAmount > 0 ? 'Приход' : 'Расход',
+      kindLabel(m),
+      m.kind === 'op' ? (m.label || '') : '',
+      formatRubExact(Math.abs(m.signedAmount)),
+    ])),
+    '',
+    csvRow(['Баланс на конец периода, ₽', formatRubExact(closingBalance)]),
+    csvRow(['Приход за период, ₽', formatRubExact(income)]),
+    csvRow(['Расход за период, ₽', formatRubExact(expense)]),
+  ];
+  return '﻿' + lines.join('\r\n');
+};
+
+const downloadTextFile = (filename, text, mime = 'text/csv;charset=utf-8') => {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 };
 
 // Адрес приложения — С завершающим слэшем: только по нему относительная
@@ -13762,6 +14204,15 @@ function BudgetMonthlyView({ data, setData }) {
   const [showFact,     setShowFact]     = useState(true);
   const [editCell,     setEditCell]     = useState(null);
   const [editVal,      setEditVal]      = useState('');
+  const [showOverlaps, setShowOverlaps] = useState(false);
+  // Долги/Накопления/Постоянные обычно длинные и меняются реже плановых
+  // статей — по умолчанию свёрнуты, но каждую можно развернуть кликом.
+  const [collapsedCats, setCollapsedCats] = useState(() => new Set(['__debts', '__savings', '__recurring']));
+  const toggleCatCollapse = (id) => setCollapsedCats(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
   const scrollRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -13926,6 +14377,77 @@ function BudgetMonthlyView({ data, setData }) {
     if (bi === -1) return -1;
     return ai - bi;
   });
+
+  // ── Задвоенный факт ──────────────────────────────────────────────────────
+  // budgetFactValues/budgetIncomeFactValues (ручной факт/факт из загруженной
+  // выписки) СКЛАДЫВАЮТСЯ с ddsFact (факт из операций ДДС) в одну ячейку —
+  // см. getItemFact/getIncomeFactVal ниже. Это нормально, когда они
+  // покрывают РАЗНЫЕ траты за месяц, но если по одному и тому же месяцу
+  // загружена вся выписка целиком И отдельно занесены те же траты через
+  // ДДС — сумма в ячейке задваивается. Ничего не чиним автоматически: только
+  // находим такие пересечения и даём убрать вклад выписки одной кнопкой —
+  // решает пользователь, глядя на цифры.
+  const factOverlaps = useMemo(() => {
+    const itemLabel = {};
+    allCats.forEach(cat => (cat.items || []).forEach(it => { itemLabel[it.id] = it.label; }));
+    incomeSources.forEach(src => { itemLabel[src.id] = src.label; });
+
+    const collect = (kind, vals, ddsMap) => Object.keys(vals).reduce((out, key) => {
+      const manual = Number(vals[key]) || 0;
+      const dds = Number(ddsMap[key]) || 0;
+      if (!manual || !dds) return out;
+      const idx = key.lastIndexOf('_');
+      const itemId = key.slice(0, idx), month = key.slice(idx + 1);
+      out.push({ kind, key, itemId, month, manual, dds, label: itemLabel[itemId] || (kind === 'income' ? 'Доход' : 'Статья') });
+      return out;
+    }, []);
+
+    return [...collect('expense', factVals, ddsFact.expense), ...collect('income', incomeFactVals, ddsFact.income)]
+      .sort((a, b) => b.month.localeCompare(a.month) || (b.manual + b.dds) - (a.manual + a.dds));
+  }, [allCats, incomeSources, factVals, incomeFactVals, ddsFact]);
+
+  // Строки самой сохранённой выписки (budgetStatementRows), из которых была
+  // посчитана сумма для этой статьи/месяца — та же логика сопоставления,
+  // что и в opsFromStatement/getIncomeFactOps ниже. Их тоже убираем вместе
+  // с агрегатом, иначе разбор ячейки «Факт» продолжил бы показывать эти
+  // строки источником суммы, которой в самой сумме уже нет.
+  const stripStatementRows = (rows, d, o) => {
+    const account = d.budgetStatementAccount;
+    const mappings = d.budgetStatementMappings || {};
+    const target = o.kind === 'income' ? `inc:${o.itemId}` : `item:${o.itemId}`;
+    return rows.filter(r => !(
+      r.account === account && r.month === o.month && mappings[r.category] === target
+      && (o.kind === 'income' ? r.amount > 0 : r.amount < 0)
+    ));
+  };
+
+  const clearOverlapManual = (o) => {
+    setData(d => {
+      const fieldKey = o.kind === 'expense' ? 'budgetFactValues' : 'budgetIncomeFactValues';
+      const next = { ...(d[fieldKey] || {}) };
+      delete next[o.key];
+      return {
+        ...d,
+        [fieldKey]: next,
+        budgetStatementRows: stripStatementRows(d.budgetStatementRows || [], d, o),
+      };
+    });
+  };
+
+  const clearAllOverlaps = () => {
+    if (!confirm(`Убрать вклад выписки/ручного факта для ${factOverlaps.length} ${pluralRu(factOverlaps.length, ['строки', 'строк', 'строк'])}? Останется только факт из операций ДДС — отменить одной кнопкой нельзя.`)) return;
+    setData(d => {
+      const nextFact = { ...(d.budgetFactValues || {}) };
+      const nextIncFact = { ...(d.budgetIncomeFactValues || {}) };
+      let rows = d.budgetStatementRows || [];
+      factOverlaps.forEach(o => {
+        if (o.kind === 'expense') delete nextFact[o.key]; else delete nextIncFact[o.key];
+        rows = stripStatementRows(rows, d, o);
+      });
+      return { ...d, budgetFactValues: nextFact, budgetIncomeFactValues: nextIncFact, budgetStatementRows: rows };
+    });
+    setShowOverlaps(false);
+  };
 
   // ── Value helpers ─────────────────────────────────────────────────────────
   const getItemVal   = (item, month) => item.getAutoVal ? item.getAutoVal(month) : (vals[`${item.id}_${month}`] || 0);
@@ -14093,6 +14615,14 @@ function BudgetMonthlyView({ data, setData }) {
             Маппинг
           </button>
         )}
+        {factOverlaps.length > 0 && (
+          <button onClick={() => setShowOverlaps(true)}
+            className="px-3 py-1.5 rounded-xl text-xs border border-amber-300 bg-amber-50 text-amber-800 transition-colors inline-flex items-center gap-1.5"
+            title="Факт из выписки/вручную и факт из ДДС заданы одновременно — суммы могут быть задвоены">
+            <Icon name="copy" size={14} />
+            Задвоения: {factOverlaps.length}
+          </button>
+        )}
         <button onClick={() => setShowFact(v => !v)}
           className={`px-3 py-1.5 rounded-xl text-xs border transition-colors inline-flex items-center gap-1.5 ${
             showFact
@@ -14243,15 +14773,23 @@ function BudgetMonthlyView({ data, setData }) {
                 {/* ── Expense categories ─────────────────────────── */}
                 {allCats.map((cat) => {
                   const isAutoCat = !!cat.isAuto;
+                  const isExpanded = !collapsedCats.has(cat.id);
 
                   return (
                     <React.Fragment key={cat.id}>
                       {/* Category total row */}
                       <tr className="bg-gray-100">
                         <td className="sticky left-0 z-10 bg-gray-100 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs">
-                          {cat.emoji && <span className="mr-1.5">{cat.emoji}</span>}
-                          <span className="uppercase tracking-wide text-[var(--text)]">{cat.label}</span>
-                          {isAutoCat && <span className="ml-2 text-[9px] font-normal opacity-50 normal-case tracking-normal">авто</span>}
+                          <button onClick={() => toggleCatCollapse(cat.id)}
+                            className="w-full flex items-center gap-1 text-left hover:opacity-70 transition-opacity"
+                            title={isExpanded ? 'Свернуть' : 'Развернуть'}>
+                            <span className="flex-shrink-0" style={{ transform: isExpanded ? 'none' : 'rotate(-90deg)', transition: 'transform 0.15s ease' }}>
+                              <Icon name="chevronDown" size={12} />
+                            </span>
+                            {cat.emoji && <span className="mr-0.5">{cat.emoji}</span>}
+                            <span className="uppercase tracking-wide text-[var(--text)]">{cat.label}</span>
+                            {isAutoCat && <span className="ml-1 text-[9px] font-normal opacity-50 normal-case tracking-normal">авто</span>}
+                          </button>
                         </td>
                         {months.map(m => {
                           const t = catTotal(cat, m);
@@ -14277,7 +14815,7 @@ function BudgetMonthlyView({ data, setData }) {
                       </tr>
 
                       {/* Item rows */}
-                      {(cat.items || []).map((item, ii) => (
+                      {isExpanded && (cat.items || []).map((item, ii) => (
                         <tr key={item.id} className={"border-b border-[var(--border)] transition-colors hover:bg-blue-50/20 bg-white"}>
                           <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
                             {!isAutoCat && item.emoji && <span className="mr-1">{item.emoji}</span>}
@@ -14399,6 +14937,63 @@ function BudgetMonthlyView({ data, setData }) {
         </div>
       )}
 
+      {/* ── Корректировки: технические статьи баланса счёта ───────────────────
+          Не входят в «Итого расходы»/«Приход»/«Остаток» выше — это не реальная
+          трата/доход, а правка баланса (например, после сверки с выпиской).
+          Баланс самого счёта на вкладке «ДДС» они двигают как любая обычная
+          операция — просто отдельно от «настоящих» план/факт статей. */}
+      <div className="mt-4 bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="text-sm border-collapse" style={{minWidth:`${180 + months.length * monthColWidth}px`}}>
+            <thead>
+              <tr>
+                <th className="sticky left-0 z-10 bg-[var(--bg)] px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] border-b border-r border-[var(--border)]"
+                  style={{minWidth:'180px'}}>
+                  🛠️ Корректировки
+                </th>
+                {months.map((m, i) => (
+                  <th key={m} colSpan={showFact ? 2 : 1}
+                    className={`px-1 py-2.5 text-center text-xs font-semibold uppercase tracking-wide border-b border-l-2 border-[var(--border)] whitespace-nowrap
+                      ${m === curMonth ? 'bg-blue-50 text-blue-700' : 'bg-[var(--bg)] text-[var(--text-subtle)]'}`}
+                    style={{minWidth:`${monthColWidth}px`}}>
+                    {MONTH_NAMES[i]}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                { id: ADJUSTMENT_EXPENSE_ID, label: 'Корректировка расход', direction: 'out', map: ddsFact.expense, color: 'text-[var(--text)]' },
+                { id: ADJUSTMENT_INCOME_ID,  label: 'Корректировка доход',  direction: 'in',  map: ddsFact.income,  color: 'text-emerald-700' },
+              ].map(row => (
+                <tr key={row.id} className="border-b border-[var(--border)] last:border-b-0">
+                  <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm">
+                    <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{row.label}</span>
+                  </td>
+                  {months.map(m => {
+                    const fv = row.map[`${row.id}_${m}`] || 0;
+                    return (
+                      <td key={m} colSpan={showFact ? 2 : 1}
+                        className={`px-1 py-1.5 text-center text-xs whitespace-nowrap ${fv > 0 ? row.color + ' font-medium' : 'text-gray-300 text-[10px]'}`}>
+                        {fv > 0 ? (
+                          <button onClick={() => openFactDetails(row.label, m, opsFromCashflow(row.id, row.direction, m))}
+                            className="hover:underline decoration-dotted underline-offset-2" title="Показать операции">
+                            {formatRub(fv)}
+                          </button>
+                        ) : '—'}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="px-4 py-2 text-[11px] text-[var(--text-subtle)] border-t border-[var(--border)]">
+          Технические статьи для правки баланса счёта — не входят в «Итого расходы», «Приход» и «Остаток» выше, но учитываются в балансе счёта на вкладке «ДДС».
+        </div>
+      </div>
+
       {showSettings && (
         <BudgetPlanSettingsModal data={data} setData={setData} autoCategories={autoCategories} allCatsOrdered={allCats} onClose={() => setShowSettings(false)} />
       )}
@@ -14435,7 +15030,71 @@ function BudgetMonthlyView({ data, setData }) {
           onClose={() => setFactDetails(null)}
         />
       )}
+
+      {showOverlaps && (
+        <BudgetFactOverlapModal
+          overlaps={factOverlaps}
+          onClear={clearOverlapManual}
+          onClearAll={clearAllOverlaps}
+          onClose={() => setShowOverlaps(false)}
+        />
+      )}
     </div>
+  );
+}
+
+// Задвоенный факт на «По месяцу»: показывает пары «выписка + ДДС» за один
+// месяц по одной статье и даёт убрать вклад выписки одной кнопкой (на статью
+// или на всё разом) — см. factOverlaps в BudgetMonthlyView.
+function BudgetFactOverlapModal({ overlaps, onClear, onClearAll, onClose }) {
+  const MONTH_NAMES_FULL = ['январь','февраль','март','апрель','май','июнь',
+                            'июль','август','сентябрь','октябрь','ноябрь','декабрь'];
+  const monthLabel = (month) => {
+    const m = /^(\d{4})-(\d{2})$/.exec(month || '');
+    return m ? `${MONTH_NAMES_FULL[Number(m[2]) - 1] || ''} ${m[1]}` : (month || '');
+  };
+
+  return (
+    <Modal title="Задвоенный факт" onClose={onClose} wide>
+      <div className="space-y-4">
+        <div className="text-sm text-[var(--text-muted)]">
+          По этим статьям и месяцам одновременно заданы факт из выписки/вручную и факт из операций ДДС —
+          в ячейке «Факт» они складываются, и сумма получается задвоенной. Обычно правильно оставить
+          только факт из ДДС (он по отдельным платежам) и убрать вклад выписки.
+        </div>
+
+        {overlaps.length === 0 ? (
+          <div className="text-center py-8 text-[var(--text-subtle)] text-sm">Задвоений не осталось 🎉</div>
+        ) : (
+          <div className="space-y-2 max-h-[55vh] overflow-y-auto">
+            {overlaps.map(o => (
+              <div key={o.key} className="flex items-center justify-between gap-3 border border-amber-200 bg-amber-50 rounded-xl px-3.5 py-2.5">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium truncate">{o.label}</div>
+                  <div className="text-xs text-[var(--text-subtle)] mt-0.5 capitalize">{monthLabel(o.month)}</div>
+                  <div className="text-xs text-amber-700 mt-1">
+                    Показано: {formatRub(o.manual + o.dds)} ₽ = выписка {formatRub(o.manual)} ₽ + ДДС {formatRub(o.dds)} ₽
+                  </div>
+                </div>
+                <button onClick={() => onClear(o)}
+                  className="flex-shrink-0 px-3 py-1.5 rounded-lg text-xs border border-amber-300 bg-white text-amber-800 hover:bg-amber-100 transition-colors whitespace-nowrap">
+                  Убрать выписку
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
+        <button onClick={onClose} className="btn-secondary flex-1">Закрыть</button>
+        {overlaps.length > 0 && (
+          <button onClick={onClearAll} className="btn-primary flex-1">
+            Убрать везде ({overlaps.length})
+          </button>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -14499,6 +15158,9 @@ function BudgetCashflowView({ data, setData, userId }) {
   const [editingOp,  setEditingOp]  = useState(null);   // объект операции или {} для новой
   const [showAccounts, setShowAccounts] = useState(false);
   const [copied,     setCopied]     = useState(false);
+  const [reconcileAccountId, setReconcileAccountId] = useState(null); // сверка счёта с выпиской
+  const [showExport, setShowExport] = useState(false); // скачать выписку ДДС за период
+  const [showDuplicates, setShowDuplicates] = useState(false); // возможные повторы операций
 
   const accounts = data.budgetCashflowAccounts || [];
   const ops      = cashflowOpsOf(data);
@@ -14570,6 +15232,25 @@ function BudgetCashflowView({ data, setData, userId }) {
     }));
   };
 
+  // Один запрос на подтверждение на всю пачку — иначе удаление десятка
+  // повторов означало бы десяток отдельных «Удалить операцию?».
+  const deleteOpsBulk = (ids) => {
+    if (!ids.length) return;
+    if (!confirm(`Удалить ${ids.length} ${pluralRu(ids.length, ['операцию', 'операции', 'операций'])}? Действие нельзя отменить.`)) return;
+    setData(d => {
+      const idSet = new Set(ids);
+      let deletedIds = d.deletedIds || {};
+      ids.forEach(id => { deletedIds = withDeletedId({ ...d, deletedIds }, 'budgetCashflowOps', id); });
+      return {
+        ...d,
+        budgetCashflowOps: (d.budgetCashflowOps || []).filter(o => !idSet.has(o.id)),
+        deletedIds,
+      };
+    });
+  };
+
+  const duplicateGroups = useMemo(() => findDuplicateCashflowOps(ops), [ops]);
+
   const ensureToken = () => {
     if (!user) return;
     if (!user.financeToken || !shareOn) {
@@ -14619,10 +15300,16 @@ function BudgetCashflowView({ data, setData, userId }) {
               Первоначальный баланс + операции. Эти же счета видны в приложении на телефоне.
             </div>
           </div>
-          <button onClick={() => setShowAccounts(true)}
-            className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors whitespace-nowrap">
-            Настроить
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowExport(true)} disabled={!accounts.length}
+              className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5">
+              <Icon name="download" size={14} /> Выписка
+            </button>
+            <button onClick={() => setShowAccounts(true)}
+              className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors whitespace-nowrap">
+              Настроить
+            </button>
+          </div>
         </div>
 
         {accounts.length === 0 ? (
@@ -14642,6 +15329,10 @@ function BudgetCashflowView({ data, setData, userId }) {
                   <div className="text-[11px] text-[var(--text-subtle)] mt-0.5">
                     старт: {formatRubExact(a.initialBalance || 0)} ₽
                   </div>
+                  <button onClick={() => setReconcileAccountId(a.id)}
+                    className="text-[11px] text-[var(--text-muted)] hover:text-[var(--text)] underline mt-1.5">
+                    Сверить с выпиской
+                  </button>
                 </div>
               );
             })}
@@ -14750,6 +15441,14 @@ function BudgetCashflowView({ data, setData, userId }) {
                 {totals.income - totals.expense >= 0 ? '+' : '−'}{formatRubExact(Math.abs(totals.income - totals.expense))} ₽
               </span></div>
             <div className="text-[var(--text-subtle)]">{visibleOps.length} оп.</div>
+            {duplicateGroups.length > 0 && (
+              <button onClick={() => setShowDuplicates(true)}
+                className="ml-auto px-3 py-1 rounded-lg text-xs border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 transition-colors inline-flex items-center gap-1.5"
+                title="Найдены операции с одинаковой датой, суммой, статьёй и счётом">
+                <Icon name="copy" size={13} />
+                Возможные повторы: {duplicateGroups.length}
+              </button>
+            )}
           </div>
         </div>
 
@@ -14832,7 +15531,123 @@ function BudgetCashflowView({ data, setData, userId }) {
           onClose={() => setEditingOp(null)}
         />
       )}
+
+      {reconcileAccountId && (
+        <CashflowReconcileModal
+          data={data}
+          setData={setData}
+          accounts={accounts}
+          articles={articles}
+          initialAccountId={reconcileAccountId}
+          onClose={() => setReconcileAccountId(null)}
+          onEditOp={(op) => { setReconcileAccountId(null); setEditingOp({ ...op }); }}
+          onDeleteOp={deleteOp}
+        />
+      )}
+
+      {showExport && (
+        <CashflowExportModal
+          data={data}
+          accounts={accounts}
+          articles={articles}
+          initialAccountId={accFilter || accounts[0]?.id || ''}
+          onClose={() => setShowExport(false)}
+        />
+      )}
+
+      {showDuplicates && (
+        <CashflowDuplicatesModal
+          groups={duplicateGroups}
+          artById={artById}
+          accById={accById}
+          onEdit={(op) => { setShowDuplicates(false); setEditingOp({ ...op }); }}
+          onDelete={deleteOp}
+          onDeleteMany={deleteOpsBulk}
+          onClose={() => setShowDuplicates(false)}
+        />
+      )}
     </div>
+  );
+}
+
+// Возможные повторы операций ДДС (см. findDuplicateCashflowOps) — например,
+// после того как сверку с выпиской прогнали дважды по пересекающимся
+// периодам и часть операций добавилась заново. Каждая группа — просто
+// подсказка «эти записи совпадают по дате/сумме/статье/счёту», решение,
+// что из этого лишнее, всегда за пользователем.
+function CashflowDuplicatesModal({ groups, artById, accById, onEdit, onDelete, onDeleteMany, onClose }) {
+  return (
+    <Modal title="Возможные повторы операций" onClose={onClose} wide>
+      <div className="space-y-4">
+        <div className="text-sm text-[var(--text-muted)]">
+          У этих операций совпадают дата, сумма, направление, статья и счёт — похоже на случайное
+          двойное добавление (например, сверка с выпиской прогонялась дважды по одному периоду).
+          Настоящие совпадения (та же трата на ту же сумму в тот же день) тоже сюда попадут — проверяйте
+          назначение и время создания перед удалением.
+        </div>
+
+        {groups.length === 0 ? (
+          <div className="text-center py-8 text-[var(--text-subtle)] text-sm">Повторов не осталось 🎉</div>
+        ) : (
+          <div className="space-y-3 max-h-[60vh] overflow-y-auto">
+            {groups.map(group => {
+              const first = group[0];
+              const art = artById[first.categoryId];
+              const acc = accById[first.accountId];
+              const isIn = first.direction === 'in';
+              return (
+                <div key={`${first.date}_${first.amount}_${first.direction}_${first.accountId}_${first.categoryId}`}
+                  className="border border-amber-200 bg-amber-50 rounded-xl p-3.5">
+                  <div className="flex items-start justify-between gap-3 mb-2.5">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium">
+                        {(first.date || '').split('-').reverse().join('.')} · {art ? art.label : 'Статья удалена'}
+                      </div>
+                      <div className="text-xs text-[var(--text-subtle)] mt-0.5">
+                        {acc ? acc.name : 'Счёт удалён'} · {group.length} записи
+                      </div>
+                    </div>
+                    <div className={`text-sm font-semibold tabular-nums whitespace-nowrap ${isIn ? 'text-emerald-600' : 'text-[var(--text)]'}`}>
+                      {isIn ? '+' : '−'}{formatRubExact(first.amount)} ₽
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    {group.map((op, i) => (
+                      <div key={op.id} className="flex items-center justify-between gap-3 bg-white rounded-lg border border-[var(--border)] px-3 py-2">
+                        <div className="min-w-0 text-xs">
+                          <span className="text-[var(--text-subtle)]">{i === 0 ? 'Первая запись' : `Запись ${i + 1}`}</span>
+                          {op.purpose && <span className="text-[var(--text-muted)]"> · {op.purpose}</span>}
+                          {op.source === 'pwa' && <span className="text-[var(--text-subtle)]"> · телефон</span>}
+                          {op.source === 'statement' && <span className="text-[var(--text-subtle)]"> · из выписки</span>}
+                        </div>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <button onClick={() => onEdit(op)} className="p-1.5 text-[var(--text-muted)] hover:text-[var(--text)]" title="Изменить">
+                            <Icon name="edit" size={14} />
+                          </button>
+                          <button onClick={() => onDelete(op.id)} className="p-1.5 text-[var(--text-muted)] hover:text-red-500" title="Удалить">
+                            <Icon name="trash" size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button onClick={() => onDeleteMany(group.slice(1).map(o => o.id))}
+                    className="mt-2.5 text-xs text-amber-800 hover:text-amber-900 underline decoration-dotted underline-offset-2">
+                    Оставить только первую запись, остальные {group.length - 1} удалить
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
+        <button onClick={onClose} className="btn-secondary flex-1">Закрыть</button>
+      </div>
+    </Modal>
   );
 }
 
@@ -15247,6 +16062,360 @@ function CashflowOpModal({ op, accounts, articles, onSave, onClose }) {
   );
 }
 
+// Сверка счёта с банковской выпиской: для случаев, когда баланс на карте
+// разошёлся с тем, что показывает ДДС. Пользователь вводит фактический
+// баланс с карты (дельта считается сразу) и грузит выписку — ИИ читает из
+// неё операции, а дальше они приблизительно сопоставляются с тем, что уже
+// записано в ДДС/Накоплениях/Долгах на этот счёт (см. matchStatementToAppMoves).
+// Ничего не применяется автоматически — только подсказки, что стоит добавить
+// или перепроверить.
+function CashflowReconcileModal({ data, setData, accounts, articles, initialAccountId, onClose, onEditOp, onDeleteOp }) {
+  const [accountId, setAccountId] = useState(initialAccountId || accounts[0]?.id || '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [statement, setStatement] = useState(null); // { transactions, totalIncome, totalExpense, fileName }
+  const [actualBalance, setActualBalance] = useState('');
+  const [addingFor, setAddingFor] = useState(''); // id строки выписки, для которой сейчас выбирают статью
+  const [addCategoryId, setAddCategoryId] = useState('');
+
+  const account = accounts.find(a => a.id === accountId) || null;
+  const allOps = cashflowOpsOf(data);
+  const appBalance = account ? cashflowAccountBalance(account, allOps, data.savingsTransactions, data.debtTransactions) : 0;
+
+  const actualNum = actualBalance === '' ? null : parseFloat(String(actualBalance).replace(/\s/g, '').replace(',', '.'));
+  const delta = actualNum != null && Number.isFinite(actualNum) ? actualNum - appBalance : null;
+
+  const appMoves = useMemo(() => accountId ? cashflowAppMovesForAccount(data, accountId) : [], [data, accountId]);
+  const match = useMemo(() => statement ? matchStatementToAppMoves(statement.transactions, appMoves, 3) : null, [statement, appMoves]);
+
+  const changeAccount = (id) => {
+    setAccountId(id);
+    setStatement(null);
+    setError('');
+    setAddingFor('');
+  };
+
+  const handleFiles = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    setError('');
+    if (files.some(f => !isHealthDocPdf(f) && !f.type.startsWith('image/'))) {
+      setError('Поддерживаются изображения и PDF');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await extractCashflowStatementTransactions(files, data.settings);
+      setStatement({ ...res, fileName: files[0].name });
+    } catch (err) {
+      setError(err.message || 'Не удалось распознать выписку');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const groupedArticlesFor = (dir) => articles.filter(a => a.direction === dir).reduce((acc, a) => {
+    (acc[a.group || '—'] = acc[a.group || '—'] || []).push(a);
+    return acc;
+  }, {});
+
+  const confirmAdd = (row) => {
+    if (!addCategoryId || !accountId) return;
+    setData(d => ({
+      ...d,
+      budgetCashflowOps: [...(d.budgetCashflowOps || []), {
+        id: crypto.randomUUID(),
+        date: row.date,
+        direction: row.amount > 0 ? 'in' : 'out',
+        amount: Math.round(Math.abs(row.amount) * 100) / 100,
+        accountId,
+        categoryId: addCategoryId,
+        purpose: row.description || '',
+        source: 'statement',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }],
+    }));
+    setAddingFor('');
+    setAddCategoryId('');
+  };
+
+  const kindLabel = (kind) => kind === 'savings' ? 'Накопления' : kind === 'debt' ? 'Долг' : 'Операция';
+
+  return (
+    <Modal title="Сверка с выпиской" onClose={onClose} wide>
+      <div className="space-y-5">
+        {accounts.length > 1 && (
+          <div>
+            <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Счёт</label>
+            <select value={accountId} onChange={e => changeAccount(e.target.value)}
+              className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm">
+              {accounts.map(a => <option key={a.id} value={a.id}>{a.name || 'Счёт'}</option>)}
+            </select>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3.5 py-3">
+            <div className="text-xs text-[var(--text-subtle)]">Баланс в приложении</div>
+            <div className="text-lg font-semibold tabular-nums mt-0.5">{formatRubExact(appBalance)} ₽</div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Баланс по факту (с карты)</label>
+            <input value={actualBalance} onChange={e => setActualBalance(e.target.value)} inputMode="decimal" placeholder="0"
+              className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+          </div>
+        </div>
+
+        {delta != null && (Math.abs(delta) > 0.01 ? (
+          <div className={`rounded-xl border px-3.5 py-2.5 text-sm ${delta > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-700'}`}>
+            Дельта: {delta > 0 ? '+' : '−'}{formatRubExact(Math.abs(delta))} ₽ — {delta > 0 ? 'на карте больше, чем в приложении' : 'в приложении больше, чем на карте'}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-800 px-3.5 py-2.5 text-sm">
+            Баланс сходится 🎉
+          </div>
+        ))}
+
+        {!statement ? (
+          <div>
+            <label className={`btn-primary inline-flex items-center gap-1.5 text-sm cursor-pointer ${busy || !accountId ? 'opacity-60 pointer-events-none' : ''}`}>
+              <Icon name="upload" size={16} />
+              {busy ? 'Распознаю…' : 'Загрузить выписку'}
+              <input type="file" accept=".pdf,image/*" multiple className="hidden" onChange={handleFiles} disabled={busy || !accountId} />
+            </label>
+            <div className="text-xs text-[var(--text-subtle)] mt-2">
+              PDF или фото выписки из банка — ИИ прочитает список операций и сравнит их с тем, что записано в ДДС
+              (плюс со связанными операциями Накоплений и Долгов на этот счёт).
+            </div>
+            {error && <div className="text-sm text-red-500 mt-2">{error}</div>}
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-2 text-xs text-[var(--text-subtle)]">
+              <div>Выписка: {statement.fileName} · {statement.transactions.length} {pluralRu(statement.transactions.length, ['операция', 'операции', 'операций'])}</div>
+              <button onClick={() => { setStatement(null); setError(''); setAddingFor(''); }} className="text-[var(--text-muted)] hover:text-[var(--text)] underline">
+                Загрузить другую
+              </button>
+            </div>
+
+            <div>
+              <div className="font-medium text-sm mb-2">
+                Похоже, не внесено в ДДС
+                {match.unmatchedStatement.length > 0 && <span className="text-[var(--text-subtle)] font-normal"> ({match.unmatchedStatement.length})</span>}
+              </div>
+              {match.unmatchedStatement.length === 0 ? (
+                <div className="text-sm text-[var(--text-subtle)]">Все операции выписки нашлись в ДДС.</div>
+              ) : (
+                <div className="space-y-2">
+                  {[...match.unmatchedStatement].sort((a, b) => b.date.localeCompare(a.date)).map(row => (
+                    <div key={row.id} className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-sm truncate">{row.description || '—'}</div>
+                          <div className="text-xs text-[var(--text-subtle)]">{row.date.split('-').reverse().join('.')}</div>
+                        </div>
+                        <div className={`text-sm font-semibold tabular-nums whitespace-nowrap ${row.amount > 0 ? 'text-emerald-600' : 'text-[var(--text)]'}`}>
+                          {row.amount > 0 ? '+' : '−'}{formatRubExact(Math.abs(row.amount))} ₽
+                        </div>
+                      </div>
+                      {addingFor === row.id ? (
+                        <div className="flex items-center gap-2 mt-2 flex-wrap">
+                          <select value={addCategoryId} onChange={e => setAddCategoryId(e.target.value)}
+                            className="flex-1 min-w-[10rem] bg-[var(--surface)] border border-[var(--border)] rounded-lg px-2.5 py-1.5 text-xs">
+                            <option value="">Статья…</option>
+                            {Object.entries(groupedArticlesFor(row.amount > 0 ? 'in' : 'out')).map(([group, items]) => (
+                              <optgroup key={group} label={group}>
+                                {items.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
+                              </optgroup>
+                            ))}
+                          </select>
+                          <button onClick={() => confirmAdd(row)} disabled={!addCategoryId}
+                            className="btn-primary text-xs px-3 py-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
+                            Добавить
+                          </button>
+                          <button onClick={() => { setAddingFor(''); setAddCategoryId(''); }} className="text-xs text-[var(--text-muted)]">
+                            Отмена
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => { setAddingFor(row.id); setAddCategoryId(''); }}
+                          className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] mt-1.5 underline">
+                          Добавить операцию в ДДС
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div className="font-medium text-sm mb-2">
+                Есть в ДДС, нет в выписке
+                {match.unmatchedApp.length > 0 && <span className="text-[var(--text-subtle)] font-normal"> ({match.unmatchedApp.length})</span>}
+              </div>
+              {match.unmatchedApp.length === 0 ? (
+                <div className="text-sm text-[var(--text-subtle)]">Все операции ДДС нашлись в выписке.</div>
+              ) : (
+                <div className="space-y-2">
+                  {[...match.unmatchedApp].sort((a, b) => b.date.localeCompare(a.date)).map(move => (
+                    <div key={`${move.kind}_${move.id}`} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-sm truncate">{move.label || kindLabel(move.kind)}</div>
+                        <div className="text-xs text-[var(--text-subtle)]">
+                          {move.date.split('-').reverse().join('.')}
+                          {move.kind !== 'op' && ` · смотрите на вкладке «${move.kind === 'savings' ? 'Накопления' : 'Долги'}»`}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <div className={`text-sm font-semibold tabular-nums ${move.signedAmount > 0 ? 'text-emerald-600' : 'text-[var(--text)]'}`}>
+                          {move.signedAmount > 0 ? '+' : '−'}{formatRubExact(Math.abs(move.signedAmount))} ₽
+                        </div>
+                        {move.kind === 'op' && (
+                          <>
+                            <button onClick={() => onEditOp(move.raw)} className="p-1 text-[var(--text-muted)] hover:text-[var(--text)]" title="Изменить">
+                              <Icon name="edit" size={14} />
+                            </button>
+                            <button onClick={() => onDeleteOp(move.id)} className="p-1 text-[var(--text-muted)] hover:text-red-500" title="Удалить">
+                              <Icon name="trash" size={14} />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="text-xs text-[var(--text-subtle)]">
+              Сопоставление приблизительное — по сумме и дате в пределах ±3 дней. Прежде чем добавлять или удалять операции, проверяйте их по описанию.
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
+        <button onClick={onClose} className="btn-secondary flex-1">Закрыть</button>
+      </div>
+    </Modal>
+  );
+}
+
+// Скачать выписку ДДС по счёту за выбранный период (CSV) — со строками
+// «Баланс на начало периода» и «Баланс на конец периода», которые считаются
+// той же cashflowAccountBalance(), что и баланс счёта на экране, только
+// с операциями, отфильтрованными по датам «до начала периода» и «по конец
+// периода включительно» — гарантированно совпадает с тем, что видно в ДДС.
+function CashflowExportModal({ data, accounts, articles, initialAccountId, onClose }) {
+  const [accountId, setAccountId] = useState(initialAccountId || accounts[0]?.id || '');
+  const [from, setFrom] = useState(`${getCurrentMonthStr()}-01`);
+  const [to,   setTo]   = useState(getTodayKey());
+
+  const account = accounts.find(a => a.id === accountId) || null;
+  const artById = useMemo(() => Object.fromEntries(articles.map(a => [a.id, a])), [articles]);
+  const rangeValid = !!(account && from && to && from <= to);
+
+  const setPreset = (rangeFrom, rangeTo) => { setFrom(rangeFrom); setTo(rangeTo); };
+  const presets = [
+    ['Этот месяц', () => setPreset(`${getCurrentMonthStr()}-01`, getTodayKey())],
+    ['Прошлый месяц', () => { const m = addMonthsStr(getCurrentMonthStr(), -1); setPreset(`${m}-01`, lastDayOfMonthStr(m)); }],
+    ['Этот год', () => setPreset(`${new Date().getFullYear()}-01-01`, getTodayKey())],
+  ];
+
+  const download = () => {
+    if (!rangeValid) return;
+    const allOps    = cashflowOpsOf(data);
+    const allSavTx  = data.savingsTransactions || [];
+    const allDebtTx = data.debtTransactions || [];
+
+    const opening = cashflowAccountBalance(
+      account,
+      allOps.filter(o => o.date && o.date < from),
+      allSavTx.filter(t => t.date && t.date < from),
+      allDebtTx.filter(t => t.date && t.date < from),
+    );
+    const closing = cashflowAccountBalance(
+      account,
+      allOps.filter(o => o.date && o.date <= to),
+      allSavTx.filter(t => t.date && t.date <= to),
+      allDebtTx.filter(t => t.date && t.date <= to),
+    );
+    const periodMoves = cashflowAppMovesForAccount(data, accountId).filter(m => m.date >= from && m.date <= to);
+
+    const csv = buildCashflowStatementCsv({
+      accountName: account.name || 'Счёт', from, to,
+      openingBalance: opening, closingBalance: closing,
+      moves: periodMoves, artById,
+    });
+    downloadTextFile(`Выписка ДДС ${account.name || 'Счёт'} ${from} - ${to}.csv`, csv);
+    onClose();
+  };
+
+  return (
+    <Modal title="Выписка ДДС" onClose={onClose}>
+      <div className="space-y-4">
+        {!accounts.length ? (
+          <div className="text-sm text-[var(--text-subtle)]">Сначала заведите счёт.</div>
+        ) : (
+          <>
+            {accounts.length > 1 && (
+              <div>
+                <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Счёт</label>
+                <select value={accountId} onChange={e => setAccountId(e.target.value)}
+                  className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm">
+                  {accounts.map(a => <option key={a.id} value={a.id}>{a.name || 'Счёт'}</option>)}
+                </select>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">С</label>
+                <input type="date" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)}
+                  className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">По</label>
+                <input type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)}
+                  className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[var(--text)]" />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 flex-wrap">
+              {presets.map(([label, fn]) => (
+                <button key={label} type="button" onClick={fn}
+                  className="px-2.5 py-1 rounded-lg text-xs font-medium bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5">
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {!rangeValid && from > to && (
+              <div className="text-xs text-red-500">Дата «С» позже даты «По»</div>
+            )}
+
+            <div className="text-xs text-[var(--text-subtle)]">
+              CSV со списком операций за период (включая связанные операции Накоплений и Долгов на этот счёт)
+              и балансами на начало и конец периода — так же считаются, как баланс счёта на экране.
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
+        <button onClick={onClose} className="btn-secondary">Отмена</button>
+        <button onClick={download} disabled={!rangeValid}
+          className="btn-primary flex-1 inline-flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed">
+          <Icon name="download" size={16} /> Скачать CSV
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 
 function BudgetStatementImportModal({ rows, fileName, editMode, data, setData, allCats, incomeSources, onClose }) {
   const savedMappings = data.budgetStatementMappings || {};
@@ -15557,10 +16726,17 @@ function BudgetStatementImportModal({ rows, fileName, editMode, data, setData, a
 
 function BudgetCopyMonthModal({ year, userCats, incomeSources, data, setData, onClose }) {
   const MONTH_NAMES = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
-  const months = MONTH_NAMES.map((_, i) => `${year}-${String(i + 1).padStart(2, '0')}`);
+  const monthsOfYear = (y) => MONTH_NAMES.map((_, i) => `${y}-${String(i + 1).padStart(2, '0')}`);
 
+  // Источник и назначение листаются по годам независимо — можно скопировать,
+  // например, декабрь одного года в несколько месяцев следующего.
+  const [srcYear,    setSrcYear]    = useState(year);
   const [srcMonth,   setSrcMonth]   = useState('');
-  const [dstMonths,  setDstMonths]  = useState([]);
+  const [dstYear,    setDstYear]    = useState(year);
+  const [dstMonths,  setDstMonths]  = useState([]); // полные "YYYY-MM", могут быть из разных лет
+
+  const srcMonthsOfYear = monthsOfYear(srcYear);
+  const dstMonthsOfYear = monthsOfYear(dstYear);
 
   const manualItemIds = userCats.flatMap(c => (c.items || []).map(it => it.id));
   const incomeIds     = incomeSources.map(s => s.id);
@@ -15574,8 +16750,16 @@ function BudgetCopyMonthModal({ year, userCats, incomeSources, data, setData, on
   );
 
   const toggleDst = (m) => setDstMonths(d => d.includes(m) ? d.filter(x => x !== m) : [...d, m]);
-  const availableDst = months.filter(m => m !== srcMonth);
-  const selectAllDst = () => setDstMonths(dstMonths.length === availableDst.length ? [] : availableDst);
+  const availableDstOfYear = dstMonthsOfYear.filter(m => m !== srcMonth);
+  const selectedInDstYear = dstMonths.filter(m => m.startsWith(`${dstYear}-`));
+  const allOfYearSelected = availableDstOfYear.length > 0 && selectedInDstYear.length === availableDstOfYear.length;
+  const selectAllDst = () => setDstMonths(d => allOfYearSelected
+    ? d.filter(m => !m.startsWith(`${dstYear}-`))
+    : [...new Set([...d, ...availableDstOfYear])]);
+  const monthChipLabel = (m) => {
+    const [y, mo] = m.split('-');
+    return `${MONTH_NAMES[Number(mo) - 1]} ${y}`;
+  };
 
   const canCopy = srcMonth && dstMonths.length > 0 && srcHasData;
 
@@ -15608,25 +16792,37 @@ function BudgetCopyMonthModal({ year, userCats, incomeSources, data, setData, on
     <Modal title="Копировать план месяца" onClose={onClose}>
       <div className="space-y-4">
         <div>
-          <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5">Откуда (источник)</label>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="block text-xs font-medium text-[var(--text-muted)]">Откуда (источник)</label>
+            <div className="flex items-center gap-1">
+              <button onClick={() => setSrcYear(y => y - 1)} className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-black/5" aria-label="Предыдущий год">‹</button>
+              <span className="text-xs font-medium w-10 text-center">{srcYear}</span>
+              <button onClick={() => setSrcYear(y => y + 1)} className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-black/5" aria-label="Следующий год">›</button>
+            </div>
+          </div>
           <select value={srcMonth} onChange={e => { setSrcMonth(e.target.value); setDstMonths(d => d.filter(m => m !== e.target.value)); }}
             className="w-full border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm bg-[var(--surface)]">
             <option value="">Выберите месяц…</option>
-            {months.map((m, i) => <option key={m} value={m}>{MONTH_NAMES[i]} {year}</option>)}
+            {srcMonthsOfYear.map((m, i) => <option key={m} value={m}>{MONTH_NAMES[i]} {srcYear}</option>)}
           </select>
         </div>
 
         <div>
           <div className="flex items-center justify-between mb-1.5">
-            <label className="block text-xs font-medium text-[var(--text-muted)]">Куда (можно несколько)</label>
+            <label className="block text-xs font-medium text-[var(--text-muted)]">Куда (можно несколько, в том числе из разных лет)</label>
             {srcMonth && (
               <button onClick={selectAllDst} className="text-[10px] text-blue-600 hover:underline">
-                {dstMonths.length === availableDst.length ? 'Снять все' : 'Выбрать все'}
+                {allOfYearSelected ? `Снять все за ${dstYear}` : `Выбрать все за ${dstYear}`}
               </button>
             )}
           </div>
+          <div className="flex items-center justify-center gap-1 mb-1.5">
+            <button onClick={() => setDstYear(y => y - 1)} className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-black/5" aria-label="Предыдущий год">‹</button>
+            <span className="text-xs font-medium w-10 text-center">{dstYear}</span>
+            <button onClick={() => setDstYear(y => y + 1)} className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-black/5" aria-label="Следующий год">›</button>
+          </div>
           <div className="border border-[var(--border)] rounded-xl overflow-hidden bg-[var(--surface)] max-h-[200px] overflow-y-auto">
-            {months.map((m, i) => {
+            {dstMonthsOfYear.map((m, i) => {
               const disabled = m === srcMonth;
               const checked = dstMonths.includes(m);
               return (
@@ -15642,7 +16838,15 @@ function BudgetCopyMonthModal({ year, userCats, incomeSources, data, setData, on
             })}
           </div>
           {dstMonths.length > 0 && (
-            <div className="text-xs text-blue-600 mt-1.5">Выбрано: {dstMonths.length} мес.</div>
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {[...dstMonths].sort().map(m => (
+                <button key={m} onClick={() => toggleDst(m)}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
+                  title="Убрать из выбранного">
+                  {monthChipLabel(m)} <span className="opacity-60">×</span>
+                </button>
+              ))}
+            </div>
           )}
         </div>
 
