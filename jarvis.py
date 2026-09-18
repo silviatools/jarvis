@@ -17,6 +17,7 @@ Any Telegram user who messages the bot is auto-subscribed.
 Requirements: pip3 install requests
 """
 
+import gzip
 import hashlib
 import html
 import json
@@ -6145,16 +6146,38 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                     f'<meta name="apple-mobile-web-app-title" content="{shortcut["apple_title"]}" />'.encode("utf-8"),
                     1,
                 )
+            # ETag поверх итогового контента (после подмены manifest/title у
+            # шорткатов), чтобы у /misc и site-wide "/" не совпадал и оба
+            # корректно инвалидировались при правке index (9).html.
+            etag = f'"{hashlib.sha1(content).hexdigest()}"'
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                # no-cache — не "не кэшировать", а "перед показом спросить
+                # сервер" (If-None-Match), поэтому safe и для /misc: если
+                # содержимое поменяется, ETag поменяется вместе с ним.
+                self.send_header("Cache-Control", "no-cache")
+                self._cors()
+                self.end_headers()
+                return
+            accept_enc = self.headers.get("Accept-Encoding", "")
+            body = content
+            encoding = None
+            if "gzip" in accept_enc:
+                body = gzip.compress(content, compresslevel=6)
+                encoding = "gzip"
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(content)))
-            if shortcut:
-                # Never let the browser (or iOS's home-screen bookmark step)
-                # serve a stale copy that still has the site-wide manifest link.
-                self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            if encoding:
+                self.send_header("Content-Encoding", encoding)
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
             self._cors()
             self.end_headers()
-            self.wfile.write(content)
+            if self.command != "HEAD":
+                self.wfile.write(body)
         except FileNotFoundError:
             self.send_response(404)
             self.end_headers()
