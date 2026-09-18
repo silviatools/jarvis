@@ -5925,10 +5925,10 @@ function ContainerModal({ item, onSave, onClose }) {
 
 // ============== KANBAN ==============
 const KANBAN_PRIORITIES = [
-  { id: 'none',   label: 'Нет',     color: 'text-[var(--text-subtle)]',  bg: '' },
-  { id: 'low',    label: 'Низкий',  color: 'text-blue-500',               bg: 'bg-blue-50/10 border-blue-400/30' },
-  { id: 'medium', label: 'Средний', color: 'text-amber-500',              bg: 'bg-amber-50/10 border-amber-400/30' },
-  { id: 'high',   label: 'Высокий', color: 'text-red-500',                bg: 'bg-red-50/10 border-red-400/30' },
+  { id: 'none',   label: 'Нет',     color: 'text-[var(--text-subtle)]',  bg: '',                                    accent: 'transparent' },
+  { id: 'low',    label: 'Низкий',  color: 'text-blue-500',               bg: 'bg-blue-50/10 border-blue-400/30',   accent: '#3b82f6' },
+  { id: 'medium', label: 'Средний', color: 'text-amber-500',              bg: 'bg-amber-50/10 border-amber-400/30', accent: '#f59e0b' },
+  { id: 'high',   label: 'Высокий', color: 'text-red-500',                bg: 'bg-red-50/10 border-red-400/30',     accent: '#ef4444' },
 ];
 const DEFAULT_KANBAN_COLUMNS = [
   { id: 'col-1', title: 'К выполнению', tasks: [] },
@@ -5957,6 +5957,11 @@ function SubtasksEditor({ subtasks, onChange }) {
   return (
     <div>
       <label>Подзадачи {subtasks.length > 0 && <span className="text-[var(--text-subtle)] font-normal">({done}/{subtasks.length})</span>}</label>
+      {subtasks.length > 0 && (
+        <div className="h-1.5 rounded-full bg-[var(--border)] overflow-hidden mb-2">
+          <div className="h-full bg-[var(--text)] transition-all" style={{ width: `${Math.round(done / subtasks.length * 100)}%` }} />
+        </div>
+      )}
       <div className="space-y-1.5 mb-2">
         {subtasks.map(s => (
           <div key={s.id} className="flex items-center gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2">
@@ -5974,10 +5979,41 @@ function SubtasksEditor({ subtasks, onChange }) {
   );
 }
 
+function ConfirmDialog({ title, text, confirmLabel = 'Удалить', danger, onConfirm, onCancel }) {
+  useEffect(() => {
+    const handler = (e) => e.key === 'Escape' && onCancel();
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onCancel]);
+
+  return ReactDOM.createPortal(
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm fade-in p-4" onClick={onCancel}>
+      <div onClick={e => e.stopPropagation()} className="bg-[var(--bg)] w-full max-w-sm rounded-2xl p-5 sm:p-6 border border-[var(--border)]">
+        <div className="font-display text-lg mb-2">{title}</div>
+        {text && <div className="text-sm text-[var(--text-muted)] mb-5">{text}</div>}
+        <div className="flex gap-2 mt-5">
+          <button onClick={onCancel} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={onConfirm} className={`flex-1 rounded-xl font-medium py-2.5 transition-all ${danger ? 'bg-red-500 text-white hover:opacity-90' : 'btn-primary'}`}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function formatCommentTime(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  } catch { return ''; }
+}
+
 function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
   const [f, setF] = useState({ ...task });
   const [newCom, setNewCom] = useState('');
   const [moveTo, setMoveTo] = useState(colId);
+  const [titleError, setTitleError] = useState(false);
+  const [confirmState, setConfirmState] = useState(null); // 'discard' | 'delete' | null
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
   const initialRef = useRef(JSON.stringify({ ...task }));
 
@@ -5989,11 +6025,10 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
   const deleteComment = (id) => set('comments', f.comments.filter(c => c.id !== id));
 
   const submit = () => {
-    if (!f.title.trim()) return alert('Введите заголовок задачи');
+    if (!f.title.trim()) { setTitleError(true); return; }
     onSave({ ...f, notify: !!(f.notify && f.notifyDate), notifyTime: f.notifyTime || '12:00' }, moveTo);
   };
 
-  const pri = KANBAN_PRIORITIES.find(p => p.id === f.priority) || KANBAN_PRIORITIES[0];
   const isNew = !task.createdAt || task.title === '';
 
   // Пока в задаче есть несохранённые правки, любое закрытие (крестик, клик по
@@ -6001,88 +6036,129 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
   // данные терялись молча.
   const isDirty = () => JSON.stringify(f) !== initialRef.current || moveTo !== colId || newCom.trim() !== '';
   const requestClose = () => {
-    if (isDirty() && !confirm(isNew ? 'Отменить создание задачи? Введённые данные будут потеряны.' : 'Есть несохранённые изменения. Закрыть без сохранения?')) return;
+    if (isDirty()) { setConfirmState('discard'); return; }
     onClose();
   };
 
   return (
-    <Modal onClose={requestClose} title={isNew ? 'Новая задача' : 'Редактировать задачу'}>
-      <div className="space-y-4">
-        <div><label>Заголовок</label><input value={f.title} onChange={e => set('title', e.target.value)} placeholder="Что нужно сделать?" autoFocus /></div>
+    <Modal onClose={requestClose} title={isNew ? 'Новая задача' : 'Задача'} wide>
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_260px] gap-6">
+        <div className="space-y-5 min-w-0">
+          <div>
+            <input
+              value={f.title}
+              onChange={e => { set('title', e.target.value); if (titleError) setTitleError(false); }}
+              placeholder="Что нужно сделать?"
+              autoFocus
+              className={`text-lg font-medium !px-0 !border-0 !border-b !rounded-none focus:!ring-0 ${titleError ? '!border-red-500' : ''}`}
+            />
+            {titleError && <div className="text-xs text-red-500 mt-1">Введите заголовок задачи</div>}
+          </div>
 
-        <div className="flex gap-3">
-          <div className="flex-1"><label>Дата начала</label><input type="date" value={f.startDate || ''} onChange={e => set('startDate', e.target.value)} /></div>
-          <div className="flex-1"><label>Дедлайн</label><input type="date" value={f.dueDate || ''} onChange={e => set('dueDate', e.target.value)} /></div>
-        </div>
-
-        <div className="border border-[var(--border)] rounded-xl p-3 space-y-3">
-          <label className="flex items-center gap-2 cursor-pointer !mb-0">
-            <input type="checkbox" className="!w-auto" checked={!!f.notify} onChange={e => set('notify', e.target.checked)} />
-            <span className="text-sm font-medium">Напоминание в Telegram</span>
-          </label>
-          {f.notify && (
-            <div className="flex gap-2 fade-in">
-              <div className="flex-1">
-                <label>Дата</label>
-                <input type="date" value={f.notifyDate || ''} onChange={e => set('notifyDate', e.target.value)} />
-              </div>
-              <div className="w-28">
-                <label>Время</label>
-                <MskTimeInput value={f.notifyTime || '12:00'} onChange={t => set('notifyTime', t)} />
-              </div>
+          <div>
+            <label>Приоритет</label>
+            <div className="flex gap-2 mt-1">
+              {KANBAN_PRIORITIES.map(p => (
+                <button key={p.id} onClick={() => set('priority', p.id)}
+                  className={`flex-1 py-2 rounded-xl text-sm font-medium transition-all ${
+                    f.priority === p.id
+                      ? 'bg-[var(--text)] text-white'
+                      : 'bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)]'
+                  }`}>
+                  {p.label}
+                </button>
+              ))}
             </div>
-          )}
-        </div>
-
-        <div>
-          <label>Приоритет</label>
-          <div className="flex gap-2 mt-1">
-            {KANBAN_PRIORITIES.map(p => (
-              <button key={p.id} onClick={() => set('priority', p.id)}
-                className={`flex-1 py-2 rounded-xl text-sm font-medium transition-all ${
-                  f.priority === p.id
-                    ? 'bg-[var(--text)] text-white'
-                    : 'bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)]'
-                }`}>
-                {p.label}
-              </button>
-            ))}
           </div>
-        </div>
 
-        <div><label>Описание</label><textarea value={f.description || ''} onChange={e => set('description', e.target.value)} rows={3} placeholder="Детали, ссылки, заметки..." style={{ resize: 'vertical' }} /></div>
+          <div className="flex gap-3">
+            <div className="flex-1"><label>Дата начала</label><input type="date" value={f.startDate || ''} onChange={e => set('startDate', e.target.value)} /></div>
+            <div className="flex-1"><label>Дедлайн</label><input type="date" value={f.dueDate || ''} onChange={e => set('dueDate', e.target.value)} /></div>
+          </div>
 
-        <SubtasksEditor subtasks={f.subtasks || []} onChange={v => set('subtasks', v)} />
-
-        <div>
-          <label>Колонка</label>
-          <select value={moveTo} onChange={e => setMoveTo(e.target.value)}>
-            {columns.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
-          </select>
-        </div>
-
-        <div>
-          <label>Комментарии</label>
-          <div className="space-y-2 mb-2">
-            {(f.comments || []).map(c => (
-              <div key={c.id} className="flex items-start gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2">
-                <div className="flex-1 text-sm">{c.text}</div>
-                <button onClick={() => deleteComment(c.id)} className="text-[var(--text-subtle)] hover:text-red-500 flex-shrink-0 mt-0.5"><Icon name="x" size={14}/></button>
+          <div className="border border-[var(--border)] rounded-xl p-3 space-y-3">
+            <label className="flex items-center gap-2 cursor-pointer !mb-0">
+              <input type="checkbox" className="!w-auto" checked={!!f.notify} onChange={e => set('notify', e.target.checked)} />
+              <span className="text-sm font-medium">Напоминание в Telegram</span>
+            </label>
+            {f.notify && (
+              <div className="flex gap-2 fade-in">
+                <div className="flex-1">
+                  <label>Дата</label>
+                  <input type="date" value={f.notifyDate || ''} onChange={e => set('notifyDate', e.target.value)} />
+                </div>
+                <div className="w-28">
+                  <label>Время</label>
+                  <MskTimeInput value={f.notifyTime || '12:00'} onChange={t => set('notifyTime', t)} />
+                </div>
               </div>
-            ))}
+            )}
           </div>
-          <div className="flex gap-2">
-            <input value={newCom} onChange={e => setNewCom(e.target.value)} onKeyDown={e => e.key === 'Enter' && addComment()} placeholder="Добавить комментарий..." className="flex-1 text-sm" />
-            <button onClick={addComment} className="btn-secondary px-3 text-sm">+</button>
-          </div>
+
+          <div><label>Описание</label><textarea value={f.description || ''} onChange={e => set('description', e.target.value)} rows={3} placeholder="Детали, ссылки, заметки..." style={{ resize: 'vertical' }} /></div>
+
+          <SubtasksEditor subtasks={f.subtasks || []} onChange={v => set('subtasks', v)} />
         </div>
 
-        <div className="flex gap-2 pt-2">
-          {!isNew && <button onClick={() => onDelete(f.id)} className="btn-secondary px-3 text-red-500"><Icon name="trash" size={16}/></button>}
-          <button onClick={requestClose} className="btn-secondary flex-1">Отмена</button>
-          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        <div className="space-y-5 min-w-0">
+          <div>
+            <label>Колонка</label>
+            <select value={moveTo} onChange={e => setMoveTo(e.target.value)}>
+              {columns.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
+            </select>
+          </div>
+
+          {!isNew && task.createdAt && (
+            <div className="text-xs text-[var(--text-subtle)]">Создано {formatCommentTime(task.createdAt)}</div>
+          )}
+
+          <div>
+            <label>Комментарии</label>
+            <div className="space-y-2 mb-2 max-h-64 overflow-y-auto pr-0.5">
+              {(f.comments || []).map(c => (
+                <div key={c.id} className="flex items-start gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2">
+                  <div className="flex-1 text-sm">
+                    <div>{c.text}</div>
+                    <div className="text-[10px] text-[var(--text-subtle)] mt-1">{formatCommentTime(c.createdAt)}</div>
+                  </div>
+                  <button onClick={() => deleteComment(c.id)} className="text-[var(--text-subtle)] hover:text-red-500 flex-shrink-0 mt-0.5"><Icon name="x" size={14}/></button>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input value={newCom} onChange={e => setNewCom(e.target.value)} onKeyDown={e => e.key === 'Enter' && addComment()} placeholder="Добавить комментарий..." className="flex-1 text-sm" />
+              <button onClick={addComment} className="btn-secondary px-3 text-sm">+</button>
+            </div>
+          </div>
         </div>
       </div>
+
+      <div className="flex gap-2 pt-5 mt-5 border-t border-[var(--border)]">
+        {!isNew && <button onClick={() => setConfirmState('delete')} className="btn-secondary px-3 text-red-500"><Icon name="trash" size={16}/></button>}
+        <button onClick={requestClose} className="btn-secondary flex-1">Отмена</button>
+        <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+      </div>
+
+      {confirmState === 'discard' && (
+        <ConfirmDialog
+          title={isNew ? 'Отменить создание задачи?' : 'Закрыть без сохранения?'}
+          text="Введённые изменения будут потеряны."
+          confirmLabel="Не сохранять"
+          danger
+          onCancel={() => setConfirmState(null)}
+          onConfirm={onClose}
+        />
+      )}
+      {confirmState === 'delete' && (
+        <ConfirmDialog
+          title="Удалить задачу?"
+          text="Это действие нельзя отменить."
+          confirmLabel="Удалить"
+          danger
+          onCancel={() => setConfirmState(null)}
+          onConfirm={() => onDelete(f.id)}
+        />
+      )}
     </Modal>
   );
 }
@@ -6127,11 +6203,23 @@ function KanbanView({ data, setData }) {
 
   const [editingTask, setEditingTask] = useState(null); // { task, colId }
   const [editingCol, setEditingCol] = useState(null);   // column object or 'new'
-  const [addingColIdx, setAddingColIdx] = useState(null);
+  const [confirmDeleteCol, setConfirmDeleteCol] = useState(null); // column id
   const [dragging, setDragging] = useState(null);       // { taskId, fromColId }
+  const [draggingCol, setDraggingCol] = useState(null); // column id
   const [dragOverCol, setDragOverCol] = useState(null);
+  const [query, setQuery] = useState('');
+  const [hideDone, setHideDone] = useState(false);
+  const [quickAddCol, setQuickAddCol] = useState(null); // column id
+  const [quickAddText, setQuickAddText] = useState('');
   const sort = data.kanban?.sort || 'default';
   const setSort = (val) => setData(d => ({ ...d, kanban: { ...d.kanban, sort: val } }));
+
+  const matchesQuery = (t) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return t.title.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q);
+  };
+  const visibleTasks = (tasks) => tasks.filter(t => matchesQuery(t) && (!hideDone || !t.closed));
 
   const sortTasks = (tasks) => {
     const open = tasks.filter(t => !t.closed);
@@ -6163,12 +6251,12 @@ function KanbanView({ data, setData }) {
     setEditingCol(null);
   };
   const deleteColumn = (id) => {
-    if (!confirm('Удалить колонку со всеми задачами?')) return;
     setData(d => ({
       ...d,
       kanban: { ...d.kanban, columns: (d.kanban?.columns || DEFAULT_KANBAN_COLUMNS).filter(c => c.id !== id) },
       deletedIds: withDeletedId(d, 'kanbanColumns', id),
     }));
+    setConfirmDeleteCol(null);
   };
   const moveColumn = (id, dir) => {
     const idx = columns.findIndex(c => c.id === id);
@@ -6178,6 +6266,19 @@ function KanbanView({ data, setData }) {
     const arr = [...columns];
     [arr[idx], arr[next]] = [arr[next], arr[idx]];
     setColumns(arr);
+  };
+  const handleColDragStart = (id) => setDraggingCol(id);
+  const handleColDragEnd = () => { setDraggingCol(null); setDragOverCol(null); };
+  const handleColDrop = (toId) => {
+    if (!draggingCol || draggingCol === toId) { handleColDragEnd(); return; }
+    const fromIdx = columns.findIndex(c => c.id === draggingCol);
+    const toIdx = columns.findIndex(c => c.id === toId);
+    if (fromIdx < 0 || toIdx < 0) { handleColDragEnd(); return; }
+    const arr = [...columns];
+    const [moved] = arr.splice(fromIdx, 1);
+    arr.splice(toIdx, 0, moved);
+    setColumns(arr);
+    handleColDragEnd();
   };
 
   // ── tasks ──
@@ -6198,10 +6299,18 @@ function KanbanView({ data, setData }) {
   };
 
   const deleteTask = (taskId, colId) => {
-    if (!confirm('Удалить задачу?')) return;
     setColumns(columns.map(c => c.id === colId ? { ...c, tasks: c.tasks.filter(t => t.id !== taskId) } : c));
     setEditingTask(null);
   };
+
+  const submitQuickAdd = (colId) => {
+    const title = quickAddText.trim();
+    if (!title) { setQuickAddCol(null); return; }
+    const task = newTask({ title });
+    setColumns(columns.map(c => c.id === colId ? { ...c, tasks: [task, ...c.tasks] } : c));
+    setQuickAddText('');
+  };
+  const cancelQuickAdd = () => { setQuickAddCol(null); setQuickAddText(''); };
 
   const moveTask = (taskId, fromColId, dir) => {
     const fromIdx = columns.findIndex(c => c.id === fromColId);
@@ -6259,9 +6368,22 @@ function KanbanView({ data, setData }) {
       <div className="mx-auto" style={{ width: 'fit-content' }}>
 
         {/* Header */}
-        <div className="flex items-center justify-between gap-8 mb-6">
-          <h2 className="font-display text-2xl">Задачи</h2>
-          <div className="flex items-center gap-2">
+        <div className="mb-6">
+          <div className="flex items-center justify-between gap-4 mb-3">
+            <h2 className="font-display text-2xl">Задачи</h2>
+            <button onClick={() => setEditingCol('new')} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--text)] text-white transition-all hover:opacity-80 flex-shrink-0">
+              <Icon name="plus" size={13}/> Колонка
+            </button>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative">
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-subtle)] pointer-events-none"><Icon name="search" size={13}/></span>
+              <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Поиск задач..." className="!py-1.5 !pl-8 text-xs w-full sm:w-44" />
+            </div>
+            <button onClick={() => setHideDone(v => !v)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${hideDone ? 'bg-[var(--text)] text-white border-[var(--text)]' : 'text-[var(--text-muted)] border-[var(--border)] hover:text-[var(--text)]'}`}>
+              Скрыть выполненные
+            </button>
             <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
               {KANBAN_SORT_OPTIONS.map(opt => (
                 <button key={opt.id} onClick={() => setSort(opt.id)}
@@ -6270,9 +6392,6 @@ function KanbanView({ data, setData }) {
                 </button>
               ))}
             </div>
-            <button onClick={() => setEditingCol('new')} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--text)] text-white transition-all hover:opacity-80">
-              <Icon name="plus" size={13}/> Колонка
-            </button>
           </div>
         </div>
 
@@ -6285,13 +6404,18 @@ function KanbanView({ data, setData }) {
         <div className="flex gap-4">
             {columns.map((col, colIdx) => (
               <div key={col.id}
-                className={`w-72 flex-shrink-0 flex flex-col bg-[var(--surface)] border rounded-2xl overflow-hidden transition-all ${dragOverCol === col.id ? 'border-[var(--text)] ring-2 ring-[var(--text)]/10' : 'border-[var(--border)]'}`}
+                className={`w-72 flex-shrink-0 flex flex-col bg-[var(--surface)] border rounded-2xl overflow-hidden transition-all ${dragOverCol === col.id ? 'border-[var(--text)] ring-2 ring-[var(--text)]/10' : 'border-[var(--border)]'} ${draggingCol === col.id ? 'opacity-40' : ''}`}
                 onDragOver={e => { e.preventDefault(); setDragOverCol(col.id); }}
                 onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOverCol(null); }}
-                onDrop={() => handleDrop(col.id)}>
+                onDrop={() => { if (draggingCol) handleColDrop(col.id); else handleDrop(col.id); }}>
                 {/* Column header */}
                 <div className="flex items-center gap-2 px-4 pt-4 pb-3 border-b border-[var(--border)]">
-                  <div className="flex-1 font-medium text-sm truncate">{col.title}</div>
+                  <div
+                    draggable
+                    onDragStart={e => { e.stopPropagation(); handleColDragStart(col.id); }}
+                    onDragEnd={handleColDragEnd}
+                    title="Потащите, чтобы переставить колонку"
+                    className="flex-1 font-medium text-sm truncate cursor-grab active:cursor-grabbing">{col.title}</div>
                   <span className="text-xs text-[var(--text-subtle)] bg-[var(--bg)] border border-[var(--border)] rounded-full px-2 py-0.5">{col.tasks.length}</span>
                   <button onClick={() => moveColumn(col.id, -1)} disabled={colIdx === 0} className="p-1 rounded-lg hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-30">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
@@ -6300,20 +6424,47 @@ function KanbanView({ data, setData }) {
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
                   </button>
                   <button onClick={() => setEditingCol(col)} className="p-1 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={14}/></button>
-                  <button onClick={() => deleteColumn(col.id)} className="p-1 rounded-lg hover:bg-black/5 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14}/></button>
+                  <button onClick={() => setConfirmDeleteCol(col.id)} className="p-1 rounded-lg hover:bg-black/5 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14}/></button>
                 </div>
 
                 {/* Add task */}
                 <div className="p-3 border-b border-[var(--border)]">
-                  <button onClick={() => setEditingTask({ task: newTask(), colId: col.id })}
-                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg)] transition-all border border-dashed border-[var(--border)] hover:border-[var(--border-strong)]">
-                    <Icon name="plus" size={15}/> Добавить задачу
-                  </button>
+                  {quickAddCol === col.id ? (
+                    <div className="space-y-2 fade-in">
+                      <textarea
+                        autoFocus
+                        rows={2}
+                        value={quickAddText}
+                        onChange={e => setQuickAddText(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitQuickAdd(col.id); }
+                          if (e.key === 'Escape') cancelQuickAdd();
+                        }}
+                        placeholder="Что нужно сделать? Enter — добавить"
+                        className="text-sm"
+                        style={{ resize: 'none' }}
+                      />
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => submitQuickAdd(col.id)} className="btn-primary flex-1 !py-1.5 text-sm">Добавить</button>
+                        <button onClick={cancelQuickAdd} className="btn-secondary !py-1.5 px-3"><Icon name="x" size={14}/></button>
+                        <button
+                          onClick={() => { setEditingTask({ task: newTask({ title: quickAddText.trim() }), colId: col.id }); cancelQuickAdd(); }}
+                          className="text-xs text-[var(--text-subtle)] hover:text-[var(--text)] flex-shrink-0 whitespace-nowrap">
+                          детали
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button onClick={() => { setQuickAddCol(col.id); setQuickAddText(''); }}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg)] transition-all border border-dashed border-[var(--border)] hover:border-[var(--border-strong)]">
+                      <Icon name="plus" size={15}/> Добавить задачу
+                    </button>
+                  )}
                 </div>
 
                 {/* Tasks */}
                 <div className="flex-1 p-3 space-y-2 overflow-y-auto" style={{ maxHeight: '60vh' }}>
-                  {sortTasks(col.tasks).map(task => {
+                  {sortTasks(visibleTasks(col.tasks)).map(task => {
                     const p = priInfo(task.priority);
                     const due = formatDue(task.dueDate);
                     return (
@@ -6322,6 +6473,7 @@ function KanbanView({ data, setData }) {
                         onDragStart={() => handleDragStart(task.id, col.id)}
                         onDragEnd={handleDragEnd}
                         onClick={() => setEditingTask({ task, colId: col.id })}
+                        style={p.id !== 'none' ? { borderLeft: `3px solid ${p.accent}` } : undefined}
                         className={`bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 cursor-grab active:cursor-grabbing hover:border-[var(--border-strong)] transition-all group select-none ${dragging?.taskId === task.id ? 'opacity-40' : ''} ${task.closed ? 'opacity-50' : ''}`}>
                         {task.priority !== 'none' && (
                           <div className={`text-[10px] font-semibold uppercase tracking-wide mb-1.5 ${p.color}`}>{p.label}</div>
@@ -6383,6 +6535,16 @@ function KanbanView({ data, setData }) {
           column={editingCol === 'new' ? null : editingCol}
           onSave={(title) => editingCol === 'new' ? addColumn(title) : updateColumn(editingCol.id, title)}
           onClose={() => setEditingCol(null)}
+        />
+      )}
+      {confirmDeleteCol && (
+        <ConfirmDialog
+          title="Удалить колонку?"
+          text="Колонка и все задачи в ней будут удалены без возможности восстановления."
+          confirmLabel="Удалить"
+          danger
+          onCancel={() => setConfirmDeleteCol(null)}
+          onConfirm={() => deleteColumn(confirmDeleteCol)}
         />
       )}
     </div>
