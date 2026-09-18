@@ -17,6 +17,7 @@ Any Telegram user who messages the bot is auto-subscribed.
 Requirements: pip3 install requests
 """
 
+import gzip
 import hashlib
 import html
 import json
@@ -70,7 +71,15 @@ FREQ_DAYS = {
 MUSIC_EXT = {"mp3": "audio/mpeg", "m4a": "audio/mp4", "aac": "audio/aac",
              "wav": "audio/wav", "ogg": "audio/ogg", "opus": "audio/ogg",
              "flac": "audio/flac"}
+# Встроенные треки: собственный синтез, лежат в репозитории рядом с кодом.
+# Порядок словаря — порядок в списке раздела «Музыка».
 MUSIC_DEMO = {
+    "gym-lift.mp3": "Разогрев · 104",
+    "gym-press.mp3": "Жим · 128",
+    "gym-push.mp3": "На максимум · 136",
+    "gym-heavy.mp3": "Тяжёлый подход · 92",
+    "gym-cardio.mp3": "Кардио · 150",
+    "gym-cooldown.mp3": "Заминка · 86",
     "demo-warmup.mp3": "Демо — Разминка",
     "demo-drive.mp3": "Демо — Рабочий подход",
 }
@@ -3367,6 +3376,21 @@ PF_DEFAULT_RECURRING_CATS = [
     {"id": "other",         "emoji": "📌", "label": "Другое"},
 ]
 
+# Технические статьи «Корректировка расход/доход» — правка баланса счёта
+# (например, после сверки с банковской выпиской), а не реальная трата/доход.
+# Встроены намертво, доступны в выборе статьи наравне с обычными, их факт
+# считается в балансе счёта, но НЕ входит в план/факт «По месяцу» — см.
+# pf_budget_rows() ниже (он их не перечисляет) и «Корректировки» в
+# BudgetMonthlyView. ДЕРЖАТЬ В СИНХРОНЕ с cashflowArticles() из index (9).html.
+ADJUSTMENT_EXPENSE_ID = "__adj_out"
+ADJUSTMENT_INCOME_ID = "__adj_in"
+ADJUSTMENT_ARTICLES = [
+    {"id": ADJUSTMENT_EXPENSE_ID, "name": "Корректировка расход", "direction": "out",
+     "group_name": "Корректировки", "emoji": "🛠️"},
+    {"id": ADJUSTMENT_INCOME_ID, "name": "Корректировка доход", "direction": "in",
+     "group_name": "Корректировки", "emoji": "🛠️"},
+]
+
 
 def find_budget_user(app: dict, token: str):
     """(uid, user) пользователя бюджета с активной ссылкой на приложение.
@@ -3514,6 +3538,8 @@ def pf_articles(sl: dict) -> list:
             "emoji": str(c.get("emoji") or "🔄"),
             "items": rec_items_by_cat.get(cid, []),
         })
+
+    arts.extend({**a, "items": []} for a in ADJUSTMENT_ARTICLES)
 
     counts = {}
     for op in _pf_list(sl, "budgetCashflowOps"):
@@ -4917,15 +4943,14 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(400, {"error": "unsupported format"})
                 return
             name = (query.get("name") or [""])[0][:120].strip() or f"Трек {ext}"
-            length = self._content_length()
-            MAX_TRACK = 40 * 1024 * 1024   # ~40 минут mp3 при 128 кбит/с
-            if length is None:
-                self._json(411, {"error": "Content-Length required"})
+            MAX_TRACK = 60 * 1024 * 1024   # час mp3 при 128 кбит/с
+            body, err = self._read_upload(MAX_TRACK)
+            if err == "file too large":
+                self._json(413, {"error": "file too large", "limit": MAX_TRACK})
                 return
-            if length > MAX_TRACK:
-                self._json(413, {"error": "file too large"})
+            if err:
+                self._json(400, {"error": err})
                 return
-            body = self.rfile.read(length)
             if not body:
                 self._json(400, {"error": "empty body"})
                 return
@@ -5655,7 +5680,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             account_id = one("account_id")
             direction = one("direction")
             try:
-                limit = max(1, min(500, int(one("limit", "50"))))
+                # Верхняя граница поднята с 500: вкладке «Аналитика» приложения
+                # нужен весь период (месяц/год) одним запросом, а не только
+                # последние операции, как «Недавним» (у них лимит остаётся 50).
+                limit = max(1, min(3000, int(one("limit", "50"))))
             except ValueError:
                 limit = 50
 
@@ -6118,16 +6146,38 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                     f'<meta name="apple-mobile-web-app-title" content="{shortcut["apple_title"]}" />'.encode("utf-8"),
                     1,
                 )
+            # ETag поверх итогового контента (после подмены manifest/title у
+            # шорткатов), чтобы у /misc и site-wide "/" не совпадал и оба
+            # корректно инвалидировались при правке index (9).html.
+            etag = f'"{hashlib.sha1(content).hexdigest()}"'
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                # no-cache — не "не кэшировать", а "перед показом спросить
+                # сервер" (If-None-Match), поэтому safe и для /misc: если
+                # содержимое поменяется, ETag поменяется вместе с ним.
+                self.send_header("Cache-Control", "no-cache")
+                self._cors()
+                self.end_headers()
+                return
+            accept_enc = self.headers.get("Accept-Encoding", "")
+            body = content
+            encoding = None
+            if "gzip" in accept_enc:
+                body = gzip.compress(content, compresslevel=6)
+                encoding = "gzip"
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(content)))
-            if shortcut:
-                # Never let the browser (or iOS's home-screen bookmark step)
-                # serve a stale copy that still has the site-wide manifest link.
-                self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            if encoding:
+                self.send_header("Content-Encoding", encoding)
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
             self._cors()
             self.end_headers()
-            self.wfile.write(content)
+            if self.command != "HEAD":
+                self.wfile.write(body)
         except FileNotFoundError:
             self.send_response(404)
             self.end_headers()
@@ -6194,6 +6244,49 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         self._cors()
         self.end_headers()
         self.wfile.write(body)
+
+    def _read_upload(self, max_bytes: int):
+        """Тело запроса с файлом: обычное, с Content-Length, либо chunked —
+        так его переупаковывают некоторые прокси, и тогда длины в заголовках
+        нет вовсе. Возвращает (данные, ошибка)."""
+        te = (self.headers.get("Transfer-Encoding") or "").lower()
+        if "chunked" in te:
+            chunks = []
+            total = 0
+            while True:
+                line = self.rfile.readline(1024).strip()
+                if not line:
+                    return None, "broken chunked body"
+                try:
+                    size = int(line.split(b";", 1)[0], 16)
+                except ValueError:
+                    return None, "broken chunked body"
+                if size == 0:
+                    # Завершающая пустая строка (и возможные трейлеры)
+                    while True:
+                        tail = self.rfile.readline(1024)
+                        if tail in (b"\r\n", b"\n", b""):
+                            break
+                    break
+                total += size
+                if total > max_bytes:
+                    return None, "file too large"
+                chunk = self.rfile.read(size)
+                if len(chunk) != size:
+                    return None, "broken chunked body"
+                chunks.append(chunk)
+                self.rfile.read(2)      # CRLF после куска
+            return b"".join(chunks), None
+
+        length = self._content_length()
+        if length is None:
+            return None, "Content-Length required"
+        if length > max_bytes:
+            return None, "file too large"
+        body = self.rfile.read(length)
+        if len(body) != length:
+            return None, "incomplete body"
+        return body, None
 
     def _serve_track(self, filename: str):
         """Аудио с поддержкой Range. Safari без 206-ответа трек просто не играет:
