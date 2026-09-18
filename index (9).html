@@ -4063,7 +4063,7 @@ function VoiceAssistantSettings({ data, setData }) {
           <li>Ассистент ответит и озвучит ответ</li>
         </ol>
         <p className="text-xs text-[var(--text-subtle)] mt-3">
-          Кнопка «Джарвис: выкл» рядом с микрофоном включает постоянную прослушку — скажите «Джарвис, …» и команду одной фразой, без нажатий. Работает, только пока вкладка открыта и экран не гаснет (полноценный always-on wake word, как в колонках, в браузере невозможен).
+          Долгое нажатие на кнопку микрофона включает постоянную прослушку (кольцо вокруг кнопки — индикатор режима) — скажите «Джарвис, …» и команду одной фразой, без нажатий. Ещё раз долгое нажатие — выключить. Работает, только пока вкладка открыта и экран не гаснет (полноценный always-on wake word, как в колонках, в браузере невозможен).
         </p>
         <p className="text-xs text-[var(--text-subtle)] mt-3">
           Тот же ассистент отвечает и в Telegram-боте: напишите ему любое сообщение (не команду) — он читает и меняет данные всего проекта и присылает ссылки на разделы. Использует тот же набор ключей, что назначен функции «Ассистент» выше.
@@ -9907,6 +9907,30 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     // processing/success/error: do nothing
   };
 
+  // Долгое нажатие на ту же кнопку — переключатель постоянной прослушки, без
+  // второй кнопки рядом. pointerup после сработавшего долгого нажатия не
+  // должен ещё и запустить обычную запись — long-press гасит следующий click.
+  const pressTimerRef = React.useRef(null);
+  const longPressFiredRef = React.useRef(false);
+  const LONG_PRESS_MS = 550;
+
+  const handlePointerDown = () => {
+    if (phase !== 'idle') return; // долгое нажатие имеет смысл только пока кнопка простаивает
+    longPressFiredRef.current = false;
+    pressTimerRef.current = setTimeout(() => {
+      longPressFiredRef.current = true;
+      pressTimerRef.current = null;
+      toggleWakeMode();
+    }, LONG_PRESS_MS);
+  };
+  const cancelPressTimer = () => {
+    if (pressTimerRef.current) { clearTimeout(pressTimerRef.current); pressTimerRef.current = null; }
+  };
+  const handleMainClick = () => {
+    if (longPressFiredRef.current) { longPressFiredRef.current = false; return; }
+    handleMainButton();
+  };
+
   const cancel = () => {
     window.speechSynthesis?.cancel();
     if (_currentAudio) { _currentAudio.pause(); _currentAudio = null; }
@@ -9993,40 +10017,35 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
         </div>
       )}
 
-      {/* Постоянная прослушка «Джарвис, ...» — переключатель, виден только
-          пока панель ответа закрыта, чтобы не загромождать её в разгар диалога. */}
-      {!showPanel && (
-        <button
-          onClick={toggleWakeMode}
-          className={`px-3 py-1.5 rounded-full text-xs font-medium shadow flex items-center gap-1.5 transition-all ${
-            settings?.voiceWakeMode
-              ? (wakeListening ? 'bg-blue-500 text-white' : voiceWakeListener.blocked() ? 'bg-red-500 text-white' : 'bg-amber-500 text-white')
-              : 'bg-[var(--surface)] border border-[var(--border)] text-[var(--text-muted)]'
-          }`}
-          title="Постоянная прослушка «Джарвис, ...» — пока вкладка открыта и экран не гаснет"
-        >
-          <span className={`w-1.5 h-1.5 rounded-full inline-block ${wakeListening ? 'bg-white animate-pulse' : 'bg-current opacity-60'}`}></span>
-          {settings?.voiceWakeMode
-            ? (wakeListening ? 'Жду «Джарвис»' : voiceWakeListener.blocked() ? 'Нет доступа к микрофону' : 'Включаю...')
-            : 'Джарвис: выкл'}
-        </button>
-      )}
-
-      {/* Main button */}
-      <button
-        onClick={handleMainButton}
-        disabled={phase === 'processing' || phase === 'success'}
-        className={`w-14 h-14 rounded-full shadow-lg flex items-center justify-center transition-all ${btnBg} ${phase === 'recording' ? 'voice-pulse' : ''} ${phase === 'processing' ? 'opacity-70' : ''}`}
-        title="Голосовой ассистент"
-      >
-        {phase === 'processing' ? (
-          <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-        ) : phase === 'success' ? (
-          <Icon name="check" size={24} />
-        ) : (
-          <Icon name="mic" size={24} />
+      {/* Постоянная прослушка «Джарвис, ...» — не отдельная кнопка, а долгое
+          нажатие на эту же: кольцо вокруг неё показывает состояние режима. */}
+      <div className="relative">
+        {settings?.voiceWakeMode && phase === 'idle' && (
+          <span
+            className={`absolute -inset-1 rounded-full pointer-events-none ${
+              wakeListening ? 'ring-2 ring-blue-500 animate-pulse' : voiceWakeListener.blocked() ? 'ring-2 ring-red-500' : 'ring-2 ring-amber-500'
+            }`}
+            title={wakeListening ? 'Жду «Джарвис»' : voiceWakeListener.blocked() ? 'Нет доступа к микрофону' : 'Включаю прослушку...'}
+          ></span>
         )}
-      </button>
+        <button
+          onClick={handleMainClick}
+          onPointerDown={handlePointerDown}
+          onPointerUp={cancelPressTimer}
+          onPointerLeave={cancelPressTimer}
+          disabled={phase === 'processing' || phase === 'success'}
+          className={`w-14 h-14 rounded-full shadow-lg flex items-center justify-center transition-all ${btnBg} ${phase === 'recording' ? 'voice-pulse' : ''} ${phase === 'processing' ? 'opacity-70' : ''}`}
+          title="Голосовой ассистент (долгое нажатие — постоянная прослушка «Джарвис, ...»)"
+        >
+          {phase === 'processing' ? (
+            <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+          ) : phase === 'success' ? (
+            <Icon name="check" size={24} />
+          ) : (
+            <Icon name="mic" size={24} />
+          )}
+        </button>
+      </div>
     </div>
   );
 }
