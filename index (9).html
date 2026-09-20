@@ -8526,11 +8526,25 @@ const VOICE_DATA_DOMAINS = {
     get: d => (d.loyaltyCards || []).map(({ photo, code, ...rest }) => rest),
   },
   gym: {
-    label: 'GYM: программы, дни, упражнения, журнал тренировок',
-    get: d => ({
-      programs: d.gymPrograms || [], days: d.gymDays || [], exercises: d.gymExercises || [],
-      sessions: (d.gymSessions || []).slice(-40),
-    }),
+    label: 'GYM: программы, дни, упражнения, журнал тренировок и ТЕКУЩАЯ тренировка, если она идёт прямо сейчас',
+    get: d => {
+      const sessions = d.gymSessions || [];
+      // Незавершённая тренировка — та, что идёт сейчас. Отдаём её отдельно и
+      // вместе с упражнениями дня: чтобы ответить «сколько мне осталось» или
+      // дописать подход, ассистенту нужен и план, и факт.
+      const running = sessions.find(x => !x.finishedAt) || null;
+      return {
+        programs: d.gymPrograms || [], days: d.gymDays || [], exercises: d.gymExercises || [],
+        sessions: sessions.slice(-40),
+        current: running ? {
+          session: running,
+          exercises: (d.gymExercises || []).filter(e => e.dayId === running.dayId),
+          hint: 'Правки текущей тренировки — update_record("gymSessions", <id>, { sets: [...] }). '
+            + 'Подход: { id, exerciseId, exerciseName, kind: "working"|"warmup", setIndex, weight, reps, at }. '
+            + 'Пропущенные подходы перечислены в session.skipped как "<exerciseId>:<индекс>".',
+        } : null,
+      };
+    },
   },
   wishlist: {
     label: 'Хотелки (списки и вещи в них)',
@@ -25315,6 +25329,17 @@ let gymLastSaid = { text: '', at: 0 };
 // Слова, которые говорит только приложение: в отчёте о подходе их не бывает.
 const GYM_APP_WORDS = /рабочий|разминк|отдых|дальше|следующее|записал|перезаписал|рекорд|завершен|поехали|осталось|секунд|минут|процент|повторите/;
 
+// «Джарвис, <вопрос>» — всё, что не тренировочная команда, уходит ассистенту.
+// Слово-обращение обязательно: микрофон открыт всю тренировку и слышит зал,
+// без него в ИИ улетал бы каждый чужой разговор.
+const GYM_WAKE = /^\s*(?:эй[\s,]+)?(?:джарвис|джарвиз|джарис|жарвис|дарвис|чарвис|jarvis)[\s,.!?—-]+(.+)$/i;
+
+const gymWakeQuestion = (raw) => {
+  const m = String(raw || '').trim().match(GYM_WAKE);
+  const q = m ? m[1].trim() : '';
+  return q.length >= 2 ? q : '';
+};
+
 const gymIsEcho = (raw) => {
   if (!gymLastSaid.text || Date.now() - gymLastSaid.at > 25000) return false;
   const heard = String(raw || '').toLowerCase();
@@ -25589,6 +25614,10 @@ const gymParseVoicePhrase = (raw) => {
   const t = gymNormalizeNumbers(raw);
   if (!t) return null;
   if (/отмен|удали|сотри/.test(t)) return { cmd: 'undo' };
+  // «Пропустить подход» — не делать предстоящий подход вовсе. Проверяем до
+  // «пропустить отдых», иначе общее /пропуст/ перехватило бы фразу.
+  // \w кириллицу не покрывает, поэтому окончания слов — явным классом букв.
+  if (/пропуст[а-яё]*\s+(этот\s+|текущий\s+)?подход|подход[а-яё]*\s+пропуст/.test(t)) return { cmd: 'skipSet' };
   // explicit — сказано именно «пропустить». Во время отдыха принимаем только
   // такую формулировку: слово «дальше» приложение произносит само («Дальше:
   // рабочий 2…»), и микрофон, слушающий отдых, принял бы это за команду.
@@ -26225,6 +26254,8 @@ function GymView({ data, setData }) {
         sessions={sessions}
         settings={data.settings}
         playlists={data.musicPlaylists || []}
+        data={data}
+        setData={setData}
         onToggleVoice={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymVoice: on } }))}
         onToggleBackgroundAudio={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymBackgroundAudio: on } }))}
         onToggleHandsFree={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymHandsFree: on } }))}
@@ -27392,7 +27423,7 @@ function GymSessionSummary({ session, exercises, sessions, onClose }) {
   );
 }
 
-function GymSessionView({ session, day, exercises, sessions, settings, playlists = [], onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onToggleMicRest, onSave, onDelete, onExit, onFinished }) {
+function GymSessionView({ session, day, exercises, sessions, settings, playlists = [], data, setData, onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onToggleMicRest, onSave, onDelete, onExit, onFinished }) {
   const voiceOn = (settings || {}).gymVoice !== false;
   // Режим «звук с погашенным экраном» забирает аудиовыход у чужого плеера,
   // поэтому включается только вручную.
@@ -27403,6 +27434,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
   const micRest = (settings || {}).gymMicRest !== false;
   const music = useMusic();
   const [pickMusic, setPickMusic] = useState(false);
+  // Разговор с ассистентом: вопрос, ответ и признак «думает».
+  const [ai, setAi] = useState({ q: '', a: '', busy: false });
   // «Применяется к следующему подходу»: включённый посреди подхода режим не
   // перехватывает тот, что уже делаешь, — микрофон поднимется со следующего.
   // Если режим был включён до старта тренировки, ждать нечего.
@@ -27614,6 +27647,13 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
   const loggedFor = (exId) => logged.filter(s => s.exerciseId === exId);
   const loggedAt = (exId, idx) => loggedFor(exId).find(s => (s.setIndex || 0) === idx) || null;
 
+  // Пропущенные подходы. Не делали — значит, ничего не записано: в журнале и
+  // аналитике их нет вовсе, это только навигация по плану. Держим в сессии,
+  // чтобы пропуск пережил выход с экрана и перезагрузку страницы.
+  const skipped = session.skipped || [];
+  const skipKey = (exId, i) => `${exId}:${i}`;
+  const isSkipped = (exId, i) => skipped.includes(skipKey(exId, i));
+
   // Черновик строки подхода: то, что уже записано → план → пусто.
   const draftRow = (ex, i) => {
     const key = `${ex.id}:${i}`;
@@ -27639,6 +27679,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     }
     // Записали новый подход — значит, исправлять прошлый уже не собираемся.
     setRewriting(false);
+    // Передумали и всё-таки сделали пропущенный подход — снимаем пометку.
+    const stillSkipped = skipped.filter(k => k !== skipKey(ex.id, i));
     const plan = gymPlanRows(ex)[i] || {};
     const rec = {
       id: (loggedAt(ex.id, i) || {}).id || crypto.randomUUID(),
@@ -27660,7 +27702,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     const remaining = (e) => {
       const total = Math.max(planRowsOf(e).length, extra[e.id] || 0);
       const done = new Set(nextSets.filter(x => x.exerciseId === e.id).map(x => x.setIndex || 0));
-      return Array.from({ length: total }, (_, idx) => idx).filter(idx => !done.has(idx));
+      return Array.from({ length: total }, (_, idx) => idx)
+        .filter(idx => !done.has(idx) && !isSkipped(e.id, idx));
     };
 
     // Упражнение закрыто? Тогда следующее незакрытое ищем от текущего вниз по
@@ -27685,6 +27728,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     onSave({
       ...session,
       sets: nextSets,
+      skipped: stillSkipped,
       restUntil: restUntilMs,
       restTotal: rest,
       ...(workoutDone ? {
@@ -27816,7 +27860,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
       const rows = planRowsOf(ex);
       for (let i = 0; i < rows.length; i++) {
         if (skip && skip.exId === ex.id && skip.index === i) continue;
-        if (!loggedAt(ex.id, i)) return { ex, row: rows[i], index: i };
+        if (!loggedAt(ex.id, i) && !isSkipped(ex.id, i)) return { ex, row: rows[i], index: i };
       }
     }
     return null;
@@ -27858,6 +27902,75 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     say(parts.join('. '));
   };
 
+  // «Пропустить подход»: предстоящий подход не делаем. Отдых идёт своим
+  // чередом — пропуск меняет только то, что будет дальше, — а если
+  // пропустили последний незакрытый подход, тренировка на этом заканчивается.
+  const skipCurrentSet = () => {
+    const t = nextTarget();
+    if (!t) { say('Все подходы уже закрыты'); return; }
+    const next = [...skipped, skipKey(t.ex.id, t.index)];
+    onSave({ ...session, skipped: next });
+    // nextTarget работает по текущему снимку, поэтому следующий ищем сами.
+    let after = null;
+    for (const ex of exercises) {
+      const rows = planRowsOf(ex);
+      for (let i = 0; i < rows.length; i++) {
+        if (loggedAt(ex.id, i) || next.includes(skipKey(ex.id, i))) continue;
+        after = { ex, row: rows[i], index: i };
+        break;
+      }
+      if (after) break;
+    }
+    if (!after) {
+      const finishedAt = Date.now();
+      onSave({
+        ...session,
+        skipped: next,
+        finishedAt,
+        durationSec: Math.max(1, Math.round((finishedAt - (session.startedAt || finishedAt)) / 1000)),
+      });
+      say('Подход пропущен. Это был последний — тренировка завершена');
+      onFinished(session.id);
+      return;
+    }
+    if (after.ex.id !== openId) { setOpenId(after.ex.id); setJustOpened(after.ex.id); }
+    announcedEx.current = after.ex.id;
+    say(`Подход пропущен. Дальше: ${gymSaySet(
+      after.row,
+      gymPctBase(after.ex, sessions, session.startedAt || Date.now()),
+      after.ex.name,
+      gymLastWorkingWeight(sessions, after.ex.name, session.startedAt || Date.now()),
+    )}`);
+  };
+
+  // «Джарвис, <вопрос>» — всё, что не тренировочная команда, уходит тому же
+  // ассистенту, что живёт в кнопке микрофона: он видит весь проект и умеет
+  // не только отвечать, но и менять данные. Отвечаем только на отдыхе — во
+  // время подхода не до разговоров, да и ответ звучал бы поверх счёта.
+  const askAssistant = async (question) => {
+    if (!question) return;
+    setAi({ q: question, a: '', busy: true });
+    say('Секунду');
+    try {
+      // Навигацию на тренировке глушим: уводить экран с идущей тренировки
+      // нельзя, поэтому ассистенту об этом сказано прямо в вопросе.
+      const noop = () => {};
+      const nav = { setData, setTab: noop, setPlannerTab: noop, setMiscTab: noop, setHouseTab: noop, setVoiceFocus: noop };
+      const prompt = 'Я сейчас в зале, иду тренировка, слушаю ответ в наушниках. '
+        + 'Отвечай коротко — одно-два предложения, без списков. Разделы приложения не открывай. '
+        + 'Вопрос: ' + question;
+      const { text } = await runVoiceAgent([{ role: 'user', content: prompt }], settings, data, nav);
+      setAi({ q: question, a: text || '', busy: false });
+      say(text || 'Готово');
+    } catch (e) {
+      const msg = e.message === 'no_key'
+        ? 'Ключ ассистента не настроен: Настройки — Ассистент'
+        : `Ассистент не ответил: ${e.message}`;
+      setAi({ q: question, a: msg, busy: false });
+      say(msg);
+    }
+  };
+
   const lastLogged = () => [...logged].sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null;
   // Прошлый подход для «также»: по этому же упражнению, а если по нему ещё
   // ничего не записано — последний записанный вообще.
@@ -27894,7 +28007,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
   // пропущенному упражнению вручную, подсветка встанет там, где нужно.
   const currentIndex = (ex) => {
     const total = Math.max(planRowsOf(ex).length, extra[ex.id] || 0);
-    for (let i = 0; i < total; i++) if (!loggedAt(ex.id, i)) return i;
+    for (let i = 0; i < total; i++) if (!loggedAt(ex.id, i) && !isSkipped(ex.id, i)) return i;
     return -1;
   };
 
@@ -27907,8 +28020,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     const t = row ? gymRowTarget(row, pctBaseOf(ex)) : null;
     const noWeight = !t || t.body || t.empty || (!t.min && !t.max);
     return noWeight
-      ? 'Скажите «15» — вес не нужен. Ещё: «также», «повтори», «перезапись», «отмена»'
-      : 'Скажите «25 на 12». Ещё: «также» — как в прошлом подходе, «повтори», «перезапись», «отмена»';
+      ? 'Скажите «15» — вес не нужен. Ещё: «также», «повтори», «пропустить подход», «отмена»'
+      : 'Скажите «25 на 12». Ещё: «также» — как в прошлом подходе, «повтори», «перезапись», «пропустить подход»';
   })();
 
   const rowCount = (ex) => {
@@ -27963,6 +28076,16 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     let parsed = null;
     let heardText = '';
     let looksLikeAttempt = false;
+    // Обращение к ассистенту ловим до тренировочных команд: «Джарвис, …» —
+    // это всегда вопрос, даже если дальше во фразе есть числа.
+    const wake = variants.map(v => gymWakeQuestion(v)).find(Boolean);
+    if (wake) {
+      setHeard('Джарвис, ' + wake);
+      if (!resting) { say('Отвечу на отдыхе'); return; }
+      if (!ai.busy) askAssistant(wake);
+      return;
+    }
+
     for (const v of variants) {
       const p = gymParseVoicePhrase(v);
       if (!p) continue;
@@ -28026,6 +28149,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
       say('Отменил последний подход');
       return;
     }
+    if (parsed.cmd === 'skipSet') { skipCurrentSet(); return; }
     if (parsed.cmd === 'skipRest') { setRest(0); announceNext(); return; }
     if (parsed.cmd === 'finish') { finish(); return; }
 
@@ -28103,6 +28227,25 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
           {logged.length > 0 && <span>В плане: {inPlan} / {logged.length}</span>}
         </div>
       </div>
+
+      {(ai.busy || ai.a) && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 mb-4">
+          <div className="flex items-start gap-2">
+            <span className="mt-0.5" style={{ color: GYM_ACCENT }}><Icon name="mic" size={15} /></span>
+            <div className="flex-1 min-w-0">
+              <div className="text-[12px] text-[var(--text-subtle)]">Джарвис, {ai.q}</div>
+              <div className="text-[14px] mt-1 whitespace-pre-wrap">
+                {ai.busy ? 'Думаю…' : ai.a}
+              </div>
+            </div>
+            {!ai.busy && (
+              <button onClick={() => setAi({ q: '', a: '', busy: false })} className="text-[var(--text-subtle)] flex-shrink-0">
+                <Icon name="x" size={14} />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Музыка из Джарвиса: пока она играет, аудиосессия наша — сигналы и речь
           идут поверх неё, а экран можно гасить, поэтому отдельный тумблер
@@ -28200,7 +28343,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
                   ? 'Включится со следующего подхода'
                   : resting
                     ? (micRest
-                      ? 'Идёт отдых. Скажите «пропустить отдых», «повтори» или «перезапись»'
+                      ? 'Идёт отдых. Команды: «пропустить отдых», «пропустить подход», «повтори», «перезапись». А «Джарвис, …» — вопрос ассистенту о чём угодно'
                       : 'Идёт отдых. Микрофон выключен — пропустить отдых можно кнопкой')
                     : voiceHint}
           </div>
@@ -28298,6 +28441,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
                     const row = draftRow(ex, i);
                     const plan = planRowsOf(ex)[i] || { kind: 'working', label: `Подход ${i + 1}` };
                     const warm = plan.kind === 'warmup';
+                    const skippedRow = !done && isSkipped(ex.id, i);
                     const badge = done ? gymFactBadge(plan, pctBaseOf(ex), done.weight, done.reps) : null;
                     const isPr = done && gymIsWorking(done) && prev.seen && (
                       prev.weight > 0
@@ -28311,6 +28455,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
                         data-gym-current={i === curIdx ? 'true' : undefined}
                         className={`rounded-xl border px-3 py-2.5 ${i === curIdx ? 'gym-current' : ''}`}
                         style={{
+                          ...(skippedRow ? { opacity: 0.5 } : {}),
                           ...(warm ? { background: GYM_WARMUP_BG } : {}),
                           borderColor: i === curIdx
                             ? GYM_ACCENT
@@ -28330,6 +28475,18 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
                             </span>
                           )}
                           {isPr && <span title="Личный рекорд" style={{ color: '#eab308' }}><Icon name="starFilled" size={14} /></span>}
+                          {skippedRow && (
+                            // Пропущенный подход не записан нигде — это только
+                            // метка в плане, вернуть его можно галочкой.
+                            <button
+                              onClick={() => onSave({ ...session, skipped: skipped.filter(k => k !== skipKey(ex.id, i)) })}
+                              className="text-[11px] px-2 py-0.5 rounded-full"
+                              style={{ background: 'var(--bg)', color: 'var(--text-subtle)' }}
+                              title="Вернуть подход в план"
+                            >
+                              пропущен
+                            </button>
+                          )}
                           <span className="flex-1" />
                           {badge && (
                             <span
