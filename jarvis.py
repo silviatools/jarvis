@@ -141,7 +141,7 @@ def music_path(filename: str):
 SPA_ROUTES = {
     "/mybody", "/budget", "/supplements", "/meals", "/weather",
     "/house", "/cars", "/holidays", "/settings", "/planner", "/health",
-    "/misc", "/wishlist", "/cards", "/gym", "/music", "/quiz",
+    "/misc", "/wishlist", "/cards", "/gym", "/music", "/knowledge", "/quiz",
 }
 
 # Deep-link routes that get their OWN <link rel="manifest"> (and Apple home-
@@ -1335,6 +1335,8 @@ def _assistant_budget_slice(app: dict) -> dict:
 # разделы и подписи, что в VOICE_DATA_DOMAINS в index (9).html — чтобы у
 # голосового и текстового ассистента было одно и то же меню возможностей.
 ASSISTANT_DATA_DOMAINS = {
+    "about": ("База данных: что пользователь рассказал о себе — кто он, где живёт, чем занимается, предпочтения и планы",
+        lambda app: app.get("knowledgeNotes", [])),
     "house_boss": ("Задачи «Босс» по расписанию",
         lambda app: [t for t in app.get("bossTasks", []) if not t.get("archived")]),
     "house_cleaning": ("Регулярные дела по дому",
@@ -1450,6 +1452,7 @@ ASSISTANT_NAV_TARGETS = {
     "cards": ("Карты лояльности", "/cards"),
     "gym": ("GYM", "/gym"),
     "music": ("Музыка", "/music"),
+    "knowledge": ("База данных", "/knowledge"),
     "cars": ("Автомобили и обслуживание", "/cars"),
     "english": ("English", "/misc"),
     "settings": ("Настройки", "/settings"),
@@ -1538,6 +1541,10 @@ WRITE_REGISTRY = {
     },
     "healthEvents": {"label": "Событие здоровья (визит/болезнь/процедура)", "create_defaults": lambda: {"tags": [], "medications": []}},
     "loyaltyCards": {"label": "Карта лояльности магазина", "create_defaults": lambda: {"format": "auto"}},
+    "knowledgeNotes": {
+        "label": "Запись в «Базе данных» — факт о пользователе (title, text, category)",
+        "create_defaults": lambda: {"category": "Разное", "pinned": False},
+    },
     "gymPrograms": {
         "label": "Программа тренировок GYM",
         "create_defaults": lambda: {},
@@ -2074,17 +2081,46 @@ ASSISTANT_TOOLS = [
     },
 ]
 
-def build_assistant_system_prompt() -> str:
+KNOWLEDGE_PROMPT_LIMIT = 6000
+
+def knowledge_for_prompt(app: dict) -> str:
+    """Записи раздела «База данных» — то, что пользователь рассказал о себе.
+    Зеркалит knowledgeForPrompt в index (9).html: закреплённые идут первыми,
+    объём ограничен — промпт уходит с каждым запросом."""
+    notes = (app or {}).get("knowledgeNotes") or []
+    ordered = sorted(notes, key=lambda n: (not n.get("pinned"), -(n.get("updatedAt") or 0)))
+    rows, size = [], 0
+    for n in ordered:
+        title = (n.get("title") or "").strip()
+        text = (n.get("text") or "").strip()
+        if not title and not text:
+            continue
+        head = " — ".join(x for x in [n.get("category"), title] if x)
+        line = f"• {head}{': ' if title and text else ''}{text}"
+        if size + len(line) > KNOWLEDGE_PROMPT_LIMIT:
+            continue
+        size += len(line)
+        rows.append(line)
+    return "\n".join(rows)
+
+
+def build_assistant_system_prompt(app: dict = None) -> str:
     domain_list = "\n".join(f"  • {k} — {label}" for k, (label, _) in ASSISTANT_DATA_DOMAINS.items())
     nav_list = "\n".join(f"  • {k} — {label}" for k, (label, _) in ASSISTANT_NAV_TARGETS.items())
     write_list = "\n".join(
         f"  • {k} — {v['label']}" + (" (финансовое — подтверждение)" if v.get("require_confirm") else "")
         for k, v in WRITE_REGISTRY.items()
     )
+    about = knowledge_for_prompt(app)
+    about_block = (
+        "ЧТО ИЗВЕСТНО О ПОЛЬЗОВАТЕЛЕ (раздел «База данных», он сам это записал — "
+        f"считай фактами и учитывай в ответах):\n{about}\n\n"
+    ) if about else ""
     return (
         "Ты ассистент приложения Jarvis, отвечаешь в Telegram. "
         "Отвечай кратко и по-русски, обычным текстом без markdown-разметки и JSON — сообщение уходит как есть.\n\n"
         f"СЕГОДНЯ: {today_msk().isoformat()}\n\n"
+        f"{about_block}"
         "У тебя есть инструменты, покрывающие весь проект — всё то же самое, что пользователь делает руками:\n\n"
         f"1. get_data(domain) — прочитать актуальные данные раздела. Разделы:\n{domain_list}\n\n"
         f"2. navigate(target) — дать пользователю ссылку на раздел сайта. Разделы:\n{nav_list}\n\n"
@@ -2204,7 +2240,7 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
     """Прогоняет tool-use цикл Claude поверх локальной копии истории.
     Возвращает (текст ответа | None, список ссылок navigate). None — агент не
     уложился в отведённые шаги. Ошибки HTTP/сети — как _AssistantError."""
-    system = build_assistant_system_prompt()
+    system = build_assistant_system_prompt(app)
     convo = list(history)
     nav_links = []
     for _ in range(_ASSISTANT_MAX_STEPS):
@@ -2259,7 +2295,7 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
     """То же самое поверх OpenAI function calling — другой формат запроса и
     ответа (tool_calls в сообщении assistant, результаты — отдельными
     сообщениями role:"tool"), но те же инструменты и та же семантика."""
-    system = build_assistant_system_prompt()
+    system = build_assistant_system_prompt(app)
     tools = [
         {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
         for t in ASSISTANT_TOOLS
