@@ -3924,6 +3924,74 @@ function NotifyRoutingSettings({ data, setData }) {
   );
 }
 
+// Apple Календарь и Напоминания: подключение живёт в переменных окружения на
+// сервере (пароль приложения не должен попадать ни в браузер, ни в
+// синхронизируемые данные), поэтому здесь только состояние — что сервер видит
+// в iCloud прямо сейчас.
+function AppleConnectionCard() {
+  const [state, setState] = React.useState({ loading: true });
+  const load = React.useCallback(() => {
+    setState(s => ({ ...s, loading: true }));
+    fetch('/api/apple/status')
+      .then(r => r.json())
+      .then(s => setState({ ...s, loading: false }))
+      .catch(e => setState({ loading: false, error: 'Сервер не ответил: ' + e.message }));
+  }, []);
+  React.useEffect(load, [load]);
+
+  const s = state;
+  const remindersLabel = s.remindersBackend === 'caldav' ? 'через iCloud'
+    : s.remindersBackend === 'bridge' ? 'через Быструю команду' : 'не подключены';
+  const ago = (ms) => {
+    if (!ms) return 'ещё ни разу';
+    const min = Math.round((Date.now() - ms) / 60000);
+    return min < 1 ? 'только что' : min < 60 ? `${min} мин назад` : `${Math.round(min / 60)} ч назад`;
+  };
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-3" data-apple-card>
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="font-display text-base">Apple Календарь и Напоминания</h3>
+        <button onClick={load} className="btn-secondary text-sm px-3 py-1.5" disabled={s.loading}>
+          {s.loading ? 'Проверяю…' : 'Проверить'}
+        </button>
+      </div>
+      <p className="text-sm text-[var(--text-muted)]">
+        Ассистент читает календарь и напоминания без спроса, а добавляет, меняет и удаляет — только после вашего подтверждения вслух или в чате.
+      </p>
+      {s.loading ? (
+        <p className="text-sm text-[var(--text-subtle)]">Спрашиваю сервер…</p>
+      ) : (
+        <div className="text-sm space-y-1">
+          <div>
+            <span className="text-[var(--text-muted)]">Календарь: </span>
+            {s.calendarConfigured
+              ? (s.calendars || []).length
+                ? <span className="text-green-600">подключён — {(s.calendars || []).join(', ')}</span>
+                : <span className="text-amber-600">вход есть, календарей не видно</span>
+              : <span className="text-[var(--text-subtle)]">не настроен</span>}
+          </div>
+          <div>
+            <span className="text-[var(--text-muted)]">Напоминания: </span>
+            <span className={s.remindersBackend ? 'text-green-600' : 'text-[var(--text-subtle)]'}>{remindersLabel}</span>
+            {s.remindersBackend === 'bridge' && (
+              <span className="text-[var(--text-subtle)]">
+                {' '}· список с телефона {ago(s.bridge?.updatedAt)}, в очереди {s.bridge?.queue || 0}
+              </span>
+            )}
+          </div>
+          {s.error && <div className="text-amber-600">{s.error}</div>}
+          {!s.calendarConfigured && (
+            <p className="text-xs text-[var(--text-subtle)] pt-1">
+              Подключение: в переменные окружения сервера (Railway → Variables) добавьте <span className="font-mono">ICLOUD_APPLE_ID</span> и <span className="font-mono">ICLOUD_APP_PASSWORD</span> — пароль приложения создаётся на account.apple.com. Для Напоминаний, если iCloud их не отдаёт, ещё <span className="font-mono">APPLE_BRIDGE_TOKEN</span> и Быстрая команда на телефоне.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function VoiceAssistantSettings({ data, setData }) {
   const settings = ensureAiPresets({ ...DEFAULT_SETTINGS, ...(data.settings || {}) });
   const presets = settings.aiPresets || [];
@@ -3962,6 +4030,8 @@ function VoiceAssistantSettings({ data, setData }) {
           Нажмите кнопку микрофона внизу экрана и скажите, что нужно — ассистент видит все разделы проекта: отвечает на вопросы по любым данным (бюджет, здоровье, авто, GYM и т.д.), открывает нужный раздел на экране и добавляет регулярные дела. Работает на любом из провайдеров ниже — какой назначите функции «Ассистент», тот и используется.
         </p>
       </div>
+
+      <AppleConnectionCard />
 
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
         <div className="flex items-center justify-between gap-3">
@@ -9170,6 +9240,158 @@ function deleteChecklistLogEntry(data, date) {
   };
 }
 
+// Apple Календарь и Напоминания живут в iCloud, а не в данных приложения.
+// Браузеру туда нельзя (CORS + пароль приложения не должен попадать в
+// браузер), поэтому инструменты ходят на собственный сервер — /api/apple/*,
+// который уже говорит с iCloud по CalDAV. Схемы совпадают с APPLE_TOOLS в
+// jarvis.py: у голосового ассистента и у бота в Telegram одни и те же руки.
+const APPLE_AGENT_TOOLS = [
+  {
+    name: 'calendar_list_events',
+    description: 'Прочитать события из Apple Календаря (iCloud) за период. Подтверждения не требует.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Начало периода, 2026-09-21 или 2026-09-21 09:00. По умолчанию сегодня.' },
+        to: { type: 'string', description: 'Конец периода включительно. По умолчанию +14 дней.' },
+        calendar: { type: 'string', description: 'Название календаря; пусто — все.' },
+      },
+    },
+  },
+  {
+    name: 'calendar_create_event',
+    description: 'Создать событие в Apple Календаре. ТОЛЬКО после явного согласия пользователя: сначала опиши, что собираешься создать, и спроси подтверждение.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        start: { type: 'string', description: '2026-09-21 18:30 (московское время) либо 2026-09-21 для события на весь день.' },
+        end: { type: 'string', description: 'Не указано — час от начала.' },
+        allDay: { type: 'boolean' },
+        location: { type: 'string' },
+        notes: { type: 'string' },
+        calendar: { type: 'string' },
+        confirmed: { type: 'boolean', description: 'true только после явного согласия пользователя.' },
+      },
+      required: ['title', 'start'],
+    },
+  },
+  {
+    name: 'calendar_update_event',
+    description: 'Изменить событие Apple Календаря по id из calendar_list_events. Требует подтверждения пользователя.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        title: { type: 'string' }, start: { type: 'string' }, end: { type: 'string' },
+        allDay: { type: 'boolean' }, location: { type: 'string' }, notes: { type: 'string' },
+        confirmed: { type: 'boolean' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'calendar_delete_event',
+    description: 'Удалить событие Apple Календаря по id. Требует подтверждения пользователя.',
+    input_schema: {
+      type: 'object',
+      properties: { id: { type: 'string' }, confirmed: { type: 'boolean' } },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'reminders_list',
+    description: 'Прочитать Напоминания Apple. Подтверждения не требует.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        list: { type: 'string', description: 'Название списка; пусто — все.' },
+        include_done: { type: 'boolean', description: 'Показать и выполненные.' },
+      },
+    },
+  },
+  {
+    name: 'reminders_create',
+    description: 'Создать напоминание Apple. Требует подтверждения пользователя.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        due: { type: 'string', description: 'Срок: 2026-09-21 18:30 или 2026-09-21.' },
+        list: { type: 'string' }, notes: { type: 'string' },
+        confirmed: { type: 'boolean' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'reminders_update',
+    description: 'Изменить напоминание Apple по id (в том числе отметить выполненным: done=true). Требует подтверждения пользователя.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        title: { type: 'string' }, due: { type: 'string' }, notes: { type: 'string' },
+        done: { type: 'boolean' },
+        confirmed: { type: 'boolean' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'reminders_delete',
+    description: 'Удалить напоминание Apple по id. Требует подтверждения пользователя.',
+    input_schema: {
+      type: 'object',
+      properties: { id: { type: 'string' }, confirmed: { type: 'boolean' } },
+      required: ['id'],
+    },
+  },
+];
+
+const APPLE_TOOL_NAMES = new Set(APPLE_AGENT_TOOLS.map(t => t.name));
+// Подтверждение спрашивает сервер (тот же код, что и для Telegram), но
+// названия действий нужны и здесь — для понятного вопроса пользователю.
+const APPLE_WRITE_TOOLS = {
+  calendar_create_event: ['/api/apple/event', 'create'],
+  calendar_update_event: ['/api/apple/event', 'update'],
+  calendar_delete_event: ['/api/apple/event', 'delete'],
+  reminders_create: ['/api/apple/reminder', 'create'],
+  reminders_update: ['/api/apple/reminder', 'update'],
+  reminders_delete: ['/api/apple/reminder', 'delete'],
+};
+
+async function executeAppleTool(name, input) {
+  input = input || {};
+  try {
+    if (name === 'calendar_list_events') {
+      const q = new URLSearchParams();
+      if (input.from) q.set('from', input.from);
+      if (input.to) q.set('to', input.to);
+      if (input.calendar) q.set('calendar', input.calendar);
+      const res = await fetch('/api/apple/events?' + q.toString());
+      return await res.json();
+    }
+    if (name === 'reminders_list') {
+      const q = new URLSearchParams();
+      if (input.list) q.set('list', input.list);
+      if (input.include_done) q.set('done', '1');
+      const res = await fetch('/api/apple/reminders?' + q.toString());
+      return await res.json();
+    }
+    const route = APPLE_WRITE_TOOLS[name];
+    if (!route) return { error: 'unknown_tool' };
+    const res = await fetch(route[0], {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...input, action: route[1] }),
+    });
+    return await res.json();
+  } catch (e) {
+    return { error: 'Сервер не ответил по Apple: ' + e.message };
+  }
+}
+
 const VOICE_AGENT_TOOLS = [
   {
     name: 'get_data',
@@ -9378,7 +9600,9 @@ const VOICE_AGENT_TOOLS = [
       required: ['planId', 'ingredientId'],
     },
   },
+  ...APPLE_AGENT_TOOLS,
 ];
+
 
 function buildVoiceAgentSystemPrompt(data) {
   // «База данных» — то, что пользователь рассказал о себе. Подмешиваем в
@@ -9415,7 +9639,9 @@ ${writeList}
 
 6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и готового веса), cooking_plan_delete_ingredient.
 
-ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task) и любая запись в финансовые разделы (помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
+7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без спроса. ЛЮБАЯ ЗАПИСЬ — добавить, изменить, удалить — только после явного согласия пользователя: сначала коротко скажи, что именно запишешь (название, дату и время), и спроси подтверждение, а после согласия повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места: «в календарь» и «напомни» — это Apple, «в планировщик» — раздел приложения.
+
+ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
@@ -9426,9 +9652,12 @@ ${writeList}
 - Никогда не удаляй и не меняй финансовые данные без подтверждения, даже если пользователь говорит это как бы между делом.`;
 }
 
-function executeVoiceTool(name, input, nav, data) {
+// Асинхронная: инструменты Apple ходят на сервер (iCloud), всё остальное
+// считается на месте и возвращается сразу.
+async function executeVoiceTool(name, input, nav, data) {
   input = input || {};
   const noop = (output) => ({ output, data });
+  if (APPLE_TOOL_NAMES.has(name)) return noop(await executeAppleTool(name, input));
   const applied = (result, output) => {
     if (result.error) return noop({ error: result.error });
     nav.setData(result.data);
@@ -9573,19 +9802,18 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
     if (!toolUses.length) return { text: text || 'Готово', pendingConfirmation };
 
     convo.push({ role: 'assistant', content });
-    convo.push({
-      role: 'user',
-      content: toolUses.map(tu => {
-        let output;
-        try {
-          const result = executeVoiceTool(tu.name, tu.input, nav, data);
-          data = result.data;
-          output = result.output;
-        } catch (e) { output = { error: e.message }; }
-        if (output && output.needs_confirmation) pendingConfirmation = true;
-        return { type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(output) };
-      }),
-    });
+    const results = [];
+    for (const tu of toolUses) {
+      let output;
+      try {
+        const result = await executeVoiceTool(tu.name, tu.input, nav, data);
+        data = result.data;
+        output = result.output;
+      } catch (e) { output = { error: e.message }; }
+      if (output && output.needs_confirmation) pendingConfirmation = true;
+      results.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(output) });
+    }
+    convo.push({ role: 'user', content: results });
   }
   return { text: 'Не разобрался за отведённое число шагов — попробуйте переформулировать.', pendingConfirmation };
 }
@@ -9625,7 +9853,7 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps) {
       try { input = JSON.parse(tc.function?.arguments || '{}'); } catch (_) { /* оставляем {} */ }
       let output;
       try {
-        const result = executeVoiceTool(tc.function?.name, input, nav, data);
+        const result = await executeVoiceTool(tc.function?.name, input, nav, data);
         data = result.data;
         output = result.output;
       } catch (e) { output = { error: e.message }; }

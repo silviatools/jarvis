@@ -29,10 +29,11 @@ import threading
 import io
 import uuid
 import zipfile
+import xml.etree.ElementTree as ET
 from datetime import datetime, date, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urljoin
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 # Moscow time is UTC+3, no DST (since 2014) — reliable without tzdata
@@ -200,6 +201,10 @@ def route_is_public(route: str) -> bool:
     # Ссылка на штрихкод карты для iOS Shortcuts (гео-триггер бьёт по ней без
     # сессии) — id карты тут и есть пропуск, как token у событий/поездок.
     if _route_token_prefix_public(route, "/api/cards/"):
+        return True
+    # Мост Напоминаний: Быстрая команда на телефоне ходит без cookie, её
+    # пропуск — APPLE_BRIDGE_TOKEN, он проверяется в самом обработчике.
+    if route in ("/api/apple/bridge/pull", "/api/apple/bridge/push"):
         return True
     return False
 
@@ -1270,6 +1275,1014 @@ def handle_checklist_callback(token: str, cq: dict):
         send_message(token, chat_id, f"✅ <b>Чек-лист за {human_date(date_iso)} заполнен!</b>")
 
 
+# ── Apple: Календарь и Напоминания ─────────────────────────────────────────
+# Календарь — напрямую в iCloud по CalDAV. Логин и пароль приложения лежат в
+# переменных окружения (Railway → Variables) и никогда не попадают в данные
+# приложения, а значит и в браузер. Браузеру ходить в iCloud нельзя (CORS),
+# поэтому и сайт, и Telegram-бот работают через /api/apple/* этого сервера.
+#
+# Напоминания Apple с iOS 13 переехали на закрытый протокол: у части аккаунтов
+# списки VTODO в CalDAV ещё видны, у части — нет. Поэтому здесь два пути:
+# сначала пробуем CalDAV, а если списков дел там нет — работаем через «мост»
+# на Быстрых командах: телефон забирает очередь действий (/api/apple/bridge/
+# pull) и присылает назад свежий список напоминаний (/api/apple/bridge/push).
+#
+# Чтение — свободное. Любая запись (добавить/изменить/удалить) идёт только с
+# confirmed:true, то есть после явного согласия пользователя: подтверждение
+# требует слой инструментов ассистента, см. WRITE_REGISTRY и APPLE_TOOLS.
+
+APPLE_DISCOVERY_TTL = 600          # сек: кэш обхода коллекций iCloud
+APPLE_HTTP_TIMEOUT = 25
+APPLE_BRIDGE_FILE = DATA_DIR / "apple_bridge.json"
+_APPLE_LOCK = threading.RLock()
+_apple_discovery = {"at": 0, "key": None, "value": None}
+
+_DAV = "{DAV:}"
+_CAL = "{urn:ietf:params:xml:ns:caldav}"
+
+
+class AppleError(Exception):
+    pass
+
+
+def apple_caldav_root() -> str:
+    return (os.environ.get("ICLOUD_CALDAV_URL") or "https://caldav.icloud.com").rstrip("/")
+
+
+def apple_creds():
+    """(apple_id, app_password) из окружения или None."""
+    login = (os.environ.get("ICLOUD_APPLE_ID") or "").strip()
+    # Пароль приложения Apple показывает группами через дефис — пробелы,
+    # случайно попавшие при копировании, убираем, дефисы оставляем как есть.
+    password = (os.environ.get("ICLOUD_APP_PASSWORD") or "").strip().replace(" ", "")
+    return (login, password) if login and password else None
+
+
+def apple_bridge_token() -> str:
+    return (os.environ.get("APPLE_BRIDGE_TOKEN") or "").strip()
+
+
+# ── CalDAV: транспорт и обход коллекций ────────────────────────────────────
+
+def _apple_dav(method: str, url: str, body=None, depth=None, headers=None):
+    creds = apple_creds()
+    if not creds:
+        raise AppleError("Apple-аккаунт не подключён: в переменных окружения нет ICLOUD_APPLE_ID / ICLOUD_APP_PASSWORD.")
+    if requests is None:
+        raise AppleError("На сервере не установлена библиотека requests.")
+    h = {"Content-Type": "application/xml; charset=utf-8", "User-Agent": "Jarvis/1.0"}
+    if depth is not None:
+        h["Depth"] = str(depth)
+    h.update(headers or {})
+    data = body.encode("utf-8") if isinstance(body, str) else body
+    try:
+        r = requests.request(method, url, data=data, headers=h, auth=creds,
+                             timeout=APPLE_HTTP_TIMEOUT)
+    except Exception as e:
+        raise AppleError(f"Не достучался до iCloud: {e}")
+    if r.status_code in (401, 403):
+        raise AppleError("iCloud не принял логин или пароль приложения — проверьте ICLOUD_APPLE_ID и ICLOUD_APP_PASSWORD.")
+    return r
+
+
+def _apple_xml(resp):
+    if resp.status_code not in (200, 207):
+        raise AppleError(f"iCloud ответил {resp.status_code} на запрос {resp.request.method}.")
+    try:
+        return ET.fromstring(resp.content)
+    except Exception:
+        raise AppleError("iCloud вернул не XML — возможно, изменился адрес CalDAV.")
+
+
+def _apple_responses(root):
+    """[(href, {tag: element})] из multistatus — только успешные propstat."""
+    out = []
+    for resp in root.findall(f"{_DAV}response"):
+        href = (resp.findtext(f"{_DAV}href") or "").strip()
+        props = {}
+        for ps in resp.findall(f"{_DAV}propstat"):
+            if "200" not in (ps.findtext(f"{_DAV}status") or ""):
+                continue
+            prop = ps.find(f"{_DAV}prop")
+            for child in (prop if prop is not None else []):
+                props[child.tag] = child
+        out.append((href, props))
+    return out
+
+
+def _apple_href_of(elem):
+    if elem is None:
+        return ""
+    href = elem.find(f"{_DAV}href")
+    return (href.text or "").strip() if href is not None and href.text else ""
+
+
+def apple_discover(force: bool = False) -> dict:
+    """Находит календари и списки напоминаний аккаунта. Результат кэшируется:
+    обход стоит трёх запросов, а состав календарей меняется раз в год."""
+    creds = apple_creds()
+    if not creds:
+        raise AppleError("Apple-аккаунт не подключён: в переменных окружения нет ICLOUD_APPLE_ID / ICLOUD_APP_PASSWORD.")
+    key = creds[0] + "@" + apple_caldav_root()
+    with _APPLE_LOCK:
+        cached = _apple_discovery
+        if (not force and cached["value"] and cached["key"] == key
+                and time.time() - cached["at"] < APPLE_DISCOVERY_TTL):
+            return cached["value"]
+
+    root_url = apple_caldav_root() + "/"
+    body = ('<?xml version="1.0" encoding="utf-8"?>'
+            '<d:propfind xmlns:d="DAV:"><d:prop><d:current-user-principal/></d:prop></d:propfind>')
+    xml = _apple_xml(_apple_dav("PROPFIND", root_url, body, depth=0))
+    principal = ""
+    for href, props in _apple_responses(xml):
+        principal = _apple_href_of(props.get(f"{_DAV}current-user-principal"))
+        if principal:
+            break
+    if not principal:
+        raise AppleError("iCloud не отдал principal — пароль приложения создан не для этого Apple ID?")
+    principal_url = urljoin(root_url, principal)
+
+    body = ('<?xml version="1.0" encoding="utf-8"?>'
+            '<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
+            '<d:prop><c:calendar-home-set/></d:prop></d:propfind>')
+    xml = _apple_xml(_apple_dav("PROPFIND", principal_url, body, depth=0))
+    home = ""
+    for href, props in _apple_responses(xml):
+        home = _apple_href_of(props.get(f"{_CAL}calendar-home-set"))
+        if home:
+            break
+    if not home:
+        raise AppleError("iCloud не отдал адрес хранилища календарей.")
+    home_url = urljoin(principal_url, home)
+    if not home_url.endswith("/"):
+        home_url += "/"
+
+    body = ('<?xml version="1.0" encoding="utf-8"?>'
+            '<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
+            '<d:prop><d:displayname/><d:resourcetype/>'
+            '<c:supported-calendar-component-set/></d:prop></d:propfind>')
+    xml = _apple_xml(_apple_dav("PROPFIND", home_url, body, depth=1))
+    calendars, todo_lists = [], []
+    for href, props in _apple_responses(xml):
+        url = urljoin(home_url, href)
+        if url.rstrip("/") == home_url.rstrip("/"):
+            continue
+        rt = props.get(f"{_DAV}resourcetype")
+        if rt is None or rt.find(f"{_CAL}calendar") is None:
+            continue
+        name_el = props.get(f"{_DAV}displayname")
+        name = (name_el.text or "").strip() if name_el is not None and name_el.text else ""
+        comps_el = props.get(f"{_CAL}supported-calendar-component-set")
+        comps = [c.get("name", "").upper() for c in (comps_el if comps_el is not None else [])]
+        entry = {"name": name or url.rstrip("/").rsplit("/", 1)[-1], "href": url if url.endswith("/") else url + "/"}
+        # Пустой набор компонентов означает «поддерживается всё» — по RFC 4791
+        # такой календарь берёт и события, и дела.
+        if not comps or "VEVENT" in comps:
+            calendars.append(entry)
+        if "VTODO" in comps:
+            todo_lists.append(entry)
+
+    value = {"principal": principal_url, "home": home_url,
+             "calendars": calendars, "todoLists": todo_lists}
+    with _APPLE_LOCK:
+        _apple_discovery.update({"at": time.time(), "key": key, "value": value})
+    return value
+
+
+def _apple_pick(collections: list, name: str = None) -> dict:
+    if not collections:
+        raise AppleError("В аккаунте не нашлось подходящего календаря.")
+    if name:
+        needle = name.strip().lower()
+        for c in collections:
+            if c["name"].strip().lower() == needle:
+                return c
+        for c in collections:
+            if needle in c["name"].strip().lower():
+                return c
+        raise AppleError(f"Календарь «{name}» не найден. Есть: " + ", ".join(c["name"] for c in collections))
+    return collections[0]
+
+
+# ── iCalendar: разбор и сборка ─────────────────────────────────────────────
+
+def _ics_unfold(text: str) -> list:
+    out = []
+    for line in (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if line[:1] in (" ", "\t") and out:
+            out[-1] += line[1:]
+        else:
+            out.append(line)
+    return out
+
+
+def _ics_fold(line: str) -> str:
+    if len(line) <= 73:
+        return line
+    chunks, rest = [line[:73]], line[73:]
+    while rest:
+        chunks.append(" " + rest[:72])
+        rest = rest[72:]
+    return "\r\n".join(chunks)
+
+
+def _ics_escape(value: str) -> str:
+    return (str(value or "").replace("\\", "\\\\").replace(";", "\\;")
+            .replace(",", "\\,").replace("\n", "\\n"))
+
+
+def _ics_unescape(value: str) -> str:
+    out, i = [], 0
+    raw = value or ""
+    while i < len(raw):
+        ch = raw[i]
+        if ch == "\\" and i + 1 < len(raw):
+            nxt = raw[i + 1]
+            out.append("\n" if nxt in ("n", "N") else nxt)
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _ics_blocks(text: str, comp: str) -> list:
+    """Строки компонентов верхнего уровня (VEVENT/VTODO) без вложенных
+    (VALARM и прочие внутрь не попадают)."""
+    blocks, cur, nested = [], None, 0
+    for line in _ics_unfold(text):
+        stripped = line.strip()
+        upper = stripped.upper()
+        if cur is None:
+            if upper == f"BEGIN:{comp}":
+                cur = []
+            continue
+        if upper.startswith("BEGIN:"):
+            nested += 1
+            continue
+        if upper.startswith("END:"):
+            if nested:
+                nested -= 1
+                continue
+            if upper == f"END:{comp}":
+                blocks.append(cur)
+                cur = None
+            continue
+        if not nested:
+            cur.append(line)
+    return blocks
+
+
+def _ics_prop(block: list, name: str):
+    """(params, value) первого свойства name или (None, None)."""
+    for line in block:
+        head, sep, value = line.partition(":")
+        if not sep:
+            continue
+        parts = head.split(";")
+        if parts[0].strip().upper() != name.upper():
+            continue
+        params = {}
+        for p in parts[1:]:
+            k, _, v = p.partition("=")
+            params[k.strip().upper()] = v.strip().strip('"')
+        return params, value
+    return None, None
+
+
+def _ics_text(block: list, name: str) -> str:
+    _, value = _ics_prop(block, name)
+    return _ics_unescape(value) if value is not None else ""
+
+
+def _apple_zone(tzid: str):
+    if not tzid:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(tzid)
+    except Exception:
+        return None
+
+
+def _ics_read_dt(params: dict, value: str):
+    """ICS-значение → ('YYYY-MM-DD' | 'YYYY-MM-DD HH:MM', all_day). Время
+    приводим к московскому — приложение целиком живёт в нём."""
+    raw = (value or "").strip()
+    params = params or {}
+    if not raw:
+        return "", False
+    if params.get("VALUE", "").upper() == "DATE" or len(raw) == 8:
+        try:
+            return datetime.strptime(raw[:8], "%Y%m%d").date().isoformat(), True
+        except Exception:
+            return raw, True
+    fmt = "%Y%m%dT%H%M%SZ" if raw.endswith("Z") else "%Y%m%dT%H%M%S"
+    try:
+        dt = datetime.strptime(raw, fmt)
+    except Exception:
+        return raw, False
+    if raw.endswith("Z"):
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        # Без TZID (или с незнакомым сервером tz) считаем время московским:
+        # иначе пришлось бы тащить в контейнер базу часовых поясов.
+        dt = dt.replace(tzinfo=_apple_zone(params.get("TZID")) or MSK)
+    return dt.astimezone(MSK).strftime("%Y-%m-%d %H:%M"), False
+
+
+def apple_parse_dt(value):
+    """Пользовательская дата/время → (date | aware datetime). Наивное время
+    считаем московским."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    raw = raw.replace("T", " ").replace("Z", "+00:00")
+    try:
+        if len(raw) == 10:
+            return date.fromisoformat(raw)
+        dt = datetime.fromisoformat(raw)
+    except Exception:
+        raise AppleError(f"Не понял дату «{value}». Нужен формат 2026-09-21 или 2026-09-21 18:30.")
+    return dt if dt.tzinfo else dt.replace(tzinfo=MSK)
+
+
+def _ics_write_dt(name: str, value, all_day: bool = False) -> str:
+    dt = apple_parse_dt(value) if not isinstance(value, (datetime, date)) else value
+    if isinstance(dt, datetime) and not all_day:
+        return f"{name}:" + dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    day = dt.date() if isinstance(dt, datetime) else dt
+    return f"{name};VALUE=DATE:" + day.strftime("%Y%m%d")
+
+
+def _ics_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+# ── Календарь: чтение ──────────────────────────────────────────────────────
+
+def _apple_report(url: str, body: str):
+    r = _apple_dav("REPORT", url, body, depth=1)
+    return r
+
+
+def _apple_calendar_query(comp: str, time_range=None, uid=None, expand=None) -> str:
+    inner = ""
+    if uid:
+        inner = ('<c:prop-filter name="UID"><c:text-match collation="i;octet">'
+                 + html.escape(uid) + "</c:text-match></c:prop-filter>")
+    elif time_range:
+        inner = f'<c:time-range start="{time_range[0]}" end="{time_range[1]}"/>'
+    data = "<c:calendar-data/>"
+    if expand:
+        data = f'<c:calendar-data><c:expand start="{expand[0]}" end="{expand[1]}"/></c:calendar-data>'
+    return ('<?xml version="1.0" encoding="utf-8"?>'
+            '<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
+            f"<d:prop><d:getetag/>{data}</d:prop>"
+            '<c:filter><c:comp-filter name="VCALENDAR">'
+            f'<c:comp-filter name="{comp}">{inner}</c:comp-filter>'
+            "</c:comp-filter></c:filter></c:calendar-query>")
+
+
+def _apple_collect(resp, comp: str):
+    """[(href, etag, ics_text)] из ответа REPORT."""
+    xml = _apple_xml(resp)
+    out = []
+    for href, props in _apple_responses(xml):
+        data = props.get(f"{_CAL}calendar-data")
+        if data is None or not (data.text or "").strip():
+            continue
+        etag_el = props.get(f"{_DAV}getetag")
+        etag = (etag_el.text or "").strip() if etag_el is not None and etag_el.text else ""
+        out.append((href, etag, data.text))
+    return out
+
+
+def _apple_event_from(block: list, calendar: str) -> dict:
+    params, value = _ics_prop(block, "DTSTART")
+    start, all_day = _ics_read_dt(params, value)
+    params_e, value_e = _ics_prop(block, "DTEND")
+    end, _ = _ics_read_dt(params_e, value_e) if value_e is not None else ("", all_day)
+    rrule = _ics_prop(block, "RRULE")[1]
+    return {
+        "id": _ics_text(block, "UID"),
+        "title": _ics_text(block, "SUMMARY") or "(без названия)",
+        "start": start, "end": end, "allDay": all_day,
+        "calendar": calendar,
+        "location": _ics_text(block, "LOCATION"),
+        "notes": _ics_text(block, "DESCRIPTION"),
+        "recurring": bool(rrule) or bool(_ics_prop(block, "RECURRENCE-ID")[1]),
+    }
+
+
+def apple_list_events(date_from=None, date_to=None, calendar=None, limit=200) -> dict:
+    disc = apple_discover()
+    cals = disc["calendars"]
+    if calendar:
+        cals = [_apple_pick(cals, calendar)]
+    if not cals:
+        raise AppleError("В аккаунте не нашлось ни одного календаря.")
+
+    start = apple_parse_dt(date_from) if date_from else today_msk()
+    end = apple_parse_dt(date_to) if date_to else None
+    start_dt = start if isinstance(start, datetime) else datetime.combine(start, datetime.min.time(), MSK)
+    if end is None:
+        end_dt = start_dt + timedelta(days=14)
+    else:
+        end_dt = end if isinstance(end, datetime) else datetime.combine(end, datetime.min.time(), MSK) + timedelta(days=1)
+    rng = (start_dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+           end_dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+
+    events = []
+    for cal in cals:
+        # expand разворачивает повторяющиеся события в отдельные вхождения —
+        # именно это нужно, чтобы ответить «что у меня в пятницу». Сервер может
+        # не уметь expand: тогда повторяем запрос без него.
+        resp = _apple_report(cal["href"], _apple_calendar_query("VEVENT", time_range=rng, expand=rng))
+        if resp.status_code not in (200, 207):
+            resp = _apple_report(cal["href"], _apple_calendar_query("VEVENT", time_range=rng))
+        for _href, _etag, text in _apple_collect(resp, "VEVENT"):
+            for block in _ics_blocks(text, "VEVENT"):
+                events.append(_apple_event_from(block, cal["name"]))
+    events.sort(key=lambda e: (e.get("start") or "", e.get("title") or ""))
+    return {
+        "range": {"from": start_dt.strftime("%Y-%m-%d %H:%M"), "to": end_dt.strftime("%Y-%m-%d %H:%M")},
+        "calendars": [c["name"] for c in cals],
+        "events": events[:limit],
+    }
+
+
+def _apple_find(uid: str, comp: str):
+    """(collection, href, etag, ics_text) по UID."""
+    if not uid:
+        raise AppleError("Не указан id записи.")
+    disc = apple_discover()
+    pool = disc["calendars"] if comp == "VEVENT" else disc["todoLists"]
+    for coll in pool:
+        resp = _apple_report(coll["href"], _apple_calendar_query(comp, uid=uid))
+        if resp.status_code not in (200, 207):
+            continue
+        found = _apple_collect(resp, comp)
+        if found:
+            href, etag, text = found[0]
+            return coll, urljoin(coll["href"], href), etag, text
+    raise AppleError("Запись с таким id в iCloud не нашлась — возможно, её уже удалили.")
+
+
+# ── Календарь: запись ──────────────────────────────────────────────────────
+
+def _apple_event_lines(fields: dict, uid: str) -> list:
+    title = (fields.get("title") or "").strip()
+    if not title:
+        raise AppleError("У события должно быть название.")
+    start_raw = fields.get("start")
+    if not start_raw:
+        raise AppleError("У события должна быть дата начала.")
+    start = apple_parse_dt(start_raw)
+    all_day = bool(fields.get("allDay")) or isinstance(start, date) and not isinstance(start, datetime)
+    end_raw = fields.get("end")
+    if end_raw:
+        end = apple_parse_dt(end_raw)
+    elif all_day:
+        end = (start.date() if isinstance(start, datetime) else start) + timedelta(days=1)
+    else:
+        end = start + timedelta(minutes=int(fields.get("durationMinutes") or 60))
+    if all_day and isinstance(end, datetime):
+        end = end.date()
+
+    lines = [f"UID:{uid}", f"DTSTAMP:{_ics_stamp()}", f"SUMMARY:{_ics_escape(title)}",
+             _ics_write_dt("DTSTART", start, all_day), _ics_write_dt("DTEND", end, all_day)]
+    if fields.get("location"):
+        lines.append(f"LOCATION:{_ics_escape(fields['location'])}")
+    if fields.get("notes"):
+        lines.append(f"DESCRIPTION:{_ics_escape(fields['notes'])}")
+    return lines
+
+
+def _apple_wrap(comp: str, lines: list) -> str:
+    body = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Jarvis//RU", f"BEGIN:{comp}"]
+    body += lines
+    body += [f"END:{comp}", "END:VCALENDAR", ""]
+    return "\r\n".join(_ics_fold(l) for l in body)
+
+
+def _apple_put(url: str, ics: str, etag: str = None) -> None:
+    headers = {"Content-Type": "text/calendar; charset=utf-8"}
+    headers["If-Match"] = etag if etag else None
+    if not etag:
+        headers.pop("If-Match")
+        headers["If-None-Match"] = "*"
+    r = _apple_dav("PUT", url, ics, headers=headers)
+    if r.status_code == 412:
+        raise AppleError("Запись изменилась на другом устройстве — откройте её ещё раз.")
+    if r.status_code not in (200, 201, 204):
+        raise AppleError(f"iCloud не принял запись ({r.status_code}).")
+
+
+def apple_create_event(fields: dict) -> dict:
+    disc = apple_discover()
+    cal = _apple_pick(disc["calendars"], fields.get("calendar"))
+    uid = str(uuid.uuid4()).upper()
+    _apple_put(urljoin(cal["href"], uid + ".ics"), _apple_wrap("VEVENT", _apple_event_lines(fields, uid)))
+    return {"ok": True, "id": uid, "calendar": cal["name"],
+            "title": fields.get("title"), "start": fields.get("start")}
+
+
+_APPLE_EVENT_FIELDS = {"title": "SUMMARY", "notes": "DESCRIPTION", "location": "LOCATION"}
+
+
+def _apple_patch_ics(text: str, comp: str, patch: dict, kind: str) -> str:
+    """Меняет свойства внутри первого компонента, остальное (VALARM, RRULE,
+    вложения) оставляет как есть — правка через приложение не должна стирать
+    то, чего ассистент не касался."""
+    lines = _ics_unfold(text)
+    try:
+        begin = next(i for i, l in enumerate(lines) if l.strip().upper() == f"BEGIN:{comp}")
+        end = next(i for i in range(begin + 1, len(lines)) if lines[i].strip().upper() == f"END:{comp}")
+    except StopIteration:
+        raise AppleError("Не разобрал запись iCloud.")
+    body = lines[begin + 1:end]
+
+    def drop(name):
+        nonlocal body
+        body = [l for l in body if l.split(";")[0].split(":")[0].strip().upper() != name]
+
+    def put(line):
+        nonlocal body
+        drop(line.split(";")[0].split(":")[0].strip().upper())
+        body.append(line)
+
+    text_fields = _APPLE_EVENT_FIELDS if kind == "event" else {"title": "SUMMARY", "notes": "DESCRIPTION"}
+    for key, prop in text_fields.items():
+        if key in patch and patch[key] is not None:
+            put(f"{prop}:{_ics_escape(patch[key])}")
+
+    if kind == "event":
+        if patch.get("start"):
+            start = apple_parse_dt(patch["start"])
+            all_day = bool(patch.get("allDay")) or (isinstance(start, date) and not isinstance(start, datetime))
+            put(_ics_write_dt("DTSTART", start, all_day))
+            if not patch.get("end"):
+                # Сдвинули начало — конец тянем на ту же длительность, иначе
+                # событие «схлопнется» в ноль или уедет в прошлое.
+                dur = timedelta(minutes=60)
+                old_start_p, old_start_v = _ics_prop(lines[begin + 1:end], "DTSTART")
+                old_end_p, old_end_v = _ics_prop(lines[begin + 1:end], "DTEND")
+                if old_start_v and old_end_v and not all_day:
+                    try:
+                        s_iso, _ = _ics_read_dt(old_start_p, old_start_v)
+                        e_iso, _ = _ics_read_dt(old_end_p, old_end_v)
+                        dur = datetime.fromisoformat(e_iso) - datetime.fromisoformat(s_iso)
+                    except Exception:
+                        dur = timedelta(minutes=60)
+                end_v = (start.date() if isinstance(start, datetime) else start) + timedelta(days=1) if all_day else start + dur
+                put(_ics_write_dt("DTEND", end_v, all_day))
+        if patch.get("end"):
+            all_day = bool(patch.get("allDay")) or (len(str(patch["end"]).strip()) == 10)
+            put(_ics_write_dt("DTEND", apple_parse_dt(patch["end"]), all_day))
+    else:
+        if "due" in patch:
+            if patch["due"]:
+                due = apple_parse_dt(patch["due"])
+                put(_ics_write_dt("DUE", due, isinstance(due, date) and not isinstance(due, datetime)))
+            else:
+                drop("DUE")
+        if "done" in patch:
+            drop("COMPLETED")
+            drop("PERCENT-COMPLETE")
+            if patch["done"]:
+                put("STATUS:COMPLETED")
+                body.append(f"COMPLETED:{_ics_stamp()}")
+                body.append("PERCENT-COMPLETE:100")
+            else:
+                put("STATUS:NEEDS-ACTION")
+
+    seq_p, seq_v = _ics_prop(body, "SEQUENCE")
+    try:
+        seq = int((seq_v or "0").strip()) + 1
+    except Exception:
+        seq = 1
+    put(f"SEQUENCE:{seq}")
+    put(f"DTSTAMP:{_ics_stamp()}")
+    put(f"LAST-MODIFIED:{_ics_stamp()}")
+
+    out = lines[:begin + 1] + body + lines[end:]
+    return "\r\n".join(_ics_fold(l) for l in out if l is not None)
+
+
+def apple_update_event(uid: str, patch: dict) -> dict:
+    coll, url, etag, text = _apple_find(uid, "VEVENT")
+    blocks = _ics_blocks(text, "VEVENT")
+    if blocks and (_ics_prop(blocks[0], "RRULE")[1] or len(blocks) > 1):
+        raise AppleError("Это повторяющееся событие — такие безопаснее править в самом Календаре.")
+    _apple_put(url, _apple_patch_ics(text, "VEVENT", patch or {}, "event"), etag)
+    return {"ok": True, "id": uid, "calendar": coll["name"]}
+
+
+def apple_delete_event(uid: str) -> dict:
+    coll, url, etag, _text = _apple_find(uid, "VEVENT")
+    r = _apple_dav("DELETE", url, headers={"If-Match": etag} if etag else None)
+    if r.status_code not in (200, 204, 404):
+        raise AppleError(f"iCloud не удалил событие ({r.status_code}).")
+    return {"ok": True, "id": uid, "calendar": coll["name"]}
+
+
+# ── Напоминания: мост на Быстрых командах ──────────────────────────────────
+
+def bridge_load() -> dict:
+    try:
+        if APPLE_BRIDGE_FILE.exists():
+            data = json.loads(APPLE_BRIDGE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                data.setdefault("reminders", [])
+                data.setdefault("lists", [])
+                data.setdefault("queue", [])
+                data.setdefault("updatedAt", 0)
+                data.setdefault("lastPullAt", 0)
+                return data
+    except Exception as e:
+        print(f"  apple bridge read error: {e}")
+    return {"reminders": [], "lists": [], "queue": [], "updatedAt": 0, "lastPullAt": 0}
+
+
+def bridge_save(data: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    APPLE_BRIDGE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def bridge_enqueue(action: str, payload: dict) -> dict:
+    with _APPLE_LOCK:
+        data = bridge_load()
+        item = {"id": str(uuid.uuid4()), "action": action, "createdAt": int(time.time() * 1000)}
+        item.update(payload or {})
+        if action in ("update", "delete"):
+            # Быстрая команда ищет напоминание на телефоне по названию — id
+            # Jarvis'а там не знают, поэтому кладём в задание и текущее имя.
+            known = next((r for r in (data.get("reminders") or []) if r.get("id") == payload.get("id")), None)
+            if known:
+                item.setdefault("title", known.get("title") or "")
+                item.setdefault("list", known.get("list") or "")
+        data["queue"] = (data.get("queue") or [])[-49:] + [item]
+        # Показываем результат сразу, не дожидаясь телефона: пользователь
+        # должен слышать «добавил», а не «добавлю в течение четверти часа».
+        reminders = list(data.get("reminders") or [])
+        if action == "create":
+            reminders.append({"id": item["id"], "title": payload.get("title"), "list": payload.get("list") or "",
+                              "due": payload.get("due") or "", "notes": payload.get("notes") or "",
+                              "done": False, "pending": True})
+        elif action in ("update", "delete"):
+            target = payload.get("id")
+            if action == "delete":
+                reminders = [r for r in reminders if r.get("id") != target]
+            else:
+                for r in reminders:
+                    if r.get("id") == target:
+                        r.update({k: v for k, v in (payload.get("patch") or {}).items()})
+                        r["pending"] = True
+        data["reminders"] = reminders
+        bridge_save(data)
+    return {"ok": True, "id": item["id"], "queued": True,
+            "note": "Действие уйдёт в Напоминания при ближайшей синхронизации Быстрой команды."}
+
+
+def bridge_pull() -> dict:
+    """Очередь действий для телефона. Отдаём один раз: повторная доставка
+    создала бы дубли напоминаний."""
+    with _APPLE_LOCK:
+        data = bridge_load()
+        actions = data.get("queue") or []
+        data["queue"] = []
+        data["lastPullAt"] = int(time.time() * 1000)
+        bridge_save(data)
+    return {"actions": actions, "count": len(actions)}
+
+
+def bridge_push(payload: dict) -> dict:
+    items = payload.get("reminders")
+    if not isinstance(items, list):
+        raise AppleError("Ожидал поле reminders со списком напоминаний.")
+    reminders = []
+    for it in items[:500]:
+        if isinstance(it, str):
+            it = {"title": it}
+        if not isinstance(it, dict):
+            continue
+        reminders.append({
+            "id": str(it.get("id") or uuid.uuid4()),
+            "title": str(it.get("title") or "").strip(),
+            "list": str(it.get("list") or "").strip(),
+            "due": str(it.get("due") or "").strip(),
+            "notes": str(it.get("notes") or "").strip(),
+            "done": bool(it.get("done")),
+        })
+    with _APPLE_LOCK:
+        data = bridge_load()
+        data["reminders"] = reminders
+        lists = payload.get("lists")
+        if isinstance(lists, list):
+            data["lists"] = [str(x) for x in lists][:50]
+        else:
+            data["lists"] = sorted({r["list"] for r in reminders if r["list"]})
+        data["updatedAt"] = int(time.time() * 1000)
+        bridge_save(data)
+    return {"ok": True, "count": len(reminders)}
+
+
+# ── Напоминания: общий слой (CalDAV, иначе мост) ───────────────────────────
+
+def apple_reminders_backend() -> str:
+    """'caldav' | 'bridge' | '' — что доступно прямо сейчас."""
+    if apple_creds():
+        try:
+            if apple_discover()["todoLists"]:
+                return "caldav"
+        except AppleError:
+            pass
+    return "bridge" if apple_bridge_token() else ""
+
+
+def _apple_todo_from(block: list, list_name: str) -> dict:
+    p_due, v_due = _ics_prop(block, "DUE")
+    if v_due is None:
+        p_due, v_due = _ics_prop(block, "DTSTART")
+    due, _all_day = _ics_read_dt(p_due, v_due) if v_due is not None else ("", False)
+    status = (_ics_text(block, "STATUS") or "").upper()
+    return {
+        "id": _ics_text(block, "UID"),
+        "title": _ics_text(block, "SUMMARY") or "(без названия)",
+        "list": list_name, "due": due,
+        "notes": _ics_text(block, "DESCRIPTION"),
+        "done": status == "COMPLETED",
+    }
+
+
+def apple_reminders_list(list_name=None, include_done=False, limit=200) -> dict:
+    backend = apple_reminders_backend()
+    if backend == "caldav":
+        disc = apple_discover()
+        lists = disc["todoLists"]
+        if list_name:
+            lists = [_apple_pick(lists, list_name)]
+        items = []
+        for coll in lists:
+            resp = _apple_report(coll["href"], _apple_calendar_query("VTODO"))
+            if resp.status_code not in (200, 207):
+                continue
+            for _href, _etag, text in _apple_collect(resp, "VTODO"):
+                for block in _ics_blocks(text, "VTODO"):
+                    items.append(_apple_todo_from(block, coll["name"]))
+        if not include_done:
+            items = [i for i in items if not i["done"]]
+        items.sort(key=lambda r: (r.get("due") or "9999", r.get("title") or ""))
+        return {"source": "icloud", "lists": [c["name"] for c in lists], "reminders": items[:limit]}
+
+    if backend == "bridge":
+        data = bridge_load()
+        items = list(data.get("reminders") or [])
+        if list_name:
+            needle = list_name.strip().lower()
+            items = [r for r in items if needle in (r.get("list") or "").lower()]
+        if not include_done:
+            items = [r for r in items if not r.get("done")]
+        age = int((time.time() * 1000 - (data.get("updatedAt") or 0)) / 60000) if data.get("updatedAt") else None
+        return {
+            "source": "shortcuts",
+            "lists": data.get("lists") or [],
+            "syncedMinutesAgo": age,
+            "note": ("Список приходит с телефона Быстрой командой"
+                     + (f", обновлён {age} мин назад." if age is not None else ", ещё ни разу не присылался.")),
+            "reminders": items[:limit],
+        }
+    raise AppleError("Напоминания не подключены: ни списков дел в iCloud, ни моста Быстрых команд (APPLE_BRIDGE_TOKEN).")
+
+
+def apple_reminders_create(fields: dict) -> dict:
+    title = (fields.get("title") or "").strip()
+    if not title:
+        raise AppleError("У напоминания должно быть название.")
+    if apple_reminders_backend() == "caldav":
+        disc = apple_discover()
+        coll = _apple_pick(disc["todoLists"], fields.get("list"))
+        uid = str(uuid.uuid4()).upper()
+        lines = [f"UID:{uid}", f"DTSTAMP:{_ics_stamp()}", f"SUMMARY:{_ics_escape(title)}", "STATUS:NEEDS-ACTION"]
+        if fields.get("due"):
+            due = apple_parse_dt(fields["due"])
+            lines.append(_ics_write_dt("DUE", due, isinstance(due, date) and not isinstance(due, datetime)))
+        if fields.get("notes"):
+            lines.append(f"DESCRIPTION:{_ics_escape(fields['notes'])}")
+        _apple_put(urljoin(coll["href"], uid + ".ics"), _apple_wrap("VTODO", lines))
+        return {"ok": True, "id": uid, "list": coll["name"], "title": title}
+    if apple_bridge_token():
+        return bridge_enqueue("create", {"title": title, "list": fields.get("list") or "",
+                                         "due": fields.get("due") or "", "notes": fields.get("notes") or ""})
+    raise AppleError("Напоминания не подключены: ни списков дел в iCloud, ни моста Быстрых команд (APPLE_BRIDGE_TOKEN).")
+
+
+def apple_reminders_update(rid: str, patch: dict) -> dict:
+    patch = patch or {}
+    if apple_reminders_backend() == "caldav":
+        coll, url, etag, text = _apple_find(rid, "VTODO")
+        _apple_put(url, _apple_patch_ics(text, "VTODO", patch, "todo"), etag)
+        return {"ok": True, "id": rid, "list": coll["name"]}
+    if apple_bridge_token():
+        return bridge_enqueue("update", {"id": rid, "patch": patch})
+    raise AppleError("Напоминания не подключены.")
+
+
+def apple_reminders_delete(rid: str) -> dict:
+    if apple_reminders_backend() == "caldav":
+        coll, url, etag, _text = _apple_find(rid, "VTODO")
+        r = _apple_dav("DELETE", url, headers={"If-Match": etag} if etag else None)
+        if r.status_code not in (200, 204, 404):
+            raise AppleError(f"iCloud не удалил напоминание ({r.status_code}).")
+        return {"ok": True, "id": rid, "list": coll["name"]}
+    if apple_bridge_token():
+        return bridge_enqueue("delete", {"id": rid})
+    raise AppleError("Напоминания не подключены.")
+
+
+def apple_status() -> dict:
+    """Что подключено — для экрана настроек и для диагностики."""
+    creds = apple_creds()
+    out = {
+        "calendarConfigured": bool(creds),
+        "appleId": (creds[0] if creds else ""),
+        "calendars": [], "todoLists": [],
+        "bridgeConfigured": bool(apple_bridge_token()),
+        "remindersBackend": "",
+        "error": "",
+    }
+    if creds:
+        try:
+            disc = apple_discover(force=True)
+            out["calendars"] = [c["name"] for c in disc["calendars"]]
+            out["todoLists"] = [c["name"] for c in disc["todoLists"]]
+        except AppleError as e:
+            out["error"] = str(e)
+    bridge = bridge_load()
+    out["bridge"] = {
+        "reminders": len(bridge.get("reminders") or []),
+        "queue": len(bridge.get("queue") or []),
+        "updatedAt": bridge.get("updatedAt") or 0,
+        "lastPullAt": bridge.get("lastPullAt") or 0,
+    }
+    out["remindersBackend"] = ("caldav" if out["todoLists"]
+                               else ("bridge" if out["bridgeConfigured"] else ""))
+    return out
+
+
+# Инструменты ассистента по Apple — один список на оба ассистента (Telegram и
+# браузерный). Чтение без подтверждения, запись — только с confirmed:true.
+APPLE_TOOLS = [
+    {
+        "name": "calendar_list_events",
+        "description": "Прочитать события из Apple Календаря (iCloud) за период. Подтверждения не требует.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "from": {"type": "string", "description": "Начало периода, 2026-09-21 или 2026-09-21 09:00. По умолчанию сегодня."},
+                "to": {"type": "string", "description": "Конец периода включительно. По умолчанию +14 дней."},
+                "calendar": {"type": "string", "description": "Название календаря; пусто — все."},
+            },
+        },
+    },
+    {
+        "name": "calendar_create_event",
+        "description": "Создать событие в Apple Календаре. ТОЛЬКО после явного согласия пользователя: сначала опиши, что собираешься создать, и спроси подтверждение.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "start": {"type": "string", "description": "2026-09-21 18:30 (московское время) либо 2026-09-21 для события на весь день."},
+                "end": {"type": "string", "description": "Не указано — час от начала."},
+                "allDay": {"type": "boolean"},
+                "location": {"type": "string"},
+                "notes": {"type": "string"},
+                "calendar": {"type": "string"},
+                "confirmed": {"type": "boolean", "description": "true только после явного согласия пользователя."},
+            },
+            "required": ["title", "start"],
+        },
+    },
+    {
+        "name": "calendar_update_event",
+        "description": "Изменить событие Apple Календаря по id из calendar_list_events. Требует подтверждения пользователя.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "title": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"},
+                "allDay": {"type": "boolean"}, "location": {"type": "string"}, "notes": {"type": "string"},
+                "confirmed": {"type": "boolean"},
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "calendar_delete_event",
+        "description": "Удалить событие Apple Календаря по id. Требует подтверждения пользователя.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "confirmed": {"type": "boolean"}},
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "reminders_list",
+        "description": "Прочитать Напоминания Apple. Подтверждения не требует.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "list": {"type": "string", "description": "Название списка; пусто — все."},
+                "include_done": {"type": "boolean", "description": "Показать и выполненные."},
+            },
+        },
+    },
+    {
+        "name": "reminders_create",
+        "description": "Создать напоминание Apple. Требует подтверждения пользователя.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "due": {"type": "string", "description": "Срок: 2026-09-21 18:30 или 2026-09-21."},
+                "list": {"type": "string"}, "notes": {"type": "string"},
+                "confirmed": {"type": "boolean"},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "reminders_update",
+        "description": "Изменить напоминание Apple по id (в том числе отметить выполненным: done=true). Требует подтверждения пользователя.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "title": {"type": "string"}, "due": {"type": "string"}, "notes": {"type": "string"},
+                "done": {"type": "boolean"},
+                "confirmed": {"type": "boolean"},
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "reminders_delete",
+        "description": "Удалить напоминание Apple по id. Требует подтверждения пользователя.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "confirmed": {"type": "boolean"}},
+            "required": ["id"],
+        },
+    },
+]
+
+APPLE_TOOL_NAMES = {t["name"] for t in APPLE_TOOLS}
+APPLE_WRITE_VERBS = {
+    "calendar_create_event": "создать событие в Apple Календаре",
+    "calendar_update_event": "изменить событие в Apple Календаре",
+    "calendar_delete_event": "удалить событие из Apple Календаря",
+    "reminders_create": "создать напоминание в Apple",
+    "reminders_update": "изменить напоминание в Apple",
+    "reminders_delete": "удалить напоминание в Apple",
+}
+
+
+def execute_apple_tool(name: str, inp: dict) -> dict:
+    """Общая для обоих ассистентов реализация. Возвращает словарь-ответ
+    инструмента; needs_confirmation — когда пользователь ещё не подтвердил."""
+    inp = inp or {}
+    verb = APPLE_WRITE_VERBS.get(name)
+    if verb and not inp.get("confirmed"):
+        return {"needs_confirmation": True,
+                "message": f"Нужно подтверждение пользователя, чтобы {verb}."}
+    try:
+        if name == "calendar_list_events":
+            return apple_list_events(inp.get("from"), inp.get("to"), inp.get("calendar"))
+        if name == "calendar_create_event":
+            return apple_create_event(inp)
+        if name == "calendar_update_event":
+            patch = {k: inp[k] for k in ("title", "start", "end", "allDay", "location", "notes") if k in inp}
+            return apple_update_event(inp.get("id"), patch)
+        if name == "calendar_delete_event":
+            return apple_delete_event(inp.get("id"))
+        if name == "reminders_list":
+            return apple_reminders_list(inp.get("list"), bool(inp.get("include_done")))
+        if name == "reminders_create":
+            return apple_reminders_create(inp)
+        if name == "reminders_update":
+            patch = {k: inp[k] for k in ("title", "due", "notes", "done") if k in inp}
+            return apple_reminders_update(inp.get("id"), patch)
+        if name == "reminders_delete":
+            return apple_reminders_delete(inp.get("id"))
+    except AppleError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Сбой при обращении к Apple: {e}"}
+    return {"error": "unknown_tool"}
+
+
 # ── Текстовый ассистент в Telegram ──────────────────────────────────────────
 # Тот же принцип, что у голосовой кнопки в index (9).html: LLM с tool-calling
 # поверх данных приложения — сама решает, что прочитать и куда отправить
@@ -2079,7 +3092,7 @@ ASSISTANT_TOOLS = [
             "required": ["planId", "ingredientId"],
         },
     },
-]
+] + APPLE_TOOLS
 
 KNOWLEDGE_PROMPT_LIMIT = 6000
 
@@ -2133,6 +3146,14 @@ def build_assistant_system_prompt(app: dict = None) -> str:
         "6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — "
         "свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и "
         "готового веса), cooking_plan_delete_ingredient.\n\n"
+        "7. Apple Календарь и Напоминания (iCloud, не данные приложения): calendar_list_events, "
+        "calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, "
+        "reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без "
+        "спроса. ЛЮБАЯ ЗАПИСЬ — добавление, изменение, удаление — только после явного согласия пользователя: "
+        "сначала коротко скажи, что именно собираешься записать (название, дату и время), и спроси подтверждение, "
+        "потом повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple "
+        "Календарь — разные места: если не сказано куда, уточни или добавь в Apple Календарь, когда речь про "
+        "«календарь», и в Напоминания, когда про «напомни».\n\n"
         "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
         "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
         "— вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми "
@@ -2153,6 +3174,10 @@ def build_assistant_system_prompt(app: dict = None) -> str:
 
 def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str) -> dict:
     inp = inp or {}
+    # Apple Календарь и Напоминания живут не в данных приложения, а в iCloud —
+    # у них свой исполнитель, общий с браузерным ассистентом.
+    if name in APPLE_TOOL_NAMES:
+        return execute_apple_tool(name, inp)
     if name == "get_data":
         entry = ASSISTANT_DATA_DOMAINS.get(inp.get("domain"))
         if not entry:
@@ -4850,6 +5875,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {"tracks": music_list()})
         elif self.path.startswith("/api/music/"):
             self._serve_track(self.path[len("/api/music/"):].split("?", 1)[0])
+        elif route.startswith("/api/apple/"):
+            self._apple_get(route)
         elif self.path == "/api/data":
             if APP_DATA_FILE.exists():
                 try:
@@ -4997,6 +6024,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             index[filename] = {"name": name, "at": int(time.time() * 1000), "size": len(body)}
             music_save_index(index)
             self._json(200, {"id": filename, "name": name, "size": len(body)})
+        elif route.startswith("/api/apple/"):
+            self._apple_post(route)
         elif self.path == "/api/data":
             length = self._content_length()
             if length is None:
@@ -6271,6 +7300,81 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    # ── Apple: Календарь, Напоминания и мост Быстрых команд ────────────────
+    def _apple_query(self) -> dict:
+        raw = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+        return {k: (v[0] if v else "") for k, v in raw.items()}
+
+    def _apple_bridge_authed(self, query: dict) -> bool:
+        """Быстрая команда ходит без cookie — её пропуск это токен из
+        переменной окружения (в заголовке или в адресе)."""
+        token = apple_bridge_token()
+        if not token:
+            return False
+        given = (self.headers.get("X-Bridge-Token") or query.get("token") or "").strip()
+        return bool(given) and given == token
+
+    def _apple_get(self, route: str):
+        query = self._apple_query()
+        if route == "/api/apple/bridge/pull":
+            if not self._apple_bridge_authed(query):
+                self._json(401, {"error": "bad token"})
+                return
+            self._json(200, bridge_pull())
+            return
+        try:
+            if route == "/api/apple/status":
+                self._json(200, apple_status())
+            elif route == "/api/apple/events":
+                self._json(200, apple_list_events(query.get("from"), query.get("to"), query.get("calendar")))
+            elif route == "/api/apple/reminders":
+                self._json(200, apple_reminders_list(query.get("list"), query.get("done") in ("1", "true", "yes")))
+            else:
+                self._json(404, {"error": "not found"})
+        except AppleError as e:
+            self._json(200, {"error": str(e)})
+        except Exception as e:
+            self._json(500, {"error": str(e)})
+
+    def _apple_post(self, route: str):
+        query = self._apple_query()
+        length = self._content_length() or 0
+        if length > 512 * 1024:
+            self._json(413, {"error": "body too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except Exception as e:
+            self._json(400, {"error": str(e)})
+            return
+        if not isinstance(payload, dict):
+            payload = {}
+
+        if route == "/api/apple/bridge/push":
+            if not self._apple_bridge_authed(query):
+                self._json(401, {"error": "bad token"})
+                return
+            try:
+                self._json(200, bridge_push(payload))
+            except AppleError as e:
+                self._json(400, {"error": str(e)})
+            return
+
+        # Остальные записи идут через тот же исполнитель, что и у ассистента:
+        # одно место, где решается, что без подтверждения ничего не пишется.
+        tool = {"/api/apple/event": {"create": "calendar_create_event", "update": "calendar_update_event",
+                                     "delete": "calendar_delete_event"},
+                "/api/apple/reminder": {"create": "reminders_create", "update": "reminders_update",
+                                        "delete": "reminders_delete"}}.get(route)
+        if not tool:
+            self._json(404, {"error": "not found"})
+            return
+        name = tool.get((payload.get("action") or "create").lower())
+        if not name:
+            self._json(400, {"error": "unknown action"})
+            return
+        self._json(200, execute_apple_tool(name, payload))
 
     def _json(self, code: int, data: dict):
         body = json.dumps(data).encode()
