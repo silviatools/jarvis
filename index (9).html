@@ -25510,6 +25510,41 @@ let gymLastSaid = { text: '', at: 0 };
 // Слова, которые говорит только приложение: в отчёте о подходе их не бывает.
 const GYM_APP_WORDS = /рабочий|разминк|отдых|дальше|следующее|записал|перезаписал|рекорд|завершен|поехали|осталось|секунд|минут|процент|повторите/;
 
+// Ассистент строит ВЕСЬ объект данных от снимка, взятого в начале запроса, и
+// отдаёт его в setData целиком. Пока он думает (2–5 секунд), тренировка живёт
+// своей жизнью: записывается подход, идёт отдых, помечаются пропуски. Без
+// слияния его ответ откатил бы всё это назад — поэтому берём только то, что
+// изменил он сам, а остальное оставляем таким, каким оно стало.
+const gymMergeAiData = (base, next, cur) => {
+  const out = { ...cur };
+  const ids = (arr) => new Map((arr || []).map(r => [r && r.id, r]));
+  Object.keys(next || {}).forEach(key => {
+    const before = base ? base[key] : undefined;
+    const after = next[key];
+    if (after === before) return;               // ассистент это не трогал
+    const live = cur ? cur[key] : undefined;
+    const listy = Array.isArray(after) && Array.isArray(before) && Array.isArray(live);
+    if (!listy) { out[key] = after; return; }
+    // Коллекции записей сливаем по id: правки ассистента поверх живых данных,
+    // удалённое им — удаляем, появившееся за время запроса — сохраняем.
+    const wasById = ids(before);
+    const aiById = ids(after);
+    const merged = [];
+    (live || []).forEach(row => {
+      const id = row && row.id;
+      if (aiById.has(id)) { merged.push(aiById.get(id)); return; }
+      if (wasById.has(id)) return;              // ассистент удалил эту запись
+      merged.push(row);                          // появилась уже после снимка
+    });
+    (after || []).forEach(row => {
+      const id = row && row.id;
+      if (!merged.some(r => r && r.id === id)) merged.push(row);
+    });
+    out[key] = merged;
+  });
+  return out;
+};
+
 // «Джарвис, <вопрос>» — всё, что не тренировочная команда, уходит ассистенту.
 // Слово-обращение обязательно: микрофон открыт всю тренировку и слышит зал,
 // без него в ИИ улетал бы каждый чужой разговор.
@@ -27617,6 +27652,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
   const [pickMusic, setPickMusic] = useState(false);
   // Разговор с ассистентом: вопрос, ответ и признак «думает».
   const [ai, setAi] = useState({ q: '', a: '', busy: false });
+  // История разговора с ассистентом — живёт только до конца подтверждения.
+  const aiConvo = useRef([]);
   // «Применяется к следующему подходу»: включённый посреди подхода режим не
   // перехватывает тот, что уже делаешь, — микрофон поднимется со следующего.
   // Если режим был включён до старта тренировки, ждать нечего.
@@ -27978,14 +28015,17 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     const left = Math.ceil((restUntil - now) / 1000);
     // Предупреждения имеют смысл только если отдых заметно длиннее их самих:
     // на 30-секундном отдыхе «тридцать секунд» прозвучало бы сразу.
+    // Предупреждение о времени не должно перебивать начатую фразу: синтез
+    // говорит что-то одно, и ответ ассистента оборвался бы на полуслове.
+    const busyTalking = () => !!(window.speechSynthesis && window.speechSynthesis.speaking);
     if (restSpoken.current.total > 35 && left <= 30 && left > 10 && restSpoken.current.thirty !== restUntil) {
       restSpoken.current.thirty = restUntil;
-      say('Тридцать секунд');
+      if (!busyTalking()) say('Тридцать секунд');
     }
     if (restSpoken.current.total > 12 && left <= 10 && left > 3 && restSpoken.current.ten !== restUntil) {
       restSpoken.current.ten = restUntil;
       gymSound.cue(1, voiceOn, bgAudio);
-      say('Десять секунд');
+      if (!busyTalking()) say('Десять секунд');
     }
     // Последние три секунды — по сигналу в секунду: обратный отсчёт слышно и с
     // погашенным экраном, в отличие от речи.
@@ -28132,18 +28172,39 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     if (!question) return;
     setAi({ q: question, a: '', busy: true });
     say('Секунду');
+    const snapshot = data;          // с этим снимком ассистент и будет работать
+    const restWas = restUntil;
     try {
       // Навигацию на тренировке глушим: уводить экран с идущей тренировки
       // нельзя, поэтому ассистенту об этом сказано прямо в вопросе.
       const noop = () => {};
-      const nav = { setData, setTab: noop, setPlannerTab: noop, setMiscTab: noop, setHouseTab: noop, setVoiceFocus: noop };
+      const nav = {
+        // Слияние вместо прямой записи: за время запроса тренировка могла уйти
+        // вперёд, и целый объект из прошлого затёр бы записанный подход.
+        setData: (next) => setData(cur => gymMergeAiData(snapshot, next, cur)),
+        setTab: noop, setPlannerTab: noop, setMiscTab: noop, setHouseTab: noop, setVoiceFocus: noop,
+      };
       const prompt = 'Я сейчас в зале, иду тренировка, слушаю ответ в наушниках. '
         + 'Отвечай коротко — одно-два предложения, без списков. Разделы приложения не открывай. '
         + 'Вопрос: ' + question;
-      const { text } = await runVoiceAgent([{ role: 'user', content: prompt }], settings, data, nav);
+      const convo = [...aiConvo.current, { role: 'user', content: prompt }];
+      const { text, pendingConfirmation } = await runVoiceAgent(convo, settings, snapshot, nav);
+      // Ассистент просит подтверждения (удаление, деньги) — сохраняем разговор,
+      // чтобы следующее «Джарвис, да» довело дело до конца, а не начало заново.
+      aiConvo.current = pendingConfirmation ? [...convo, { role: 'assistant', content: text }] : [];
       setAi({ q: question, a: text || '', busy: false });
-      say(text || 'Готово');
+      // Пока ассистент думал, отдых мог закончиться, и его объявление было бы
+      // срезано ответом: синтез говорит что-то одно. Досказываем сами.
+      const t = (restWas && Date.now() >= restWas) ? nextTarget() : null;
+      const tail = t ? `. Дальше: ${gymSaySet(
+        t.row,
+        gymPctBase(t.ex, sessions, session.startedAt || Date.now()),
+        t.ex.name,
+        gymLastWorkingWeight(sessions, t.ex.name, session.startedAt || Date.now()),
+      )}` : '';
+      say((text || 'Готово') + tail);
     } catch (e) {
+      aiConvo.current = [];
       const msg = e.message === 'no_key'
         ? 'Ключ ассистента не настроен: Настройки — Ассистент'
         : `Ассистент не ответил: ${e.message}`;
