@@ -36,6 +36,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urljoin
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
+from foods_data import FOODS, FOOD_CATEGORIES
+
 # Moscow time is UTC+3, no DST (since 2014) — reliable without tzdata
 MSK = timezone(timedelta(hours=3))
 
@@ -5871,6 +5873,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self.wfile.write(content)
             else:
                 self._json(404, {"error": "not found"})
+        elif route == "/api/foods":
+            self._json(200, {"categories": FOOD_CATEGORIES, "foods": FOODS})
         elif route == "/api/music":
             self._json(200, {"tracks": music_list()})
         elif self.path.startswith("/api/music/"):

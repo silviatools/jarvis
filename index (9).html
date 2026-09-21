@@ -2141,7 +2141,7 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
       ) : (
         <>
           <div className="flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6 gap-0 overflow-x-auto">
-            {[{ id: 'plan', label: 'План' }, { id: 'cooking', label: 'Готовка' }, { id: 'containers', label: 'Контейнеры' }, { id: 'counter', label: 'Счётчик' }, { id: 'purchase', label: 'Закупка' }].map(t => (
+            {[{ id: 'plan', label: 'План' }, { id: 'cooking', label: 'Готовка' }, { id: 'containers', label: 'Контейнеры' }, { id: 'counter', label: 'Счётчик' }, { id: 'purchase', label: 'Закупка' }, { id: 'foods', label: 'База продуктов' }].map(t => (
               <button
                 key={t.id}
                 onClick={() => setMealTab(t.id)}
@@ -2159,6 +2159,7 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
           {mealTab === 'containers' && <ContainersView data={data} setData={setData} />}
           {mealTab === 'counter' && <RationCounter data={data} setData={setData} />}
           {mealTab === 'purchase' && <MealPurchaseView data={data} setData={setData} />}
+          {mealTab === 'foods' && <FoodDatabaseView />}
         </>
       )}
     </div>
@@ -2598,6 +2599,109 @@ function MealPurchaseForm({ meals, list, onSave, onCancel }) {
         <button onClick={onCancel} className="btn-secondary flex-1">Отмена</button>
         <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
       </div>
+    </div>
+  );
+}
+
+// ============== FOOD DATABASE (Питание → База продуктов) ==============
+function FoodDatabaseView() {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [categories, setCategories] = useState([]);
+  const [foods, setFoods] = useState([]);
+  const [query, setQuery] = useState('');
+  const [activeCategory, setActiveCategory] = useState('all');
+
+  useEffect(() => {
+    fetch('/api/foods')
+      .then(r => r.json())
+      .then(d => {
+        setCategories(d.categories || []);
+        setFoods(d.foods || []);
+        setLoading(false);
+      })
+      .catch(() => { setError(true); setLoading(false); });
+  }, []);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return foods.filter(f =>
+      (activeCategory === 'all' || f.category === activeCategory) &&
+      (!q || f.name.toLowerCase().includes(q))
+    );
+  }, [foods, query, activeCategory]);
+
+  const grouped = useMemo(() => {
+    const byCat = {};
+    filtered.forEach(f => { (byCat[f.category] = byCat[f.category] || []).push(f); });
+    return categories
+      .map(c => ({ cat: c, items: (byCat[c.id] || []).sort((a, b) => a.name.localeCompare(b.name, 'ru')) }))
+      .filter(g => g.items.length > 0);
+  }, [filtered, categories]);
+
+  if (loading) return <div className="text-center py-8 text-[var(--text-subtle)] text-sm">Загрузка справочника…</div>;
+  if (error) return <EmptyState title="Не удалось загрузить" text="Попробуйте обновить страницу" />;
+
+  return (
+    <div className="fade-in space-y-4">
+      <div className="relative">
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-subtle)]">
+          <Icon name="search" size={16} />
+        </span>
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder="Поиск по продукту"
+          className="w-full !pl-9"
+        />
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        <button
+          onClick={() => setActiveCategory('all')}
+          className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap flex-shrink-0 border transition-all ${
+            activeCategory === 'all' ? 'bg-[var(--text)] text-white border-[var(--text)]' : 'border-[var(--border)] text-[var(--text-muted)]'
+          }`}
+        >
+          Все
+        </button>
+        {categories.map(c => (
+          <button
+            key={c.id}
+            onClick={() => setActiveCategory(c.id)}
+            className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap flex-shrink-0 border transition-all ${
+              activeCategory === c.id ? 'bg-[var(--text)] text-white border-[var(--text)]' : 'border-[var(--border)] text-[var(--text-muted)]'
+            }`}
+          >
+            {c.name}
+          </button>
+        ))}
+      </div>
+
+      {grouped.length === 0 ? (
+        <EmptyState title="Ничего не найдено" text="Попробуйте изменить запрос" />
+      ) : (
+        <div className="space-y-5">
+          {grouped.map(({ cat, items }) => (
+            <div key={cat.id}>
+              <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] mb-2 font-medium">{cat.name}</div>
+              <div className="space-y-2">
+                {items.map(f => (
+                  <div key={f.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+                    <span className="font-medium truncate">{f.name}</span>
+                    <div className="flex gap-3 text-sm shrink-0">
+                      <span><span className="font-medium">{f.kcal}</span><span className="text-[var(--text-subtle)] ml-1">ккал</span></span>
+                      <span><span className="font-medium">{f.protein}</span><span className="text-[var(--text-subtle)] ml-1">Б</span></span>
+                      <span><span className="font-medium">{f.fat}</span><span className="text-[var(--text-subtle)] ml-1">Ж</span></span>
+                      <span><span className="font-medium">{f.carbs}</span><span className="text-[var(--text-subtle)] ml-1">У</span></span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
