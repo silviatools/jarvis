@@ -737,6 +737,18 @@ def save_app_data(app: dict):
         os.replace(tmp, APP_DATA_FILE)
 
 
+def foods_with_unit_weights() -> list:
+    """FOODS (статичный справочник) + вес «1 шт», который пользователь задаёт
+    руками в разделе Питание → База продуктов (хранится в app-data, а не в
+    коде — foods_data.py статика и правится вручную только разработчиком)."""
+    weights = (load_app_data() or {}).get("foodUnitWeights") or {}
+    out = []
+    for f in FOODS:
+        w = weights.get(f["id"])
+        out.append({**f, "unitWeight": w} if w else {k: v for k, v in f.items() if k != "unitWeight"})
+    return out
+
+
 # ── backup (full project + data, sent to Telegram) ──────────────────────────
 
 MAX_TG_FILE = 45 * 1024 * 1024  # stay safely under Telegram's ~50 MB bot upload limit
@@ -5874,7 +5886,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             else:
                 self._json(404, {"error": "not found"})
         elif route == "/api/foods":
-            self._json(200, {"categories": FOOD_CATEGORIES, "foods": FOODS})
+            self._json(200, {"categories": FOOD_CATEGORIES, "foods": foods_with_unit_weights()})
         elif route == "/api/music":
             self._json(200, {"tracks": music_list()})
         elif self.path.startswith("/api/music/"):
