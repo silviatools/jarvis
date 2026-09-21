@@ -10921,6 +10921,12 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
   const transcriptRef = React.useRef(''); // kept in sync for onend closure
   const noSpeechStreakRef = React.useRef(0);
   const startRetryRef = React.useRef(0);
+  // На iOS распознавание после воспроизведения звука иногда «зависает»: сам
+  // индикатор микрофона у пользователя горит (getUserMedia активен), а
+  // recognition больше никогда не отвечает — ни onresult, ни onerror, ни
+  // onend. Свой таймер вместо ожидания несуществующего события браузера.
+  const aliveWatchdogRef = React.useRef(null);
+  const clearAliveWatchdog = () => { if (aliveWatchdogRef.current) { clearTimeout(aliveWatchdogRef.current); aliveWatchdogRef.current = null; } };
   const historyIdRef = React.useRef(0);
   const historyScrollRef = React.useRef(null);
   useEffect(() => {
@@ -11008,6 +11014,8 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
 
     r.onresult = (e) => {
       noSpeechStreakRef.current = 0;
+      startRetryRef.current = 0;
+      armAliveWatchdog(); // есть сигнал — recognition точно живо, ждём дальше
       let t = '';
       for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
       transcriptRef.current = t;
@@ -11015,6 +11023,7 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     };
 
     r.onerror = (e) => {
+      clearAliveWatchdog();
       recogRef.current = null;
       if (e.error === 'no-speech') {
         // Разговор непрерывный, пока попап открыт — переслушиваем сами, но не
@@ -11035,8 +11044,31 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
 
     // Auto-triggered when user stops speaking (or manually via r.stop())
     r.onend = () => {
+      clearAliveWatchdog();
       recogRef.current = null;
       processTranscript(transcriptRef.current.trim(), existingMessages);
+    };
+
+    // Сторож зависания: на iOS после проигрывания звука recognition иногда
+    // не отвечает вообще ничем — ни onresult, ни onerror, ни onend, — хотя
+    // индикатор микрофона у пользователя горит. Без своего таймера такой
+    // объект висел бы молча до бесконечности. Если признаков жизни нет —
+    // выбрасываем его и пробуем заново с чистого объекта.
+    const armAliveWatchdog = () => {
+      clearAliveWatchdog();
+      aliveWatchdogRef.current = setTimeout(() => {
+        aliveWatchdogRef.current = null;
+        if (recogRef.current !== r) return; // уже сменилось на другое
+        try { r.onresult = null; r.onerror = null; r.onend = null; r.abort ? r.abort() : r.stop(); } catch (_) {}
+        recogRef.current = null;
+        startRetryRef.current += 1;
+        if (startRetryRef.current >= 5) {
+          setErrorMsg('Микрофон завис — нажмите на него, чтобы попробовать снова');
+          setPhase('error');
+          return;
+        }
+        startRecording(existingMessages);
+      }, 12000);
     };
 
     try {
@@ -11056,6 +11088,7 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
       setTimeout(() => startRecording(existingMessages), 400);
       return;
     }
+    armAliveWatchdog();
     setPhase('listening');
     setTranscript('');
   };
@@ -11155,6 +11188,7 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     window.speechSynthesis?.cancel();
     if (_currentAudio) { _currentAudio.pause(); _currentAudio = null; }
     if (recogRef.current) { recogRef.current.onend = null; recogRef.current.onerror = null; recogRef.current.stop(); recogRef.current = null; }
+    clearAliveWatchdog();
     noSpeechStreakRef.current = 0;
     startRetryRef.current = 0;
     setDialogOpen(false);
