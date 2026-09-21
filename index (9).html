@@ -600,14 +600,24 @@ const parseMealLine = (line) => {
   return { id: crypto.randomUUID(), product: trimmed, amount: '' };
 };
 
+// Продукт из рациона несёт свой КБЖУ: либо подтянут из базы продуктов
+// (foodId + граммы → пересчёт на лету), либо введён вручную вместе с весом.
+const emptyItemMacros = { foodId: null, kcal: '', protein: '', fat: '', carbs: '' };
+
 const normalizeMealSection = (val) => {
   if (Array.isArray(val)) {
     return val.map(it => (it && typeof it === 'object')
-      ? { id: it.id || crypto.randomUUID(), product: it.product || '', amount: it.amount || '' }
-      : { id: crypto.randomUUID(), product: String(it ?? ''), amount: '' });
+      ? {
+          id: it.id || crypto.randomUUID(),
+          product: it.product || '',
+          amount: it.amount || '',
+          foodId: it.foodId || null,
+          kcal: it.kcal ?? '', protein: it.protein ?? '', fat: it.fat ?? '', carbs: it.carbs ?? '',
+        }
+      : { id: crypto.randomUUID(), product: String(it ?? ''), amount: '', ...emptyItemMacros });
   }
   if (typeof val === 'string') {
-    return val.split('\n').map(parseMealLine).filter(Boolean);
+    return val.split('\n').map(parseMealLine).filter(Boolean).map(it => ({ ...it, ...emptyItemMacros }));
   }
   return [];
 };
@@ -619,6 +629,27 @@ const normalizeMeal = (meal) => ({
   lunch: normalizeMealSection(meal.lunch),
   dinner: normalizeMealSection(meal.dinner),
 });
+
+const round1 = (v) => Math.round(v * 10) / 10;
+
+// Список продуктов грузится один раз и кэшируется на модуль — форма рациона
+// может открываться много раз за сессию, база маленькая и статическая.
+let _foodsListCache = null;
+let _foodsListPromise = null;
+const useFoodsList = () => {
+  const [foods, setFoods] = useState(_foodsListCache || []);
+  useEffect(() => {
+    if (_foodsListCache) { setFoods(_foodsListCache); return; }
+    if (!_foodsListPromise) {
+      _foodsListPromise = fetch('/api/foods').then(r => r.json()).then(d => {
+        _foodsListCache = d.foods || [];
+        return _foodsListCache;
+      }).catch(() => (_foodsListCache = []));
+    }
+    _foodsListPromise.then(setFoods);
+  }, []);
+  return foods;
+};
 
 // ── Закупка (shopping list): aggregate product amounts across selected meal
 // plans × quantity, for totalling a grocery run. ──────────────────────────
@@ -5300,11 +5331,19 @@ function SettingsMealRow({ meal, archived, onEdit, onArchive, onDelete }) {
 
 function MealModal({ meal, onSave, onClose }) {
   const [form, setForm] = useState(() => normalizeMeal(meal));
+  const foods = useFoodsList();
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  const addItem = (key) => set(key, [...form[key], { id: crypto.randomUUID(), product: '', amount: '' }]);
-  const updItem = (key, id, field, val) => set(key, form[key].map(it => it.id === id ? { ...it, [field]: val } : it));
+  const addItem = (key, item) => set(key, [...form[key], item]);
+  const updItem = (key, id, patch) => set(key, form[key].map(it => it.id === id ? { ...it, ...patch } : it));
   const delItem = (key, id) => set(key, form[key].filter(it => it.id !== id));
+
+  const totals = useMemo(() => {
+    const all = [...form.breakfast, ...form.snack, ...form.lunch, ...form.dinner];
+    if (all.length === 0) return { calories: '', protein: '', fat: '', carbs: '' };
+    const sum = (f) => round1(all.reduce((s, it) => s + (Number(it[f]) || 0), 0));
+    return { calories: sum('kcal'), protein: sum('protein'), fat: sum('fat'), carbs: sum('carbs') };
+  }, [form.breakfast, form.snack, form.lunch, form.dinner]);
 
   const submit = () => {
     if (!form.name.trim()) return alert('Введите название рациона');
@@ -5317,6 +5356,7 @@ function MealModal({ meal, onSave, onClose }) {
       snack: clean(form.snack),
       lunch: clean(form.lunch),
       dinner: clean(form.dinner),
+      calories: totals.calories, protein: totals.protein, fat: totals.fat, carbs: totals.carbs,
     });
   };
 
@@ -5329,48 +5369,14 @@ function MealModal({ meal, onSave, onClose }) {
         </div>
 
         <div>
-          <label>КБЖУ на день</label>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            <div>
-              <input
-                type="number" inputMode="decimal" min="0"
-                value={form.calories ?? ''}
-                onChange={e => set('calories', e.target.value)}
-                placeholder="ккал"
-                style={{ textAlign: 'center' }}
-              />
-              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">ккал</div>
-            </div>
-            <div>
-              <input
-                type="number" inputMode="decimal" min="0"
-                value={form.protein ?? ''}
-                onChange={e => set('protein', e.target.value)}
-                placeholder="Б"
-                style={{ textAlign: 'center' }}
-              />
-              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">Белки</div>
-            </div>
-            <div>
-              <input
-                type="number" inputMode="decimal" min="0"
-                value={form.fat ?? ''}
-                onChange={e => set('fat', e.target.value)}
-                placeholder="Ж"
-                style={{ textAlign: 'center' }}
-              />
-              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">Жиры</div>
-            </div>
-            <div>
-              <input
-                type="number" inputMode="decimal" min="0"
-                value={form.carbs ?? ''}
-                onChange={e => set('carbs', e.target.value)}
-                placeholder="У"
-                style={{ textAlign: 'center' }}
-              />
-              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">Углеводы</div>
-            </div>
+          <label>КБЖУ на день (считается автоматически по продуктам)</label>
+          <div className="grid grid-cols-4 gap-1 bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3">
+            {[['ккал', totals.calories], ['Б', totals.protein], ['Ж', totals.fat], ['У', totals.carbs]].map(([label, val]) => (
+              <div key={label} className="text-center">
+                <div className="font-display text-lg">{val === '' ? '—' : val}</div>
+                <div className="text-[10px] text-[var(--text-subtle)] uppercase tracking-wider mt-0.5">{label}</div>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -5380,33 +5386,12 @@ function MealModal({ meal, onSave, onClose }) {
           { key: 'lunch', label: 'Обед' },
           { key: 'dinner', label: 'Ужин' },
         ].map(({ key, label }) => (
-          <div key={key}>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="!mb-0">{label}</label>
-              <button type="button" onClick={() => addItem(key)}
-                className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1">
-                <Icon name="plus" size={13} /> Добавить продукт
-              </button>
-            </div>
-            {form[key].length === 0 ? (
-              <div className="text-xs text-[var(--text-subtle)] py-1">Нет продуктов</div>
-            ) : (
-              <div className="space-y-2">
-                {form[key].map(item => (
-                  <div key={item.id} className="flex gap-2">
-                    <input value={item.product} onChange={e => updItem(key, item.id, 'product', e.target.value)}
-                      placeholder="Продукт" className="flex-1" />
-                    <input value={item.amount} onChange={e => updItem(key, item.id, 'amount', e.target.value)}
-                      placeholder="Кол-во/гр" style={{ width: '110px' }} />
-                    <button type="button" onClick={() => delItem(key, item.id)}
-                      className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0">
-                      <Icon name="trash" size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <MealSectionEditor
+            key={key} label={label} items={form[key]} foods={foods}
+            onAdd={item => addItem(key, item)}
+            onUpdate={(id, patch) => updItem(key, id, patch)}
+            onRemove={id => delItem(key, id)}
+          />
         ))}
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
@@ -5414,6 +5399,192 @@ function MealModal({ meal, onSave, onClose }) {
         </div>
       </div>
     </Modal>
+  );
+}
+
+function MealSectionEditor({ label, items, foods, onAdd, onUpdate, onRemove }) {
+  const [adding, setAdding] = useState(false);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="!mb-0">{label}</label>
+        <button type="button" onClick={() => setAdding(a => !a)}
+          className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1">
+          <Icon name="plus" size={13} /> Добавить продукт
+        </button>
+      </div>
+
+      {items.length === 0 && !adding && (
+        <div className="text-xs text-[var(--text-subtle)] py-1">Нет продуктов</div>
+      )}
+
+      {items.length > 0 && (
+        <div className="space-y-2 mb-2">
+          {items.map(item => (
+            <MealItemEditorRow key={item.id} item={item} foods={foods}
+              onChange={patch => onUpdate(item.id, patch)}
+              onRemove={() => onRemove(item.id)} />
+          ))}
+        </div>
+      )}
+
+      {adding && (
+        <MealItemAddForm foods={foods}
+          onAdd={item => { onAdd(item); setAdding(false); }}
+          onCancel={() => setAdding(false)} />
+      )}
+    </div>
+  );
+}
+
+function MealItemEditorRow({ item, foods, onChange, onRemove }) {
+  if (item.foodId) {
+    const food = foods.find(f => f.id === item.foodId);
+    const changeGrams = (v) => {
+      const g = parseFloat(String(v).replace(',', '.'));
+      const amount = v === '' ? '' : `${v} г`;
+      if (food && g > 0) {
+        onChange({ amount, kcal: round1(food.kcal * g / 100), protein: round1(food.protein * g / 100), fat: round1(food.fat * g / 100), carbs: round1(food.carbs * g / 100) });
+      } else {
+        onChange({ amount, kcal: '', protein: '', fat: '', carbs: '' });
+      }
+    };
+    return (
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-2.5 space-y-1.5">
+        <div className="flex items-center gap-2">
+          <span className="flex-1 text-sm font-medium truncate">{item.product}</span>
+          <span className="text-[10px] text-[var(--text-subtle)] uppercase tracking-wider shrink-0">из базы</span>
+          <button type="button" onClick={onRemove} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0">
+            <Icon name="trash" size={14} />
+          </button>
+        </div>
+        <div className="flex items-center gap-2">
+          <input type="number" inputMode="decimal" min="0" value={item.amount.replace(/[^\d.,]/g, '')}
+            onChange={e => changeGrams(e.target.value)} placeholder="граммы" style={{ width: '90px' }} />
+          <span className="text-xs text-[var(--text-subtle)]">
+            {item.kcal !== '' ? `${item.kcal} ккал · ${item.protein} Б · ${item.fat} Ж · ${item.carbs} У` : 'Укажите граммы'}
+          </span>
+        </div>
+      </div>
+    );
+  }
+  const num = (v) => v === '' ? '' : Number(v);
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-2.5 space-y-1.5">
+      <div className="flex gap-2">
+        <input value={item.product} onChange={e => onChange({ product: e.target.value })} placeholder="Продукт" className="flex-1" />
+        <input value={item.amount} onChange={e => onChange({ amount: e.target.value })} placeholder="Кол-во/гр" style={{ width: '100px' }} />
+        <button type="button" onClick={onRemove} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0">
+          <Icon name="trash" size={14} />
+        </button>
+      </div>
+      <div className="grid grid-cols-4 gap-2">
+        <input type="number" inputMode="decimal" min="0" value={item.kcal} onChange={e => onChange({ kcal: num(e.target.value) })} placeholder="ккал" style={{ textAlign: 'center' }} />
+        <input type="number" inputMode="decimal" min="0" value={item.protein} onChange={e => onChange({ protein: num(e.target.value) })} placeholder="Б" style={{ textAlign: 'center' }} />
+        <input type="number" inputMode="decimal" min="0" value={item.fat} onChange={e => onChange({ fat: num(e.target.value) })} placeholder="Ж" style={{ textAlign: 'center' }} />
+        <input type="number" inputMode="decimal" min="0" value={item.carbs} onChange={e => onChange({ carbs: num(e.target.value) })} placeholder="У" style={{ textAlign: 'center' }} />
+      </div>
+    </div>
+  );
+}
+
+function MealItemAddForm({ foods, onAdd, onCancel }) {
+  const [query, setQuery] = useState('');
+  const [selectedFood, setSelectedFood] = useState(null);
+  const [amount, setAmount] = useState('');
+  const [mk, setMk] = useState('');
+  const [mp, setMp] = useState('');
+  const [mf, setMf] = useState('');
+  const [mc, setMc] = useState('');
+
+  const suggestions = useMemo(() => {
+    if (selectedFood || !query.trim()) return [];
+    const q = query.trim().toLowerCase();
+    return foods.filter(f => f.name.toLowerCase().includes(q)).slice(0, 6);
+  }, [foods, query, selectedFood]);
+
+  const grams = parseFloat(amount.replace(',', '.'));
+  const computed = selectedFood && grams > 0 ? {
+    kcal: round1(selectedFood.kcal * grams / 100),
+    protein: round1(selectedFood.protein * grams / 100),
+    fat: round1(selectedFood.fat * grams / 100),
+    carbs: round1(selectedFood.carbs * grams / 100),
+  } : null;
+
+  const pick = (food) => { setSelectedFood(food); setQuery(food.name); setAmount(''); };
+  const clearPick = () => { setSelectedFood(null); setQuery(''); setAmount(''); };
+
+  const submit = () => {
+    if (selectedFood) {
+      if (!(grams > 0)) return alert('Введите граммы');
+      onAdd({
+        id: crypto.randomUUID(), product: selectedFood.name, amount: `${formatAmountValue(grams)} г`,
+        foodId: selectedFood.id,
+        kcal: computed.kcal, protein: computed.protein, fat: computed.fat, carbs: computed.carbs,
+      });
+    } else {
+      const product = query.trim();
+      if (!product) return alert('Введите продукт');
+      onAdd({
+        id: crypto.randomUUID(), product, amount: amount.trim(), foodId: null,
+        kcal: mk === '' ? '' : Number(mk), protein: mp === '' ? '' : Number(mp),
+        fat: mf === '' ? '' : Number(mf), carbs: mc === '' ? '' : Number(mc),
+      });
+    }
+  };
+
+  return (
+    <div className="mt-2 p-3 rounded-xl border border-[var(--border)] bg-[var(--bg)] space-y-2">
+      <div className="relative">
+        <input
+          value={query}
+          onChange={e => { setQuery(e.target.value); if (selectedFood) setSelectedFood(null); }}
+          placeholder="Продукт — поиск по базе или ввод вручную"
+          className="w-full"
+          autoFocus
+        />
+        {suggestions.length > 0 && (
+          <div className="absolute z-10 left-0 right-0 mt-1 bg-[var(--surface)] border border-[var(--border)] rounded-xl shadow-lg max-h-56 overflow-auto">
+            {suggestions.map(f => (
+              <button key={f.id} type="button" onClick={() => pick(f)}
+                className="w-full text-left px-3 py-2 text-sm hover:bg-black/5 flex items-center justify-between gap-2">
+                <span className="truncate">{f.name}</span>
+                <span className="text-[var(--text-subtle)] text-xs shrink-0">{f.kcal} ккал/100г</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {selectedFood ? (
+        <div className="flex items-center gap-2">
+          <input type="number" inputMode="decimal" min="0" value={amount}
+            onChange={e => setAmount(e.target.value)} placeholder="Граммы" style={{ width: '100px' }} autoFocus />
+          <span className="text-xs text-[var(--text-subtle)] flex-1">
+            {computed ? `${computed.kcal} ккал · ${computed.protein} Б · ${computed.fat} Ж · ${computed.carbs} У` : 'Укажите граммы'}
+          </span>
+          <button type="button" onClick={clearPick} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] shrink-0">
+            вручную
+          </button>
+        </div>
+      ) : (
+        <>
+          <input value={amount} onChange={e => setAmount(e.target.value)} placeholder="Кол-во/вес (например, 150г)" />
+          <div className="grid grid-cols-4 gap-2">
+            <input type="number" inputMode="decimal" min="0" value={mk} onChange={e => setMk(e.target.value)} placeholder="ккал" style={{ textAlign: 'center' }} />
+            <input type="number" inputMode="decimal" min="0" value={mp} onChange={e => setMp(e.target.value)} placeholder="Б" style={{ textAlign: 'center' }} />
+            <input type="number" inputMode="decimal" min="0" value={mf} onChange={e => setMf(e.target.value)} placeholder="Ж" style={{ textAlign: 'center' }} />
+            <input type="number" inputMode="decimal" min="0" value={mc} onChange={e => setMc(e.target.value)} placeholder="У" style={{ textAlign: 'center' }} />
+          </div>
+        </>
+      )}
+
+      <div className="flex gap-2">
+        <button type="button" onClick={onCancel} className="btn-secondary flex-1 !py-2 text-sm">Отмена</button>
+        <button type="button" onClick={submit} className="btn-primary flex-1 !py-2 text-sm">Добавить</button>
+      </div>
+    </div>
   );
 }
 
