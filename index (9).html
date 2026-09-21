@@ -643,6 +643,34 @@ const computeFoodMacros = (food, grams) => ({
   carbs: round1(food.carbs * grams / 100),
 });
 
+// «Мои блюда» (data.customDishes) — свои рецепты из продуктов базы. Каждое
+// блюдо хранит ингредиенты с их абсолютным КБЖУ (снимок на момент добавления)
+// и приводится к форме обычного продукта (КБЖУ на 100г + unitWeight = вес
+// всего блюда целиком), чтобы бесшовно попадать в тот же список для поиска
+// и работать с тем же переключателем шт/г, что и продукты из базы.
+const CUSTOM_DISH_CATEGORY = { id: 'custom', name: 'Мои блюда' };
+
+const dishTotals = (ingredients) => {
+  const grams = round1((ingredients || []).reduce((s, i) => s + (Number(i.grams) || 0), 0));
+  const sum = (f) => round1((ingredients || []).reduce((s, i) => s + (Number(i[f]) || 0), 0));
+  return { grams, kcal: sum('kcal'), protein: sum('protein'), fat: sum('fat'), carbs: sum('carbs') };
+};
+
+const dishToFoodShape = (dish) => {
+  const t = dishTotals(dish.ingredients);
+  const per100 = t.grams > 0 ? 100 / t.grams : 0;
+  return {
+    id: `dish-${dish.id}`,
+    name: dish.name,
+    category: 'custom',
+    kcal: round1(t.kcal * per100), protein: round1(t.protein * per100),
+    fat: round1(t.fat * per100), carbs: round1(t.carbs * per100),
+    unitWeight: t.grams || null,
+    isCustomDish: true,
+    dishId: dish.id,
+  };
+};
+
 // Список продуктов грузится один раз и кэшируется на модуль — форма рациона
 // может открываться много раз за сессию, база маленькая и статическая.
 let _foodsListCache = null;
@@ -2653,22 +2681,27 @@ function FoodDatabaseView({ data, setData }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [categories, setCategories] = useState([]);
-  const [foods, setFoods] = useState([]);
+  const [dbFoods, setDbFoods] = useState([]);
   const [query, setQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState('all');
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState('');
+  const [dishModal, setDishModal] = useState(null); // 'new' | dish | null
 
   useEffect(() => {
     fetch('/api/foods')
       .then(r => r.json())
       .then(d => {
         setCategories(d.categories || []);
-        setFoods(d.foods || []);
+        setDbFoods(d.foods || []);
         setLoading(false);
       })
       .catch(() => { setError(true); setLoading(false); });
   }, []);
+
+  const dishes = data.customDishes || [];
+  const allCategories = useMemo(() => [...categories, CUSTOM_DISH_CATEGORY], [categories]);
+  const foods = useMemo(() => [...dbFoods, ...dishes.map(dishToFoodShape)], [dbFoods, dishes]);
 
   const dropUnitWeight = (f) => { const { unitWeight, ...rest } = f; return rest; };
 
@@ -2680,7 +2713,7 @@ function FoodDatabaseView({ data, setData }) {
   const saveUnitWeight = (foodId) => {
     const grams = parseFloat(editValue.replace(',', '.'));
     const value = grams > 0 ? grams : null;
-    setFoods(fs => fs.map(f => f.id !== foodId ? f : (value ? { ...f, unitWeight: value } : dropUnitWeight(f))));
+    setDbFoods(fs => fs.map(f => f.id !== foodId ? f : (value ? { ...f, unitWeight: value } : dropUnitWeight(f))));
     setData(d => {
       const weights = { ...(d.foodUnitWeights || {}) };
       if (value) weights[foodId] = value; else delete weights[foodId];
@@ -2688,6 +2721,26 @@ function FoodDatabaseView({ data, setData }) {
     });
     invalidateFoodsCache();
     cancelEdit();
+  };
+
+  // Блюда живут в data.customDishes и попадают в MealModal напрямую через
+  // проп customDishes (см. MealSettings) — кэш /api/foods их не касается.
+  const saveDish = (dish) => {
+    setData(d => {
+      const list = d.customDishes || [];
+      const exists = list.some(x => x.id === dish.id);
+      return { ...d, customDishes: exists ? list.map(x => x.id === dish.id ? dish : x) : [...list, dish] };
+    });
+    setDishModal(null);
+  };
+
+  const deleteDish = (dish) => {
+    if (!confirm(`Удалить блюдо «${dish.name}»?`)) return;
+    setData(d => ({
+      ...d,
+      customDishes: (d.customDishes || []).filter(x => x.id !== dish.id),
+      deletedIds: withDeletedId(d, 'customDishes', dish.id),
+    }));
   };
 
   const filtered = useMemo(() => {
@@ -2701,10 +2754,10 @@ function FoodDatabaseView({ data, setData }) {
   const grouped = useMemo(() => {
     const byCat = {};
     filtered.forEach(f => { (byCat[f.category] = byCat[f.category] || []).push(f); });
-    return categories
+    return allCategories
       .map(c => ({ cat: c, items: (byCat[c.id] || []).sort((a, b) => a.name.localeCompare(b.name, 'ru')) }))
       .filter(g => g.items.length > 0);
-  }, [filtered, categories]);
+  }, [filtered, allCategories]);
 
   if (loading) return <div className="text-center py-8 text-[var(--text-subtle)] text-sm">Загрузка справочника…</div>;
   if (error) return <EmptyState title="Не удалось загрузить" text="Попробуйте обновить страницу" />;
@@ -2723,6 +2776,13 @@ function FoodDatabaseView({ data, setData }) {
         />
       </div>
 
+      <button
+        onClick={() => setDishModal('new')}
+        className="btn-primary w-full flex items-center justify-center gap-2 text-sm"
+      >
+        <Icon name="plus" size={16} /> Создать блюдо
+      </button>
+
       <div className="flex gap-2 overflow-x-auto pb-1">
         <button
           onClick={() => setActiveCategory('all')}
@@ -2732,7 +2792,7 @@ function FoodDatabaseView({ data, setData }) {
         >
           Все
         </button>
-        {categories.map(c => (
+        {allCategories.map(c => (
           <button
             key={c.id}
             onClick={() => setActiveCategory(c.id)}
@@ -2746,7 +2806,7 @@ function FoodDatabaseView({ data, setData }) {
       </div>
 
       {grouped.length === 0 ? (
-        <EmptyState title="Ничего не найдено" text="Попробуйте изменить запрос" />
+        <EmptyState title="Ничего не найдено" text="Попробуйте изменить запрос или создайте своё блюдо" />
       ) : (
         <div className="space-y-5">
           {grouped.map(({ cat, items }) => (
@@ -2765,7 +2825,17 @@ function FoodDatabaseView({ data, setData }) {
                       </div>
                     </div>
 
-                    {editingId === f.id ? (
+                    {f.isCustomDish ? (
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-[var(--text-subtle)] flex-1">
+                          {f.unitWeight ? `1 порция (весь рецепт) ≈ ${f.unitWeight} г` : 'Нет ингредиентов'}
+                        </span>
+                        <button type="button" onClick={() => setDishModal(dishes.find(d => d.id === f.dishId))}
+                          className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]">Редактировать</button>
+                        <button type="button" onClick={() => deleteDish(dishes.find(d => d.id === f.dishId))}
+                          className="text-xs text-[var(--text-muted)] hover:text-red-500">Удалить</button>
+                      </div>
+                    ) : editingId === f.id ? (
                       <div className="flex items-center gap-2">
                         <input
                           type="number" inputMode="decimal" min="0" autoFocus
@@ -2792,7 +2862,145 @@ function FoodDatabaseView({ data, setData }) {
           ))}
         </div>
       )}
+
+      {dishModal && (
+        <DishModal
+          dish={dishModal === 'new' ? null : dishModal}
+          foods={dbFoods}
+          onSave={saveDish}
+          onClose={() => setDishModal(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function DishModal({ dish, foods, onSave, onClose }) {
+  const [name, setName] = useState(dish?.name || '');
+  const [ingredients, setIngredients] = useState(dish?.ingredients || []);
+  const [query, setQuery] = useState('');
+  const [selectedFood, setSelectedFood] = useState(null);
+  const [unit, setUnit] = useState('g');
+  const [amount, setAmount] = useState('');
+
+  const suggestions = useMemo(() => {
+    if (selectedFood || !query.trim()) return [];
+    const q = query.trim().toLowerCase();
+    return foods.filter(f => f.name.toLowerCase().includes(q)).slice(0, 6);
+  }, [foods, query, selectedFood]);
+
+  const pick = (f) => { setSelectedFood(f); setQuery(f.name); setAmount(''); setUnit(f.unitWeight ? 'pcs' : 'g'); };
+  const clearPick = () => { setSelectedFood(null); setQuery(''); setAmount(''); setUnit('g'); };
+
+  const qty = parseFloat(amount.replace(',', '.'));
+  const grams = selectedFood && qty > 0 ? resolveGrams(qty, unit, selectedFood) : 0;
+
+  const addIngredient = () => {
+    if (!selectedFood || !(grams > 0)) return;
+    const macros = computeFoodMacros(selectedFood, grams);
+    setIngredients(list => [...list, {
+      id: crypto.randomUUID(), foodId: selectedFood.id, product: selectedFood.name, grams: round1(grams), ...macros,
+    }]);
+    clearPick();
+  };
+  const removeIngredient = (id) => setIngredients(list => list.filter(i => i.id !== id));
+
+  const totals = useMemo(() => dishTotals(ingredients), [ingredients]);
+
+  const submit = () => {
+    if (!name.trim()) return alert('Введите название блюда');
+    if (ingredients.length === 0) return alert('Добавьте хотя бы один продукт из базы');
+    onSave({ id: dish?.id || crypto.randomUUID(), name: name.trim(), ingredients, updatedAt: Date.now() });
+  };
+
+  return (
+    <Modal onClose={onClose} title={dish ? 'Редактировать блюдо' : 'Новое блюдо'}>
+      <div className="space-y-4">
+        <div>
+          <label>Название блюда</label>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="Например, Плов с курицей" autoFocus />
+        </div>
+
+        <div>
+          <label>Ингредиенты {ingredients.length > 0 && <span className="text-[var(--text-subtle)] font-normal">({ingredients.length})</span>}</label>
+
+          {ingredients.length > 0 && (
+            <div className="space-y-1.5 mb-2">
+              {ingredients.map(ing => (
+                <div key={ing.id} className="flex items-center justify-between gap-2 text-sm bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-2">
+                  <span className="truncate">{ing.product} — {ing.grams} г</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-[var(--text-subtle)] text-xs">{ing.kcal} ккал</span>
+                    <button type="button" onClick={() => removeIngredient(ing.id)} className="p-1 text-[var(--text-muted)] hover:text-red-500">
+                      <Icon name="x" size={14} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="relative">
+            <input
+              value={query}
+              onChange={e => { setQuery(e.target.value); if (selectedFood) setSelectedFood(null); }}
+              placeholder="Добавить продукт из базы"
+              className="w-full"
+            />
+            {suggestions.length > 0 && (
+              <div className="absolute z-10 left-0 right-0 mt-1 bg-[var(--surface)] border border-[var(--border)] rounded-xl shadow-lg max-h-56 overflow-auto">
+                {suggestions.map(f => (
+                  <button key={f.id} type="button" onClick={() => pick(f)}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-black/5 flex items-center justify-between gap-2">
+                    <span className="truncate">{f.name}</span>
+                    <span className="text-[var(--text-subtle)] text-xs shrink-0">
+                      {f.kcal} ккал/100г{f.unitWeight ? ` · ~${f.unitWeight} г/шт` : ''}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {selectedFood && (
+            <div className="flex items-center gap-2 flex-wrap mt-2">
+              <input type="number" inputMode="decimal" min="0" value={amount}
+                onChange={e => setAmount(e.target.value)} placeholder={unit === 'pcs' ? 'Штук' : 'Граммы'}
+                style={{ width: '90px' }} autoFocus />
+              {selectedFood.unitWeight ? (
+                <div className="flex rounded-lg border border-[var(--border)] overflow-hidden text-xs shrink-0">
+                  {[['pcs', 'шт'], ['g', 'г']].map(([u, l]) => (
+                    <button key={u} type="button" onClick={() => setUnit(u)}
+                      className={`px-2 py-1 ${unit === u ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>{l}</button>
+                  ))}
+                </div>
+              ) : null}
+              <button type="button" onClick={addIngredient} className="text-xs font-medium text-[var(--text)] shrink-0">+ добавить в блюдо</button>
+              <button type="button" onClick={clearPick} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] shrink-0">отмена</button>
+            </div>
+          )}
+        </div>
+
+        {ingredients.length > 0 && (
+          <div>
+            <label>КБЖУ блюда целиком ({totals.grams} г)</label>
+            <div className="grid grid-cols-4 gap-1 bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3">
+              {[['ккал', totals.kcal], ['Б', totals.protein], ['Ж', totals.fat], ['У', totals.carbs]].map(([label, val]) => (
+                <div key={label} className="text-center">
+                  <div className="font-display text-lg">{val}</div>
+                  <div className="text-[10px] text-[var(--text-subtle)] uppercase tracking-wider mt-0.5">{label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -5358,7 +5566,7 @@ function MealSettings({ data, setData }) {
       )}
 
       {editing && (
-        <MealModal meal={editing} onSave={save} onClose={() => setEditing(null)} />
+        <MealModal meal={editing} customDishes={data.customDishes || []} onSave={save} onClose={() => setEditing(null)} />
       )}
     </div>
   );
@@ -5388,9 +5596,13 @@ function SettingsMealRow({ meal, archived, onEdit, onArchive, onDelete }) {
   );
 }
 
-function MealModal({ meal, onSave, onClose }) {
+function MealModal({ meal, customDishes, onSave, onClose }) {
   const [form, setForm] = useState(() => normalizeMeal(meal));
-  const foods = useFoodsList();
+  const dbFoods = useFoodsList();
+  const foods = useMemo(
+    () => [...dbFoods, ...(customDishes || []).map(dishToFoodShape)],
+    [dbFoods, customDishes]
+  );
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   const addItem = (key, item) => set(key, [...form[key], item]);
@@ -5625,7 +5837,7 @@ function MealItemAddForm({ foods, onAdd, onCancel }) {
             {suggestions.map(f => (
               <button key={f.id} type="button" onClick={() => pick(f)}
                 className="w-full text-left px-3 py-2 text-sm hover:bg-black/5 flex items-center justify-between gap-2">
-                <span className="truncate">{f.name}</span>
+                <span className="truncate">{f.name}{f.isCustomDish ? ' · блюдо' : ''}</span>
                 <span className="text-[var(--text-subtle)] text-xs shrink-0">
                   {f.kcal} ккал/100г{f.unitWeight ? ` · ~${f.unitWeight} г/шт` : ''}
                 </span>

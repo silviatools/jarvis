@@ -2423,7 +2423,7 @@ ASSISTANT_DATA_DOMAINS = {
             "items": app.get("campingItems", []), "categories": app.get("campingCategories", []),
             "trips": app.get("campingTrips", []),
         }),
-    "meals": ("Питание: вкладки План/Готовка/Контейнеры/Счётчик/Закупка — рационы, планы готовки, контейнеры для взвешивания, остаток порций, БАДы, списки покупок",
+    "meals": ("Питание: вкладки План/Готовка/Контейнеры/Счётчик/Закупка/База продуктов — рационы, планы готовки, контейнеры для взвешивания, остаток порций, БАДы, списки покупок, свои блюда",
         lambda app: {
             "meals": app.get("meals", [])[-30:],  # вкладка «План»
             "cookingPlans": app.get("cookingPlans", [])[-30:],  # вкладка «Готовка» — отдельная сущность от meals
@@ -2431,6 +2431,9 @@ ASSISTANT_DATA_DOMAINS = {
             "rationStock": app.get("rationStock", 0),  # вкладка «Счётчик»
             "supplements": app.get("supplements", []),
             "dietLog": app.get("dietLog", [])[-30:], "shoppingLists": app.get("shoppingLists", []),
+            # вкладка «База продуктов» → «Мои блюда»: свои блюда из продуктов
+            # статичного справочника (foods_data.py), КБЖУ на 100г — сумма ингредиентов
+            "customDishes": app.get("customDishes", []),
         }),
     "body": ("Тело: история замеров и веса, режимы (диета/тренировки), целевые значения",
         lambda app: {
