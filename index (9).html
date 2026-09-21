@@ -602,7 +602,7 @@ const parseMealLine = (line) => {
 
 // Продукт из рациона несёт свой КБЖУ: либо подтянут из базы продуктов
 // (foodId + граммы → пересчёт на лету), либо введён вручную вместе с весом.
-const emptyItemMacros = { foodId: null, kcal: '', protein: '', fat: '', carbs: '' };
+const emptyItemMacros = { foodId: null, unit: 'g', kcal: '', protein: '', fat: '', carbs: '' };
 
 const normalizeMealSection = (val) => {
   if (Array.isArray(val)) {
@@ -612,6 +612,7 @@ const normalizeMealSection = (val) => {
           product: it.product || '',
           amount: it.amount || '',
           foodId: it.foodId || null,
+          unit: it.unit === 'pcs' ? 'pcs' : 'g',
           kcal: it.kcal ?? '', protein: it.protein ?? '', fat: it.fat ?? '', carbs: it.carbs ?? '',
         }
       : { id: crypto.randomUUID(), product: String(it ?? ''), amount: '', ...emptyItemMacros });
@@ -631,6 +632,16 @@ const normalizeMeal = (meal) => ({
 });
 
 const round1 = (v) => Math.round(v * 10) / 10;
+
+// qty — количество в выбранной единице (граммы либо штуки); для штук нужен
+// food.unitWeight (средний вес одной штуки, г), иначе штуки не имеют смысла.
+const resolveGrams = (qty, unit, food) => (unit === 'pcs' && food?.unitWeight ? qty * food.unitWeight : qty);
+const computeFoodMacros = (food, grams) => ({
+  kcal: round1(food.kcal * grams / 100),
+  protein: round1(food.protein * grams / 100),
+  fat: round1(food.fat * grams / 100),
+  carbs: round1(food.carbs * grams / 100),
+});
 
 // Список продуктов грузится один раз и кэшируется на модуль — форма рациона
 // может открываться много раз за сессию, база маленькая и статическая.
@@ -5441,14 +5452,25 @@ function MealSectionEditor({ label, items, foods, onAdd, onUpdate, onRemove }) {
 function MealItemEditorRow({ item, foods, onChange, onRemove }) {
   if (item.foodId) {
     const food = foods.find(f => f.id === item.foodId);
-    const changeGrams = (v) => {
-      const g = parseFloat(String(v).replace(',', '.'));
-      const amount = v === '' ? '' : `${v} г`;
-      if (food && g > 0) {
-        onChange({ amount, kcal: round1(food.kcal * g / 100), protein: round1(food.protein * g / 100), fat: round1(food.fat * g / 100), carbs: round1(food.carbs * g / 100) });
+    const unit = item.unit === 'pcs' ? 'pcs' : 'g';
+    const qtyStr = item.amount.replace(/[^\d.,]/g, '');
+    const applyQty = (v, u) => {
+      const q = parseFloat(String(v).replace(',', '.'));
+      const amount = v === '' ? '' : `${v} ${u === 'pcs' ? 'шт' : 'г'}`;
+      if (food && q > 0) {
+        onChange({ amount, unit: u, ...computeFoodMacros(food, resolveGrams(q, u, food)) });
       } else {
-        onChange({ amount, kcal: '', protein: '', fat: '', carbs: '' });
+        onChange({ amount, unit: u, kcal: '', protein: '', fat: '', carbs: '' });
       }
+    };
+    // при переключении шт↔г пересчитываем введённое число, а не просто меняем ярлык единицы
+    const switchUnit = (u) => {
+      if (u === unit || !food) return;
+      const q = parseFloat(qtyStr.replace(',', '.'));
+      if (!(q > 0)) { applyQty('', u); return; }
+      const grams = resolveGrams(q, unit, food);
+      const newQty = u === 'pcs' ? grams / food.unitWeight : grams;
+      applyQty(String(round1(newQty)), u);
     };
     return (
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-2.5 space-y-1.5">
@@ -5459,11 +5481,19 @@ function MealItemEditorRow({ item, foods, onChange, onRemove }) {
             <Icon name="trash" size={14} />
           </button>
         </div>
-        <div className="flex items-center gap-2">
-          <input type="number" inputMode="decimal" min="0" value={item.amount.replace(/[^\d.,]/g, '')}
-            onChange={e => changeGrams(e.target.value)} placeholder="граммы" style={{ width: '90px' }} />
+        <div className="flex items-center gap-2 flex-wrap">
+          <input type="number" inputMode="decimal" min="0" value={qtyStr}
+            onChange={e => applyQty(e.target.value, unit)} placeholder={unit === 'pcs' ? 'шт' : 'граммы'} style={{ width: '80px' }} />
+          {food?.unitWeight ? (
+            <div className="flex rounded-lg border border-[var(--border)] overflow-hidden text-xs shrink-0">
+              {[['pcs', 'шт'], ['g', 'г']].map(([u, l]) => (
+                <button key={u} type="button" onClick={() => switchUnit(u)}
+                  className={`px-2 py-1 ${unit === u ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>{l}</button>
+              ))}
+            </div>
+          ) : null}
           <span className="text-xs text-[var(--text-subtle)]">
-            {item.kcal !== '' ? `${item.kcal} ккал · ${item.protein} Б · ${item.fat} Ж · ${item.carbs} У` : 'Укажите граммы'}
+            {item.kcal !== '' ? `${item.kcal} ккал · ${item.protein} Б · ${item.fat} Ж · ${item.carbs} У` : `Укажите ${unit === 'pcs' ? 'количество' : 'граммы'}`}
           </span>
         </div>
       </div>
@@ -5492,6 +5522,7 @@ function MealItemEditorRow({ item, foods, onChange, onRemove }) {
 function MealItemAddForm({ foods, onAdd, onCancel }) {
   const [query, setQuery] = useState('');
   const [selectedFood, setSelectedFood] = useState(null);
+  const [unit, setUnit] = useState('g');
   const [amount, setAmount] = useState('');
   const [mk, setMk] = useState('');
   const [mp, setMp] = useState('');
@@ -5504,23 +5535,20 @@ function MealItemAddForm({ foods, onAdd, onCancel }) {
     return foods.filter(f => f.name.toLowerCase().includes(q)).slice(0, 6);
   }, [foods, query, selectedFood]);
 
-  const grams = parseFloat(amount.replace(',', '.'));
-  const computed = selectedFood && grams > 0 ? {
-    kcal: round1(selectedFood.kcal * grams / 100),
-    protein: round1(selectedFood.protein * grams / 100),
-    fat: round1(selectedFood.fat * grams / 100),
-    carbs: round1(selectedFood.carbs * grams / 100),
-  } : null;
+  const qty = parseFloat(amount.replace(',', '.'));
+  const grams = selectedFood && qty > 0 ? resolveGrams(qty, unit, selectedFood) : 0;
+  const computed = selectedFood && grams > 0 ? computeFoodMacros(selectedFood, grams) : null;
 
-  const pick = (food) => { setSelectedFood(food); setQuery(food.name); setAmount(''); };
-  const clearPick = () => { setSelectedFood(null); setQuery(''); setAmount(''); };
+  const pick = (food) => { setSelectedFood(food); setQuery(food.name); setAmount(''); setUnit(food.unitWeight ? 'pcs' : 'g'); };
+  const clearPick = () => { setSelectedFood(null); setQuery(''); setAmount(''); setUnit('g'); };
 
   const submit = () => {
     if (selectedFood) {
-      if (!(grams > 0)) return alert('Введите граммы');
+      if (!(qty > 0)) return alert(unit === 'pcs' ? 'Введите количество штук' : 'Введите граммы');
       onAdd({
-        id: crypto.randomUUID(), product: selectedFood.name, amount: `${formatAmountValue(grams)} г`,
-        foodId: selectedFood.id,
+        id: crypto.randomUUID(), product: selectedFood.name,
+        amount: `${formatAmountValue(qty)} ${unit === 'pcs' ? 'шт' : 'г'}`,
+        foodId: selectedFood.id, unit,
         kcal: computed.kcal, protein: computed.protein, fat: computed.fat, carbs: computed.carbs,
       });
     } else {
@@ -5550,7 +5578,9 @@ function MealItemAddForm({ foods, onAdd, onCancel }) {
               <button key={f.id} type="button" onClick={() => pick(f)}
                 className="w-full text-left px-3 py-2 text-sm hover:bg-black/5 flex items-center justify-between gap-2">
                 <span className="truncate">{f.name}</span>
-                <span className="text-[var(--text-subtle)] text-xs shrink-0">{f.kcal} ккал/100г</span>
+                <span className="text-[var(--text-subtle)] text-xs shrink-0">
+                  {f.kcal} ккал/100г{f.unitWeight ? ` · ~${f.unitWeight} г/шт` : ''}
+                </span>
               </button>
             ))}
           </div>
@@ -5558,11 +5588,21 @@ function MealItemAddForm({ foods, onAdd, onCancel }) {
       </div>
 
       {selectedFood ? (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <input type="number" inputMode="decimal" min="0" value={amount}
-            onChange={e => setAmount(e.target.value)} placeholder="Граммы" style={{ width: '100px' }} autoFocus />
-          <span className="text-xs text-[var(--text-subtle)] flex-1">
-            {computed ? `${computed.kcal} ккал · ${computed.protein} Б · ${computed.fat} Ж · ${computed.carbs} У` : 'Укажите граммы'}
+            onChange={e => setAmount(e.target.value)} placeholder={unit === 'pcs' ? 'Штук' : 'Граммы'} style={{ width: '90px' }} autoFocus />
+          {selectedFood.unitWeight ? (
+            <div className="flex rounded-lg border border-[var(--border)] overflow-hidden text-xs shrink-0">
+              {[['pcs', 'шт'], ['g', 'г']].map(([u, l]) => (
+                <button key={u} type="button" onClick={() => setUnit(u)}
+                  className={`px-2 py-1 ${unit === u ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>{l}</button>
+              ))}
+            </div>
+          ) : null}
+          <span className="text-xs text-[var(--text-subtle)] flex-1 basis-full sm:basis-auto">
+            {computed
+              ? `${computed.kcal} ккал · ${computed.protein} Б · ${computed.fat} Ж · ${computed.carbs} У${unit === 'pcs' ? ` (≈${formatAmountValue(grams)} г)` : ''}`
+              : `Укажите ${unit === 'pcs' ? 'количество' : 'граммы'}`}
           </span>
           <button type="button" onClick={clearPick} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] shrink-0">
             вручную
