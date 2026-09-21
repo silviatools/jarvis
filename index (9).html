@@ -6288,6 +6288,7 @@ function KanbanView({ data, setData }) {
   const [hideDone, setHideDone] = useState(false);
   const [quickAddCol, setQuickAddCol] = useState(null); // column id
   const [quickAddText, setQuickAddText] = useState('');
+  const [quickAddPriority, setQuickAddPriority] = useState('none');
   const sort = data.kanban?.sort || 'default';
   const setSort = (val) => setData(d => ({ ...d, kanban: { ...d.kanban, sort: val } }));
 
@@ -6383,11 +6384,13 @@ function KanbanView({ data, setData }) {
   const submitQuickAdd = (colId) => {
     const title = quickAddText.trim();
     if (!title) { setQuickAddCol(null); return; }
-    const task = newTask({ title });
+    const task = newTask({ title, priority: quickAddPriority });
     setColumns(columns.map(c => c.id === colId ? { ...c, tasks: [task, ...c.tasks] } : c));
+    setQuickAddCol(null);
     setQuickAddText('');
+    setQuickAddPriority('none');
   };
-  const cancelQuickAdd = () => { setQuickAddCol(null); setQuickAddText(''); };
+  const cancelQuickAdd = () => { setQuickAddCol(null); setQuickAddText(''); setQuickAddPriority('none'); };
 
   const moveTask = (taskId, fromColId, dir) => {
     const fromIdx = columns.findIndex(c => c.id === fromColId);
@@ -6521,18 +6524,30 @@ function KanbanView({ data, setData }) {
                         className="text-sm"
                         style={{ resize: 'none' }}
                       />
+                      <div className="flex items-center gap-1.5">
+                        {KANBAN_PRIORITIES.map(p => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => setQuickAddPriority(p.id)}
+                            title={p.label}
+                            className={`w-5 h-5 rounded-full flex-shrink-0 transition-all ${quickAddPriority === p.id ? 'ring-2 ring-offset-1 ring-[var(--text)]' : 'opacity-40 hover:opacity-80'}`}
+                            style={{ background: p.id === 'none' ? 'var(--surface)' : p.accent, border: p.id === 'none' ? '2px solid var(--border-strong)' : 'none' }}
+                          />
+                        ))}
+                      </div>
                       <div className="flex items-center gap-2">
                         <button onClick={() => submitQuickAdd(col.id)} className="btn-primary flex-1 !py-1.5 text-sm">Добавить</button>
                         <button onClick={cancelQuickAdd} className="btn-secondary !py-1.5 px-3"><Icon name="x" size={14}/></button>
                         <button
-                          onClick={() => { setEditingTask({ task: newTask({ title: quickAddText.trim() }), colId: col.id }); cancelQuickAdd(); }}
+                          onClick={() => { setEditingTask({ task: newTask({ title: quickAddText.trim(), priority: quickAddPriority }), colId: col.id }); cancelQuickAdd(); }}
                           className="text-xs text-[var(--text-subtle)] hover:text-[var(--text)] flex-shrink-0 whitespace-nowrap">
                           детали
                         </button>
                       </div>
                     </div>
                   ) : (
-                    <button onClick={() => { setQuickAddCol(col.id); setQuickAddText(''); }}
+                    <button onClick={() => { setQuickAddCol(col.id); setQuickAddText(''); setQuickAddPriority('none'); }}
                       className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg)] transition-all border border-dashed border-[var(--border)] hover:border-[var(--border-strong)]">
                       <Icon name="plus" size={15}/> Добавить задачу
                     </button>
