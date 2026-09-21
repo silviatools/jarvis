@@ -605,6 +605,11 @@ const DEFAULT_DATA = () => ({
   gymDays: [],
   gymExercises: [],
   gymSessions: [],
+  // База данных: произвольные записи о самом пользователе — кто он, где
+  // живёт, чем занимается, что любит. Нужны не приложению, а ассистенту:
+  // они подмешиваются в его системный промпт, чтобы он отвечал, понимая,
+  // с кем говорит, а не спрашивал одно и то же каждый раз.
+  knowledgeNotes: [],
   // Музыка: сами треки лежат файлами на сервере, а плейлисты — обычный
   // id-массив со списком id треков внутри, поэтому синхронизируются как всё
   // остальное. Встроенные треки собраны в плейлист по умолчанию.
@@ -640,14 +645,25 @@ const parseMealLine = (line) => {
   return { id: crypto.randomUUID(), product: trimmed, amount: '' };
 };
 
+// Продукт из рациона несёт свой КБЖУ: либо подтянут из базы продуктов
+// (foodId + граммы → пересчёт на лету), либо введён вручную вместе с весом.
+const emptyItemMacros = { foodId: null, unit: 'g', kcal: '', protein: '', fat: '', carbs: '' };
+
 const normalizeMealSection = (val) => {
   if (Array.isArray(val)) {
     return val.map(it => (it && typeof it === 'object')
-      ? { id: it.id || crypto.randomUUID(), product: it.product || '', amount: it.amount || '' }
-      : { id: crypto.randomUUID(), product: String(it ?? ''), amount: '' });
+      ? {
+          id: it.id || crypto.randomUUID(),
+          product: it.product || '',
+          amount: it.amount || '',
+          foodId: it.foodId || null,
+          unit: it.unit === 'pcs' ? 'pcs' : 'g',
+          kcal: it.kcal ?? '', protein: it.protein ?? '', fat: it.fat ?? '', carbs: it.carbs ?? '',
+        }
+      : { id: crypto.randomUUID(), product: String(it ?? ''), amount: '', ...emptyItemMacros });
   }
   if (typeof val === 'string') {
-    return val.split('\n').map(parseMealLine).filter(Boolean);
+    return val.split('\n').map(parseMealLine).filter(Boolean).map(it => ({ ...it, ...emptyItemMacros }));
   }
   return [];
 };
@@ -659,6 +675,68 @@ const normalizeMeal = (meal) => ({
   lunch: normalizeMealSection(meal.lunch),
   dinner: normalizeMealSection(meal.dinner),
 });
+
+const round1 = (v) => Math.round(v * 10) / 10;
+
+// qty — количество в выбранной единице (граммы либо штуки); для штук нужен
+// food.unitWeight (средний вес одной штуки, г), иначе штуки не имеют смысла.
+const resolveGrams = (qty, unit, food) => (unit === 'pcs' && food?.unitWeight ? qty * food.unitWeight : qty);
+const computeFoodMacros = (food, grams) => ({
+  kcal: round1(food.kcal * grams / 100),
+  protein: round1(food.protein * grams / 100),
+  fat: round1(food.fat * grams / 100),
+  carbs: round1(food.carbs * grams / 100),
+});
+
+// «Мои блюда» (data.customDishes) — свои рецепты из продуктов базы. Каждое
+// блюдо хранит ингредиенты с их абсолютным КБЖУ (снимок на момент добавления)
+// и приводится к форме обычного продукта (КБЖУ на 100г + unitWeight = вес
+// всего блюда целиком), чтобы бесшовно попадать в тот же список для поиска
+// и работать с тем же переключателем шт/г, что и продукты из базы.
+const CUSTOM_DISH_CATEGORY = { id: 'custom', name: 'Мои блюда' };
+
+const dishTotals = (ingredients) => {
+  const grams = round1((ingredients || []).reduce((s, i) => s + (Number(i.grams) || 0), 0));
+  const sum = (f) => round1((ingredients || []).reduce((s, i) => s + (Number(i[f]) || 0), 0));
+  return { grams, kcal: sum('kcal'), protein: sum('protein'), fat: sum('fat'), carbs: sum('carbs') };
+};
+
+const dishToFoodShape = (dish) => {
+  const t = dishTotals(dish.ingredients);
+  const per100 = t.grams > 0 ? 100 / t.grams : 0;
+  return {
+    id: `dish-${dish.id}`,
+    name: dish.name,
+    category: 'custom',
+    kcal: round1(t.kcal * per100), protein: round1(t.protein * per100),
+    fat: round1(t.fat * per100), carbs: round1(t.carbs * per100),
+    unitWeight: t.grams || null,
+    isCustomDish: true,
+    dishId: dish.id,
+  };
+};
+
+// Список продуктов грузится один раз и кэшируется на модуль — форма рациона
+// может открываться много раз за сессию, база маленькая и статическая.
+let _foodsListCache = null;
+let _foodsListPromise = null;
+const useFoodsList = () => {
+  const [foods, setFoods] = useState(_foodsListCache || []);
+  useEffect(() => {
+    if (_foodsListCache) { setFoods(_foodsListCache); return; }
+    if (!_foodsListPromise) {
+      _foodsListPromise = fetch('/api/foods').then(r => r.json()).then(d => {
+        _foodsListCache = d.foods || [];
+        return _foodsListCache;
+      }).catch(() => (_foodsListCache = []));
+    }
+    _foodsListPromise.then(setFoods);
+  }, []);
+  return foods;
+};
+// Вызывается после того, как в «Базе продуктов» задали/поменяли вес 1 шт —
+// следующее открытие формы рациона должно увидеть свежие данные с сервера.
+const invalidateFoodsCache = () => { _foodsListCache = null; _foodsListPromise = null; };
 
 // ── Закупка (shopping list): aggregate product amounts across selected meal
 // plans × quantity, for totalling a grocery run. ──────────────────────────
@@ -1170,6 +1248,7 @@ const Icon = ({ name, size = 22 }) => {
     pause: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 4v16M16 4v16"/></svg>,
     skipBack: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 5v14L8 12zM5 5v14"/></svg>,
     skipForward: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 5v14l11-7zM19 5v14"/></svg>,
+    database: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>,
     music: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>,
     shuffle: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>,
     timer: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/></svg>,
@@ -1390,6 +1469,7 @@ const PATH_TAB_MAP = {
   '/cards': 'misc',
   '/gym': 'misc',
   '/music': 'misc',
+  '/knowledge': 'misc',
   '/quiz': 'misc',
   '/cars': 'misc',
   '/settings': 'misc',
@@ -1402,8 +1482,8 @@ const TAB_PATH_MAP = Object.fromEntries(Object.entries(PATH_TAB_MAP).map(([p, t]
 const PLANNER_SUB_BY_PATH = { '/holidays': 'holidays' };
 const PLANNER_PATH_BY_SUB = { holidays: '/holidays' };
 
-const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/music': 'music', '/quiz': 'quiz', '/cars': 'cars', '/settings': 'settings' };
-const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', music: '/music', quiz: '/quiz', cars: '/cars', settings: '/settings' };
+const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/music': 'music', '/knowledge': 'knowledge', '/quiz': 'quiz', '/cars': 'cars', '/settings': 'settings' };
+const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', music: '/music', knowledge: '/knowledge', quiz: '/quiz', cars: '/cars', settings: '/settings' };
 
 // Routes that get their own Add-to-Home-Screen shortcut manifest (mirrors
 // SHORTCUT_MANIFESTS in jarvis.py). The server only sets the right
@@ -2179,7 +2259,7 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
       ) : (
         <>
           <div className="flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-6 gap-0 overflow-x-auto">
-            {[{ id: 'plan', label: 'План' }, { id: 'cooking', label: 'Готовка' }, { id: 'containers', label: 'Контейнеры' }, { id: 'counter', label: 'Счётчик' }, { id: 'purchase', label: 'Закупка' }].map(t => (
+            {[{ id: 'plan', label: 'План' }, { id: 'cooking', label: 'Готовка' }, { id: 'containers', label: 'Контейнеры' }, { id: 'counter', label: 'Счётчик' }, { id: 'purchase', label: 'Закупка' }, { id: 'foods', label: 'База продуктов' }].map(t => (
               <button
                 key={t.id}
                 onClick={() => setMealTab(t.id)}
@@ -2197,6 +2277,7 @@ function MealsView({ data, setData, mealTab, setMealTab }) {
           {mealTab === 'containers' && <ContainersView data={data} setData={setData} />}
           {mealTab === 'counter' && <RationCounter data={data} setData={setData} />}
           {mealTab === 'purchase' && <MealPurchaseView data={data} setData={setData} />}
+          {mealTab === 'foods' && <FoodDatabaseView data={data} setData={setData} />}
         </>
       )}
     </div>
@@ -2637,6 +2718,334 @@ function MealPurchaseForm({ meals, list, onSave, onCancel }) {
         <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
       </div>
     </div>
+  );
+}
+
+// ============== FOOD DATABASE (Питание → База продуктов) ==============
+function FoodDatabaseView({ data, setData }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [categories, setCategories] = useState([]);
+  const [dbFoods, setDbFoods] = useState([]);
+  const [query, setQuery] = useState('');
+  const [activeCategory, setActiveCategory] = useState('all');
+  const [editingId, setEditingId] = useState(null);
+  const [editValue, setEditValue] = useState('');
+  const [dishModal, setDishModal] = useState(null); // 'new' | dish | null
+
+  useEffect(() => {
+    fetch('/api/foods')
+      .then(r => r.json())
+      .then(d => {
+        setCategories(d.categories || []);
+        setDbFoods(d.foods || []);
+        setLoading(false);
+      })
+      .catch(() => { setError(true); setLoading(false); });
+  }, []);
+
+  const dishes = data.customDishes || [];
+  const allCategories = useMemo(() => [...categories, CUSTOM_DISH_CATEGORY], [categories]);
+  const foods = useMemo(() => [...dbFoods, ...dishes.map(dishToFoodShape)], [dbFoods, dishes]);
+
+  const dropUnitWeight = (f) => { const { unitWeight, ...rest } = f; return rest; };
+
+  const startEdit = (f) => { setEditingId(f.id); setEditValue(f.unitWeight ? String(f.unitWeight) : ''); };
+  const cancelEdit = () => { setEditingId(null); setEditValue(''); };
+
+  // Пустое/нулевое значение при сохранении снимает вес 1 шт — отдельной
+  // кнопки «убрать» не нужно.
+  const saveUnitWeight = (foodId) => {
+    const grams = parseFloat(editValue.replace(',', '.'));
+    const value = grams > 0 ? grams : null;
+    setDbFoods(fs => fs.map(f => f.id !== foodId ? f : (value ? { ...f, unitWeight: value } : dropUnitWeight(f))));
+    setData(d => {
+      const weights = { ...(d.foodUnitWeights || {}) };
+      if (value) weights[foodId] = value; else delete weights[foodId];
+      return { ...d, foodUnitWeights: weights };
+    });
+    invalidateFoodsCache();
+    cancelEdit();
+  };
+
+  // Блюда живут в data.customDishes и попадают в MealModal напрямую через
+  // проп customDishes (см. MealSettings) — кэш /api/foods их не касается.
+  const saveDish = (dish) => {
+    setData(d => {
+      const list = d.customDishes || [];
+      const exists = list.some(x => x.id === dish.id);
+      return { ...d, customDishes: exists ? list.map(x => x.id === dish.id ? dish : x) : [...list, dish] };
+    });
+    setDishModal(null);
+  };
+
+  const deleteDish = (dish) => {
+    if (!confirm(`Удалить блюдо «${dish.name}»?`)) return;
+    setData(d => ({
+      ...d,
+      customDishes: (d.customDishes || []).filter(x => x.id !== dish.id),
+      deletedIds: withDeletedId(d, 'customDishes', dish.id),
+    }));
+  };
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return foods.filter(f =>
+      (activeCategory === 'all' || f.category === activeCategory) &&
+      (!q || f.name.toLowerCase().includes(q))
+    );
+  }, [foods, query, activeCategory]);
+
+  const grouped = useMemo(() => {
+    const byCat = {};
+    filtered.forEach(f => { (byCat[f.category] = byCat[f.category] || []).push(f); });
+    return allCategories
+      .map(c => ({ cat: c, items: (byCat[c.id] || []).sort((a, b) => a.name.localeCompare(b.name, 'ru')) }))
+      .filter(g => g.items.length > 0);
+  }, [filtered, allCategories]);
+
+  if (loading) return <div className="text-center py-8 text-[var(--text-subtle)] text-sm">Загрузка справочника…</div>;
+  if (error) return <EmptyState title="Не удалось загрузить" text="Попробуйте обновить страницу" />;
+
+  return (
+    <div className="fade-in space-y-4">
+      <div className="relative">
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-subtle)]">
+          <Icon name="search" size={16} />
+        </span>
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder="Поиск по продукту"
+          className="w-full !pl-9"
+        />
+      </div>
+
+      <button
+        onClick={() => setDishModal('new')}
+        className="btn-primary w-full flex items-center justify-center gap-2 text-sm"
+      >
+        <Icon name="plus" size={16} /> Создать блюдо
+      </button>
+
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        <button
+          onClick={() => setActiveCategory('all')}
+          className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap flex-shrink-0 border transition-all ${
+            activeCategory === 'all' ? 'bg-[var(--text)] text-white border-[var(--text)]' : 'border-[var(--border)] text-[var(--text-muted)]'
+          }`}
+        >
+          Все
+        </button>
+        {allCategories.map(c => (
+          <button
+            key={c.id}
+            onClick={() => setActiveCategory(c.id)}
+            className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap flex-shrink-0 border transition-all ${
+              activeCategory === c.id ? 'bg-[var(--text)] text-white border-[var(--text)]' : 'border-[var(--border)] text-[var(--text-muted)]'
+            }`}
+          >
+            {c.name}
+          </button>
+        ))}
+      </div>
+
+      {grouped.length === 0 ? (
+        <EmptyState title="Ничего не найдено" text="Попробуйте изменить запрос или создайте своё блюдо" />
+      ) : (
+        <div className="space-y-5">
+          {grouped.map(({ cat, items }) => (
+            <div key={cat.id}>
+              <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] mb-2 font-medium">{cat.name}</div>
+              <div className="space-y-2">
+                {items.map(f => (
+                  <div key={f.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-medium truncate">{f.name}</span>
+                      <div className="flex gap-3 text-sm shrink-0">
+                        <span><span className="font-medium">{f.kcal}</span><span className="text-[var(--text-subtle)] ml-1">ккал</span></span>
+                        <span><span className="font-medium">{f.protein}</span><span className="text-[var(--text-subtle)] ml-1">Б</span></span>
+                        <span><span className="font-medium">{f.fat}</span><span className="text-[var(--text-subtle)] ml-1">Ж</span></span>
+                        <span><span className="font-medium">{f.carbs}</span><span className="text-[var(--text-subtle)] ml-1">У</span></span>
+                      </div>
+                    </div>
+
+                    {f.isCustomDish ? (
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-[var(--text-subtle)] flex-1">
+                          {f.unitWeight ? `1 порция (весь рецепт) ≈ ${f.unitWeight} г` : 'Нет ингредиентов'}
+                        </span>
+                        <button type="button" onClick={() => setDishModal(dishes.find(d => d.id === f.dishId))}
+                          className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]">Редактировать</button>
+                        <button type="button" onClick={() => deleteDish(dishes.find(d => d.id === f.dishId))}
+                          className="text-xs text-[var(--text-muted)] hover:text-red-500">Удалить</button>
+                      </div>
+                    ) : editingId === f.id ? (
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number" inputMode="decimal" min="0" autoFocus
+                          value={editValue}
+                          onChange={e => setEditValue(e.target.value)}
+                          onKeyDown={e => e.key === 'Enter' && saveUnitWeight(f.id)}
+                          placeholder="Грамм в 1 шт"
+                          style={{ width: '120px' }}
+                        />
+                        <button type="button" onClick={() => saveUnitWeight(f.id)} className="text-xs font-medium text-[var(--text)]">Сохранить</button>
+                        <button type="button" onClick={cancelEdit} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]">Отмена</button>
+                      </div>
+                    ) : (
+                      <button type="button" onClick={() => startEdit(f)}
+                        className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1">
+                        <Icon name="edit" size={12} />
+                        {f.unitWeight ? `1 шт ≈ ${f.unitWeight} г — изменить` : 'Указать вес 1 шт'}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {dishModal && (
+        <DishModal
+          dish={dishModal === 'new' ? null : dishModal}
+          foods={dbFoods}
+          onSave={saveDish}
+          onClose={() => setDishModal(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function DishModal({ dish, foods, onSave, onClose }) {
+  const [name, setName] = useState(dish?.name || '');
+  const [ingredients, setIngredients] = useState(dish?.ingredients || []);
+  const [query, setQuery] = useState('');
+  const [selectedFood, setSelectedFood] = useState(null);
+  const [unit, setUnit] = useState('g');
+  const [amount, setAmount] = useState('');
+
+  const suggestions = useMemo(() => {
+    if (selectedFood || !query.trim()) return [];
+    const q = query.trim().toLowerCase();
+    return foods.filter(f => f.name.toLowerCase().includes(q)).slice(0, 6);
+  }, [foods, query, selectedFood]);
+
+  const pick = (f) => { setSelectedFood(f); setQuery(f.name); setAmount(''); setUnit(f.unitWeight ? 'pcs' : 'g'); };
+  const clearPick = () => { setSelectedFood(null); setQuery(''); setAmount(''); setUnit('g'); };
+
+  const qty = parseFloat(amount.replace(',', '.'));
+  const grams = selectedFood && qty > 0 ? resolveGrams(qty, unit, selectedFood) : 0;
+
+  const addIngredient = () => {
+    if (!selectedFood || !(grams > 0)) return;
+    const macros = computeFoodMacros(selectedFood, grams);
+    setIngredients(list => [...list, {
+      id: crypto.randomUUID(), foodId: selectedFood.id, product: selectedFood.name, grams: round1(grams), ...macros,
+    }]);
+    clearPick();
+  };
+  const removeIngredient = (id) => setIngredients(list => list.filter(i => i.id !== id));
+
+  const totals = useMemo(() => dishTotals(ingredients), [ingredients]);
+
+  const submit = () => {
+    if (!name.trim()) return alert('Введите название блюда');
+    if (ingredients.length === 0) return alert('Добавьте хотя бы один продукт из базы');
+    onSave({ id: dish?.id || crypto.randomUUID(), name: name.trim(), ingredients, updatedAt: Date.now() });
+  };
+
+  return (
+    <Modal onClose={onClose} title={dish ? 'Редактировать блюдо' : 'Новое блюдо'}>
+      <div className="space-y-4">
+        <div>
+          <label>Название блюда</label>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="Например, Плов с курицей" autoFocus />
+        </div>
+
+        <div>
+          <label>Ингредиенты {ingredients.length > 0 && <span className="text-[var(--text-subtle)] font-normal">({ingredients.length})</span>}</label>
+
+          {ingredients.length > 0 && (
+            <div className="space-y-1.5 mb-2">
+              {ingredients.map(ing => (
+                <div key={ing.id} className="flex items-center justify-between gap-2 text-sm bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-2">
+                  <span className="truncate">{ing.product} — {ing.grams} г</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-[var(--text-subtle)] text-xs">{ing.kcal} ккал</span>
+                    <button type="button" onClick={() => removeIngredient(ing.id)} className="p-1 text-[var(--text-muted)] hover:text-red-500">
+                      <Icon name="x" size={14} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="relative">
+            <input
+              value={query}
+              onChange={e => { setQuery(e.target.value); if (selectedFood) setSelectedFood(null); }}
+              placeholder="Добавить продукт из базы"
+              className="w-full"
+            />
+            {suggestions.length > 0 && (
+              <div className="absolute z-10 left-0 right-0 mt-1 bg-[var(--surface)] border border-[var(--border)] rounded-xl shadow-lg max-h-56 overflow-auto">
+                {suggestions.map(f => (
+                  <button key={f.id} type="button" onClick={() => pick(f)}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-black/5 flex items-center justify-between gap-2">
+                    <span className="truncate">{f.name}</span>
+                    <span className="text-[var(--text-subtle)] text-xs shrink-0">
+                      {f.kcal} ккал/100г{f.unitWeight ? ` · ~${f.unitWeight} г/шт` : ''}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {selectedFood && (
+            <div className="flex items-center gap-2 flex-wrap mt-2">
+              <input type="number" inputMode="decimal" min="0" value={amount}
+                onChange={e => setAmount(e.target.value)} placeholder={unit === 'pcs' ? 'Штук' : 'Граммы'}
+                style={{ width: '90px' }} autoFocus />
+              {selectedFood.unitWeight ? (
+                <div className="flex rounded-lg border border-[var(--border)] overflow-hidden text-xs shrink-0">
+                  {[['pcs', 'шт'], ['g', 'г']].map(([u, l]) => (
+                    <button key={u} type="button" onClick={() => setUnit(u)}
+                      className={`px-2 py-1 ${unit === u ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>{l}</button>
+                  ))}
+                </div>
+              ) : null}
+              <button type="button" onClick={addIngredient} className="text-xs font-medium text-[var(--text)] shrink-0">+ добавить в блюдо</button>
+              <button type="button" onClick={clearPick} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] shrink-0">отмена</button>
+            </div>
+          )}
+        </div>
+
+        {ingredients.length > 0 && (
+          <div>
+            <label>КБЖУ блюда целиком ({totals.grams} г)</label>
+            <div className="grid grid-cols-4 gap-1 bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3">
+              {[['ккал', totals.kcal], ['Б', totals.protein], ['Ж', totals.fat], ['У', totals.carbs]].map(([label, val]) => (
+                <div key={label} className="text-center">
+                  <div className="font-display text-lg">{val}</div>
+                  <div className="text-[10px] text-[var(--text-subtle)] uppercase tracking-wider mt-0.5">{label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -3962,6 +4371,74 @@ function NotifyRoutingSettings({ data, setData }) {
   );
 }
 
+// Apple Календарь и Напоминания: подключение живёт в переменных окружения на
+// сервере (пароль приложения не должен попадать ни в браузер, ни в
+// синхронизируемые данные), поэтому здесь только состояние — что сервер видит
+// в iCloud прямо сейчас.
+function AppleConnectionCard() {
+  const [state, setState] = React.useState({ loading: true });
+  const load = React.useCallback(() => {
+    setState(s => ({ ...s, loading: true }));
+    fetch('/api/apple/status')
+      .then(r => r.json())
+      .then(s => setState({ ...s, loading: false }))
+      .catch(e => setState({ loading: false, error: 'Сервер не ответил: ' + e.message }));
+  }, []);
+  React.useEffect(load, [load]);
+
+  const s = state;
+  const remindersLabel = s.remindersBackend === 'caldav' ? 'через iCloud'
+    : s.remindersBackend === 'bridge' ? 'через Быструю команду' : 'не подключены';
+  const ago = (ms) => {
+    if (!ms) return 'ещё ни разу';
+    const min = Math.round((Date.now() - ms) / 60000);
+    return min < 1 ? 'только что' : min < 60 ? `${min} мин назад` : `${Math.round(min / 60)} ч назад`;
+  };
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-3" data-apple-card>
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="font-display text-base">Apple Календарь и Напоминания</h3>
+        <button onClick={load} className="btn-secondary text-sm px-3 py-1.5" disabled={s.loading}>
+          {s.loading ? 'Проверяю…' : 'Проверить'}
+        </button>
+      </div>
+      <p className="text-sm text-[var(--text-muted)]">
+        Ассистент читает календарь и напоминания без спроса, а добавляет, меняет и удаляет — только после вашего подтверждения вслух или в чате.
+      </p>
+      {s.loading ? (
+        <p className="text-sm text-[var(--text-subtle)]">Спрашиваю сервер…</p>
+      ) : (
+        <div className="text-sm space-y-1">
+          <div>
+            <span className="text-[var(--text-muted)]">Календарь: </span>
+            {s.calendarConfigured
+              ? (s.calendars || []).length
+                ? <span className="text-green-600">подключён — {(s.calendars || []).join(', ')}</span>
+                : <span className="text-amber-600">вход есть, календарей не видно</span>
+              : <span className="text-[var(--text-subtle)]">не настроен</span>}
+          </div>
+          <div>
+            <span className="text-[var(--text-muted)]">Напоминания: </span>
+            <span className={s.remindersBackend ? 'text-green-600' : 'text-[var(--text-subtle)]'}>{remindersLabel}</span>
+            {s.remindersBackend === 'bridge' && (
+              <span className="text-[var(--text-subtle)]">
+                {' '}· список с телефона {ago(s.bridge?.updatedAt)}, в очереди {s.bridge?.queue || 0}
+              </span>
+            )}
+          </div>
+          {s.error && <div className="text-amber-600">{s.error}</div>}
+          {!s.calendarConfigured && (
+            <p className="text-xs text-[var(--text-subtle)] pt-1">
+              Подключение: в переменные окружения сервера (Railway → Variables) добавьте <span className="font-mono">ICLOUD_APPLE_ID</span> и <span className="font-mono">ICLOUD_APP_PASSWORD</span> — пароль приложения создаётся на account.apple.com. Для Напоминаний, если iCloud их не отдаёт, ещё <span className="font-mono">APPLE_BRIDGE_TOKEN</span> и Быстрая команда на телефоне.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function VoiceAssistantSettings({ data, setData }) {
   const settings = ensureAiPresets({ ...DEFAULT_SETTINGS, ...(data.settings || {}) });
   const presets = settings.aiPresets || [];
@@ -4000,6 +4477,8 @@ function VoiceAssistantSettings({ data, setData }) {
           Нажмите кнопку микрофона внизу экрана и скажите, что нужно — ассистент видит все разделы проекта: отвечает на вопросы по любым данным (бюджет, здоровье, авто, GYM и т.д.), открывает нужный раздел на экране и добавляет регулярные дела. Работает на любом из провайдеров ниже — какой назначите функции «Ассистент», тот и используется.
         </p>
       </div>
+
+      <AppleConnectionCard />
 
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
         <div className="flex items-center justify-between gap-3">
@@ -5132,7 +5611,7 @@ function MealSettings({ data, setData }) {
       )}
 
       {editing && (
-        <MealModal meal={editing} onSave={save} onClose={() => setEditing(null)} />
+        <MealModal meal={editing} customDishes={data.customDishes || []} onSave={save} onClose={() => setEditing(null)} />
       )}
     </div>
   );
@@ -5162,13 +5641,25 @@ function SettingsMealRow({ meal, archived, onEdit, onArchive, onDelete }) {
   );
 }
 
-function MealModal({ meal, onSave, onClose }) {
+function MealModal({ meal, customDishes, onSave, onClose }) {
   const [form, setForm] = useState(() => normalizeMeal(meal));
+  const dbFoods = useFoodsList();
+  const foods = useMemo(
+    () => [...dbFoods, ...(customDishes || []).map(dishToFoodShape)],
+    [dbFoods, customDishes]
+  );
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  const addItem = (key) => set(key, [...form[key], { id: crypto.randomUUID(), product: '', amount: '' }]);
-  const updItem = (key, id, field, val) => set(key, form[key].map(it => it.id === id ? { ...it, [field]: val } : it));
+  const addItem = (key, item) => set(key, [...form[key], item]);
+  const updItem = (key, id, patch) => set(key, form[key].map(it => it.id === id ? { ...it, ...patch } : it));
   const delItem = (key, id) => set(key, form[key].filter(it => it.id !== id));
+
+  const totals = useMemo(() => {
+    const all = [...form.breakfast, ...form.snack, ...form.lunch, ...form.dinner];
+    if (all.length === 0) return { calories: '', protein: '', fat: '', carbs: '' };
+    const sum = (f) => round1(all.reduce((s, it) => s + (Number(it[f]) || 0), 0));
+    return { calories: sum('kcal'), protein: sum('protein'), fat: sum('fat'), carbs: sum('carbs') };
+  }, [form.breakfast, form.snack, form.lunch, form.dinner]);
 
   const submit = () => {
     if (!form.name.trim()) return alert('Введите название рациона');
@@ -5181,6 +5672,7 @@ function MealModal({ meal, onSave, onClose }) {
       snack: clean(form.snack),
       lunch: clean(form.lunch),
       dinner: clean(form.dinner),
+      calories: totals.calories, protein: totals.protein, fat: totals.fat, carbs: totals.carbs,
     });
   };
 
@@ -5193,48 +5685,14 @@ function MealModal({ meal, onSave, onClose }) {
         </div>
 
         <div>
-          <label>КБЖУ на день</label>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            <div>
-              <input
-                type="number" inputMode="decimal" min="0"
-                value={form.calories ?? ''}
-                onChange={e => set('calories', e.target.value)}
-                placeholder="ккал"
-                style={{ textAlign: 'center' }}
-              />
-              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">ккал</div>
-            </div>
-            <div>
-              <input
-                type="number" inputMode="decimal" min="0"
-                value={form.protein ?? ''}
-                onChange={e => set('protein', e.target.value)}
-                placeholder="Б"
-                style={{ textAlign: 'center' }}
-              />
-              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">Белки</div>
-            </div>
-            <div>
-              <input
-                type="number" inputMode="decimal" min="0"
-                value={form.fat ?? ''}
-                onChange={e => set('fat', e.target.value)}
-                placeholder="Ж"
-                style={{ textAlign: 'center' }}
-              />
-              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">Жиры</div>
-            </div>
-            <div>
-              <input
-                type="number" inputMode="decimal" min="0"
-                value={form.carbs ?? ''}
-                onChange={e => set('carbs', e.target.value)}
-                placeholder="У"
-                style={{ textAlign: 'center' }}
-              />
-              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">Углеводы</div>
-            </div>
+          <label>КБЖУ на день (считается автоматически по продуктам)</label>
+          <div className="grid grid-cols-4 gap-1 bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3">
+            {[['ккал', totals.calories], ['Б', totals.protein], ['Ж', totals.fat], ['У', totals.carbs]].map(([label, val]) => (
+              <div key={label} className="text-center">
+                <div className="font-display text-lg">{val === '' ? '—' : val}</div>
+                <div className="text-[10px] text-[var(--text-subtle)] uppercase tracking-wider mt-0.5">{label}</div>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -5244,33 +5702,12 @@ function MealModal({ meal, onSave, onClose }) {
           { key: 'lunch', label: 'Обед' },
           { key: 'dinner', label: 'Ужин' },
         ].map(({ key, label }) => (
-          <div key={key}>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="!mb-0">{label}</label>
-              <button type="button" onClick={() => addItem(key)}
-                className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1">
-                <Icon name="plus" size={13} /> Добавить продукт
-              </button>
-            </div>
-            {form[key].length === 0 ? (
-              <div className="text-xs text-[var(--text-subtle)] py-1">Нет продуктов</div>
-            ) : (
-              <div className="space-y-2">
-                {form[key].map(item => (
-                  <div key={item.id} className="flex gap-2">
-                    <input value={item.product} onChange={e => updItem(key, item.id, 'product', e.target.value)}
-                      placeholder="Продукт" className="flex-1" />
-                    <input value={item.amount} onChange={e => updItem(key, item.id, 'amount', e.target.value)}
-                      placeholder="Кол-во/гр" style={{ width: '110px' }} />
-                    <button type="button" onClick={() => delItem(key, item.id)}
-                      className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0">
-                      <Icon name="trash" size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <MealSectionEditor
+            key={key} label={label} items={form[key]} foods={foods}
+            onAdd={item => addItem(key, item)}
+            onUpdate={(id, patch) => updItem(key, id, patch)}
+            onRemove={id => delItem(key, id)}
+          />
         ))}
         <div className="flex gap-3 pt-2">
           <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
@@ -5278,6 +5715,221 @@ function MealModal({ meal, onSave, onClose }) {
         </div>
       </div>
     </Modal>
+  );
+}
+
+function MealSectionEditor({ label, items, foods, onAdd, onUpdate, onRemove }) {
+  const [adding, setAdding] = useState(false);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="!mb-0">{label}</label>
+        <button type="button" onClick={() => setAdding(a => !a)}
+          className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1">
+          <Icon name="plus" size={13} /> Добавить продукт
+        </button>
+      </div>
+
+      {items.length === 0 && !adding && (
+        <div className="text-xs text-[var(--text-subtle)] py-1">Нет продуктов</div>
+      )}
+
+      {items.length > 0 && (
+        <div className="space-y-2 mb-2">
+          {items.map(item => (
+            <MealItemEditorRow key={item.id} item={item} foods={foods}
+              onChange={patch => onUpdate(item.id, patch)}
+              onRemove={() => onRemove(item.id)} />
+          ))}
+        </div>
+      )}
+
+      {adding && (
+        <MealItemAddForm foods={foods}
+          onAdd={item => { onAdd(item); setAdding(false); }}
+          onCancel={() => setAdding(false)} />
+      )}
+    </div>
+  );
+}
+
+function MealItemEditorRow({ item, foods, onChange, onRemove }) {
+  if (item.foodId) {
+    const food = foods.find(f => f.id === item.foodId);
+    const unit = item.unit === 'pcs' ? 'pcs' : 'g';
+    const qtyStr = item.amount.replace(/[^\d.,]/g, '');
+    const applyQty = (v, u) => {
+      const q = parseFloat(String(v).replace(',', '.'));
+      const amount = v === '' ? '' : `${v} ${u === 'pcs' ? 'шт' : 'г'}`;
+      if (food && q > 0) {
+        onChange({ amount, unit: u, ...computeFoodMacros(food, resolveGrams(q, u, food)) });
+      } else {
+        onChange({ amount, unit: u, kcal: '', protein: '', fat: '', carbs: '' });
+      }
+    };
+    // при переключении шт↔г пересчитываем введённое число, а не просто меняем ярлык единицы
+    const switchUnit = (u) => {
+      if (u === unit || !food) return;
+      const q = parseFloat(qtyStr.replace(',', '.'));
+      if (!(q > 0)) { applyQty('', u); return; }
+      const grams = resolveGrams(q, unit, food);
+      const newQty = u === 'pcs' ? grams / food.unitWeight : grams;
+      applyQty(String(round1(newQty)), u);
+    };
+    return (
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-2.5 space-y-1.5">
+        <div className="flex items-center gap-2">
+          <span className="flex-1 text-sm font-medium truncate">{item.product}</span>
+          <span className="text-[10px] text-[var(--text-subtle)] uppercase tracking-wider shrink-0">из базы</span>
+          <button type="button" onClick={onRemove} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0">
+            <Icon name="trash" size={14} />
+          </button>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <input type="number" inputMode="decimal" min="0" value={qtyStr}
+            onChange={e => applyQty(e.target.value, unit)} placeholder={unit === 'pcs' ? 'шт' : 'граммы'} style={{ width: '80px' }} />
+          {food?.unitWeight ? (
+            <div className="flex rounded-lg border border-[var(--border)] overflow-hidden text-xs shrink-0">
+              {[['pcs', 'шт'], ['g', 'г']].map(([u, l]) => (
+                <button key={u} type="button" onClick={() => switchUnit(u)}
+                  className={`px-2 py-1 ${unit === u ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>{l}</button>
+              ))}
+            </div>
+          ) : null}
+          <span className="text-xs text-[var(--text-subtle)]">
+            {item.kcal !== '' ? `${item.kcal} ккал · ${item.protein} Б · ${item.fat} Ж · ${item.carbs} У` : `Укажите ${unit === 'pcs' ? 'количество' : 'граммы'}`}
+          </span>
+        </div>
+      </div>
+    );
+  }
+  const num = (v) => v === '' ? '' : Number(v);
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-2.5 space-y-1.5">
+      <div className="flex gap-2">
+        <input value={item.product} onChange={e => onChange({ product: e.target.value })} placeholder="Продукт" className="flex-1" />
+        <input value={item.amount} onChange={e => onChange({ amount: e.target.value })} placeholder="Кол-во/гр" style={{ width: '100px' }} />
+        <button type="button" onClick={onRemove} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0">
+          <Icon name="trash" size={14} />
+        </button>
+      </div>
+      <div className="grid grid-cols-4 gap-2">
+        <input type="number" inputMode="decimal" min="0" value={item.kcal} onChange={e => onChange({ kcal: num(e.target.value) })} placeholder="ккал" style={{ textAlign: 'center' }} />
+        <input type="number" inputMode="decimal" min="0" value={item.protein} onChange={e => onChange({ protein: num(e.target.value) })} placeholder="Б" style={{ textAlign: 'center' }} />
+        <input type="number" inputMode="decimal" min="0" value={item.fat} onChange={e => onChange({ fat: num(e.target.value) })} placeholder="Ж" style={{ textAlign: 'center' }} />
+        <input type="number" inputMode="decimal" min="0" value={item.carbs} onChange={e => onChange({ carbs: num(e.target.value) })} placeholder="У" style={{ textAlign: 'center' }} />
+      </div>
+    </div>
+  );
+}
+
+function MealItemAddForm({ foods, onAdd, onCancel }) {
+  const [query, setQuery] = useState('');
+  const [selectedFood, setSelectedFood] = useState(null);
+  const [unit, setUnit] = useState('g');
+  const [amount, setAmount] = useState('');
+  const [mk, setMk] = useState('');
+  const [mp, setMp] = useState('');
+  const [mf, setMf] = useState('');
+  const [mc, setMc] = useState('');
+
+  const suggestions = useMemo(() => {
+    if (selectedFood || !query.trim()) return [];
+    const q = query.trim().toLowerCase();
+    return foods.filter(f => f.name.toLowerCase().includes(q)).slice(0, 6);
+  }, [foods, query, selectedFood]);
+
+  const qty = parseFloat(amount.replace(',', '.'));
+  const grams = selectedFood && qty > 0 ? resolveGrams(qty, unit, selectedFood) : 0;
+  const computed = selectedFood && grams > 0 ? computeFoodMacros(selectedFood, grams) : null;
+
+  const pick = (food) => { setSelectedFood(food); setQuery(food.name); setAmount(''); setUnit(food.unitWeight ? 'pcs' : 'g'); };
+  const clearPick = () => { setSelectedFood(null); setQuery(''); setAmount(''); setUnit('g'); };
+
+  const submit = () => {
+    if (selectedFood) {
+      if (!(qty > 0)) return alert(unit === 'pcs' ? 'Введите количество штук' : 'Введите граммы');
+      onAdd({
+        id: crypto.randomUUID(), product: selectedFood.name,
+        amount: `${formatAmountValue(qty)} ${unit === 'pcs' ? 'шт' : 'г'}`,
+        foodId: selectedFood.id, unit,
+        kcal: computed.kcal, protein: computed.protein, fat: computed.fat, carbs: computed.carbs,
+      });
+    } else {
+      const product = query.trim();
+      if (!product) return alert('Введите продукт');
+      onAdd({
+        id: crypto.randomUUID(), product, amount: amount.trim(), foodId: null,
+        kcal: mk === '' ? '' : Number(mk), protein: mp === '' ? '' : Number(mp),
+        fat: mf === '' ? '' : Number(mf), carbs: mc === '' ? '' : Number(mc),
+      });
+    }
+  };
+
+  return (
+    <div className="mt-2 p-3 rounded-xl border border-[var(--border)] bg-[var(--bg)] space-y-2">
+      <div className="relative">
+        <input
+          value={query}
+          onChange={e => { setQuery(e.target.value); if (selectedFood) setSelectedFood(null); }}
+          placeholder="Продукт — поиск по базе или ввод вручную"
+          className="w-full"
+          autoFocus
+        />
+        {suggestions.length > 0 && (
+          <div className="absolute z-10 left-0 right-0 mt-1 bg-[var(--surface)] border border-[var(--border)] rounded-xl shadow-lg max-h-56 overflow-auto">
+            {suggestions.map(f => (
+              <button key={f.id} type="button" onClick={() => pick(f)}
+                className="w-full text-left px-3 py-2 text-sm hover:bg-black/5 flex items-center justify-between gap-2">
+                <span className="truncate">{f.name}{f.isCustomDish ? ' · блюдо' : ''}</span>
+                <span className="text-[var(--text-subtle)] text-xs shrink-0">
+                  {f.kcal} ккал/100г{f.unitWeight ? ` · ~${f.unitWeight} г/шт` : ''}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {selectedFood ? (
+        <div className="flex items-center gap-2 flex-wrap">
+          <input type="number" inputMode="decimal" min="0" value={amount}
+            onChange={e => setAmount(e.target.value)} placeholder={unit === 'pcs' ? 'Штук' : 'Граммы'} style={{ width: '90px' }} autoFocus />
+          {selectedFood.unitWeight ? (
+            <div className="flex rounded-lg border border-[var(--border)] overflow-hidden text-xs shrink-0">
+              {[['pcs', 'шт'], ['g', 'г']].map(([u, l]) => (
+                <button key={u} type="button" onClick={() => setUnit(u)}
+                  className={`px-2 py-1 ${unit === u ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>{l}</button>
+              ))}
+            </div>
+          ) : null}
+          <span className="text-xs text-[var(--text-subtle)] flex-1 basis-full sm:basis-auto">
+            {computed
+              ? `${computed.kcal} ккал · ${computed.protein} Б · ${computed.fat} Ж · ${computed.carbs} У${unit === 'pcs' ? ` (≈${formatAmountValue(grams)} г)` : ''}`
+              : `Укажите ${unit === 'pcs' ? 'количество' : 'граммы'}`}
+          </span>
+          <button type="button" onClick={clearPick} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] shrink-0">
+            вручную
+          </button>
+        </div>
+      ) : (
+        <>
+          <input value={amount} onChange={e => setAmount(e.target.value)} placeholder="Кол-во/вес (например, 150г)" />
+          <div className="grid grid-cols-4 gap-2">
+            <input type="number" inputMode="decimal" min="0" value={mk} onChange={e => setMk(e.target.value)} placeholder="ккал" style={{ textAlign: 'center' }} />
+            <input type="number" inputMode="decimal" min="0" value={mp} onChange={e => setMp(e.target.value)} placeholder="Б" style={{ textAlign: 'center' }} />
+            <input type="number" inputMode="decimal" min="0" value={mf} onChange={e => setMf(e.target.value)} placeholder="Ж" style={{ textAlign: 'center' }} />
+            <input type="number" inputMode="decimal" min="0" value={mc} onChange={e => setMc(e.target.value)} placeholder="У" style={{ textAlign: 'center' }} />
+          </div>
+        </>
+      )}
+
+      <div className="flex gap-2">
+        <button type="button" onClick={onCancel} className="btn-secondary flex-1 !py-2 text-sm">Отмена</button>
+        <button type="button" onClick={submit} className="btn-primary flex-1 !py-2 text-sm">Добавить</button>
+      </div>
+    </div>
   );
 }
 
@@ -5970,10 +6622,10 @@ function ContainerModal({ item, onSave, onClose }) {
 
 // ============== KANBAN ==============
 const KANBAN_PRIORITIES = [
-  { id: 'none',   label: 'Нет',     color: 'text-[var(--text-subtle)]',  bg: '' },
-  { id: 'low',    label: 'Низкий',  color: 'text-blue-500',               bg: 'bg-blue-50/10 border-blue-400/30' },
-  { id: 'medium', label: 'Средний', color: 'text-amber-500',              bg: 'bg-amber-50/10 border-amber-400/30' },
-  { id: 'high',   label: 'Высокий', color: 'text-red-500',                bg: 'bg-red-50/10 border-red-400/30' },
+  { id: 'none',   label: 'Нет',     color: 'text-[var(--text-subtle)]',  bg: '',                                    accent: 'transparent' },
+  { id: 'low',    label: 'Низкий',  color: 'text-blue-500',               bg: 'bg-blue-50/10 border-blue-400/30',   accent: '#3b82f6' },
+  { id: 'medium', label: 'Средний', color: 'text-amber-500',              bg: 'bg-amber-50/10 border-amber-400/30', accent: '#f59e0b' },
+  { id: 'high',   label: 'Высокий', color: 'text-red-500',                bg: 'bg-red-50/10 border-red-400/30',     accent: '#ef4444' },
 ];
 const DEFAULT_KANBAN_COLUMNS = [
   { id: 'col-1', title: 'К выполнению', tasks: [] },
@@ -6002,6 +6654,11 @@ function SubtasksEditor({ subtasks, onChange }) {
   return (
     <div>
       <label>Подзадачи {subtasks.length > 0 && <span className="text-[var(--text-subtle)] font-normal">({done}/{subtasks.length})</span>}</label>
+      {subtasks.length > 0 && (
+        <div className="h-1.5 rounded-full bg-[var(--border)] overflow-hidden mb-2">
+          <div className="h-full bg-[var(--text)] transition-all" style={{ width: `${Math.round(done / subtasks.length * 100)}%` }} />
+        </div>
+      )}
       <div className="space-y-1.5 mb-2">
         {subtasks.map(s => (
           <div key={s.id} className="flex items-center gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2">
@@ -6019,10 +6676,43 @@ function SubtasksEditor({ subtasks, onChange }) {
   );
 }
 
+function ConfirmDialog({ title, text, confirmLabel = 'Удалить', danger, onConfirm, onCancel }) {
+  useEffect(() => {
+    const handler = (e) => e.key === 'Escape' && onCancel();
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onCancel]);
+
+  return ReactDOM.createPortal(
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm fade-in p-4" onClick={onCancel}>
+      <div onClick={e => e.stopPropagation()} className="bg-[var(--bg)] w-full max-w-sm rounded-2xl p-5 sm:p-6 border border-[var(--border)]">
+        <div className="font-display text-lg mb-2">{title}</div>
+        {text && <div className="text-sm text-[var(--text-muted)] mb-5">{text}</div>}
+        <div className="flex gap-2 mt-5">
+          <button onClick={onCancel} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={onConfirm} className={`flex-1 rounded-xl font-medium py-2.5 transition-all ${danger ? 'bg-red-500 text-white hover:opacity-90' : 'btn-primary'}`}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function formatCommentTime(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  } catch { return ''; }
+}
+
 function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
   const [f, setF] = useState({ ...task });
   const [newCom, setNewCom] = useState('');
+  const [editingCommentId, setEditingCommentId] = useState(null);
+  const [editingCommentText, setEditingCommentText] = useState('');
   const [moveTo, setMoveTo] = useState(colId);
+  const [titleError, setTitleError] = useState(false);
+  const [confirmState, setConfirmState] = useState(null); // 'discard' | 'delete' | null
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
   const initialRef = useRef(JSON.stringify({ ...task }));
 
@@ -6032,102 +6722,174 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
     setNewCom('');
   };
   const deleteComment = (id) => set('comments', f.comments.filter(c => c.id !== id));
+  const startEditComment = (c) => { setEditingCommentId(c.id); setEditingCommentText(c.text); };
+  const cancelEditComment = () => { setEditingCommentId(null); setEditingCommentText(''); };
+  const saveEditComment = () => {
+    const text = editingCommentText.trim();
+    if (!text) return;
+    set('comments', f.comments.map(c => c.id === editingCommentId ? { ...c, text, editedAt: new Date().toISOString() } : c));
+    cancelEditComment();
+  };
 
   const submit = () => {
-    if (!f.title.trim()) return alert('Введите заголовок задачи');
+    if (!f.title.trim()) { setTitleError(true); return; }
     onSave({ ...f, notify: !!(f.notify && f.notifyDate), notifyTime: f.notifyTime || '12:00' }, moveTo);
   };
 
-  const pri = KANBAN_PRIORITIES.find(p => p.id === f.priority) || KANBAN_PRIORITIES[0];
   const isNew = !task.createdAt || task.title === '';
 
   // Пока в задаче есть несохранённые правки, любое закрытие (крестик, клик по
   // фону, Escape, кнопка «Отмена») спрашивает подтверждение — иначе введённые
   // данные терялись молча.
-  const isDirty = () => JSON.stringify(f) !== initialRef.current || moveTo !== colId || newCom.trim() !== '';
+  const isDirty = () => JSON.stringify(f) !== initialRef.current || moveTo !== colId || newCom.trim() !== '' || editingCommentId !== null;
   const requestClose = () => {
-    if (isDirty() && !confirm(isNew ? 'Отменить создание задачи? Введённые данные будут потеряны.' : 'Есть несохранённые изменения. Закрыть без сохранения?')) return;
+    if (isDirty()) { setConfirmState('discard'); return; }
     onClose();
   };
 
   return (
-    <Modal onClose={requestClose} title={isNew ? 'Новая задача' : 'Редактировать задачу'}>
-      <div className="space-y-4">
-        <div><label>Заголовок</label><input value={f.title} onChange={e => set('title', e.target.value)} placeholder="Что нужно сделать?" autoFocus /></div>
+    <Modal onClose={requestClose} title={isNew ? 'Новая задача' : 'Задача'} wide>
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_260px] gap-6">
+        <div className="space-y-5 min-w-0">
+          <div>
+            <input
+              value={f.title}
+              onChange={e => { set('title', e.target.value); if (titleError) setTitleError(false); }}
+              placeholder="Что нужно сделать?"
+              autoFocus
+              className={`text-lg font-medium !px-0 !border-0 !border-b !rounded-none focus:!ring-0 ${titleError ? '!border-red-500' : ''}`}
+            />
+            {titleError && <div className="text-xs text-red-500 mt-1">Введите заголовок задачи</div>}
+          </div>
 
-        <div className="flex gap-3">
-          <div className="flex-1"><label>Дата начала</label><input type="date" value={f.startDate || ''} onChange={e => set('startDate', e.target.value)} /></div>
-          <div className="flex-1"><label>Дедлайн</label><input type="date" value={f.dueDate || ''} onChange={e => set('dueDate', e.target.value)} /></div>
-        </div>
-
-        <div className="border border-[var(--border)] rounded-xl p-3 space-y-3">
-          <label className="flex items-center gap-2 cursor-pointer !mb-0">
-            <input type="checkbox" className="!w-auto" checked={!!f.notify} onChange={e => set('notify', e.target.checked)} />
-            <span className="text-sm font-medium">Напоминание в Telegram</span>
-          </label>
-          {f.notify && (
-            <div className="flex gap-2 fade-in">
-              <div className="flex-1">
-                <label>Дата</label>
-                <input type="date" value={f.notifyDate || ''} onChange={e => set('notifyDate', e.target.value)} />
-              </div>
-              <div className="w-28">
-                <label>Время</label>
-                <MskTimeInput value={f.notifyTime || '12:00'} onChange={t => set('notifyTime', t)} />
-              </div>
+          <div>
+            <label>Приоритет</label>
+            <div className="flex gap-2 mt-1">
+              {KANBAN_PRIORITIES.map(p => (
+                <button key={p.id} onClick={() => set('priority', p.id)}
+                  className={`flex-1 py-2 rounded-xl text-sm font-medium transition-all ${
+                    f.priority === p.id
+                      ? 'bg-[var(--text)] text-white'
+                      : 'bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)]'
+                  }`}>
+                  {p.label}
+                </button>
+              ))}
             </div>
-          )}
-        </div>
-
-        <div>
-          <label>Приоритет</label>
-          <div className="flex gap-2 mt-1">
-            {KANBAN_PRIORITIES.map(p => (
-              <button key={p.id} onClick={() => set('priority', p.id)}
-                className={`flex-1 py-2 rounded-xl text-sm font-medium transition-all ${
-                  f.priority === p.id
-                    ? 'bg-[var(--text)] text-white'
-                    : 'bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)]'
-                }`}>
-                {p.label}
-              </button>
-            ))}
           </div>
-        </div>
 
-        <div><label>Описание</label><textarea value={f.description || ''} onChange={e => set('description', e.target.value)} rows={3} placeholder="Детали, ссылки, заметки..." style={{ resize: 'vertical' }} /></div>
+          <div className="flex gap-3">
+            <div className="flex-1"><label>Дата начала</label><input type="date" value={f.startDate || ''} onChange={e => set('startDate', e.target.value)} /></div>
+            <div className="flex-1"><label>Дедлайн</label><input type="date" value={f.dueDate || ''} onChange={e => set('dueDate', e.target.value)} /></div>
+          </div>
 
-        <SubtasksEditor subtasks={f.subtasks || []} onChange={v => set('subtasks', v)} />
-
-        <div>
-          <label>Колонка</label>
-          <select value={moveTo} onChange={e => setMoveTo(e.target.value)}>
-            {columns.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
-          </select>
-        </div>
-
-        <div>
-          <label>Комментарии</label>
-          <div className="space-y-2 mb-2">
-            {(f.comments || []).map(c => (
-              <div key={c.id} className="flex items-start gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2">
-                <div className="flex-1 text-sm">{c.text}</div>
-                <button onClick={() => deleteComment(c.id)} className="text-[var(--text-subtle)] hover:text-red-500 flex-shrink-0 mt-0.5"><Icon name="x" size={14}/></button>
+          <div className="border border-[var(--border)] rounded-xl p-3 space-y-3">
+            <label className="flex items-center gap-2 cursor-pointer !mb-0">
+              <input type="checkbox" className="!w-auto" checked={!!f.notify} onChange={e => set('notify', e.target.checked)} />
+              <span className="text-sm font-medium">Напоминание в Telegram</span>
+            </label>
+            {f.notify && (
+              <div className="flex gap-2 fade-in">
+                <div className="flex-1">
+                  <label>Дата</label>
+                  <input type="date" value={f.notifyDate || ''} onChange={e => set('notifyDate', e.target.value)} />
+                </div>
+                <div className="w-28">
+                  <label>Время</label>
+                  <MskTimeInput value={f.notifyTime || '12:00'} onChange={t => set('notifyTime', t)} />
+                </div>
               </div>
-            ))}
+            )}
           </div>
-          <div className="flex gap-2">
-            <input value={newCom} onChange={e => setNewCom(e.target.value)} onKeyDown={e => e.key === 'Enter' && addComment()} placeholder="Добавить комментарий..." className="flex-1 text-sm" />
-            <button onClick={addComment} className="btn-secondary px-3 text-sm">+</button>
-          </div>
+
+          <div><label>Описание</label><textarea value={f.description || ''} onChange={e => set('description', e.target.value)} rows={3} placeholder="Детали, ссылки, заметки..." style={{ resize: 'vertical' }} /></div>
+
+          <SubtasksEditor subtasks={f.subtasks || []} onChange={v => set('subtasks', v)} />
         </div>
 
-        <div className="flex gap-2 pt-2">
-          {!isNew && <button onClick={() => onDelete(f.id)} className="btn-secondary px-3 text-red-500"><Icon name="trash" size={16}/></button>}
-          <button onClick={requestClose} className="btn-secondary flex-1">Отмена</button>
-          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        <div className="space-y-5 min-w-0">
+          <div>
+            <label>Колонка</label>
+            <select value={moveTo} onChange={e => setMoveTo(e.target.value)}>
+              {columns.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
+            </select>
+          </div>
+
+          {!isNew && task.createdAt && (
+            <div className="text-xs text-[var(--text-subtle)]">Создано {formatCommentTime(task.createdAt)}</div>
+          )}
+
+          <div>
+            <label>Комментарии</label>
+            <div className="space-y-2 mb-2 max-h-64 overflow-y-auto pr-0.5">
+              {(f.comments || []).map(c => (
+                editingCommentId === c.id ? (
+                  <div key={c.id} className="bg-[var(--bg)] border border-[var(--border-strong)] rounded-xl px-3 py-2 space-y-2">
+                    <textarea
+                      autoFocus
+                      rows={2}
+                      value={editingCommentText}
+                      onChange={e => setEditingCommentText(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEditComment(); }
+                        if (e.key === 'Escape') cancelEditComment();
+                      }}
+                      className="text-sm !p-0 !border-0 !bg-transparent"
+                      style={{ resize: 'none' }}
+                    />
+                    <div className="flex gap-2">
+                      <button onClick={saveEditComment} className="btn-primary flex-1 !py-1 text-xs">Сохранить</button>
+                      <button onClick={cancelEditComment} className="btn-secondary !py-1 px-3 text-xs">Отмена</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div key={c.id} className="flex items-start gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 group">
+                    <div className="flex-1 text-sm min-w-0">
+                      <div className="whitespace-pre-wrap break-words">{c.text}</div>
+                      <div className="text-[10px] text-[var(--text-subtle)] mt-1">
+                        {formatCommentTime(c.createdAt)}{c.editedAt && <span> · изменено</span>}
+                      </div>
+                    </div>
+                    <button onClick={() => startEditComment(c)} className="text-[var(--text-subtle)] hover:text-[var(--text)] flex-shrink-0 mt-0.5"><Icon name="edit" size={13}/></button>
+                    <button onClick={() => deleteComment(c.id)} className="text-[var(--text-subtle)] hover:text-red-500 flex-shrink-0 mt-0.5"><Icon name="x" size={14}/></button>
+                  </div>
+                )
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input value={newCom} onChange={e => setNewCom(e.target.value)} onKeyDown={e => e.key === 'Enter' && addComment()} placeholder="Добавить комментарий..." className="flex-1 text-sm" />
+              <button onClick={addComment} className="btn-secondary px-3 text-sm">+</button>
+            </div>
+          </div>
         </div>
       </div>
+
+      <div className="flex gap-2 pt-5 mt-5 border-t border-[var(--border)]">
+        {!isNew && <button onClick={() => setConfirmState('delete')} className="btn-secondary px-3 text-red-500"><Icon name="trash" size={16}/></button>}
+        <button onClick={requestClose} className="btn-secondary flex-1">Отмена</button>
+        <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+      </div>
+
+      {confirmState === 'discard' && (
+        <ConfirmDialog
+          title={isNew ? 'Отменить создание задачи?' : 'Закрыть без сохранения?'}
+          text="Введённые изменения будут потеряны."
+          confirmLabel="Не сохранять"
+          danger
+          onCancel={() => setConfirmState(null)}
+          onConfirm={onClose}
+        />
+      )}
+      {confirmState === 'delete' && (
+        <ConfirmDialog
+          title="Удалить задачу?"
+          text="Это действие нельзя отменить."
+          confirmLabel="Удалить"
+          danger
+          onCancel={() => setConfirmState(null)}
+          onConfirm={() => onDelete(f.id)}
+        />
+      )}
     </Modal>
   );
 }
@@ -6172,11 +6934,24 @@ function KanbanView({ data, setData }) {
 
   const [editingTask, setEditingTask] = useState(null); // { task, colId }
   const [editingCol, setEditingCol] = useState(null);   // column object or 'new'
-  const [addingColIdx, setAddingColIdx] = useState(null);
+  const [confirmDeleteCol, setConfirmDeleteCol] = useState(null); // column id
   const [dragging, setDragging] = useState(null);       // { taskId, fromColId }
+  const [draggingCol, setDraggingCol] = useState(null); // column id
   const [dragOverCol, setDragOverCol] = useState(null);
+  const [query, setQuery] = useState('');
+  const [hideDone, setHideDone] = useState(false);
+  const [quickAddCol, setQuickAddCol] = useState(null); // column id
+  const [quickAddText, setQuickAddText] = useState('');
+  const [quickAddPriority, setQuickAddPriority] = useState('none');
   const sort = data.kanban?.sort || 'default';
   const setSort = (val) => setData(d => ({ ...d, kanban: { ...d.kanban, sort: val } }));
+
+  const matchesQuery = (t) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return t.title.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q);
+  };
+  const visibleTasks = (tasks) => tasks.filter(t => matchesQuery(t) && (!hideDone || !t.closed));
 
   const sortTasks = (tasks) => {
     const open = tasks.filter(t => !t.closed);
@@ -6208,12 +6983,12 @@ function KanbanView({ data, setData }) {
     setEditingCol(null);
   };
   const deleteColumn = (id) => {
-    if (!confirm('Удалить колонку со всеми задачами?')) return;
     setData(d => ({
       ...d,
       kanban: { ...d.kanban, columns: (d.kanban?.columns || DEFAULT_KANBAN_COLUMNS).filter(c => c.id !== id) },
       deletedIds: withDeletedId(d, 'kanbanColumns', id),
     }));
+    setConfirmDeleteCol(null);
   };
   const moveColumn = (id, dir) => {
     const idx = columns.findIndex(c => c.id === id);
@@ -6223,6 +6998,19 @@ function KanbanView({ data, setData }) {
     const arr = [...columns];
     [arr[idx], arr[next]] = [arr[next], arr[idx]];
     setColumns(arr);
+  };
+  const handleColDragStart = (id) => setDraggingCol(id);
+  const handleColDragEnd = () => { setDraggingCol(null); setDragOverCol(null); };
+  const handleColDrop = (toId) => {
+    if (!draggingCol || draggingCol === toId) { handleColDragEnd(); return; }
+    const fromIdx = columns.findIndex(c => c.id === draggingCol);
+    const toIdx = columns.findIndex(c => c.id === toId);
+    if (fromIdx < 0 || toIdx < 0) { handleColDragEnd(); return; }
+    const arr = [...columns];
+    const [moved] = arr.splice(fromIdx, 1);
+    arr.splice(toIdx, 0, moved);
+    setColumns(arr);
+    handleColDragEnd();
   };
 
   // ── tasks ──
@@ -6243,10 +7031,20 @@ function KanbanView({ data, setData }) {
   };
 
   const deleteTask = (taskId, colId) => {
-    if (!confirm('Удалить задачу?')) return;
     setColumns(columns.map(c => c.id === colId ? { ...c, tasks: c.tasks.filter(t => t.id !== taskId) } : c));
     setEditingTask(null);
   };
+
+  const submitQuickAdd = (colId) => {
+    const title = quickAddText.trim();
+    if (!title) { setQuickAddCol(null); return; }
+    const task = newTask({ title, priority: quickAddPriority });
+    setColumns(columns.map(c => c.id === colId ? { ...c, tasks: [task, ...c.tasks] } : c));
+    setQuickAddCol(null);
+    setQuickAddText('');
+    setQuickAddPriority('none');
+  };
+  const cancelQuickAdd = () => { setQuickAddCol(null); setQuickAddText(''); setQuickAddPriority('none'); };
 
   const moveTask = (taskId, fromColId, dir) => {
     const fromIdx = columns.findIndex(c => c.id === fromColId);
@@ -6304,9 +7102,22 @@ function KanbanView({ data, setData }) {
       <div className="mx-auto" style={{ width: 'fit-content' }}>
 
         {/* Header */}
-        <div className="flex items-center justify-between gap-8 mb-6">
-          <h2 className="font-display text-2xl">Задачи</h2>
-          <div className="flex items-center gap-2">
+        <div className="mb-6">
+          <div className="flex items-center justify-between gap-4 mb-3">
+            <h2 className="font-display text-2xl">Задачи</h2>
+            <button onClick={() => setEditingCol('new')} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--text)] text-white transition-all hover:opacity-80 flex-shrink-0">
+              <Icon name="plus" size={13}/> Колонка
+            </button>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative">
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-subtle)] pointer-events-none"><Icon name="search" size={13}/></span>
+              <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Поиск задач..." className="!py-1.5 !pl-8 text-xs w-full sm:w-44" />
+            </div>
+            <button onClick={() => setHideDone(v => !v)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${hideDone ? 'bg-[var(--text)] text-white border-[var(--text)]' : 'text-[var(--text-muted)] border-[var(--border)] hover:text-[var(--text)]'}`}>
+              Скрыть выполненные
+            </button>
             <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
               {KANBAN_SORT_OPTIONS.map(opt => (
                 <button key={opt.id} onClick={() => setSort(opt.id)}
@@ -6315,9 +7126,6 @@ function KanbanView({ data, setData }) {
                 </button>
               ))}
             </div>
-            <button onClick={() => setEditingCol('new')} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--text)] text-white transition-all hover:opacity-80">
-              <Icon name="plus" size={13}/> Колонка
-            </button>
           </div>
         </div>
 
@@ -6330,13 +7138,18 @@ function KanbanView({ data, setData }) {
         <div className="flex gap-4">
             {columns.map((col, colIdx) => (
               <div key={col.id}
-                className={`w-72 flex-shrink-0 flex flex-col bg-[var(--surface)] border rounded-2xl overflow-hidden transition-all ${dragOverCol === col.id ? 'border-[var(--text)] ring-2 ring-[var(--text)]/10' : 'border-[var(--border)]'}`}
+                className={`w-72 flex-shrink-0 flex flex-col bg-[var(--surface)] border rounded-2xl overflow-hidden transition-all ${dragOverCol === col.id ? 'border-[var(--text)] ring-2 ring-[var(--text)]/10' : 'border-[var(--border)]'} ${draggingCol === col.id ? 'opacity-40' : ''}`}
                 onDragOver={e => { e.preventDefault(); setDragOverCol(col.id); }}
                 onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragOverCol(null); }}
-                onDrop={() => handleDrop(col.id)}>
+                onDrop={() => { if (draggingCol) handleColDrop(col.id); else handleDrop(col.id); }}>
                 {/* Column header */}
                 <div className="flex items-center gap-2 px-4 pt-4 pb-3 border-b border-[var(--border)]">
-                  <div className="flex-1 font-medium text-sm truncate">{col.title}</div>
+                  <div
+                    draggable
+                    onDragStart={e => { e.stopPropagation(); handleColDragStart(col.id); }}
+                    onDragEnd={handleColDragEnd}
+                    title="Потащите, чтобы переставить колонку"
+                    className="flex-1 font-medium text-sm truncate cursor-grab active:cursor-grabbing">{col.title}</div>
                   <span className="text-xs text-[var(--text-subtle)] bg-[var(--bg)] border border-[var(--border)] rounded-full px-2 py-0.5">{col.tasks.length}</span>
                   <button onClick={() => moveColumn(col.id, -1)} disabled={colIdx === 0} className="p-1 rounded-lg hover:bg-black/5 text-[var(--text-muted)] disabled:opacity-30">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
@@ -6345,20 +7158,59 @@ function KanbanView({ data, setData }) {
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
                   </button>
                   <button onClick={() => setEditingCol(col)} className="p-1 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={14}/></button>
-                  <button onClick={() => deleteColumn(col.id)} className="p-1 rounded-lg hover:bg-black/5 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14}/></button>
+                  <button onClick={() => setConfirmDeleteCol(col.id)} className="p-1 rounded-lg hover:bg-black/5 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14}/></button>
                 </div>
 
                 {/* Add task */}
                 <div className="p-3 border-b border-[var(--border)]">
-                  <button onClick={() => setEditingTask({ task: newTask(), colId: col.id })}
-                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg)] transition-all border border-dashed border-[var(--border)] hover:border-[var(--border-strong)]">
-                    <Icon name="plus" size={15}/> Добавить задачу
-                  </button>
+                  {quickAddCol === col.id ? (
+                    <div className="space-y-2 fade-in">
+                      <textarea
+                        autoFocus
+                        rows={2}
+                        value={quickAddText}
+                        onChange={e => setQuickAddText(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitQuickAdd(col.id); }
+                          if (e.key === 'Escape') cancelQuickAdd();
+                        }}
+                        placeholder="Что нужно сделать? Enter — добавить"
+                        className="text-sm"
+                        style={{ resize: 'none' }}
+                      />
+                      <div className="flex items-center gap-1.5">
+                        {KANBAN_PRIORITIES.map(p => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => setQuickAddPriority(p.id)}
+                            title={p.label}
+                            className={`w-5 h-5 rounded-full flex-shrink-0 transition-all ${quickAddPriority === p.id ? 'ring-2 ring-offset-1 ring-[var(--text)]' : 'opacity-40 hover:opacity-80'}`}
+                            style={{ background: p.id === 'none' ? 'var(--surface)' : p.accent, border: p.id === 'none' ? '2px solid var(--border-strong)' : 'none' }}
+                          />
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => submitQuickAdd(col.id)} className="btn-primary flex-1 !py-1.5 text-sm">Добавить</button>
+                        <button onClick={cancelQuickAdd} className="btn-secondary !py-1.5 px-3"><Icon name="x" size={14}/></button>
+                        <button
+                          onClick={() => { setEditingTask({ task: newTask({ title: quickAddText.trim(), priority: quickAddPriority }), colId: col.id }); cancelQuickAdd(); }}
+                          className="text-xs text-[var(--text-subtle)] hover:text-[var(--text)] flex-shrink-0 whitespace-nowrap">
+                          детали
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button onClick={() => { setQuickAddCol(col.id); setQuickAddText(''); setQuickAddPriority('none'); }}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg)] transition-all border border-dashed border-[var(--border)] hover:border-[var(--border-strong)]">
+                      <Icon name="plus" size={15}/> Добавить задачу
+                    </button>
+                  )}
                 </div>
 
                 {/* Tasks */}
                 <div className="flex-1 p-3 space-y-2 overflow-y-auto" style={{ maxHeight: '60vh' }}>
-                  {sortTasks(col.tasks).map(task => {
+                  {sortTasks(visibleTasks(col.tasks)).map(task => {
                     const p = priInfo(task.priority);
                     const due = formatDue(task.dueDate);
                     return (
@@ -6367,6 +7219,7 @@ function KanbanView({ data, setData }) {
                         onDragStart={() => handleDragStart(task.id, col.id)}
                         onDragEnd={handleDragEnd}
                         onClick={() => setEditingTask({ task, colId: col.id })}
+                        style={p.id !== 'none' ? { borderLeft: `3px solid ${p.accent}` } : undefined}
                         className={`bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 cursor-grab active:cursor-grabbing hover:border-[var(--border-strong)] transition-all group select-none ${dragging?.taskId === task.id ? 'opacity-40' : ''} ${task.closed ? 'opacity-50' : ''}`}>
                         {task.priority !== 'none' && (
                           <div className={`text-[10px] font-semibold uppercase tracking-wide mb-1.5 ${p.color}`}>{p.label}</div>
@@ -6428,6 +7281,16 @@ function KanbanView({ data, setData }) {
           column={editingCol === 'new' ? null : editingCol}
           onSave={(title) => editingCol === 'new' ? addColumn(title) : updateColumn(editingCol.id, title)}
           onClose={() => setEditingCol(null)}
+        />
+      )}
+      {confirmDeleteCol && (
+        <ConfirmDialog
+          title="Удалить колонку?"
+          text="Колонка и все задачи в ней будут удалены без возможности восстановления."
+          confirmLabel="Удалить"
+          danger
+          onCancel={() => setConfirmDeleteCol(null)}
+          onConfirm={() => deleteColumn(confirmDeleteCol)}
         />
       )}
     </div>
@@ -8570,12 +9433,31 @@ const VOICE_DATA_DOMAINS = {
     // на них токены незачем.
     get: d => (d.loyaltyCards || []).map(({ photo, code, ...rest }) => rest),
   },
+  about: {
+    label: 'База данных: что пользователь рассказал о себе — кто он, где живёт, чем занимается, предпочтения и планы',
+    get: d => (d.knowledgeNotes || []).map(({ id, title, text, category, pinned, updatedAt }) =>
+      ({ id, title, text, category, pinned, updatedAt })),
+  },
   gym: {
-    label: 'GYM: программы, дни, упражнения, журнал тренировок',
-    get: d => ({
-      programs: d.gymPrograms || [], days: d.gymDays || [], exercises: d.gymExercises || [],
-      sessions: (d.gymSessions || []).slice(-40),
-    }),
+    label: 'GYM: программы, дни, упражнения, журнал тренировок и ТЕКУЩАЯ тренировка, если она идёт прямо сейчас',
+    get: d => {
+      const sessions = d.gymSessions || [];
+      // Незавершённая тренировка — та, что идёт сейчас. Отдаём её отдельно и
+      // вместе с упражнениями дня: чтобы ответить «сколько мне осталось» или
+      // дописать подход, ассистенту нужен и план, и факт.
+      const running = sessions.find(x => !x.finishedAt) || null;
+      return {
+        programs: d.gymPrograms || [], days: d.gymDays || [], exercises: d.gymExercises || [],
+        sessions: sessions.slice(-40),
+        current: running ? {
+          session: running,
+          exercises: (d.gymExercises || []).filter(e => e.dayId === running.dayId),
+          hint: 'Правки текущей тренировки — update_record("gymSessions", <id>, { sets: [...] }). '
+            + 'Подход: { id, exerciseId, exerciseName, kind: "working"|"warmup", setIndex, weight, reps, at }. '
+            + 'Пропущенные подходы перечислены в session.skipped как "<exerciseId>:<индекс>".',
+        } : null,
+      };
+    },
   },
   wishlist: {
     label: 'Хотелки (списки и вещи в них)',
@@ -8703,6 +9585,10 @@ const WRITE_REGISTRY = {
   },
   healthEvents: { label: 'Событие здоровья (визит/болезнь/процедура)', createDefaults: () => ({ tags: [], medications: [] }) },
   loyaltyCards: { label: 'Карта лояльности магазина', createDefaults: () => ({ format: 'auto' }) },
+  knowledgeNotes: {
+    label: 'Запись в «Базе данных» — факт о пользователе (title, text, category)',
+    createDefaults: () => ({ category: 'Разное', pinned: false }),
+  },
   gymPrograms: {
     label: 'Программа тренировок GYM',
     createDefaults: () => ({}),
@@ -9023,6 +9909,158 @@ function deleteChecklistLogEntry(data, date) {
   };
 }
 
+// Apple Календарь и Напоминания живут в iCloud, а не в данных приложения.
+// Браузеру туда нельзя (CORS + пароль приложения не должен попадать в
+// браузер), поэтому инструменты ходят на собственный сервер — /api/apple/*,
+// который уже говорит с iCloud по CalDAV. Схемы совпадают с APPLE_TOOLS в
+// jarvis.py: у голосового ассистента и у бота в Telegram одни и те же руки.
+const APPLE_AGENT_TOOLS = [
+  {
+    name: 'calendar_list_events',
+    description: 'Прочитать события из Apple Календаря (iCloud) за период. Подтверждения не требует.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Начало периода, 2026-09-21 или 2026-09-21 09:00. По умолчанию сегодня.' },
+        to: { type: 'string', description: 'Конец периода включительно. По умолчанию +14 дней.' },
+        calendar: { type: 'string', description: 'Название календаря; пусто — все.' },
+      },
+    },
+  },
+  {
+    name: 'calendar_create_event',
+    description: 'Создать событие в Apple Календаре. ТОЛЬКО после явного согласия пользователя: сначала опиши, что собираешься создать, и спроси подтверждение.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        start: { type: 'string', description: '2026-09-21 18:30 (московское время) либо 2026-09-21 для события на весь день.' },
+        end: { type: 'string', description: 'Не указано — час от начала.' },
+        allDay: { type: 'boolean' },
+        location: { type: 'string' },
+        notes: { type: 'string' },
+        calendar: { type: 'string' },
+        confirmed: { type: 'boolean', description: 'true только после явного согласия пользователя.' },
+      },
+      required: ['title', 'start'],
+    },
+  },
+  {
+    name: 'calendar_update_event',
+    description: 'Изменить событие Apple Календаря по id из calendar_list_events. Требует подтверждения пользователя.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        title: { type: 'string' }, start: { type: 'string' }, end: { type: 'string' },
+        allDay: { type: 'boolean' }, location: { type: 'string' }, notes: { type: 'string' },
+        confirmed: { type: 'boolean' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'calendar_delete_event',
+    description: 'Удалить событие Apple Календаря по id. Требует подтверждения пользователя.',
+    input_schema: {
+      type: 'object',
+      properties: { id: { type: 'string' }, confirmed: { type: 'boolean' } },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'reminders_list',
+    description: 'Прочитать Напоминания Apple. Подтверждения не требует.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        list: { type: 'string', description: 'Название списка; пусто — все.' },
+        include_done: { type: 'boolean', description: 'Показать и выполненные.' },
+      },
+    },
+  },
+  {
+    name: 'reminders_create',
+    description: 'Создать напоминание Apple. Требует подтверждения пользователя.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        due: { type: 'string', description: 'Срок: 2026-09-21 18:30 или 2026-09-21.' },
+        list: { type: 'string' }, notes: { type: 'string' },
+        confirmed: { type: 'boolean' },
+      },
+      required: ['title'],
+    },
+  },
+  {
+    name: 'reminders_update',
+    description: 'Изменить напоминание Apple по id (в том числе отметить выполненным: done=true). Требует подтверждения пользователя.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        title: { type: 'string' }, due: { type: 'string' }, notes: { type: 'string' },
+        done: { type: 'boolean' },
+        confirmed: { type: 'boolean' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'reminders_delete',
+    description: 'Удалить напоминание Apple по id. Требует подтверждения пользователя.',
+    input_schema: {
+      type: 'object',
+      properties: { id: { type: 'string' }, confirmed: { type: 'boolean' } },
+      required: ['id'],
+    },
+  },
+];
+
+const APPLE_TOOL_NAMES = new Set(APPLE_AGENT_TOOLS.map(t => t.name));
+// Подтверждение спрашивает сервер (тот же код, что и для Telegram), но
+// названия действий нужны и здесь — для понятного вопроса пользователю.
+const APPLE_WRITE_TOOLS = {
+  calendar_create_event: ['/api/apple/event', 'create'],
+  calendar_update_event: ['/api/apple/event', 'update'],
+  calendar_delete_event: ['/api/apple/event', 'delete'],
+  reminders_create: ['/api/apple/reminder', 'create'],
+  reminders_update: ['/api/apple/reminder', 'update'],
+  reminders_delete: ['/api/apple/reminder', 'delete'],
+};
+
+async function executeAppleTool(name, input) {
+  input = input || {};
+  try {
+    if (name === 'calendar_list_events') {
+      const q = new URLSearchParams();
+      if (input.from) q.set('from', input.from);
+      if (input.to) q.set('to', input.to);
+      if (input.calendar) q.set('calendar', input.calendar);
+      const res = await fetch('/api/apple/events?' + q.toString());
+      return await res.json();
+    }
+    if (name === 'reminders_list') {
+      const q = new URLSearchParams();
+      if (input.list) q.set('list', input.list);
+      if (input.include_done) q.set('done', '1');
+      const res = await fetch('/api/apple/reminders?' + q.toString());
+      return await res.json();
+    }
+    const route = APPLE_WRITE_TOOLS[name];
+    if (!route) return { error: 'unknown_tool' };
+    const res = await fetch(route[0], {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...input, action: route[1] }),
+    });
+    return await res.json();
+  } catch (e) {
+    return { error: 'Сервер не ответил по Apple: ' + e.message };
+  }
+}
+
 const VOICE_AGENT_TOOLS = [
   {
     name: 'get_data',
@@ -9231,9 +10269,15 @@ const VOICE_AGENT_TOOLS = [
       required: ['planId', 'ingredientId'],
     },
   },
+  ...APPLE_AGENT_TOOLS,
 ];
 
-function buildVoiceAgentSystemPrompt() {
+
+function buildVoiceAgentSystemPrompt(data) {
+  // «База данных» — то, что пользователь рассказал о себе. Подмешиваем в
+  // промпт целиком, а не ждём вызова get_data: ассистент должен понимать, с
+  // кем говорит, с первой же фразы.
+  const about = knowledgeForPrompt((data || {}).knowledgeNotes);
   const domainList = Object.entries(VOICE_DATA_DOMAINS).map(([k, v]) => `  • ${k} — ${v.label}`).join('\n');
   const navList = Object.entries(VOICE_NAV_LABELS).map(([k, v]) => `  • ${k} — ${v}`).join('\n');
   const writeList = Object.entries(WRITE_REGISTRY).map(([k, v]) => `  • ${k} — ${v.label}${v.requireConfirm ? ' (финансовое — подтверждение)' : ''}`).join('\n');
@@ -9242,6 +10286,10 @@ function buildVoiceAgentSystemPrompt() {
   return `Ты ассистент приложения Jarvis. Отвечай кратко и по-русски, разговорным языком.
 
 СЕГОДНЯ: ${todayStr}
+${about ? `
+ЧТО ИЗВЕСТНО О ПОЛЬЗОВАТЕЛЕ (раздел «База данных», он сам это записал — считай фактами и учитывай в ответах):
+${about}
+` : ''}
 
 У тебя есть инструменты, покрывающие весь проект — всё то же самое, что пользователь делает руками:
 
@@ -9260,7 +10308,9 @@ ${writeList}
 
 6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и готового веса), cooking_plan_delete_ingredient.
 
-ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task) и любая запись в финансовые разделы (помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
+7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без спроса. ЛЮБАЯ ЗАПИСЬ — добавить, изменить, удалить — только после явного согласия пользователя: сначала коротко скажи, что именно запишешь (название, дату и время), и спроси подтверждение, а после согласия повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места: «в календарь» и «напомни» — это Apple, «в планировщик» — раздел приложения.
+
+ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
@@ -9271,9 +10321,12 @@ ${writeList}
 - Никогда не удаляй и не меняй финансовые данные без подтверждения, даже если пользователь говорит это как бы между делом.`;
 }
 
-function executeVoiceTool(name, input, nav, data) {
+// Асинхронная: инструменты Apple ходят на сервер (iCloud), всё остальное
+// считается на месте и возвращается сразу.
+async function executeVoiceTool(name, input, nav, data) {
   input = input || {};
   const noop = (output) => ({ output, data });
+  if (APPLE_TOOL_NAMES.has(name)) return noop(await executeAppleTool(name, input));
   const applied = (result, output) => {
     if (result.error) return noop({ error: result.error });
     nav.setData(result.data);
@@ -9393,7 +10446,7 @@ async function runVoiceAgent(messages, settings, data, nav, maxSteps = 6) {
 // в этом раунде вернул needs_confirmation — тогда VoiceButton не сбрасывает
 // историю после ответа, чтобы следующее «да» продолжило тот же разговор.
 async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
-  const system = buildVoiceAgentSystemPrompt();
+  const system = buildVoiceAgentSystemPrompt(data);
   let pendingConfirmation = false;
   for (let step = 0; step < maxSteps; step++) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -9418,19 +10471,18 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
     if (!toolUses.length) return { text: text || 'Готово', pendingConfirmation };
 
     convo.push({ role: 'assistant', content });
-    convo.push({
-      role: 'user',
-      content: toolUses.map(tu => {
-        let output;
-        try {
-          const result = executeVoiceTool(tu.name, tu.input, nav, data);
-          data = result.data;
-          output = result.output;
-        } catch (e) { output = { error: e.message }; }
-        if (output && output.needs_confirmation) pendingConfirmation = true;
-        return { type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(output) };
-      }),
-    });
+    const results = [];
+    for (const tu of toolUses) {
+      let output;
+      try {
+        const result = await executeVoiceTool(tu.name, tu.input, nav, data);
+        data = result.data;
+        output = result.output;
+      } catch (e) { output = { error: e.message }; }
+      if (output && output.needs_confirmation) pendingConfirmation = true;
+      results.push({ type: 'tool_result', tool_use_id: tu.id, content: JSON.stringify(output) });
+    }
+    convo.push({ role: 'user', content: results });
   }
   return { text: 'Не разобрался за отведённое число шагов — попробуйте переформулировать.', pendingConfirmation };
 }
@@ -9440,7 +10492,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
 // плечом к плечу с текстом в одном сообщении assistant, результаты — отдельными
 // сообщениями role:"tool" с tool_call_id, а не одним user-сообщением как у Claude.
 async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps) {
-  const system = buildVoiceAgentSystemPrompt();
+  const system = buildVoiceAgentSystemPrompt(data);
   const tools = VOICE_AGENT_TOOLS.map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.input_schema },
@@ -9470,7 +10522,7 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps) {
       try { input = JSON.parse(tc.function?.arguments || '{}'); } catch (_) { /* оставляем {} */ }
       let output;
       try {
-        const result = executeVoiceTool(tc.function?.name, input, nav, data);
+        const result = await executeVoiceTool(tc.function?.name, input, nav, data);
         data = result.data;
         output = result.output;
       } catch (e) { output = { error: e.message }; }
@@ -24092,6 +25144,204 @@ function CampingPackingEditor({ catalogItems, categories, initial, onSave, onClo
   );
 }
 
+// ============== БАЗА ДАННЫХ ==============
+// Записи о самом пользователе: кто он, где живёт, чем занимается, что любит.
+// Приложение их не использует нигде, кроме одного места — системного промпта
+// ассистента: с ними он отвечает, понимая, с кем говорит.
+const KNOWLEDGE_CATEGORIES = ['О себе', 'Работа', 'Семья', 'Здоровье', 'Предпочтения', 'Планы', 'Разное'];
+
+// Сколько знаний уходит ассистенту. Ограничение не жадность, а здравый смысл:
+// промпт улетает с каждым запросом, и мегабайт заметок стоил бы денег на
+// каждый вопрос. Закреплённые идут первыми, поэтому важное не отрежется.
+const KNOWLEDGE_PROMPT_LIMIT = 6000;
+
+const knowledgeSorted = (notes) => [...(notes || [])].sort((a, b) => {
+  if (!!b.pinned !== !!a.pinned) return b.pinned ? 1 : -1;
+  return (b.updatedAt || 0) - (a.updatedAt || 0);
+});
+
+const knowledgeForPrompt = (notes) => {
+  const rows = [];
+  let size = 0;
+  knowledgeSorted(notes).forEach(n => {
+    const title = (n.title || '').trim();
+    const text = (n.text || '').trim();
+    if (!title && !text) return;
+    const line = `• ${[n.category, title].filter(Boolean).join(' — ')}${title && text ? ': ' : ''}${text}`;
+    if (size + line.length > KNOWLEDGE_PROMPT_LIMIT) return;
+    size += line.length;
+    rows.push(line);
+  });
+  return rows.join('\n');
+};
+
+function KnowledgeView({ data, setData }) {
+  const notes = data.knowledgeNotes || [];
+  const [editing, setEditing] = useState(null);   // { id?, title, text, category, pinned }
+  const [query, setQuery] = useState('');
+
+  const save = () => {
+    const title = (editing.title || '').trim();
+    const text = (editing.text || '').trim();
+    if (!title && !text) { setEditing(null); return; }
+    const now = Date.now();
+    setData(d => {
+      const list = d.knowledgeNotes || [];
+      const row = {
+        id: editing.id || crypto.randomUUID(),
+        title, text,
+        category: editing.category || 'О себе',
+        pinned: !!editing.pinned,
+        createdAt: editing.createdAt || now,
+        updatedAt: now,
+      };
+      return {
+        ...d,
+        knowledgeNotes: editing.id ? list.map(x => (x.id === row.id ? row : x)) : [row, ...list],
+      };
+    });
+    setEditing(null);
+  };
+
+  const remove = (note) => {
+    if (!confirm(`Удалить запись «${note.title || 'без названия'}»?`)) return;
+    setData(d => ({
+      ...d,
+      knowledgeNotes: (d.knowledgeNotes || []).filter(x => x.id !== note.id),
+      deletedIds: withDeletedId(d, 'knowledgeNotes', note.id),
+    }));
+  };
+
+  const togglePin = (note) => setData(d => ({
+    ...d,
+    knowledgeNotes: (d.knowledgeNotes || []).map(x => (x.id === note.id ? { ...x, pinned: !x.pinned, updatedAt: Date.now() } : x)),
+  }));
+
+  const q = query.trim().toLowerCase();
+  const shown = knowledgeSorted(notes).filter(n => !q
+    || (n.title || '').toLowerCase().includes(q)
+    || (n.text || '').toLowerCase().includes(q)
+    || (n.category || '').toLowerCase().includes(q));
+  const promptSize = knowledgeForPrompt(notes).length;
+
+  return (
+    <div className="fade-in pb-10">
+      <div className="text-[13px] text-[var(--text-muted)] leading-relaxed mb-4">
+        Всё, что здесь записано, ассистент знает по умолчанию — и в чате, и в
+        Telegram, и голосом на тренировке. Расскажите о себе: кто вы, где живёте,
+        чем занимаетесь, что важно помнить.
+      </div>
+
+      {!editing && (
+        <div className="flex items-center gap-2 mb-3">
+          <button
+            onClick={() => setEditing({ title: '', text: '', category: 'О себе', pinned: false })}
+            className="flex-1 py-2.5 rounded-xl text-white text-sm font-medium flex items-center justify-center gap-2"
+            style={{ background: '#0369a1' }}
+          >
+            <Icon name="plus" size={16} /> Добавить запись
+          </button>
+        </div>
+      )}
+
+      {editing && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-3 mb-4 space-y-2">
+          <input
+            autoFocus
+            value={editing.title}
+            onChange={e => setEditing({ ...editing, title: e.target.value })}
+            placeholder="Коротко: о чём запись"
+            className="w-full"
+          />
+          <textarea
+            value={editing.text}
+            onChange={e => setEditing({ ...editing, text: e.target.value })}
+            placeholder="Например: живу в Москве, веду бизнес на маркетплейсах, тренируюсь три раза в неделю"
+            rows={5}
+            className="w-full"
+          />
+          <div className="flex flex-wrap gap-1.5">
+            {KNOWLEDGE_CATEGORIES.map(c => (
+              <button
+                key={c}
+                onClick={() => setEditing({ ...editing, category: c })}
+                className="px-2.5 py-1 rounded-full text-[12px] border"
+                style={editing.category === c
+                  ? { background: '#0369a1', color: '#fff', borderColor: '#0369a1' }
+                  : { borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+              >{c}</button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={() => setEditing({ ...editing, pinned: !editing.pinned })}
+              className="px-3 py-2 rounded-xl text-[13px] border"
+              style={editing.pinned
+                ? { background: '#0369a1', color: '#fff', borderColor: '#0369a1' }
+                : { borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+              title="Закреплённые уходят ассистенту первыми"
+            >Закрепить</button>
+            <span className="flex-1" />
+            <button onClick={() => setEditing(null)} className="px-3 py-2 text-[13px] text-[var(--text-muted)]">Отмена</button>
+            <button onClick={save} className="px-4 py-2 rounded-xl text-white text-[13px]" style={{ background: '#0369a1' }}>
+              Сохранить
+            </button>
+          </div>
+        </div>
+      )}
+
+      {notes.length > 3 && (
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder="Поиск по записям"
+          className="w-full mb-3"
+        />
+      )}
+
+      <div className="space-y-2">
+        {shown.length === 0 && (
+          <div className="text-[13px] text-[var(--text-subtle)] text-center py-8">
+            {notes.length ? 'Ничего не нашлось' : 'Пока пусто. Первая запись — о себе: имя, город, чем занимаетесь.'}
+          </div>
+        )}
+        {shown.map(n => (
+          <div key={n.id} data-note={n.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-3 py-2.5">
+            <div className="flex items-start gap-2">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {n.pinned && <span style={{ color: '#0369a1' }}><Icon name="starFilled" size={13} /></span>}
+                  <span className="text-[14px] font-medium">{n.title || 'Без названия'}</span>
+                  {n.category && (
+                    <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: 'var(--bg)', color: 'var(--text-subtle)' }}>
+                      {n.category}
+                    </span>
+                  )}
+                </div>
+                {n.text && <div className="text-[13px] text-[var(--text-muted)] mt-1 whitespace-pre-wrap">{n.text}</div>}
+              </div>
+              <div className="flex flex-col gap-1.5 flex-shrink-0">
+                <button onClick={() => togglePin(n)} className="text-[var(--text-subtle)]" title="Закрепить">
+                  <Icon name={n.pinned ? 'starFilled' : 'star'} size={15} />
+                </button>
+                <button onClick={() => setEditing({ ...n })} className="text-[var(--text-subtle)]"><Icon name="edit" size={15} /></button>
+                <button onClick={() => remove(n)} className="text-red-300"><Icon name="trash" size={15} /></button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {notes.length > 0 && (
+        <div className="mt-5 text-[12px] text-[var(--text-subtle)]">
+          Ассистенту уходит {promptSize} символов из {notes.length} {gymPlural(notes.length, 'записи', 'записей', 'записей')}.
+          {promptSize >= KNOWLEDGE_PROMPT_LIMIT && ' Лимит выбран — закрепите главное, оно уходит первым.'}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ============== МУЗЫКА ==============
 // Свой плеер поверх обычного <audio>. Он живёт вне дерева React — иначе музыка
 // обрывалась бы на каждом переходе между разделами, — а компоненты подписаны
@@ -25400,6 +26650,52 @@ let gymLastSaid = { text: '', at: 0 };
 // Слова, которые говорит только приложение: в отчёте о подходе их не бывает.
 const GYM_APP_WORDS = /рабочий|разминк|отдых|дальше|следующее|записал|перезаписал|рекорд|завершен|поехали|осталось|секунд|минут|процент|повторите/;
 
+// Ассистент строит ВЕСЬ объект данных от снимка, взятого в начале запроса, и
+// отдаёт его в setData целиком. Пока он думает (2–5 секунд), тренировка живёт
+// своей жизнью: записывается подход, идёт отдых, помечаются пропуски. Без
+// слияния его ответ откатил бы всё это назад — поэтому берём только то, что
+// изменил он сам, а остальное оставляем таким, каким оно стало.
+const gymMergeAiData = (base, next, cur) => {
+  const out = { ...cur };
+  const ids = (arr) => new Map((arr || []).map(r => [r && r.id, r]));
+  Object.keys(next || {}).forEach(key => {
+    const before = base ? base[key] : undefined;
+    const after = next[key];
+    if (after === before) return;               // ассистент это не трогал
+    const live = cur ? cur[key] : undefined;
+    const listy = Array.isArray(after) && Array.isArray(before) && Array.isArray(live);
+    if (!listy) { out[key] = after; return; }
+    // Коллекции записей сливаем по id: правки ассистента поверх живых данных,
+    // удалённое им — удаляем, появившееся за время запроса — сохраняем.
+    const wasById = ids(before);
+    const aiById = ids(after);
+    const merged = [];
+    (live || []).forEach(row => {
+      const id = row && row.id;
+      if (aiById.has(id)) { merged.push(aiById.get(id)); return; }
+      if (wasById.has(id)) return;              // ассистент удалил эту запись
+      merged.push(row);                          // появилась уже после снимка
+    });
+    (after || []).forEach(row => {
+      const id = row && row.id;
+      if (!merged.some(r => r && r.id === id)) merged.push(row);
+    });
+    out[key] = merged;
+  });
+  return out;
+};
+
+// «Джарвис, <вопрос>» — всё, что не тренировочная команда, уходит ассистенту.
+// Слово-обращение обязательно: микрофон открыт всю тренировку и слышит зал,
+// без него в ИИ улетал бы каждый чужой разговор.
+const GYM_WAKE = /^\s*(?:эй[\s,]+)?(?:джарвис|джарвиз|джарис|жарвис|дарвис|чарвис|jarvis)[\s,.!?—-]+(.+)$/i;
+
+const gymWakeQuestion = (raw) => {
+  const m = String(raw || '').trim().match(GYM_WAKE);
+  const q = m ? m[1].trim() : '';
+  return q.length >= 2 ? q : '';
+};
+
 const gymIsEcho = (raw) => {
   if (!gymLastSaid.text || Date.now() - gymLastSaid.at > 25000) return false;
   const heard = String(raw || '').toLowerCase();
@@ -25674,6 +26970,10 @@ const gymParseVoicePhrase = (raw) => {
   const t = gymNormalizeNumbers(raw);
   if (!t) return null;
   if (/отмен|удали|сотри/.test(t)) return { cmd: 'undo' };
+  // «Пропустить подход» — не делать предстоящий подход вовсе. Проверяем до
+  // «пропустить отдых», иначе общее /пропуст/ перехватило бы фразу.
+  // \w кириллицу не покрывает, поэтому окончания слов — явным классом букв.
+  if (/пропуст[а-яё]*\s+(этот\s+|текущий\s+)?подход|подход[а-яё]*\s+пропуст/.test(t)) return { cmd: 'skipSet' };
   // explicit — сказано именно «пропустить». Во время отдыха принимаем только
   // такую формулировку: слово «дальше» приложение произносит само («Дальше:
   // рабочий 2…»), и микрофон, слушающий отдых, принял бы это за команду.
@@ -26310,6 +27610,8 @@ function GymView({ data, setData }) {
         sessions={sessions}
         settings={data.settings}
         playlists={data.musicPlaylists || []}
+        data={data}
+        setData={setData}
         onToggleVoice={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymVoice: on } }))}
         onToggleBackgroundAudio={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymBackgroundAudio: on } }))}
         onToggleHandsFree={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymHandsFree: on } }))}
@@ -27477,7 +28779,7 @@ function GymSessionSummary({ session, exercises, sessions, onClose }) {
   );
 }
 
-function GymSessionView({ session, day, exercises, sessions, settings, playlists = [], onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onToggleMicRest, onSave, onDelete, onExit, onFinished }) {
+function GymSessionView({ session, day, exercises, sessions, settings, playlists = [], data, setData, onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onToggleMicRest, onSave, onDelete, onExit, onFinished }) {
   const voiceOn = (settings || {}).gymVoice !== false;
   // Режим «звук с погашенным экраном» забирает аудиовыход у чужого плеера,
   // поэтому включается только вручную.
@@ -27488,6 +28790,10 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
   const micRest = (settings || {}).gymMicRest !== false;
   const music = useMusic();
   const [pickMusic, setPickMusic] = useState(false);
+  // Разговор с ассистентом: вопрос, ответ и признак «думает».
+  const [ai, setAi] = useState({ q: '', a: '', busy: false });
+  // История разговора с ассистентом — живёт только до конца подтверждения.
+  const aiConvo = useRef([]);
   // «Применяется к следующему подходу»: включённый посреди подхода режим не
   // перехватывает тот, что уже делаешь, — микрофон поднимется со следующего.
   // Если режим был включён до старта тренировки, ждать нечего.
@@ -27699,6 +29005,13 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
   const loggedFor = (exId) => logged.filter(s => s.exerciseId === exId);
   const loggedAt = (exId, idx) => loggedFor(exId).find(s => (s.setIndex || 0) === idx) || null;
 
+  // Пропущенные подходы. Не делали — значит, ничего не записано: в журнале и
+  // аналитике их нет вовсе, это только навигация по плану. Держим в сессии,
+  // чтобы пропуск пережил выход с экрана и перезагрузку страницы.
+  const skipped = session.skipped || [];
+  const skipKey = (exId, i) => `${exId}:${i}`;
+  const isSkipped = (exId, i) => skipped.includes(skipKey(exId, i));
+
   // Черновик строки подхода: то, что уже записано → план → пусто.
   const draftRow = (ex, i) => {
     const key = `${ex.id}:${i}`;
@@ -27724,6 +29037,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     }
     // Записали новый подход — значит, исправлять прошлый уже не собираемся.
     setRewriting(false);
+    // Передумали и всё-таки сделали пропущенный подход — снимаем пометку.
+    const stillSkipped = skipped.filter(k => k !== skipKey(ex.id, i));
     const plan = gymPlanRows(ex)[i] || {};
     const rec = {
       id: (loggedAt(ex.id, i) || {}).id || crypto.randomUUID(),
@@ -27745,7 +29060,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     const remaining = (e) => {
       const total = Math.max(planRowsOf(e).length, extra[e.id] || 0);
       const done = new Set(nextSets.filter(x => x.exerciseId === e.id).map(x => x.setIndex || 0));
-      return Array.from({ length: total }, (_, idx) => idx).filter(idx => !done.has(idx));
+      return Array.from({ length: total }, (_, idx) => idx)
+        .filter(idx => !done.has(idx) && !isSkipped(e.id, idx));
     };
 
     // Упражнение закрыто? Тогда следующее незакрытое ищем от текущего вниз по
@@ -27770,6 +29086,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     onSave({
       ...session,
       sets: nextSets,
+      skipped: stillSkipped,
       restUntil: restUntilMs,
       restTotal: rest,
       ...(workoutDone ? {
@@ -27838,14 +29155,17 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     const left = Math.ceil((restUntil - now) / 1000);
     // Предупреждения имеют смысл только если отдых заметно длиннее их самих:
     // на 30-секундном отдыхе «тридцать секунд» прозвучало бы сразу.
+    // Предупреждение о времени не должно перебивать начатую фразу: синтез
+    // говорит что-то одно, и ответ ассистента оборвался бы на полуслове.
+    const busyTalking = () => !!(window.speechSynthesis && window.speechSynthesis.speaking);
     if (restSpoken.current.total > 35 && left <= 30 && left > 10 && restSpoken.current.thirty !== restUntil) {
       restSpoken.current.thirty = restUntil;
-      say('Тридцать секунд');
+      if (!busyTalking()) say('Тридцать секунд');
     }
     if (restSpoken.current.total > 12 && left <= 10 && left > 3 && restSpoken.current.ten !== restUntil) {
       restSpoken.current.ten = restUntil;
       gymSound.cue(1, voiceOn, bgAudio);
-      say('Десять секунд');
+      if (!busyTalking()) say('Десять секунд');
     }
     // Последние три секунды — по сигналу в секунду: обратный отсчёт слышно и с
     // погашенным экраном, в отличие от речи.
@@ -27901,7 +29221,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
       const rows = planRowsOf(ex);
       for (let i = 0; i < rows.length; i++) {
         if (skip && skip.exId === ex.id && skip.index === i) continue;
-        if (!loggedAt(ex.id, i)) return { ex, row: rows[i], index: i };
+        if (!loggedAt(ex.id, i) && !isSkipped(ex.id, i)) return { ex, row: rows[i], index: i };
       }
     }
     return null;
@@ -27943,6 +29263,96 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     say(parts.join('. '));
   };
 
+  // «Пропустить подход»: предстоящий подход не делаем. Отдых идёт своим
+  // чередом — пропуск меняет только то, что будет дальше, — а если
+  // пропустили последний незакрытый подход, тренировка на этом заканчивается.
+  const skipCurrentSet = () => {
+    const t = nextTarget();
+    if (!t) { say('Все подходы уже закрыты'); return; }
+    const next = [...skipped, skipKey(t.ex.id, t.index)];
+    onSave({ ...session, skipped: next });
+    // nextTarget работает по текущему снимку, поэтому следующий ищем сами.
+    let after = null;
+    for (const ex of exercises) {
+      const rows = planRowsOf(ex);
+      for (let i = 0; i < rows.length; i++) {
+        if (loggedAt(ex.id, i) || next.includes(skipKey(ex.id, i))) continue;
+        after = { ex, row: rows[i], index: i };
+        break;
+      }
+      if (after) break;
+    }
+    if (!after) {
+      const finishedAt = Date.now();
+      onSave({
+        ...session,
+        skipped: next,
+        finishedAt,
+        durationSec: Math.max(1, Math.round((finishedAt - (session.startedAt || finishedAt)) / 1000)),
+      });
+      say('Подход пропущен. Это был последний — тренировка завершена');
+      onFinished(session.id);
+      return;
+    }
+    if (after.ex.id !== openId) { setOpenId(after.ex.id); setJustOpened(after.ex.id); }
+    announcedEx.current = after.ex.id;
+    say(`Подход пропущен. Дальше: ${gymSaySet(
+      after.row,
+      gymPctBase(after.ex, sessions, session.startedAt || Date.now()),
+      after.ex.name,
+      gymLastWorkingWeight(sessions, after.ex.name, session.startedAt || Date.now()),
+    )}`);
+  };
+
+  // «Джарвис, <вопрос>» — всё, что не тренировочная команда, уходит тому же
+  // ассистенту, что живёт в кнопке микрофона: он видит весь проект и умеет
+  // не только отвечать, но и менять данные. Отвечаем только на отдыхе — во
+  // время подхода не до разговоров, да и ответ звучал бы поверх счёта.
+  const askAssistant = async (question) => {
+    if (!question) return;
+    setAi({ q: question, a: '', busy: true });
+    say('Секунду');
+    const snapshot = data;          // с этим снимком ассистент и будет работать
+    const restWas = restUntil;
+    try {
+      // Навигацию на тренировке глушим: уводить экран с идущей тренировки
+      // нельзя, поэтому ассистенту об этом сказано прямо в вопросе.
+      const noop = () => {};
+      const nav = {
+        // Слияние вместо прямой записи: за время запроса тренировка могла уйти
+        // вперёд, и целый объект из прошлого затёр бы записанный подход.
+        setData: (next) => setData(cur => gymMergeAiData(snapshot, next, cur)),
+        setTab: noop, setPlannerTab: noop, setMiscTab: noop, setHouseTab: noop, setVoiceFocus: noop,
+      };
+      const prompt = 'Я сейчас в зале, иду тренировка, слушаю ответ в наушниках. '
+        + 'Отвечай коротко — одно-два предложения, без списков. Разделы приложения не открывай. '
+        + 'Вопрос: ' + question;
+      const convo = [...aiConvo.current, { role: 'user', content: prompt }];
+      const { text, pendingConfirmation } = await runVoiceAgent(convo, settings, snapshot, nav);
+      // Ассистент просит подтверждения (удаление, деньги) — сохраняем разговор,
+      // чтобы следующее «Джарвис, да» довело дело до конца, а не начало заново.
+      aiConvo.current = pendingConfirmation ? [...convo, { role: 'assistant', content: text }] : [];
+      setAi({ q: question, a: text || '', busy: false });
+      // Пока ассистент думал, отдых мог закончиться, и его объявление было бы
+      // срезано ответом: синтез говорит что-то одно. Досказываем сами.
+      const t = (restWas && Date.now() >= restWas) ? nextTarget() : null;
+      const tail = t ? `. Дальше: ${gymSaySet(
+        t.row,
+        gymPctBase(t.ex, sessions, session.startedAt || Date.now()),
+        t.ex.name,
+        gymLastWorkingWeight(sessions, t.ex.name, session.startedAt || Date.now()),
+      )}` : '';
+      say((text || 'Готово') + tail);
+    } catch (e) {
+      aiConvo.current = [];
+      const msg = e.message === 'no_key'
+        ? 'Ключ ассистента не настроен: Настройки — Ассистент'
+        : `Ассистент не ответил: ${e.message}`;
+      setAi({ q: question, a: msg, busy: false });
+      say(msg);
+    }
+  };
+
   const lastLogged = () => [...logged].sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null;
   // Прошлый подход для «также»: по этому же упражнению, а если по нему ещё
   // ничего не записано — последний записанный вообще.
@@ -27979,7 +29389,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
   // пропущенному упражнению вручную, подсветка встанет там, где нужно.
   const currentIndex = (ex) => {
     const total = Math.max(planRowsOf(ex).length, extra[ex.id] || 0);
-    for (let i = 0; i < total; i++) if (!loggedAt(ex.id, i)) return i;
+    for (let i = 0; i < total; i++) if (!loggedAt(ex.id, i) && !isSkipped(ex.id, i)) return i;
     return -1;
   };
 
@@ -27992,8 +29402,8 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     const t = row ? gymRowTarget(row, pctBaseOf(ex)) : null;
     const noWeight = !t || t.body || t.empty || (!t.min && !t.max);
     return noWeight
-      ? 'Скажите «15» — вес не нужен. Ещё: «также», «повтори», «перезапись», «отмена»'
-      : 'Скажите «25 на 12». Ещё: «также» — как в прошлом подходе, «повтори», «перезапись», «отмена»';
+      ? 'Скажите «15» — вес не нужен. Ещё: «также», «повтори», «пропустить подход», «отмена»'
+      : 'Скажите «25 на 12». Ещё: «также» — как в прошлом подходе, «повтори», «перезапись», «пропустить подход»';
   })();
 
   const rowCount = (ex) => {
@@ -28048,6 +29458,16 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     let parsed = null;
     let heardText = '';
     let looksLikeAttempt = false;
+    // Обращение к ассистенту ловим до тренировочных команд: «Джарвис, …» —
+    // это всегда вопрос, даже если дальше во фразе есть числа.
+    const wake = variants.map(v => gymWakeQuestion(v)).find(Boolean);
+    if (wake) {
+      setHeard('Джарвис, ' + wake);
+      if (!resting) { say('Отвечу на отдыхе'); return; }
+      if (!ai.busy) askAssistant(wake);
+      return;
+    }
+
     for (const v of variants) {
       const p = gymParseVoicePhrase(v);
       if (!p) continue;
@@ -28111,6 +29531,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
       say('Отменил последний подход');
       return;
     }
+    if (parsed.cmd === 'skipSet') { skipCurrentSet(); return; }
     if (parsed.cmd === 'skipRest') { setRest(0); announceNext(); return; }
     if (parsed.cmd === 'finish') { finish(); return; }
 
@@ -28188,6 +29609,25 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
           {logged.length > 0 && <span>В плане: {inPlan} / {logged.length}</span>}
         </div>
       </div>
+
+      {(ai.busy || ai.a) && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 mb-4">
+          <div className="flex items-start gap-2">
+            <span className="mt-0.5" style={{ color: GYM_ACCENT }}><Icon name="mic" size={15} /></span>
+            <div className="flex-1 min-w-0">
+              <div className="text-[12px] text-[var(--text-subtle)]">Джарвис, {ai.q}</div>
+              <div className="text-[14px] mt-1 whitespace-pre-wrap">
+                {ai.busy ? 'Думаю…' : ai.a}
+              </div>
+            </div>
+            {!ai.busy && (
+              <button onClick={() => setAi({ q: '', a: '', busy: false })} className="text-[var(--text-subtle)] flex-shrink-0">
+                <Icon name="x" size={14} />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Музыка из Джарвиса: пока она играет, аудиосессия наша — сигналы и речь
           идут поверх неё, а экран можно гасить, поэтому отдельный тумблер
@@ -28285,7 +29725,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
                   ? 'Включится со следующего подхода'
                   : resting
                     ? (micRest
-                      ? 'Идёт отдых. Скажите «пропустить отдых», «повтори» или «перезапись»'
+                      ? 'Идёт отдых. Команды: «пропустить отдых», «пропустить подход», «повтори», «перезапись». А «Джарвис, …» — вопрос ассистенту о чём угодно'
                       : 'Идёт отдых. Микрофон выключен — пропустить отдых можно кнопкой')
                     : voiceHint}
           </div>
@@ -28383,6 +29823,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
                     const row = draftRow(ex, i);
                     const plan = planRowsOf(ex)[i] || { kind: 'working', label: `Подход ${i + 1}` };
                     const warm = plan.kind === 'warmup';
+                    const skippedRow = !done && isSkipped(ex.id, i);
                     const badge = done ? gymFactBadge(plan, pctBaseOf(ex), done.weight, done.reps) : null;
                     const isPr = done && gymIsWorking(done) && prev.seen && (
                       prev.weight > 0
@@ -28396,6 +29837,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
                         data-gym-current={i === curIdx ? 'true' : undefined}
                         className={`rounded-xl border px-3 py-2.5 ${i === curIdx ? 'gym-current' : ''}`}
                         style={{
+                          ...(skippedRow ? { opacity: 0.5 } : {}),
                           ...(warm ? { background: GYM_WARMUP_BG } : {}),
                           borderColor: i === curIdx
                             ? GYM_ACCENT
@@ -28415,6 +29857,18 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
                             </span>
                           )}
                           {isPr && <span title="Личный рекорд" style={{ color: '#eab308' }}><Icon name="starFilled" size={14} /></span>}
+                          {skippedRow && (
+                            // Пропущенный подход не записан нигде — это только
+                            // метка в плане, вернуть его можно галочкой.
+                            <button
+                              onClick={() => onSave({ ...session, skipped: skipped.filter(k => k !== skipKey(ex.id, i)) })}
+                              className="text-[11px] px-2 py-0.5 rounded-full"
+                              style={{ background: 'var(--bg)', color: 'var(--text-subtle)' }}
+                              title="Вернуть подход в план"
+                            >
+                              пропущен
+                            </button>
+                          )}
                           <span className="flex-1" />
                           {badge && (
                             <span
@@ -29182,6 +30636,7 @@ const MISC_APPS = [
   { id: 'cards',    label: 'Карты',      icon: 'creditCard', color: '#1d4ed8' },
   { id: 'gym',      label: 'GYM',        icon: 'dumbbell',   color: '#0d9488' },
   { id: 'music',    label: 'Музыка',     icon: 'music',      color: '#9333ea' },
+  { id: 'knowledge', label: 'База данных', icon: 'database',  color: '#0369a1' },
   { id: 'english',  label: 'English',    icon: 'book',       color: '#0f766e' },
   { id: 'quiz',     label: 'Своя игра',  icon: 'quiz',       color: '#b45309' },
   { id: 'cars',     label: 'Автомобиль', icon: 'car',        color: '#6d28d9' },
@@ -29250,6 +30705,7 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
       {sub === 'wishlist' && <WishlistView data={data} setData={setData} />}
       {sub === 'gym' && <GymView data={data} setData={setData} />}
       {sub === 'music' && <MusicView data={data} setData={setData} />}
+      {sub === 'knowledge' && <KnowledgeView data={data} setData={setData} />}
       {sub === 'quiz' && <QuizView data={data} setData={setData} />}
     </div>
   );
