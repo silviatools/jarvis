@@ -6088,6 +6088,8 @@ function formatCommentTime(iso) {
 function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
   const [f, setF] = useState({ ...task });
   const [newCom, setNewCom] = useState('');
+  const [editingCommentId, setEditingCommentId] = useState(null);
+  const [editingCommentText, setEditingCommentText] = useState('');
   const [moveTo, setMoveTo] = useState(colId);
   const [titleError, setTitleError] = useState(false);
   const [confirmState, setConfirmState] = useState(null); // 'discard' | 'delete' | null
@@ -6100,6 +6102,14 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
     setNewCom('');
   };
   const deleteComment = (id) => set('comments', f.comments.filter(c => c.id !== id));
+  const startEditComment = (c) => { setEditingCommentId(c.id); setEditingCommentText(c.text); };
+  const cancelEditComment = () => { setEditingCommentId(null); setEditingCommentText(''); };
+  const saveEditComment = () => {
+    const text = editingCommentText.trim();
+    if (!text) return;
+    set('comments', f.comments.map(c => c.id === editingCommentId ? { ...c, text, editedAt: new Date().toISOString() } : c));
+    cancelEditComment();
+  };
 
   const submit = () => {
     if (!f.title.trim()) { setTitleError(true); return; }
@@ -6111,7 +6121,7 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
   // Пока в задаче есть несохранённые правки, любое закрытие (крестик, клик по
   // фону, Escape, кнопка «Отмена») спрашивает подтверждение — иначе введённые
   // данные терялись молча.
-  const isDirty = () => JSON.stringify(f) !== initialRef.current || moveTo !== colId || newCom.trim() !== '';
+  const isDirty = () => JSON.stringify(f) !== initialRef.current || moveTo !== colId || newCom.trim() !== '' || editingCommentId !== null;
   const requestClose = () => {
     if (isDirty()) { setConfirmState('discard'); return; }
     onClose();
@@ -6193,13 +6203,37 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
             <label>Комментарии</label>
             <div className="space-y-2 mb-2 max-h-64 overflow-y-auto pr-0.5">
               {(f.comments || []).map(c => (
-                <div key={c.id} className="flex items-start gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2">
-                  <div className="flex-1 text-sm">
-                    <div>{c.text}</div>
-                    <div className="text-[10px] text-[var(--text-subtle)] mt-1">{formatCommentTime(c.createdAt)}</div>
+                editingCommentId === c.id ? (
+                  <div key={c.id} className="bg-[var(--bg)] border border-[var(--border-strong)] rounded-xl px-3 py-2 space-y-2">
+                    <textarea
+                      autoFocus
+                      rows={2}
+                      value={editingCommentText}
+                      onChange={e => setEditingCommentText(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveEditComment(); }
+                        if (e.key === 'Escape') cancelEditComment();
+                      }}
+                      className="text-sm !p-0 !border-0 !bg-transparent"
+                      style={{ resize: 'none' }}
+                    />
+                    <div className="flex gap-2">
+                      <button onClick={saveEditComment} className="btn-primary flex-1 !py-1 text-xs">Сохранить</button>
+                      <button onClick={cancelEditComment} className="btn-secondary !py-1 px-3 text-xs">Отмена</button>
+                    </div>
                   </div>
-                  <button onClick={() => deleteComment(c.id)} className="text-[var(--text-subtle)] hover:text-red-500 flex-shrink-0 mt-0.5"><Icon name="x" size={14}/></button>
-                </div>
+                ) : (
+                  <div key={c.id} className="flex items-start gap-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 group">
+                    <div className="flex-1 text-sm min-w-0">
+                      <div className="whitespace-pre-wrap break-words">{c.text}</div>
+                      <div className="text-[10px] text-[var(--text-subtle)] mt-1">
+                        {formatCommentTime(c.createdAt)}{c.editedAt && <span> · изменено</span>}
+                      </div>
+                    </div>
+                    <button onClick={() => startEditComment(c)} className="text-[var(--text-subtle)] hover:text-[var(--text)] flex-shrink-0 mt-0.5"><Icon name="edit" size={13}/></button>
+                    <button onClick={() => deleteComment(c.id)} className="text-[var(--text-subtle)] hover:text-red-500 flex-shrink-0 mt-0.5"><Icon name="x" size={14}/></button>
+                  </div>
+                )
               ))}
             </div>
             <div className="flex gap-2">
