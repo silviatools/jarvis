@@ -10744,6 +10744,10 @@ function speak(text, settings) {
       return new Promise(resolve => {
         const cleanup = () => {
           URL.revokeObjectURL(url);
+          // Полностью отпускаем медиа-ресурс — иначе на iOS аудио-сессия
+          // остаётся занята выводом звука, и следующий запуск распознавания
+          // речи какое-то время не слышит микрофон вообще.
+          try { audio.pause(); audio.removeAttribute('src'); audio.load(); } catch (_) {}
           if (_currentAudio === audio) _currentAudio = null;
           voiceSpeechEndedAt = Date.now();
         };
@@ -10916,6 +10920,7 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
   const recogRef = React.useRef(null);
   const transcriptRef = React.useRef(''); // kept in sync for onend closure
   const noSpeechStreakRef = React.useRef(0);
+  const startRetryRef = React.useRef(0);
   const historyIdRef = React.useRef(0);
   const historyScrollRef = React.useRef(null);
   useEffect(() => {
@@ -10961,6 +10966,12 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
         // прочитать текст глазами, раз услышать его не вышло.
         setHistory(h => h.map(m => m.id === assistantEntryId ? { ...m, ttsFailed: true, ttsError: ttsResult.error } : m));
         await new Promise(r => setTimeout(r, Math.min(4500, Math.max(1400, answerStr.length * 45))));
+        if (!dialogOpenRef.current) return;
+      } else {
+        // На iOS аудио-сессия ещё какое-то время после audio.onended остаётся
+        // занята воспроизведением — запусти распознавание сразу, и микрофон
+        // может просто не услышать голос. Небольшая пауза даёт ей переключиться.
+        await new Promise(r => setTimeout(r, 400));
         if (!dialogOpenRef.current) return;
       }
       // Разговор как в живом диалоге: сразу слушаем следующую реплику в том же
@@ -11028,7 +11039,23 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
       processTranscript(transcriptRef.current.trim(), existingMessages);
     };
 
-    r.start();
+    try {
+      r.start();
+      startRetryRef.current = 0;
+    } catch (_) {
+      // iOS иногда бросает исключение, если запустить распознавание слишком
+      // быстро после воспроизведения звука — короткий повтор обычно хватает,
+      // но не бесконечно, если причина не во времени, а в самом микрофоне.
+      recogRef.current = null;
+      startRetryRef.current += 1;
+      if (startRetryRef.current >= 4) {
+        setErrorMsg('Не удаётся включить микрофон — нажмите на него, чтобы попробовать снова');
+        setPhase('error');
+        return;
+      }
+      setTimeout(() => startRecording(existingMessages), 400);
+      return;
+    }
     setPhase('listening');
     setTranscript('');
   };
@@ -11049,6 +11076,7 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
         const match = variants.map(stripWakeWord).find(v => v !== null);
         if (!match) return; // ни один вариант не начинался с «Джарвис», либо слово сказано без команды
         noSpeechStreakRef.current = 0;
+        startRetryRef.current = 0;
         setDialogOpen(true);
         processTranscript(match, messagesRef.current);
       },
@@ -11088,6 +11116,7 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
       // второй SpeechRecognition поверх ещё живого wake-слушателя.
       voiceWakeListener.stop();
       noSpeechStreakRef.current = 0;
+      startRetryRef.current = 0;
       setErrorMsg('');
       setDialogOpen(true);
       startRecording([]);
@@ -11127,6 +11156,7 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     if (_currentAudio) { _currentAudio.pause(); _currentAudio = null; }
     if (recogRef.current) { recogRef.current.onend = null; recogRef.current.onerror = null; recogRef.current.stop(); recogRef.current = null; }
     noSpeechStreakRef.current = 0;
+    startRetryRef.current = 0;
     setDialogOpen(false);
     setPhase('idle');
     setMessages([]);
