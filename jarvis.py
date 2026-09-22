@@ -37,6 +37,23 @@ from urllib.parse import parse_qs, quote, urljoin
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 from foods_data import FOODS, FOOD_CATEGORIES
+from off_products_data import OFF_PRODUCTS
+
+OFF_CATEGORY = {"id": "packaged", "name": "Магазинные продукты (РФ)"}
+# OFF_PRODUCTS — товары из Open Food Facts со штрихкодами (см. off_products_data.py
+# про источник/лицензию/фильтрацию). Отдаём единым списком с FOODS через /api/foods,
+# префикс id не пересекается с "<категория>-NNN" из foods_data.py.
+FOODS_ALL = FOODS + [
+    {
+        "id": f"off-{i:05d}",
+        "name": p["name"],
+        "category": OFF_CATEGORY["id"],
+        "kcal": p["kcal"], "protein": p["protein"], "fat": p["fat"], "carbs": p["carbs"],
+        "barcode": p["barcode"],
+    }
+    for i, p in enumerate(OFF_PRODUCTS, start=1)
+]
+FOOD_CATEGORIES_ALL = FOOD_CATEGORIES + [OFF_CATEGORY]
 
 # Moscow time is UTC+3, no DST (since 2014) — reliable without tzdata
 MSK = timezone(timedelta(hours=3))
@@ -738,12 +755,12 @@ def save_app_data(app: dict):
 
 
 def foods_with_unit_weights() -> list:
-    """FOODS (статичный справочник) + вес «1 шт», который пользователь задаёт
-    руками в разделе Питание → База продуктов (хранится в app-data, а не в
-    коде — foods_data.py статика и правится вручную только разработчиком)."""
+    """FOODS_ALL (статичный справочник + товары OFF) + вес «1 шт», который
+    пользователь задаёт руками в разделе Питание → База продуктов (хранится
+    в app-data, а не в коде — сами справочники статика и правятся вручную)."""
     weights = (load_app_data() or {}).get("foodUnitWeights") or {}
     out = []
-    for f in FOODS:
+    for f in FOODS_ALL:
         w = weights.get(f["id"])
         out.append({**f, "unitWeight": w} if w else {k: v for k, v in f.items() if k != "unitWeight"})
     return out
@@ -5889,7 +5906,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             else:
                 self._json(404, {"error": "not found"})
         elif route == "/api/foods":
-            self._json(200, {"categories": FOOD_CATEGORIES, "foods": foods_with_unit_weights()})
+            self._json(200, {"categories": FOOD_CATEGORIES_ALL, "foods": foods_with_unit_weights()})
         elif route == "/api/music":
             self._json(200, {"tracks": music_list()})
         elif self.path.startswith("/api/music/"):

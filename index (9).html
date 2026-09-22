@@ -643,6 +643,14 @@ const computeFoodMacros = (food, grams) => ({
   carbs: round1(food.carbs * grams / 100),
 });
 
+// Поиск продукта — по названию (без учёта регистра) или по штрихкоду
+// (магазинные товары из Open Food Facts несут поле barcode).
+const foodMatchesQuery = (food, rawQuery) => {
+  const q = (rawQuery || '').trim();
+  if (!q) return true;
+  return food.name.toLowerCase().includes(q.toLowerCase()) || (food.barcode && food.barcode.includes(q));
+};
+
 // «Мои блюда» (data.customDishes) — свои рецепты из продуктов базы. Каждое
 // блюдо хранит ингредиенты с их абсолютным КБЖУ (снимок на момент добавления)
 // и приводится к форме обычного продукта (КБЖУ на 100г + unitWeight = вес
@@ -2744,10 +2752,9 @@ function FoodDatabaseView({ data, setData }) {
   };
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
     return foods.filter(f =>
       (activeCategory === 'all' || f.category === activeCategory) &&
-      (!q || f.name.toLowerCase().includes(q))
+      foodMatchesQuery(f, query)
     );
   }, [foods, query, activeCategory]);
 
@@ -2771,9 +2778,16 @@ function FoodDatabaseView({ data, setData }) {
         <input
           value={query}
           onChange={e => setQuery(e.target.value)}
-          placeholder="Поиск по продукту"
+          placeholder="Поиск по продукту или штрихкоду"
           className="w-full !pl-9"
         />
+      </div>
+
+      <div className="text-xs text-[var(--text-subtle)]">
+        Магазинные продукты — данные{' '}
+        <a href="https://ru.openfoodfacts.org" target="_blank" rel="noopener noreferrer" className="underline">Open Food Facts</a>,
+        доступны по лицензии{' '}
+        <a href="https://opendatacommons.org/licenses/odbl/" target="_blank" rel="noopener noreferrer" className="underline">ODbL</a>
       </div>
 
       <button
@@ -2816,7 +2830,10 @@ function FoodDatabaseView({ data, setData }) {
                 {items.map(f => (
                   <div key={f.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3 space-y-2">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="font-medium truncate">{f.name}</span>
+                      <span className="font-medium truncate">
+                        {f.name}
+                        {f.barcode && <span className="text-[var(--text-subtle)] font-normal text-xs ml-2">{f.barcode}</span>}
+                      </span>
                       <div className="flex gap-3 text-sm shrink-0">
                         <span><span className="font-medium">{f.kcal}</span><span className="text-[var(--text-subtle)] ml-1">ккал</span></span>
                         <span><span className="font-medium">{f.protein}</span><span className="text-[var(--text-subtle)] ml-1">Б</span></span>
@@ -2885,8 +2902,7 @@ function DishModal({ dish, foods, onSave, onClose }) {
 
   const suggestions = useMemo(() => {
     if (selectedFood || !query.trim()) return [];
-    const q = query.trim().toLowerCase();
-    return foods.filter(f => f.name.toLowerCase().includes(q)).slice(0, 6);
+    return foods.filter(f => foodMatchesQuery(f, query)).slice(0, 6);
   }, [foods, query, selectedFood]);
 
   const pick = (f) => { setSelectedFood(f); setQuery(f.name); setAmount(''); setUnit(f.unitWeight ? 'pcs' : 'g'); };
@@ -5791,8 +5807,7 @@ function MealItemAddForm({ foods, onAdd, onCancel }) {
 
   const suggestions = useMemo(() => {
     if (selectedFood || !query.trim()) return [];
-    const q = query.trim().toLowerCase();
-    return foods.filter(f => f.name.toLowerCase().includes(q)).slice(0, 6);
+    return foods.filter(f => foodMatchesQuery(f, query)).slice(0, 6);
   }, [foods, query, selectedFood]);
 
   const qty = parseFloat(amount.replace(',', '.'));
