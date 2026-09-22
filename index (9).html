@@ -203,6 +203,54 @@
     animation: pulse-ring 1.2s ease-out infinite;
     pointer-events: none;
   }
+
+  /* Джарвис-попап — анимация в духе арк-реактора */
+  @keyframes jarvisSpin { to { transform: rotate(360deg); } }
+  @keyframes jarvisPulseRing {
+    0% { transform: scale(0.85); opacity: 0.55; }
+    70% { opacity: 0; }
+    100% { transform: scale(1.65); opacity: 0; }
+  }
+  @keyframes jarvisCore {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+  }
+  .jarvis-orb { position: relative; width: 160px; height: 160px; }
+  .jarvis-orb__core {
+    position: absolute; inset: 30px; border-radius: 9999px;
+    background: radial-gradient(circle at 35% 30%, #7dd3fc, #0ea5e9 55%, #0369a1 100%);
+    box-shadow: 0 0 30px 6px rgba(56, 189, 248, 0.55);
+    animation: jarvisCore 1.6s ease-in-out infinite;
+  }
+  .jarvis-orb__ring { position: absolute; inset: 0; border-radius: 9999px; border: 2px solid rgba(56, 189, 248, 0.5); }
+  .jarvis-orb__ring--pulse { animation: jarvisPulseRing 1.8s ease-out infinite; }
+  .jarvis-orb__ring--pulse:nth-child(2) { animation-delay: 0.4s; }
+  .jarvis-orb__ring--pulse:nth-child(3) { animation-delay: 0.8s; }
+  .jarvis-orb--processing .jarvis-orb__core { animation: none; }
+  .jarvis-orb--processing .jarvis-orb__ring--pulse { animation: none; opacity: 0; }
+  .jarvis-orb__scan {
+    position: absolute; inset: 6px; border-radius: 9999px;
+    border: 2px solid transparent; border-top-color: #38bdf8; border-right-color: rgba(56, 189, 248, 0.35);
+    animation: jarvisSpin 0.9s linear infinite;
+  }
+  .jarvis-orb--listening .jarvis-orb__core {
+    background: radial-gradient(circle at 35% 30%, #fef08a, #f59e0b 55%, #b45309 100%);
+    box-shadow: 0 0 30px 6px rgba(245, 158, 11, 0.55);
+  }
+  .jarvis-orb--listening .jarvis-orb__ring { border-color: rgba(245, 158, 11, 0.55); }
+  .jarvis-orb--error .jarvis-orb__core {
+    background: radial-gradient(circle at 35% 30%, #fca5a5, #ef4444 55%, #991b1b 100%);
+    box-shadow: 0 0 30px 6px rgba(239, 68, 68, 0.55);
+    animation: none;
+  }
+  .jarvis-orb--error .jarvis-orb__ring--pulse { animation: none; opacity: 0; }
+  .jarvis-orb--error .jarvis-orb__ring { border-color: rgba(239, 68, 68, 0.4); }
+  .jarvis-orb--sm { width: 88px; height: 88px; }
+  .jarvis-orb--sm .jarvis-orb__core { inset: 16px; }
+  .jarvis-orb--sm .jarvis-orb__scan { inset: 3px; }
+  @media (prefers-reduced-motion: reduce) {
+    .jarvis-orb__core, .jarvis-orb__ring--pulse, .jarvis-orb__scan { animation: none; }
+  }
 </style>
 </head>
 <body>
@@ -10665,15 +10713,31 @@ let _currentAudio = null;
 // за команду собственный же ответ ассистента.
 let voiceSpeechEndedAt = 0;
 
+// iOS блокирует programmatic audio.play(), если он вызван не внутри
+// настоящего тапа пользователя — а к моменту озвучки мы уже в конце цепочки
+// из нескольких await (распознавание → LLM → TTS-запрос). Обходной приём,
+// которым пользуются почти все веб-плееры: один раз проиграть что-то на
+// элементе прямо в обработчике клика — после этого iOS считает элемент
+// «разблокированным» и разрешает playback на нём даже без нового жеста.
+let _blessedAudio = null;
+function primeAudioPlayback() {
+  if (_blessedAudio) return;
+  try {
+    const a = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=');
+    a.play().catch(() => {});
+    _blessedAudio = a;
+  } catch (_) {}
+}
+
+// Возвращает { ok, error } — никогда не бросает, чтобы вызывающий код не
+// прерывал диалог из-за упавшей озвучки, а мог показать причину в истории.
 function speak(text, settings) {
-  // Stop any currently playing audio
-  if (_currentAudio) { _currentAudio.pause(); _currentAudio = null; }
   window.speechSynthesis?.cancel();
+  if (_currentAudio) { try { _currentAudio.pause(); } catch (_) {} }
 
   const ttsPreset = resolveTtsPreset(settings);
   const key = (ttsPreset?.apiKey || '').trim();
   if (key) {
-    // OpenAI TTS — returns promise that resolves when audio finishes
     const voice = settings?.voiceTtsVoice || 'nova';
     return fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
@@ -10683,23 +10747,40 @@ function speak(text, settings) {
       },
       body: JSON.stringify({ model: 'tts-1', voice, input: text }),
     }).then(res => {
-      if (!res.ok) throw new Error('tts_fail');
+      if (!res.ok) throw new Error(`Ошибка OpenAI TTS (${res.status})`);
       return res.blob();
     }).then(blob => {
       const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
+      // Переиспользуем «разблокированный» элемент вместо нового Audio() —
+      // на нём play() уже разрешён iOS без нового жеста.
+      const audio = _blessedAudio || new Audio();
+      audio.src = url;
       _currentAudio = audio;
       return new Promise(resolve => {
-        const done = () => { URL.revokeObjectURL(url); _currentAudio = null; voiceSpeechEndedAt = Date.now(); resolve(); };
-        audio.onended = done;
-        audio.onerror = done;
-        audio.play().catch(done);
+        const cleanup = () => {
+          URL.revokeObjectURL(url);
+          // Полностью отпускаем медиа-ресурс — иначе на iOS аудио-сессия
+          // остаётся занята выводом звука, и следующий запуск распознавания
+          // речи какое-то время не слышит микрофон вообще.
+          try { audio.pause(); audio.removeAttribute('src'); audio.load(); } catch (_) {}
+          if (_currentAudio === audio) _currentAudio = null;
+          voiceSpeechEndedAt = Date.now();
+        };
+        audio.onended = () => { cleanup(); resolve({ ok: true }); };
+        audio.onerror = () => { cleanup(); resolve({ ok: false, error: 'Не удалось воспроизвести озвучку' }); };
+        audio.play().catch(() => { cleanup(); resolve({ ok: false, error: 'Браузер заблокировал автозапуск звука' }); });
       });
-    }).catch(() => { voiceSpeechEndedAt = Date.now(); return Promise.resolve(); });
+    }).catch(e => {
+      voiceSpeechEndedAt = Date.now();
+      return { ok: false, error: e.message || 'Ошибка озвучки' };
+    });
   }
 
-  // Fallback: browser SpeechSynthesis — returns promise that resolves when done
-  if (!window.speechSynthesis) { voiceSpeechEndedAt = Date.now(); return Promise.resolve(); }
+  // Fallback: браузерный SpeechSynthesis
+  if (!window.speechSynthesis) {
+    voiceSpeechEndedAt = Date.now();
+    return Promise.resolve({ ok: false, error: 'Нет ключа OpenAI для озвучки и браузер не поддерживает SpeechSynthesis' });
+  }
   const u = new SpeechSynthesisUtterance(text);
   u.lang = 'ru-RU';
   u.rate = 1.05;
@@ -10707,7 +10788,7 @@ function speak(text, settings) {
   const ruVoice = voices.find(v => v.lang.startsWith('ru'));
   if (ruVoice) u.voice = ruVoice;
   return new Promise(resolve => {
-    const done = () => { voiceSpeechEndedAt = Date.now(); resolve(); };
+    const done = () => { voiceSpeechEndedAt = Date.now(); resolve({ ok: true }); };
     u.onend = done;
     u.onerror = done;
     window.speechSynthesis.speak(u);
@@ -10841,29 +10922,51 @@ const voiceWakeListener = (() => {
 })();
 
 function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTab, setHouseTab, setVoiceFocus }) {
-  const [phase, setPhase] = useState('idle'); // idle|recording|processing|clarifying|success|answered|error
+  const [phase, setPhase] = useState('idle'); // idle|listening|processing|speaking|error
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [transcript, setTranscript] = useState('');
-  const [clarifyQuestion, setClarifyQuestion] = useState('');
   const [messages, setMessages] = useState([]);
-  const [lastAdded, setLastAdded] = useState('');
-  const [answerText, setAnswerText] = useState('');
+  // Видимая история реплик попапа — отдельно от messages (это контекст для
+  // LLM, который по дизайну сбрасывается после каждого обычного обмена).
+  // История же копится, пока попап открыт, и стирается только по крестику.
+  const [history, setHistory] = useState([]); // [{ id, role: 'user'|'assistant', text, ttsFailed?, ttsError? }]
   const [errorMsg, setErrorMsg] = useState('');
   const [wakeListening, setWakeListening] = useState(false);
   const recogRef = React.useRef(null);
   const transcriptRef = React.useRef(''); // kept in sync for onend closure
+  const noSpeechStreakRef = React.useRef(0);
+  const startRetryRef = React.useRef(0);
+  // На iOS распознавание после воспроизведения звука иногда «зависает»: сам
+  // индикатор микрофона у пользователя горит (getUserMedia активен), а
+  // recognition больше никогда не отвечает — ни onresult, ни onerror, ни
+  // onend. Свой таймер вместо ожидания несуществующего события браузера.
+  const aliveWatchdogRef = React.useRef(null);
+  const clearAliveWatchdog = () => { if (aliveWatchdogRef.current) { clearTimeout(aliveWatchdogRef.current); aliveWatchdogRef.current = null; } };
+  const historyIdRef = React.useRef(0);
+  const historyScrollRef = React.useRef(null);
+  useEffect(() => {
+    const el = historyScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [history, transcript, phase]);
   // voiceWakeListener живёт дольше одного рендера — обработчик читает отсюда,
   // а не из замыкания над messages, иначе после первого запуска слушателя
   // видел бы только тот messages, что был на момент запуска.
   const messagesRef = React.useRef([]);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
+  // Диалог мог закрыться (крестик), пока шёл await — обычные state-проверки
+  // после await видят замыкание на момент запуска, а не текущее значение.
+  const dialogOpenRef = React.useRef(false);
+  useEffect(() => { dialogOpenRef.current = dialogOpen; }, [dialogOpen]);
 
   const processTranscript = async (text, existingMessages) => {
     if (!text) {
-      setPhase(existingMessages.length > 0 ? 'clarifying' : 'idle');
+      // Не расслышали — переспрашиваем в том же диалоге, а не закрываем его.
+      startRecording(existingMessages);
       return;
     }
     const newMessages = [...existingMessages, { role: 'user', content: text }];
     setMessages(newMessages);
+    setHistory(h => [...h, { id: ++historyIdRef.current, role: 'user', text }]);
     setPhase('processing');
 
     // Полный доступ ко всему проекту (чтение любых разделов + навигация) —
@@ -10872,22 +10975,40 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     try {
       const nav = { setData, setTab, setPlannerTab, setMiscTab, setHouseTab, setVoiceFocus };
       const { text: answerStr, pendingConfirmation } = await runVoiceAgent(newMessages, settings, data, nav);
-      setAnswerText(answerStr);
-      setPhase('answered');
-      await speak(answerStr, settings);
-      setPhase('idle');
-      // Ожидание подтверждения (удаление/финансовая запись) — не сбрасываем
-      // разговор: следующее нажатие микрофона должно продолжить его тем же
-      // «да»/«нет», а не начать новый вопрос с чистого листа.
-      setMessages(pendingConfirmation ? [...newMessages, { role: 'assistant', content: answerStr }] : []);
+      // Пока думали — пользователь мог закрыть диалог крестиком: не озвучиваем.
+      if (!dialogOpenRef.current) return;
+      const assistantEntryId = ++historyIdRef.current;
+      setHistory(h => [...h, { id: assistantEntryId, role: 'assistant', text: answerStr }]);
+      setPhase('speaking');
+      const ttsResult = await speak(answerStr, settings);
+      if (!dialogOpenRef.current) return;
+      if (!ttsResult.ok) {
+        // Озвучка не сработала — заметно помечаем реплику и даём время
+        // прочитать текст глазами, раз услышать его не вышло.
+        setHistory(h => h.map(m => m.id === assistantEntryId ? { ...m, ttsFailed: true, ttsError: ttsResult.error } : m));
+        await new Promise(r => setTimeout(r, Math.min(4500, Math.max(1400, answerStr.length * 45))));
+        if (!dialogOpenRef.current) return;
+      } else {
+        // На iOS аудио-сессия ещё какое-то время после audio.onended остаётся
+        // занята воспроизведением — запусти распознавание сразу, и микрофон
+        // может просто не услышать голос. Небольшая пауза даёт ей переключиться.
+        await new Promise(r => setTimeout(r, 400));
+        if (!dialogOpenRef.current) return;
+      }
+      // Разговор как в живом диалоге: сразу слушаем следующую реплику в том же
+      // контексте. Ожидание подтверждения (удаление/финансовая запись) не
+      // сбрасывает историю — следующая фраза продолжает её тем же «да»/«нет».
+      const cont = pendingConfirmation ? [...newMessages, { role: 'assistant', content: answerStr }] : [];
+      setMessages(cont);
+      if (dialogOpenRef.current) startRecording(cont);
     } catch (e) {
+      if (!dialogOpenRef.current) return;
       const msg = e.message === 'no_key'
         ? 'Настройте набор ключей ИИ для ассистента в Настройках → Ассистент'
         : `Ошибка: ${e.message}`;
       setErrorMsg(msg);
       setPhase('error');
       setMessages([]);
-      setTimeout(() => setPhase('idle'), 4000);
     }
   };
 
@@ -10896,7 +11017,6 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     if (!SR) {
       setErrorMsg('Браузер не поддерживает распознавание речи');
       setPhase('error');
-      setTimeout(() => setPhase('idle'), 3000);
       return;
     }
     const r = new SR();
@@ -10908,6 +11028,9 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     recogRef.current = r;
 
     r.onresult = (e) => {
+      noSpeechStreakRef.current = 0;
+      startRetryRef.current = 0;
+      armAliveWatchdog(); // есть сигнал — recognition точно живо, ждём дальше
       let t = '';
       for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
       transcriptRef.current = t;
@@ -10915,21 +11038,73 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     };
 
     r.onerror = (e) => {
+      clearAliveWatchdog();
       recogRef.current = null;
-      if (e.error === 'no-speech') { setPhase('idle'); return; }
+      if (e.error === 'no-speech') {
+        // Разговор непрерывный, пока попап открыт — переслушиваем сами, но не
+        // бесконечно: если явно ушли от экрана, через несколько попыток
+        // останавливаемся и ждём ручного нажатия, а не держим микрофон вечно.
+        noSpeechStreakRef.current += 1;
+        if (noSpeechStreakRef.current >= 6) {
+          setErrorMsg('Не слышу вас — нажмите на микрофон, чтобы продолжить');
+          setPhase('error');
+          return;
+        }
+        startRecording(existingMessages);
+        return;
+      }
       setErrorMsg(`Ошибка записи: ${e.error}`);
       setPhase('error');
-      setTimeout(() => setPhase('idle'), 3000);
     };
 
     // Auto-triggered when user stops speaking (or manually via r.stop())
     r.onend = () => {
+      clearAliveWatchdog();
       recogRef.current = null;
       processTranscript(transcriptRef.current.trim(), existingMessages);
     };
 
-    r.start();
-    setPhase('recording');
+    // Сторож зависания: на iOS после проигрывания звука recognition иногда
+    // не отвечает вообще ничем — ни onresult, ни onerror, ни onend, — хотя
+    // индикатор микрофона у пользователя горит. Без своего таймера такой
+    // объект висел бы молча до бесконечности. Если признаков жизни нет —
+    // выбрасываем его и пробуем заново с чистого объекта.
+    const armAliveWatchdog = () => {
+      clearAliveWatchdog();
+      aliveWatchdogRef.current = setTimeout(() => {
+        aliveWatchdogRef.current = null;
+        if (recogRef.current !== r) return; // уже сменилось на другое
+        try { r.onresult = null; r.onerror = null; r.onend = null; r.abort ? r.abort() : r.stop(); } catch (_) {}
+        recogRef.current = null;
+        startRetryRef.current += 1;
+        if (startRetryRef.current >= 5) {
+          setErrorMsg('Микрофон завис — нажмите на него, чтобы попробовать снова');
+          setPhase('error');
+          return;
+        }
+        startRecording(existingMessages);
+      }, 12000);
+    };
+
+    try {
+      r.start();
+      startRetryRef.current = 0;
+    } catch (_) {
+      // iOS иногда бросает исключение, если запустить распознавание слишком
+      // быстро после воспроизведения звука — короткий повтор обычно хватает,
+      // но не бесконечно, если причина не во времени, а в самом микрофоне.
+      recogRef.current = null;
+      startRetryRef.current += 1;
+      if (startRetryRef.current >= 4) {
+        setErrorMsg('Не удаётся включить микрофон — нажмите на него, чтобы попробовать снова');
+        setPhase('error');
+        return;
+      }
+      setTimeout(() => startRecording(existingMessages), 400);
+      return;
+    }
+    armAliveWatchdog();
+    setPhase('listening');
     setTranscript('');
   };
 
@@ -10948,6 +11123,9 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
       (variants) => {
         const match = variants.map(stripWakeWord).find(v => v !== null);
         if (!match) return; // ни один вариант не начинался с «Джарвис», либо слово сказано без команды
+        noSpeechStreakRef.current = 0;
+        startRetryRef.current = 0;
+        setDialogOpen(true);
         processTranscript(match, messagesRef.current);
       },
       setWakeListening,
@@ -10971,28 +11149,30 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
   };
 
   const handleMainButton = () => {
-    if (phase === 'idle') {
+    if (phase === 'idle' || phase === 'error') {
+      // Только здесь мы точно внутри настоящего тапа пользователя — этим и
+      // «разблокируем» звук для последующей озвучки через await-цепочку.
+      primeAudioPlayback();
       const preset = resolveAiPreset(settings, 'voiceAssistant');
       if (!preset || !preset.apiKey) {
         setErrorMsg('Настройте набор ключей ИИ для ассистента в Настройках → Ассистент');
         setPhase('error');
-        setTimeout(() => setPhase('idle'), 4000);
+        setDialogOpen(true);
         return;
       }
       // Ручной тап всегда перехватывает микрофон — иначе рискуем запустить
       // второй SpeechRecognition поверх ещё живого wake-слушателя.
       voiceWakeListener.stop();
-      // messages обычно [] — но останется непустым после раунда с
-      // ожиданием подтверждения (см. processTranscript), тогда это нажатие
-      // продолжает тот же разговор, а не начинает новый с нуля.
-      startRecording(messages);
-    } else if (phase === 'recording') {
+      noSpeechStreakRef.current = 0;
+      startRetryRef.current = 0;
+      setErrorMsg('');
+      setDialogOpen(true);
+      startRecording([]);
+    } else if (phase === 'listening') {
       // Manual early stop — triggers onend which calls processTranscript
       if (recogRef.current) recogRef.current.stop();
-    } else if (phase === 'clarifying') {
-      startRecording(messages);
     }
-    // processing/success/error: do nothing
+    // processing/speaking: do nothing, ждём
   };
 
   // Долгое нажатие на ту же кнопку — переключатель постоянной прослушки, без
@@ -11022,119 +11202,131 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
   const cancel = () => {
     window.speechSynthesis?.cancel();
     if (_currentAudio) { _currentAudio.pause(); _currentAudio = null; }
-    if (recogRef.current) { recogRef.current.onend = null; recogRef.current.stop(); recogRef.current = null; }
+    if (recogRef.current) { recogRef.current.onend = null; recogRef.current.onerror = null; recogRef.current.stop(); recogRef.current = null; }
+    clearAliveWatchdog();
+    noSpeechStreakRef.current = 0;
+    startRetryRef.current = 0;
+    setDialogOpen(false);
     setPhase('idle');
     setMessages([]);
+    setHistory([]);
     setTranscript('');
+    setErrorMsg('');
   };
-
-  const showPanel = phase !== 'idle';
 
   const btnBg = {
     idle: 'bg-[var(--text)] text-white',
-    recording: 'bg-red-500 text-white',
+    listening: 'bg-red-500 text-white',
     processing: 'bg-[var(--text)] text-white',
-    clarifying: 'bg-blue-500 text-white',
-    answered: 'bg-blue-500 text-white',
-    success: 'bg-green-500 text-white',
+    speaking: 'bg-blue-500 text-white',
     error: 'bg-red-500 text-white',
   }[phase] || 'bg-[var(--text)] text-white';
 
+  const orbClass = phase === 'listening' ? 'jarvis-orb--listening'
+    : phase === 'processing' ? 'jarvis-orb--processing'
+    : phase === 'error' ? 'jarvis-orb--error' : '';
+
   return (
-    <div className="fixed bottom-24 right-4 z-30 flex flex-col items-end gap-2 md:bottom-8">
-      {/* Mini panel */}
-      {showPanel && (
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl shadow-lg p-4 max-w-[260px] w-[260px] fade-in">
-          {phase === 'recording' && (
-            <div>
-              <div className="text-xs text-red-500 font-medium mb-1 flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse inline-block"></span>
-                Слушаю...
-              </div>
-              <div className="text-sm text-[var(--text)] min-h-[40px] leading-snug">
-                {transcript || <span className="text-[var(--text-subtle)]">Говорите...</span>}
-              </div>
-              <div className="text-xs text-[var(--text-subtle)] mt-2">Остановится автоматически после паузы</div>
+    <>
+      {/* Диалог с ассистентом — открывается по нажатию на микрофон и держится,
+          пока не закроют крестиком: слушает, отвечает голосом и сразу же
+          слушает дальше в том же разговоре, без повторных нажатий. */}
+      {dialogOpen && (
+        <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex flex-col fade-in">
+          <button
+            onClick={cancel}
+            className="absolute top-5 right-5 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center z-10"
+            title="Закрыть"
+          >
+            <Icon name="x" size={20} />
+          </button>
+
+          {/* Вся история реплик с момента открытия попапа — не стирается
+              между обменами, чтобы успеть прочитать ответ. */}
+          <div ref={historyScrollRef} className="flex-1 overflow-y-auto px-5 pt-16 pb-3">
+            <div className="max-w-lg mx-auto w-full space-y-3">
+              {history.length === 0 && (
+                <div className="text-white/30 text-center text-sm mt-10">Скажите что-нибудь...</div>
+              )}
+              {history.map(m => (
+                <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-snug whitespace-pre-wrap ${
+                    m.role === 'user' ? 'bg-white/15 text-white' : 'bg-sky-500/20 text-sky-50'
+                  }`}>
+                    {m.text}
+                    {m.ttsFailed && (
+                      <div className="text-amber-300 text-xs mt-1.5">
+                        ⚠ Озвучка не сработала{m.ttsError ? `: ${m.ttsError}` : ''}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
-          )}
-          {phase === 'processing' && (
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 border-2 border-[var(--text)] border-t-transparent rounded-full animate-spin flex-shrink-0"></div>
-              <span className="text-sm text-[var(--text-muted)]">Обрабатываю...</span>
+          </div>
+
+          <div className="flex flex-col items-center px-6 pb-8 pt-2 flex-shrink-0">
+            <div className={`jarvis-orb jarvis-orb--sm ${orbClass}`}>
+              <span className="jarvis-orb__ring jarvis-orb__ring--pulse"></span>
+              <span className="jarvis-orb__ring jarvis-orb__ring--pulse"></span>
+              <span className="jarvis-orb__ring jarvis-orb__ring--pulse"></span>
+              {phase === 'processing' && <span className="jarvis-orb__scan"></span>}
+              <span className="jarvis-orb__core"></span>
             </div>
-          )}
-          {phase === 'clarifying' && (
-            <div>
-              <div className="text-xs text-blue-500 font-medium mb-1">Уточнение</div>
-              <div className="text-sm text-[var(--text)] mb-3">{clarifyQuestion}</div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => startRecording(messages)}
-                  className="flex-1 flex items-center justify-center gap-1.5 bg-blue-500 text-white rounded-xl py-2 text-sm font-medium"
-                >
-                  <Icon name="mic" size={16} />
-                  Ответить
-                </button>
-                <button onClick={cancel} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]">
-                  <Icon name="x" size={18} />
-                </button>
-              </div>
+
+            <div className="mt-3 min-h-[20px] max-w-sm px-4 text-center">
+              {phase === 'listening' && (
+                <div className="text-amber-400 text-sm">{transcript || 'Слушаю...'}</div>
+              )}
+              {phase === 'processing' && <div className="text-sky-300 text-sm">Думаю...</div>}
+              {phase === 'speaking' && <div className="text-sky-300 text-sm animate-pulse">Говорю...</div>}
+              {phase === 'error' && <div className="text-red-400 text-sm">{errorMsg}</div>}
             </div>
-          )}
-          {phase === 'success' && (
-            <div className="flex items-center gap-2">
-              <span className="text-green-500"><Icon name="check" size={18} /></span>
-              <span className="text-sm text-[var(--text)]">Добавлено: <b>{lastAdded}</b></span>
-            </div>
-          )}
-          {phase === 'answered' && (
-            <div>
-              <div className="text-xs text-blue-500 font-medium mb-1 flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse inline-block"></span>
-                Ответ
-              </div>
-              <div className="text-sm text-[var(--text)] leading-snug">{answerText}</div>
-            </div>
-          )}
-          {phase === 'error' && (
-            <div>
-              <div className="text-xs text-red-500 font-medium mb-1">Ошибка</div>
-              <div className="text-sm text-[var(--text-muted)]">{errorMsg}</div>
-            </div>
-          )}
+
+            <button
+              onClick={handleMainButton}
+              disabled={phase === 'processing' || phase === 'speaking'}
+              className={`mt-4 w-16 h-16 rounded-full shadow-lg flex items-center justify-center transition-all text-white ${
+                phase === 'listening' ? 'bg-amber-500' : phase === 'error' ? 'bg-red-500' : 'bg-white/10'
+              } ${(phase === 'processing' || phase === 'speaking') ? 'opacity-40' : ''}`}
+              title={phase === 'listening' ? 'Остановить запись' : phase === 'error' ? 'Попробовать снова' : 'Микрофон'}
+            >
+              <Icon name="mic" size={26} />
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Постоянная прослушка «Джарвис, ...» — не отдельная кнопка, а долгое
-          нажатие на эту же: кольцо вокруг неё показывает состояние режима. */}
-      <div className="relative">
-        {settings?.voiceWakeMode && phase === 'idle' && (
-          <span
-            className={`absolute -inset-1 rounded-full pointer-events-none ${
-              wakeListening ? 'ring-2 ring-blue-500 animate-pulse' : voiceWakeListener.blocked() ? 'ring-2 ring-red-500' : 'ring-2 ring-amber-500'
-            }`}
-            title={wakeListening ? 'Жду «Джарвис»' : voiceWakeListener.blocked() ? 'Нет доступа к микрофону' : 'Включаю прослушку...'}
-          ></span>
-        )}
-        <button
-          onClick={handleMainClick}
-          onPointerDown={handlePointerDown}
-          onPointerUp={cancelPressTimer}
-          onPointerLeave={cancelPressTimer}
-          disabled={phase === 'processing' || phase === 'success'}
-          className={`w-14 h-14 rounded-full shadow-lg flex items-center justify-center transition-all ${btnBg} ${phase === 'recording' ? 'voice-pulse' : ''} ${phase === 'processing' ? 'opacity-70' : ''}`}
-          title="Голосовой ассистент (долгое нажатие — постоянная прослушка «Джарвис, ...»)"
-        >
-          {phase === 'processing' ? (
-            <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-          ) : phase === 'success' ? (
-            <Icon name="check" size={24} />
-          ) : (
-            <Icon name="mic" size={24} />
+      <div className="fixed bottom-24 right-4 z-30 flex flex-col items-end gap-2 md:bottom-8">
+        {/* Постоянная прослушка «Джарвис, ...» — не отдельная кнопка, а долгое
+            нажатие на эту же: кольцо вокруг неё показывает состояние режима. */}
+        <div className="relative">
+          {settings?.voiceWakeMode && phase === 'idle' && (
+            <span
+              className={`absolute -inset-1 rounded-full pointer-events-none ${
+                wakeListening ? 'ring-2 ring-blue-500 animate-pulse' : voiceWakeListener.blocked() ? 'ring-2 ring-red-500' : 'ring-2 ring-amber-500'
+              }`}
+              title={wakeListening ? 'Жду «Джарвис»' : voiceWakeListener.blocked() ? 'Нет доступа к микрофону' : 'Включаю прослушку...'}
+            ></span>
           )}
-        </button>
+          <button
+            onClick={handleMainClick}
+            onPointerDown={handlePointerDown}
+            onPointerUp={cancelPressTimer}
+            onPointerLeave={cancelPressTimer}
+            disabled={phase === 'processing'}
+            className={`w-14 h-14 rounded-full shadow-lg flex items-center justify-center transition-all ${btnBg} ${phase === 'listening' ? 'voice-pulse' : ''} ${phase === 'processing' ? 'opacity-70' : ''}`}
+            title="Голосовой ассистент (долгое нажатие — постоянная прослушка «Джарвис, ...»)"
+          >
+            {phase === 'processing' ? (
+              <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+            ) : (
+              <Icon name="mic" size={24} />
+            )}
+          </button>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
