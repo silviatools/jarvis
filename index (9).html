@@ -10716,34 +10716,41 @@ async function extractHealthEventFromDocument(files, settings) {
   };
 }
 
-let _currentAudio = null;
 // Момент, когда синтез в последний раз замолчал — тот же приём, что у
 // gymSpeechEndedAt в GYM: распознавание отдаёт фразу с задержкой, и без
 // этой отметки микрофон в режиме ожидания активации слышит и принимает
 // за команду собственный же ответ ассистента.
 let voiceSpeechEndedAt = 0;
 
-// iOS блокирует programmatic audio.play(), если он вызван не внутри
-// настоящего тапа пользователя — а к моменту озвучки мы уже в конце цепочки
-// из нескольких await (распознавание → LLM → TTS-запрос). Обходной приём,
-// которым пользуются почти все веб-плееры: один раз проиграть что-то на
-// элементе прямо в обработчике клика — после этого iOS считает элемент
-// «разблокированным» и разрешает playback на нём даже без нового жеста.
-let _blessedAudio = null;
+// На iOS Safari HTMLAudioElement (<audio>) и getUserMedia (распознавание
+// речи) используют разные внутренние аудио-движки — после проигрывания
+// через <audio> микрофон переставал слышать голос вообще (аудио-сессия
+// оставалась занята выводом). Web Audio API (AudioContext) делит движок с
+// записью речи и не выталкивает её, плюс navigator.audioSession — новый
+// W3C API, которым можно явно попросить iOS режим «играть и слушать
+// одновременно», а не полагаться на автоопределение. AudioContext, как и
+// <audio>, требует «разблокировки» внутри настоящего тапа — резервируем
+// и запускаем его один раз в обработчике клика, дальше он остаётся живым.
+let _audioCtx = null;
+let _stopCurrentSpeech = null; // () => void — прерывает то, что сейчас звучит через OpenAI TTS
 function primeAudioPlayback() {
-  if (_blessedAudio) return;
   try {
-    const a = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=');
-    a.play().catch(() => {});
-    _blessedAudio = a;
+    if (navigator.audioSession) navigator.audioSession.type = 'play-and-record';
   } catch (_) {}
+  try {
+    if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (_audioCtx.state === 'suspended') _audioCtx.resume().catch(() => {});
+  } catch (_) {}
+}
+function stopCurrentSpeech() {
+  if (_stopCurrentSpeech) { try { _stopCurrentSpeech(); } catch (_) {} }
 }
 
 // Возвращает { ok, error } — никогда не бросает, чтобы вызывающий код не
 // прерывал диалог из-за упавшей озвучки, а мог показать причину в истории.
 function speak(text, settings) {
   window.speechSynthesis?.cancel();
-  if (_currentAudio) { try { _currentAudio.pause(); } catch (_) {} }
+  stopCurrentSpeech();
 
   const ttsPreset = resolveTtsPreset(settings);
   const key = (ttsPreset?.apiKey || '').trim();
@@ -10758,27 +10765,32 @@ function speak(text, settings) {
       body: JSON.stringify({ model: 'tts-1', voice, input: text }),
     }).then(res => {
       if (!res.ok) throw new Error(`Ошибка OpenAI TTS (${res.status})`);
-      return res.blob();
-    }).then(blob => {
-      const url = URL.createObjectURL(blob);
-      // Переиспользуем «разблокированный» элемент вместо нового Audio() —
-      // на нём play() уже разрешён iOS без нового жеста.
-      const audio = _blessedAudio || new Audio();
-      audio.src = url;
-      _currentAudio = audio;
+      return res.arrayBuffer();
+    }).then(buf => {
+      if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      return _audioCtx.decodeAudioData(buf);
+    }).then(audioBuffer => {
       return new Promise(resolve => {
-        const cleanup = () => {
-          URL.revokeObjectURL(url);
-          // Полностью отпускаем медиа-ресурс — иначе на iOS аудио-сессия
-          // остаётся занята выводом звука, и следующий запуск распознавания
-          // речи какое-то время не слышит микрофон вообще.
-          try { audio.pause(); audio.removeAttribute('src'); audio.load(); } catch (_) {}
-          if (_currentAudio === audio) _currentAudio = null;
+        if (_audioCtx.state === 'suspended') _audioCtx.resume().catch(() => {});
+        const source = _audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(_audioCtx.destination);
+        let done = false;
+        const finish = (result) => {
+          if (done) return;
+          done = true;
+          if (_stopCurrentSpeech === stop) _stopCurrentSpeech = null;
           voiceSpeechEndedAt = Date.now();
+          resolve(result);
         };
-        audio.onended = () => { cleanup(); resolve({ ok: true }); };
-        audio.onerror = () => { cleanup(); resolve({ ok: false, error: 'Не удалось воспроизвести озвучку' }); };
-        audio.play().catch(() => { cleanup(); resolve({ ok: false, error: 'Браузер заблокировал автозапуск звука' }); });
+        const stop = () => { try { source.onended = null; source.stop(); } catch (_) {} finish({ ok: false, error: 'Озвучка прервана' }); };
+        _stopCurrentSpeech = stop;
+        source.onended = () => finish({ ok: true });
+        try {
+          source.start(0);
+        } catch (_) {
+          finish({ ok: false, error: 'Не удалось воспроизвести озвучку' });
+        }
       });
     }).catch(e => {
       voiceSpeechEndedAt = Date.now();
@@ -11211,7 +11223,7 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
 
   const cancel = () => {
     window.speechSynthesis?.cancel();
-    if (_currentAudio) { _currentAudio.pause(); _currentAudio = null; }
+    stopCurrentSpeech();
     if (recogRef.current) { recogRef.current.onend = null; recogRef.current.onerror = null; recogRef.current.stop(); recogRef.current = null; }
     clearAliveWatchdog();
     noSpeechStreakRef.current = 0;
