@@ -10317,11 +10317,16 @@ function buildVoiceAgentSystemPrompt(data) {
   const domainList = Object.entries(VOICE_DATA_DOMAINS).map(([k, v]) => `  • ${k} — ${v.label}`).join('\n');
   const navList = Object.entries(VOICE_NAV_LABELS).map(([k, v]) => `  • ${k} — ${v}`).join('\n');
   const writeList = Object.entries(WRITE_REGISTRY).map(([k, v]) => `  • ${k} — ${v.label}${v.requireConfirm ? ' (финансовое — подтверждение)' : ''}`).join('\n');
-  const todayStr = dateToLocalStr(new Date());
+  const now = new Date();
+  const todayStr = dateToLocalStr(now);
+  // День недели считаем сами и подсовываем готовым — модели плохо даётся
+  // счёт дней недели по дате в уме, отсюда были неверные ответы вида
+  // «22 сентября» + «сегодня понедельник» (это был вторник).
+  const weekdayStr = WEEKDAY_FULL[now.getDay()].toLowerCase();
 
   return `Ты ассистент приложения Jarvis. Отвечай кратко и по-русски, разговорным языком.
 
-СЕГОДНЯ: ${todayStr}
+СЕГОДНЯ: ${todayStr}, ${weekdayStr}. Используй эту дату и день недели как факт — не вычисляй день недели сам по числу, он уже дан.
 ${about ? `
 ЧТО ИЗВЕСТНО О ПОЛЬЗОВАТЕЛЕ (раздел «База данных», он сам это записал — считай фактами и учитывай в ответах):
 ${about}
