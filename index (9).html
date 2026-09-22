@@ -10299,10 +10299,15 @@ const VOICE_AGENT_TOOLS = [
   },
   {
     name: 'get_weather',
-    description: 'Текущая погода и краткий прогноз на 3 дня для города. Раздел «Погода» — это НЕ данные проекта (не через get_data), а живой внешний запрос. Если город не указан — берётся сохранённый город из настроек (Погода → город).',
+    description: 'Погода для города. Раздел «Погода» — это НЕ данные проекта (не через get_data), а живой внешний запрос. Без date/date_from — текущая погода и краткий прогноз на 3 дня. С date (конкретный день) или date_from/date_to (диапазон, например «на следующей неделе») — погода на эти даты, доступно на 16 дней вперёд от сегодня. Даты вычисляй сам от даты СЕГОДНЯ из системного промпта.',
     input_schema: {
       type: 'object',
-      properties: { city: { type: 'string', description: 'Название города, например «Москва». Необязательно.' } },
+      properties: {
+        city: { type: 'string', description: 'Название города, например «Москва». Необязательно — по умолчанию город из настроек.' },
+        date: { type: 'string', description: 'Конкретная дата YYYY-MM-DD, например для «в субботу» или «22 сентября».' },
+        date_from: { type: 'string', description: 'Начало диапазона дат YYYY-MM-DD, например для «на следующей неделе».' },
+        date_to: { type: 'string', description: 'Конец диапазона дат YYYY-MM-DD.' },
+      },
     },
   },
   ...APPLE_AGENT_TOOLS,
@@ -10351,7 +10356,7 @@ ${writeList}
 
 7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без спроса. ЛЮБАЯ ЗАПИСЬ — добавить, изменить, удалить — только после явного согласия пользователя: сначала коротко скажи, что именно запишешь (название, дату и время), и спроси подтверждение, а после согласия повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места: «в календарь» и «напомни» — это Apple, «в планировщик» — раздел приложения.
 
-8. get_weather(city?) — текущая погода и прогноз на 3 дня для города. Раздел «Погода» тоже НЕ данные приложения (внешний сервис), а живой запрос — используй этот инструмент, а не navigate/get_data. Город можно не указывать — тогда берётся сохранённый в настройках (Погода → город).
+8. get_weather(city?, date?, date_from?, date_to?) — погода для города. Раздел «Погода» тоже НЕ данные приложения (внешний сервис), а живой запрос — используй этот инструмент, а не navigate/get_data. Город можно не указывать — тогда берётся сохранённый в настройках (Погода → город). Без date — текущая погода и 3 дня вперёд. Для конкретного дня или диапазона («в субботу», «на следующей неделе») передай date или date_from/date_to в формате YYYY-MM-DD — вычисли даты сам от СЕГОДНЯ (прогноз доступен на 16 дней вперёд).
 
 ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
@@ -10367,8 +10372,12 @@ ${writeList}
 // Погода — не часть данных проекта (пользователь её только смотрит, ничего
 // не хранит), поэтому не домен get_data, а отдельный живой запрос: геокодинг
 // города через Nominatim + прогноз через Open-Meteo, тот же API, что и у
-// самой вкладки «Погода» (WeatherView/MiniWeatherCard).
-async function fetchAssistantWeather(cityInput, settings) {
+// самой вкладки «Погода» (WeatherView/MiniWeatherCard). Всегда тянем полные
+// 16 дней вперёд (максимум бесплатного прогноза Open-Meteo) одним запросом —
+// «на следующей неделе» и подобное просто фильтруются из того же ответа, без
+// второго похода в сеть.
+async function fetchAssistantWeather(cityInput, settings, opts) {
+  opts = opts || {};
   const city = (cityInput || '').trim() || ((settings || {}).weatherCity || '').trim();
   if (!city) return { error: 'Не указан город, и город не сохранён в настройках (Погода → город)' };
   try {
@@ -10384,23 +10393,42 @@ async function fetchAssistantWeather(cityInput, settings) {
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
       `&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m` +
       `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
-      `&timezone=auto&forecast_days=3`;
+      `&timezone=auto&forecast_days=16`;
     const res = await fetch(url);
     if (!res.ok) return { error: 'Не удалось загрузить погоду' };
     const w = await res.json();
     const cur = w.current || {};
     const daily = w.daily || {};
     const days = daily.time || [];
-    const forecast = [];
-    for (let i = 0; i < Math.min(3, days.length); i++) {
-      forecast.push({
-        date: days[i],
-        condition: getWeatherInfo((daily.weather_code || [])[i]).label.toLowerCase(),
-        min_c: (daily.temperature_2m_min || [])[i],
-        max_c: (daily.temperature_2m_max || [])[i],
-        precip_probability_percent: (daily.precipitation_probability_max || [])[i],
+    const wc = daily.weather_code || [];
+    const tmin = daily.temperature_2m_min || [];
+    const tmax = daily.temperature_2m_max || [];
+    const precip = daily.precipitation_probability_max || [];
+    const dayEntry = (i) => ({
+      date: days[i],
+      condition: getWeatherInfo(wc[i]).label.toLowerCase(),
+      min_c: tmin[i],
+      max_c: tmax[i],
+      precip_probability_percent: precip[i],
+    });
+
+    // Конкретная дата или диапазон — «в субботу», «на следующей неделе»:
+    // модель сама вычисляет YYYY-MM-DD от даты СЕГОДНЯ из системного промпта.
+    if (opts.date || opts.date_from || opts.date_to) {
+      const from = opts.date_from || opts.date || opts.date_to;
+      const to = opts.date_to || opts.date || opts.date_from;
+      const wanted = opts.date ? [opts.date] : days.filter(d => d >= from && d <= to);
+      const requested = wanted.map(d => {
+        const i = days.indexOf(d);
+        return i === -1
+          ? { date: d, error: 'Нет данных на эту дату — прогноз доступен только на ближайшие 16 дней' }
+          : dayEntry(i);
       });
+      return { city: name, requested };
     }
+
+    const forecast = [];
+    for (let i = 0; i < Math.min(3, days.length); i++) forecast.push(dayEntry(i));
     return {
       city: name,
       current: {
@@ -10423,7 +10451,11 @@ async function executeVoiceTool(name, input, nav, data) {
   input = input || {};
   const noop = (output) => ({ output, data });
   if (APPLE_TOOL_NAMES.has(name)) return noop(await executeAppleTool(name, input));
-  if (name === 'get_weather') return noop(await fetchAssistantWeather(input.city, (data || {}).settings));
+  if (name === 'get_weather') {
+    return noop(await fetchAssistantWeather(input.city, (data || {}).settings, {
+      date: input.date, date_from: input.date_from, date_to: input.date_to,
+    }));
+  }
   const applied = (result, output) => {
     if (result.error) return noop({ error: result.error });
     nav.setData(result.data);

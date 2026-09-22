@@ -3132,10 +3132,15 @@ ASSISTANT_TOOLS = [
     },
     {
         "name": "get_weather",
-        "description": "Текущая погода и краткий прогноз на 3 дня для города. Раздел «Погода» — это НЕ данные проекта (не через get_data), а живой внешний запрос. Если город не указан — берётся сохранённый город из настроек (Погода → город).",
+        "description": "Погода для города. Раздел «Погода» — это НЕ данные проекта (не через get_data), а живой внешний запрос. Без date/date_from — текущая погода и краткий прогноз на 3 дня. С date (конкретный день) или date_from/date_to (диапазон, например «на следующей неделе») — погода на эти даты, доступно на 16 дней вперёд от сегодня. Даты вычисляй сам от даты СЕГОДНЯ из системного промпта.",
         "input_schema": {
             "type": "object",
-            "properties": {"city": {"type": "string", "description": "Название города, например «Москва». Необязательно."}},
+            "properties": {
+                "city": {"type": "string", "description": "Название города, например «Москва». Необязательно — по умолчанию город из настроек."},
+                "date": {"type": "string", "description": "Конкретная дата YYYY-MM-DD, например для «в субботу» или «22 сентября»."},
+                "date_from": {"type": "string", "description": "Начало диапазона дат YYYY-MM-DD, например для «на следующей неделе»."},
+                "date_to": {"type": "string", "description": "Конец диапазона дат YYYY-MM-DD."},
+            },
         },
     },
 ] + APPLE_TOOLS
@@ -3166,11 +3171,13 @@ def _weather_code_label(code) -> str:
     return "облачно"
 
 
-def get_weather(app: dict, city: str = "") -> dict:
+def get_weather(app: dict, city: str = "", date: str = "", date_from: str = "", date_to: str = "") -> dict:
     """Погода — не часть данных проекта (пользователь её только смотрит, ничего
     не хранит), поэтому не домен ASSISTANT_DATA_DOMAINS, а живой запрос:
     геокодинг через Nominatim + прогноз через Open-Meteo — тот же API, что и
-    у самой вкладки «Погода» в браузере."""
+    у самой вкладки «Погода» в браузере. Всегда тянем полные 16 дней вперёд
+    (максимум бесплатного прогноза Open-Meteo) одним запросом — «на следующей
+    неделе» и подобное просто фильтруются из того же ответа."""
     if not requests:
         return {"error": "Погода недоступна: на сервере не установлен requests"}
     city = (city or "").strip() or ((app.get("settings") or {}).get("weatherCity") or "").strip()
@@ -3196,7 +3203,7 @@ def get_weather(app: dict, city: str = "") -> dict:
                 "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m",
                 "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
                 "timezone": "auto",
-                "forecast_days": 3,
+                "forecast_days": 16,
             },
             timeout=10,
         )
@@ -3213,15 +3220,31 @@ def get_weather(app: dict, city: str = "") -> dict:
     tmin = daily.get("temperature_2m_min") or []
     tmax = daily.get("temperature_2m_max") or []
     precip = daily.get("precipitation_probability_max") or []
-    forecast = []
-    for i in range(min(3, len(days))):
-        forecast.append({
+
+    def day_entry(i):
+        return {
             "date": days[i],
             "condition": _weather_code_label(wc[i]) if i < len(wc) else None,
             "min_c": tmin[i] if i < len(tmin) else None,
             "max_c": tmax[i] if i < len(tmax) else None,
             "precip_probability_percent": precip[i] if i < len(precip) else None,
-        })
+        }
+
+    # Конкретная дата или диапазон — «в субботу», «на следующей неделе»:
+    # модель сама вычисляет YYYY-MM-DD от даты СЕГОДНЯ из системного промпта.
+    if date or date_from or date_to:
+        rng_from = date_from or date or date_to
+        rng_to = date_to or date or date_from
+        wanted = [date] if date else [d for d in days if rng_from <= d <= rng_to]
+        requested = []
+        for d in wanted:
+            requested.append(
+                day_entry(days.index(d)) if d in days
+                else {"date": d, "error": "Нет данных на эту дату — прогноз доступен только на ближайшие 16 дней"}
+            )
+        return {"city": name, "requested": requested}
+
+    forecast = [day_entry(i) for i in range(min(3, len(days)))]
     return {
         "city": name,
         "current": {
@@ -3301,9 +3324,12 @@ def build_assistant_system_prompt(app: dict = None) -> str:
         "потом повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple "
         "Календарь — разные места: если не сказано куда, уточни или добавь в Apple Календарь, когда речь про "
         "«календарь», и в Напоминания, когда про «напомни».\n\n"
-        "8. get_weather(city?) — текущая погода и прогноз на 3 дня для города. Раздел «Погода» тоже НЕ данные "
+        "8. get_weather(city?, date?, date_from?, date_to?) — погода для города. Раздел «Погода» тоже НЕ данные "
         "приложения (внешний сервис), а живой запрос — используй этот инструмент, а не navigate/get_data. Город "
-        "можно не указывать — тогда берётся сохранённый в настройках (Погода → город).\n\n"
+        "можно не указывать — тогда берётся сохранённый в настройках (Погода → город). Без date — текущая погода "
+        "и 3 дня вперёд. Для конкретного дня или диапазона («в субботу», «на следующей неделе») передай date или "
+        "date_from/date_to в формате YYYY-MM-DD — вычисли даты сам от СЕГОДНЯ (прогноз доступен на 16 дней "
+        "вперёд).\n\n"
         "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
         "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
         "— вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми "
@@ -3329,7 +3355,10 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str) -> di
     if name in APPLE_TOOL_NAMES:
         return execute_apple_tool(name, inp)
     if name == "get_weather":
-        return get_weather(app, inp.get("city") or "")
+        return get_weather(
+            app, inp.get("city") or "",
+            date=inp.get("date") or "", date_from=inp.get("date_from") or "", date_to=inp.get("date_to") or "",
+        )
     if name == "get_data":
         entry = ASSISTANT_DATA_DOMAINS.get(inp.get("domain"))
         if not entry:
