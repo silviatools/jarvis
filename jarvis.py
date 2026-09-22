@@ -3130,7 +3130,110 @@ ASSISTANT_TOOLS = [
             "required": ["planId", "ingredientId"],
         },
     },
+    {
+        "name": "get_weather",
+        "description": "Текущая погода и краткий прогноз на 3 дня для города. Раздел «Погода» — это НЕ данные проекта (не через get_data), а живой внешний запрос. Если город не указан — берётся сохранённый город из настроек (Погода → город).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"city": {"type": "string", "description": "Название города, например «Москва». Необязательно."}},
+        },
+    },
 ] + APPLE_TOOLS
+
+
+def _weather_code_label(code) -> str:
+    """WMO-код погоды → текст. Зеркалит getWeatherInfo в index (9).html."""
+    if code == 0:
+        return "ясно"
+    if code in (1, 2):
+        return "переменная облачность"
+    if code == 3:
+        return "пасмурно"
+    if code in (45, 48):
+        return "туман"
+    if code is not None and 51 <= code <= 57:
+        return "морось"
+    if code is not None and 61 <= code <= 67:
+        return "дождь"
+    if code is not None and 71 <= code <= 77:
+        return "снег"
+    if code is not None and 80 <= code <= 82:
+        return "ливень"
+    if code is not None and 85 <= code <= 86:
+        return "снегопад"
+    if code is not None and 95 <= code <= 99:
+        return "гроза"
+    return "облачно"
+
+
+def get_weather(app: dict, city: str = "") -> dict:
+    """Погода — не часть данных проекта (пользователь её только смотрит, ничего
+    не хранит), поэтому не домен ASSISTANT_DATA_DOMAINS, а живой запрос:
+    геокодинг через Nominatim + прогноз через Open-Meteo — тот же API, что и
+    у самой вкладки «Погода» в браузере."""
+    if not requests:
+        return {"error": "Погода недоступна: на сервере не установлен requests"}
+    city = (city or "").strip() or ((app.get("settings") or {}).get("weatherCity") or "").strip()
+    if not city:
+        return {"error": "Не указан город, и город не сохранён в настройках (Погода → город)"}
+    try:
+        geo = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": city, "format": "json", "limit": 1},
+            headers={"Accept-Language": "ru", "User-Agent": "Jarvis/1.0"},
+            timeout=10,
+        )
+        results = geo.json() if geo.ok else []
+        if not results:
+            return {"error": f"Город «{city}» не найден"}
+        lat, lon = float(results[0]["lat"]), float(results[0]["lon"])
+        name = (results[0].get("display_name") or city).split(",")[0].strip()
+        fc = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m",
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+                "timezone": "auto",
+                "forecast_days": 3,
+            },
+            timeout=10,
+        )
+        if not fc.ok:
+            return {"error": "Не удалось загрузить погоду"}
+        w = fc.json()
+    except Exception as e:
+        return {"error": f"Ошибка запроса погоды: {e}"}
+
+    cur = w.get("current") or {}
+    daily = w.get("daily") or {}
+    days = daily.get("time") or []
+    wc = daily.get("weather_code") or []
+    tmin = daily.get("temperature_2m_min") or []
+    tmax = daily.get("temperature_2m_max") or []
+    precip = daily.get("precipitation_probability_max") or []
+    forecast = []
+    for i in range(min(3, len(days))):
+        forecast.append({
+            "date": days[i],
+            "condition": _weather_code_label(wc[i]) if i < len(wc) else None,
+            "min_c": tmin[i] if i < len(tmin) else None,
+            "max_c": tmax[i] if i < len(tmax) else None,
+            "precip_probability_percent": precip[i] if i < len(precip) else None,
+        })
+    return {
+        "city": name,
+        "current": {
+            "condition": _weather_code_label(cur.get("weather_code")),
+            "temperature_c": cur.get("temperature_2m"),
+            "feels_like_c": cur.get("apparent_temperature"),
+            "humidity_percent": cur.get("relative_humidity_2m"),
+            "wind_kmh": cur.get("wind_speed_10m"),
+        },
+        "forecast": forecast,
+    }
+
 
 KNOWLEDGE_PROMPT_LIMIT = 6000
 
@@ -3192,6 +3295,9 @@ def build_assistant_system_prompt(app: dict = None) -> str:
         "потом повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple "
         "Календарь — разные места: если не сказано куда, уточни или добавь в Apple Календарь, когда речь про "
         "«календарь», и в Напоминания, когда про «напомни».\n\n"
+        "8. get_weather(city?) — текущая погода и прогноз на 3 дня для города. Раздел «Погода» тоже НЕ данные "
+        "приложения (внешний сервис), а живой запрос — используй этот инструмент, а не navigate/get_data. Город "
+        "можно не указывать — тогда берётся сохранённый в настройках (Погода → город).\n\n"
         "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
         "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
         "— вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми "
@@ -3216,6 +3322,8 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str) -> di
     # у них свой исполнитель, общий с браузерным ассистентом.
     if name in APPLE_TOOL_NAMES:
         return execute_apple_tool(name, inp)
+    if name == "get_weather":
+        return get_weather(app, inp.get("city") or "")
     if name == "get_data":
         entry = ASSISTANT_DATA_DOMAINS.get(inp.get("domain"))
         if not entry:

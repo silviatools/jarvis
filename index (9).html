@@ -10297,6 +10297,14 @@ const VOICE_AGENT_TOOLS = [
       required: ['planId', 'ingredientId'],
     },
   },
+  {
+    name: 'get_weather',
+    description: 'Текущая погода и краткий прогноз на 3 дня для города. Раздел «Погода» — это НЕ данные проекта (не через get_data), а живой внешний запрос. Если город не указан — берётся сохранённый город из настроек (Погода → город).',
+    input_schema: {
+      type: 'object',
+      properties: { city: { type: 'string', description: 'Название города, например «Москва». Необязательно.' } },
+    },
+  },
   ...APPLE_AGENT_TOOLS,
 ];
 
@@ -10338,6 +10346,8 @@ ${writeList}
 
 7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без спроса. ЛЮБАЯ ЗАПИСЬ — добавить, изменить, удалить — только после явного согласия пользователя: сначала коротко скажи, что именно запишешь (название, дату и время), и спроси подтверждение, а после согласия повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места: «в календарь» и «напомни» — это Apple, «в планировщик» — раздел приложения.
 
+8. get_weather(city?) — текущая погода и прогноз на 3 дня для города. Раздел «Погода» тоже НЕ данные приложения (внешний сервис), а живой запрос — используй этот инструмент, а не navigate/get_data. Город можно не указывать — тогда берётся сохранённый в настройках (Погода → город).
+
 ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
 Правила:
@@ -10349,12 +10359,66 @@ ${writeList}
 - Никогда не удаляй и не меняй финансовые данные без подтверждения, даже если пользователь говорит это как бы между делом.`;
 }
 
+// Погода — не часть данных проекта (пользователь её только смотрит, ничего
+// не хранит), поэтому не домен get_data, а отдельный живой запрос: геокодинг
+// города через Nominatim + прогноз через Open-Meteo, тот же API, что и у
+// самой вкладки «Погода» (WeatherView/MiniWeatherCard).
+async function fetchAssistantWeather(cityInput, settings) {
+  const city = (cityInput || '').trim() || ((settings || {}).weatherCity || '').trim();
+  if (!city) return { error: 'Не указан город, и город не сохранён в настройках (Погода → город)' };
+  try {
+    const geoRes = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(city)}&format=json&limit=1`,
+      { headers: { 'Accept-Language': 'ru' } }
+    );
+    const results = geoRes.ok ? await geoRes.json() : [];
+    if (!results.length) return { error: `Город «${city}» не найден` };
+    const lat = parseFloat(results[0].lat);
+    const lon = parseFloat(results[0].lon);
+    const name = (results[0].display_name || city).split(',')[0].trim();
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+      `&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m` +
+      `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
+      `&timezone=auto&forecast_days=3`;
+    const res = await fetch(url);
+    if (!res.ok) return { error: 'Не удалось загрузить погоду' };
+    const w = await res.json();
+    const cur = w.current || {};
+    const daily = w.daily || {};
+    const days = daily.time || [];
+    const forecast = [];
+    for (let i = 0; i < Math.min(3, days.length); i++) {
+      forecast.push({
+        date: days[i],
+        condition: getWeatherInfo((daily.weather_code || [])[i]).label.toLowerCase(),
+        min_c: (daily.temperature_2m_min || [])[i],
+        max_c: (daily.temperature_2m_max || [])[i],
+        precip_probability_percent: (daily.precipitation_probability_max || [])[i],
+      });
+    }
+    return {
+      city: name,
+      current: {
+        condition: getWeatherInfo(cur.weather_code).label.toLowerCase(),
+        temperature_c: cur.temperature_2m,
+        feels_like_c: cur.apparent_temperature,
+        humidity_percent: cur.relative_humidity_2m,
+        wind_kmh: cur.wind_speed_10m,
+      },
+      forecast,
+    };
+  } catch (e) {
+    return { error: `Ошибка запроса погоды: ${e.message}` };
+  }
+}
+
 // Асинхронная: инструменты Apple ходят на сервер (iCloud), всё остальное
 // считается на месте и возвращается сразу.
 async function executeVoiceTool(name, input, nav, data) {
   input = input || {};
   const noop = (output) => ({ output, data });
   if (APPLE_TOOL_NAMES.has(name)) return noop(await executeAppleTool(name, input));
+  if (name === 'get_weather') return noop(await fetchAssistantWeather(input.city, (data || {}).settings));
   const applied = (result, output) => {
     if (result.error) return noop({ error: result.error });
     nav.setData(result.data);
