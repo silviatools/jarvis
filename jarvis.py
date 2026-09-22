@@ -1767,14 +1767,15 @@ def _apple_find(uid: str, comp: str):
 
 # ── Календарь: запись ──────────────────────────────────────────────────────
 
-def _apple_alarm_lines(description: str = "Напоминание") -> list:
-    """Оповещение в момент начала события — нужно для «напомни через N минут»,
-    когда в Apple Напоминания писать некуда (нет CalDAV VTODO / нет Shortcuts)."""
+def _apple_alarm_lines(description: str = "Напоминание", minutes_before: int = 0) -> list:
+    """VALARM для события календаря: оповещение за N минут до начала (0 = в момент старта)."""
+    mins = max(0, int(minutes_before or 0))
+    trigger = "PT0S" if mins == 0 else f"-PT{mins}M"
     return [
         "BEGIN:VALARM",
         "ACTION:DISPLAY",
         f"DESCRIPTION:{_ics_escape(description)}",
-        "TRIGGER:PT0S",
+        f"TRIGGER:{trigger}",
         "END:VALARM",
     ]
 
@@ -1804,8 +1805,13 @@ def _apple_event_lines(fields: dict, uid: str) -> list:
         lines.append(f"LOCATION:{_ics_escape(fields['location'])}")
     if fields.get("notes"):
         lines.append(f"DESCRIPTION:{_ics_escape(fields['notes'])}")
-    if fields.get("alarm"):
-        lines += _apple_alarm_lines(title)
+    # Оповещение о событии — только когда пользователь просит напомнить о событии
+    # календаря. Это не замена Apple Напоминаний.
+    if fields.get("alarm") or fields.get("alarmMinutesBefore") is not None:
+        mins = fields.get("alarmMinutesBefore")
+        if mins is None:
+            mins = 0
+        lines += _apple_alarm_lines(title, mins)
     return lines
 
 
@@ -2111,88 +2117,41 @@ def _apple_bridge_alive() -> bool:
     return bool(bridge_load().get("lastPullAt"))
 
 
-def _apple_reminder_as_calendar_alert(title: str, due, notes: str = "") -> dict:
-    """Срочное напоминание без рабочего канала в Apple Reminders → событие
-    в Календаре с оповещением в момент due (CalDAV у пользователя уже работает)."""
-    if not isinstance(due, datetime):
-        raise AppleError("Для оповещения через календарь нужно точное время.")
-    if not apple_creds():
-        raise AppleError("Календарь не подключён — оповещение поставить некуда.")
-    start = due.astimezone(MSK).strftime("%Y-%m-%d %H:%M")
-    note = (notes or "").strip()
-    if note:
-        note = note + "\n"
-    note += "Поставлено как оповещение в Календаре: Apple Напоминания без Shortcuts недоступны."
-    created = apple_create_event({
-        "title": title,
-        "start": start,
-        "durationMinutes": 5,
-        "notes": note,
-        "alarm": True,
-    })
-    return {
-        "ok": True,
-        "id": created["id"],
-        "title": title,
-        "due": start,
-        "deliveredAs": "calendar_alert",
-        "calendar": created.get("calendar"),
-        "note": ("В Apple Напоминания сейчас писать некуда (нет iCloud-списков дел и не "
-                 "настроены Быстрые команды), поэтому поставил оповещение в Календаре "
-                 f"«{created.get('calendar')}» на {start}. Скажи пользователю именно это — "
-                 "не говори, что создал напоминание в Apple Напоминания."),
-    }
-
-
 def apple_reminders_create(fields: dict) -> dict:
     title = (fields.get("title") or "").strip()
     if not title:
         raise AppleError("У напоминания должно быть название.")
     due_raw = fields.get("due") or ""
-    due = apple_parse_dt(due_raw) if due_raw else None
-
-    # «Напомни через 5 минут» и прочие ближайшие сроки: CalDAV VTODO у многих
-    # аккаунтов Apple принимает запись, но в приложении Напоминания её не видно,
-    # а мост Shortcuts без настройки / с часовым циклом опоздание гарантирует.
-    # Календарь у пользователя уже работает — ставим событие с оповещением.
-    if isinstance(due, datetime) and apple_creds():
-        minutes = (due.astimezone(MSK) - datetime.now(MSK)).total_seconds() / 60
-        if minutes <= 180:
-            return _apple_reminder_as_calendar_alert(title, due, fields.get("notes") or "")
 
     if apple_reminders_backend() == "caldav":
         disc = apple_discover()
         coll = _apple_pick(disc["todoLists"], fields.get("list"))
         uid = str(uuid.uuid4()).upper()
         lines = [f"UID:{uid}", f"DTSTAMP:{_ics_stamp()}", f"SUMMARY:{_ics_escape(title)}", "STATUS:NEEDS-ACTION"]
-        if due is not None:
+        if due_raw:
+            due = apple_parse_dt(due_raw)
             lines.append(_ics_write_dt("DUE", due, isinstance(due, date) and not isinstance(due, datetime)))
         if fields.get("notes"):
             lines.append(f"DESCRIPTION:{_ics_escape(fields['notes'])}")
         _apple_put(urljoin(coll["href"], uid + ".ics"), _apple_wrap("VTODO", lines))
-        return {"ok": True, "id": uid, "list": coll["name"], "title": title, "deliveredAs": "icloud"}
+        return {"ok": True, "id": uid, "list": coll["name"], "title": title}
 
-    # Мост: кладём в очередь только если телефон уже хотя бы раз забирал задания.
-    # Иначе «создал» врёт — без Shortcuts ничего в Apple не появится.
+    # Мост: только если телефон уже хотя бы раз забирал очередь. Иначе «создал»
+    # врёт — без Shortcuts в Apple Напоминания ничего не попадёт.
+    # Напоминание ≠ событие календаря: сюда не подставляем календарный fallback.
     if apple_bridge_token() and _apple_bridge_alive():
         return bridge_enqueue("create", {"title": title, "list": fields.get("list") or "",
                                          "due": due_raw, "notes": fields.get("notes") or ""})
-
-    # Срок с часами (дальше 3 часов) → тот же надёжный канал через Календарь.
-    if isinstance(due, datetime) and apple_creds():
-        return _apple_reminder_as_calendar_alert(title, due, fields.get("notes") or "")
-
-    if apple_bridge_token() and not _apple_bridge_alive():
+    if apple_bridge_token():
         raise AppleError(
             "Напоминания через iCloud недоступны, а мост Быстрых команд ещё ни разу "
-            "не синхронизировался (команда на телефоне не запускалась). "
-            "Без этого «напомни» в Apple Напоминания не попадёт. "
-            "Для срочных («через 5 минут») укажи время — поставлю оповещение в Календаре. "
-            "Либо настрой Shortcuts по apple-setup.md."
+            "не синхронизировался. Запусти на телефоне команду «Jarvis Напоминания» "
+            "(см. apple-setup.md) — после первого обмена смогу создавать напоминания."
         )
     raise AppleError(
         "Напоминания не подключены: iCloud не отдаёт списки дел, мост Быстрых команд "
-        "не настроен. Для срочных с точным временем могу поставить оповещение в Календаре."
+        "не настроен. Настрой Shortcuts по apple-setup.md — «напомни» создаёт именно "
+        "напоминание Apple, не событие календаря."
     )
 
 
@@ -2249,10 +2208,10 @@ def apple_status() -> dict:
                                      else ("bridge_pending" if out["bridgeConfigured"] else "")))
     if out["remindersBackend"] == "bridge_pending":
         out["remindersHint"] = ("Токен моста есть, но Быстрая команда ещё ни разу не "
-                                "синхронизировалась — срочные «напомни» уйдут в Календарь.")
+                                "синхронизировалась — запусти «Jarvis Напоминания» на телефоне.")
     elif not out["remindersBackend"] and out["calendarConfigured"]:
-        out["remindersHint"] = ("Списки дел iCloud не видны и Shortcuts не настроены. "
-                                "Срочные с точным временем — оповещение в Календаре.")
+        out["remindersHint"] = ("Списки дел iCloud не видны. Чтобы «напомни» создавало "
+                                "напоминания Apple, настрой Shortcuts (apple-setup.md).")
     return out
 
 
@@ -2273,7 +2232,10 @@ APPLE_TOOLS = [
     },
     {
         "name": "calendar_create_event",
-        "description": "Создать событие в Apple Календаре. ТОЛЬКО после явного согласия пользователя: сначала опиши, что собираешься создать, и спроси подтверждение.",
+        "description": ("Создать событие в Apple Календаре. ТОЛЬКО после явного согласия пользователя. "
+                        "Если просят событие и напомнить о нём — передай alarmMinutesBefore "
+                        "(минуты до начала; 0 = в момент старта). Это оповещение о событии, "
+                        "не Apple Напоминание. «Напомни купить X» — это reminders_create, не этот инструмент."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2284,6 +2246,10 @@ APPLE_TOOLS = [
                 "location": {"type": "string"},
                 "notes": {"type": "string"},
                 "calendar": {"type": "string"},
+                "alarmMinutesBefore": {
+                    "type": "integer",
+                    "description": "Оповещение за N минут до начала события. 0 — в момент старта. Не передавай, если оповещение не нужно.",
+                },
                 "confirmed": {"type": "boolean", "description": "true только после явного согласия пользователя."},
             },
             "required": ["title", "start"],
@@ -2325,9 +2291,9 @@ APPLE_TOOLS = [
     },
     {
         "name": "reminders_create",
-        "description": ("Создать напоминание Apple. Требует подтверждения пользователя. "
-                        "Если Напоминания недоступны, срочные с точным временем могут уйти "
-                        "как оповещение в Календарь (deliveredAs=calendar_alert) — скажи это пользователю."),
+        "description": ("Создать напоминание Apple (кружок в Напоминаниях). Требует подтверждения. "
+                        "Не подменяет напоминание событием календаря. Если напоминания не подключены — "
+                        "вернёт error; скажи пользователю настроить Shortcuts."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -3413,9 +3379,9 @@ def build_assistant_system_prompt(app: dict = None) -> str:
         "спроса. ЛЮБАЯ ЗАПИСЬ — добавление, изменение, удаление — только после явного согласия пользователя: "
         "сначала коротко скажи, что именно собираешься записать (название, дату и время), и спроси подтверждение, "
         "потом повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple "
-        "Календарь — разные места: если не сказано куда, уточни или добавь в Apple Календарь, когда речь про "
-        "«календарь», и в Напоминания, когда про «напомни». Если reminders_create вернул deliveredAs="
-        "calendar_alert — скажи, что поставил оповещение в Календаре (не в Напоминаниях). Если queued:true — "
+        "Календарь — разные места. «В календарь» / «создай событие» → calendar_create_event; если ещё и "
+        "напомнить о событии — alarmMinutesBefore. «Напомни …» / напоминание → только reminders_create "
+        "(настоящее Apple Напоминание), никогда не подменяй его событием календаря. Если queued:true — "
         "скажи, что попадёт в Напоминания после синхронизации Быстрой команды, НЕ говори «создал». "
         "Если error — честно скажи, что не удалось, и почему.\n\n"
         "8. get_weather(city?, date?, date_from?, date_to?) — погода для города. Раздел «Погода» тоже НЕ данные "

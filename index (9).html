@@ -9960,7 +9960,7 @@ const APPLE_AGENT_TOOLS = [
   },
   {
     name: 'calendar_create_event',
-    description: 'Создать событие в Apple Календаре. ТОЛЬКО после явного согласия пользователя: сначала опиши, что собираешься создать, и спроси подтверждение.',
+    description: 'Создать событие в Apple Календаре. ТОЛЬКО после явного согласия. Если просят событие и напомнить о нём — alarmMinutesBefore (0 = в момент старта). Это оповещение о событии, не Apple Напоминание. «Напомни купить X» — reminders_create.',
     input_schema: {
       type: 'object',
       properties: {
@@ -9971,6 +9971,7 @@ const APPLE_AGENT_TOOLS = [
         location: { type: 'string' },
         notes: { type: 'string' },
         calendar: { type: 'string' },
+        alarmMinutesBefore: { type: 'integer', description: 'Оповещение за N минут до начала. 0 — в момент старта. Не передавай, если не нужно.' },
         confirmed: { type: 'boolean', description: 'true только после явного согласия пользователя.' },
       },
       required: ['title', 'start'],
@@ -10012,7 +10013,7 @@ const APPLE_AGENT_TOOLS = [
   },
   {
     name: 'reminders_create',
-    description: 'Создать напоминание Apple. Требует подтверждения пользователя. Если Напоминания недоступны, срочные с точным временем могут уйти как оповещение в Календарь (deliveredAs=calendar_alert) — скажи это пользователю.',
+    description: 'Создать напоминание Apple (кружок в Напоминаниях). Требует подтверждения. Не подменяет напоминание событием календаря. Если напоминания не подключены — вернёт error; скажи пользователю настроить Shortcuts.',
     input_schema: {
       type: 'object',
       properties: {
@@ -10357,7 +10358,7 @@ ${writeList}
 
 6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и готового веса), cooking_plan_delete_ingredient.
 
-7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без спроса. ЛЮБАЯ ЗАПИСЬ — добавить, изменить, удалить — только после явного согласия пользователя: сначала коротко скажи, что именно запишешь (название, дату и время), и спроси подтверждение, а после согласия повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места: «в календарь» и «напомни» — это Apple, «в планировщик» — раздел приложения. Если reminders_create вернул deliveredAs=calendar_alert — скажи, что поставил оповещение в Календаре (не в Напоминаниях). Если queued:true — скажи, что попадёт в Напоминания после синхронизации Быстрой команды, НЕ говори «создал». Если error — честно скажи, что не удалось.
+7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без спроса. ЛЮБАЯ ЗАПИСЬ — добавить, изменить, удалить — только после явного согласия пользователя: сначала коротко скажи, что именно запишешь (название, дату и время), и спроси подтверждение, а после согласия повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места. «В календарь» / «создай событие» → calendar_create_event; если ещё и напомнить о событии — alarmMinutesBefore. «Напомни …» → только reminders_create (настоящее Apple Напоминание), никогда не подменяй его событием календаря. Если queued:true — скажи, что попадёт в Напоминания после синхронизации Быстрой команды, НЕ говори «создал». Если error — честно скажи, что не удалось, и почему.
 
 8. get_weather(city?, date?, date_from?, date_to?) — погода для города. Раздел «Погода» тоже НЕ данные приложения (внешний сервис), а живой запрос — используй этот инструмент, а не navigate/get_data. Город можно не указывать — тогда берётся сохранённый в настройках (Погода → город). Без date — текущая погода и 3 дня вперёд. Для конкретного дня или диапазона («в субботу», «на следующей неделе») передай date или date_from/date_to в формате YYYY-MM-DD — вычисли даты сам от СЕГОДНЯ (прогноз доступен на 16 дней вперёд).
 
