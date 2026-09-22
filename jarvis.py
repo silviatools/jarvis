@@ -43,16 +43,20 @@ OFF_CATEGORY = {"id": "packaged", "name": "Магазинные продукты
 # OFF_PRODUCTS — товары из Open Food Facts со штрихкодами (см. off_products_data.py
 # про источник/лицензию/фильтрацию). Отдаём единым списком с FOODS через /api/foods,
 # префикс id не пересекается с "<категория>-NNN" из foods_data.py.
-FOODS_ALL = FOODS + [
-    {
+def _off_food(i: int, p: dict) -> dict:
+    food = {
         "id": f"off-{i:05d}",
         "name": p["name"],
         "category": OFF_CATEGORY["id"],
         "kcal": p["kcal"], "protein": p["protein"], "fat": p["fat"], "carbs": p["carbs"],
         "barcode": p["barcode"],
     }
-    for i, p in enumerate(OFF_PRODUCTS, start=1)
-]
+    if p.get("brand"):
+        food["brand"] = p["brand"]
+    return food
+
+
+FOODS_ALL = FOODS + [_off_food(i, p) for i, p in enumerate(OFF_PRODUCTS, start=1)]
 FOOD_CATEGORIES_ALL = FOOD_CATEGORIES + [OFF_CATEGORY]
 
 # Moscow time is UTC+3, no DST (since 2014) — reliable without tzdata
