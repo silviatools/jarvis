@@ -4415,7 +4415,9 @@ function AppleConnectionCard() {
 
   const s = state;
   const remindersLabel = s.remindersBackend === 'caldav' ? 'через iCloud'
-    : s.remindersBackend === 'bridge' ? 'через Быструю команду' : 'не подключены';
+    : s.remindersBackend === 'bridge' ? 'через Быструю команду'
+    : s.remindersBackend === 'bridge_pending' ? 'мост ждёт Shortcuts'
+    : 'не подключены';
   const ago = (ms) => {
     if (!ms) return 'ещё ни разу';
     const min = Math.round((Date.now() - ms) / 60000);
@@ -4454,6 +4456,7 @@ function AppleConnectionCard() {
               </span>
             )}
           </div>
+          {s.remindersHint && <div className="text-amber-600 text-sm">{s.remindersHint}</div>}
           {s.error && <div className="text-amber-600">{s.error}</div>}
           {!s.calendarConfigured && (
             <p className="text-xs text-[var(--text-subtle)] pt-1">
@@ -10009,7 +10012,7 @@ const APPLE_AGENT_TOOLS = [
   },
   {
     name: 'reminders_create',
-    description: 'Создать напоминание Apple. Требует подтверждения пользователя.',
+    description: 'Создать напоминание Apple. Требует подтверждения пользователя. Если Напоминания недоступны, срочные с точным временем могут уйти как оповещение в Календарь (deliveredAs=calendar_alert) — скажи это пользователю.',
     input_schema: {
       type: 'object',
       properties: {
@@ -10354,7 +10357,7 @@ ${writeList}
 
 6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и готового веса), cooking_plan_delete_ingredient.
 
-7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без спроса. ЛЮБАЯ ЗАПИСЬ — добавить, изменить, удалить — только после явного согласия пользователя: сначала коротко скажи, что именно запишешь (название, дату и время), и спроси подтверждение, а после согласия повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места: «в календарь» и «напомни» — это Apple, «в планировщик» — раздел приложения.
+7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без спроса. ЛЮБАЯ ЗАПИСЬ — добавить, изменить, удалить — только после явного согласия пользователя: сначала коротко скажи, что именно запишешь (название, дату и время), и спроси подтверждение, а после согласия повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места: «в календарь» и «напомни» — это Apple, «в планировщик» — раздел приложения. Если reminders_create вернул deliveredAs=calendar_alert — скажи, что поставил оповещение в Календаре (не в Напоминаниях). Если queued:true — скажи, что попадёт в Напоминания после синхронизации Быстрой команды, НЕ говори «создал». Если error — честно скажи, что не удалось.
 
 8. get_weather(city?, date?, date_from?, date_to?) — погода для города. Раздел «Погода» тоже НЕ данные приложения (внешний сервис), а живой запрос — используй этот инструмент, а не navigate/get_data. Город можно не указывать — тогда берётся сохранённый в настройках (Погода → город). Без date — текущая погода и 3 дня вперёд. Для конкретного дня или диапазона («в субботу», «на следующей неделе») передай date или date_from/date_to в формате YYYY-MM-DD — вычисли даты сам от СЕГОДНЯ (прогноз доступен на 16 дней вперёд).
 

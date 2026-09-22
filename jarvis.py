@@ -1767,6 +1767,18 @@ def _apple_find(uid: str, comp: str):
 
 # ── Календарь: запись ──────────────────────────────────────────────────────
 
+def _apple_alarm_lines(description: str = "Напоминание") -> list:
+    """Оповещение в момент начала события — нужно для «напомни через N минут»,
+    когда в Apple Напоминания писать некуда (нет CalDAV VTODO / нет Shortcuts)."""
+    return [
+        "BEGIN:VALARM",
+        "ACTION:DISPLAY",
+        f"DESCRIPTION:{_ics_escape(description)}",
+        "TRIGGER:PT0S",
+        "END:VALARM",
+    ]
+
+
 def _apple_event_lines(fields: dict, uid: str) -> list:
     title = (fields.get("title") or "").strip()
     if not title:
@@ -1792,6 +1804,8 @@ def _apple_event_lines(fields: dict, uid: str) -> list:
         lines.append(f"LOCATION:{_ics_escape(fields['location'])}")
     if fields.get("notes"):
         lines.append(f"DESCRIPTION:{_ics_escape(fields['notes'])}")
+    if fields.get("alarm"):
+        lines += _apple_alarm_lines(title)
     return lines
 
 
@@ -2092,26 +2106,94 @@ def apple_reminders_list(list_name=None, include_done=False, limit=200) -> dict:
     raise AppleError("Напоминания не подключены: ни списков дел в iCloud, ни моста Быстрых команд (APPLE_BRIDGE_TOKEN).")
 
 
+def _apple_bridge_alive() -> bool:
+    """Быстрая команда хотя бы раз забирала очередь — иначе токен бесполезен."""
+    return bool(bridge_load().get("lastPullAt"))
+
+
+def _apple_reminder_as_calendar_alert(title: str, due, notes: str = "") -> dict:
+    """Срочное напоминание без рабочего канала в Apple Reminders → событие
+    в Календаре с оповещением в момент due (CalDAV у пользователя уже работает)."""
+    if not isinstance(due, datetime):
+        raise AppleError("Для оповещения через календарь нужно точное время.")
+    if not apple_creds():
+        raise AppleError("Календарь не подключён — оповещение поставить некуда.")
+    start = due.astimezone(MSK).strftime("%Y-%m-%d %H:%M")
+    note = (notes or "").strip()
+    if note:
+        note = note + "\n"
+    note += "Поставлено как оповещение в Календаре: Apple Напоминания без Shortcuts недоступны."
+    created = apple_create_event({
+        "title": title,
+        "start": start,
+        "durationMinutes": 5,
+        "notes": note,
+        "alarm": True,
+    })
+    return {
+        "ok": True,
+        "id": created["id"],
+        "title": title,
+        "due": start,
+        "deliveredAs": "calendar_alert",
+        "calendar": created.get("calendar"),
+        "note": ("В Apple Напоминания сейчас писать некуда (нет iCloud-списков дел и не "
+                 "настроены Быстрые команды), поэтому поставил оповещение в Календаре "
+                 f"«{created.get('calendar')}» на {start}. Скажи пользователю именно это — "
+                 "не говори, что создал напоминание в Apple Напоминания."),
+    }
+
+
 def apple_reminders_create(fields: dict) -> dict:
     title = (fields.get("title") or "").strip()
     if not title:
         raise AppleError("У напоминания должно быть название.")
+    due_raw = fields.get("due") or ""
+    due = apple_parse_dt(due_raw) if due_raw else None
+
+    # «Напомни через 5 минут» и прочие ближайшие сроки: CalDAV VTODO у многих
+    # аккаунтов Apple принимает запись, но в приложении Напоминания её не видно,
+    # а мост Shortcuts без настройки / с часовым циклом опоздание гарантирует.
+    # Календарь у пользователя уже работает — ставим событие с оповещением.
+    if isinstance(due, datetime) and apple_creds():
+        minutes = (due.astimezone(MSK) - datetime.now(MSK)).total_seconds() / 60
+        if minutes <= 180:
+            return _apple_reminder_as_calendar_alert(title, due, fields.get("notes") or "")
+
     if apple_reminders_backend() == "caldav":
         disc = apple_discover()
         coll = _apple_pick(disc["todoLists"], fields.get("list"))
         uid = str(uuid.uuid4()).upper()
         lines = [f"UID:{uid}", f"DTSTAMP:{_ics_stamp()}", f"SUMMARY:{_ics_escape(title)}", "STATUS:NEEDS-ACTION"]
-        if fields.get("due"):
-            due = apple_parse_dt(fields["due"])
+        if due is not None:
             lines.append(_ics_write_dt("DUE", due, isinstance(due, date) and not isinstance(due, datetime)))
         if fields.get("notes"):
             lines.append(f"DESCRIPTION:{_ics_escape(fields['notes'])}")
         _apple_put(urljoin(coll["href"], uid + ".ics"), _apple_wrap("VTODO", lines))
-        return {"ok": True, "id": uid, "list": coll["name"], "title": title}
-    if apple_bridge_token():
+        return {"ok": True, "id": uid, "list": coll["name"], "title": title, "deliveredAs": "icloud"}
+
+    # Мост: кладём в очередь только если телефон уже хотя бы раз забирал задания.
+    # Иначе «создал» врёт — без Shortcuts ничего в Apple не появится.
+    if apple_bridge_token() and _apple_bridge_alive():
         return bridge_enqueue("create", {"title": title, "list": fields.get("list") or "",
-                                         "due": fields.get("due") or "", "notes": fields.get("notes") or ""})
-    raise AppleError("Напоминания не подключены: ни списков дел в iCloud, ни моста Быстрых команд (APPLE_BRIDGE_TOKEN).")
+                                         "due": due_raw, "notes": fields.get("notes") or ""})
+
+    # Срок с часами (дальше 3 часов) → тот же надёжный канал через Календарь.
+    if isinstance(due, datetime) and apple_creds():
+        return _apple_reminder_as_calendar_alert(title, due, fields.get("notes") or "")
+
+    if apple_bridge_token() and not _apple_bridge_alive():
+        raise AppleError(
+            "Напоминания через iCloud недоступны, а мост Быстрых команд ещё ни разу "
+            "не синхронизировался (команда на телефоне не запускалась). "
+            "Без этого «напомни» в Apple Напоминания не попадёт. "
+            "Для срочных («через 5 минут») укажи время — поставлю оповещение в Календаре. "
+            "Либо настрой Shortcuts по apple-setup.md."
+        )
+    raise AppleError(
+        "Напоминания не подключены: iCloud не отдаёт списки дел, мост Быстрых команд "
+        "не настроен. Для срочных с точным временем могу поставить оповещение в Календаре."
+    )
 
 
 def apple_reminders_update(rid: str, patch: dict) -> dict:
@@ -2120,9 +2202,9 @@ def apple_reminders_update(rid: str, patch: dict) -> dict:
         coll, url, etag, text = _apple_find(rid, "VTODO")
         _apple_put(url, _apple_patch_ics(text, "VTODO", patch, "todo"), etag)
         return {"ok": True, "id": rid, "list": coll["name"]}
-    if apple_bridge_token():
+    if apple_bridge_token() and _apple_bridge_alive():
         return bridge_enqueue("update", {"id": rid, "patch": patch})
-    raise AppleError("Напоминания не подключены.")
+    raise AppleError("Напоминания не подключены (нет iCloud-списков дел и не работает мост Shortcuts).")
 
 
 def apple_reminders_delete(rid: str) -> dict:
@@ -2132,9 +2214,9 @@ def apple_reminders_delete(rid: str) -> dict:
         if r.status_code not in (200, 204, 404):
             raise AppleError(f"iCloud не удалил напоминание ({r.status_code}).")
         return {"ok": True, "id": rid, "list": coll["name"]}
-    if apple_bridge_token():
+    if apple_bridge_token() and _apple_bridge_alive():
         return bridge_enqueue("delete", {"id": rid})
-    raise AppleError("Напоминания не подключены.")
+    raise AppleError("Напоминания не подключены (нет iCloud-списков дел и не работает мост Shortcuts).")
 
 
 def apple_status() -> dict:
@@ -2163,7 +2245,14 @@ def apple_status() -> dict:
         "lastPullAt": bridge.get("lastPullAt") or 0,
     }
     out["remindersBackend"] = ("caldav" if out["todoLists"]
-                               else ("bridge" if out["bridgeConfigured"] else ""))
+                               else ("bridge" if out["bridgeConfigured"] and (bridge.get("lastPullAt") or 0)
+                                     else ("bridge_pending" if out["bridgeConfigured"] else "")))
+    if out["remindersBackend"] == "bridge_pending":
+        out["remindersHint"] = ("Токен моста есть, но Быстрая команда ещё ни разу не "
+                                "синхронизировалась — срочные «напомни» уйдут в Календарь.")
+    elif not out["remindersBackend"] and out["calendarConfigured"]:
+        out["remindersHint"] = ("Списки дел iCloud не видны и Shortcuts не настроены. "
+                                "Срочные с точным временем — оповещение в Календаре.")
     return out
 
 
@@ -2236,7 +2325,9 @@ APPLE_TOOLS = [
     },
     {
         "name": "reminders_create",
-        "description": "Создать напоминание Apple. Требует подтверждения пользователя.",
+        "description": ("Создать напоминание Apple. Требует подтверждения пользователя. "
+                        "Если Напоминания недоступны, срочные с точным временем могут уйти "
+                        "как оповещение в Календарь (deliveredAs=calendar_alert) — скажи это пользователю."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -3323,7 +3414,10 @@ def build_assistant_system_prompt(app: dict = None) -> str:
         "сначала коротко скажи, что именно собираешься записать (название, дату и время), и спроси подтверждение, "
         "потом повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple "
         "Календарь — разные места: если не сказано куда, уточни или добавь в Apple Календарь, когда речь про "
-        "«календарь», и в Напоминания, когда про «напомни».\n\n"
+        "«календарь», и в Напоминания, когда про «напомни». Если reminders_create вернул deliveredAs="
+        "calendar_alert — скажи, что поставил оповещение в Календаре (не в Напоминаниях). Если queued:true — "
+        "скажи, что попадёт в Напоминания после синхронизации Быстрой команды, НЕ говори «создал». "
+        "Если error — честно скажи, что не удалось, и почему.\n\n"
         "8. get_weather(city?, date?, date_from?, date_to?) — погода для города. Раздел «Погода» тоже НЕ данные "
         "приложения (внешний сервис), а живой запрос — используй этот инструмент, а не navigate/get_data. Город "
         "можно не указывать — тогда берётся сохранённый в настройках (Погода → город). Без date — текущая погода "
