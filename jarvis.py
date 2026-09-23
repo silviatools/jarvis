@@ -22,6 +22,7 @@ import hashlib
 import html
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -333,7 +334,7 @@ def subscriber_name(subs: dict, chat_id) -> str:
 # entry in data.settings.notifyRouting receives NOTHING (default-deny). Anyone
 # who messages the bot is auto-subscribed with zero categories; an owner has
 # to explicitly opt them into each category from Settings → Маршрутизация.
-NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "tasks", "backup"}
+NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "tasks", "backup", "english"}
 
 
 def recipients_for(app_data: dict, subs: dict, category: str) -> list:
@@ -3751,6 +3752,151 @@ def _already_fired(kind: str, ident, today_iso: str, now_str: str) -> bool:
     return False
 
 
+# ── English daily word picks (Telegram) ────────────────────────────────────
+# Settings live in app data as engWordReminder (enabled/time/days/count/order/
+# dateRange). Words themselves come from engWords once the in-app vocabulary
+# DB is filled — until then the tick logs and skips the send.
+_ENG_RU_MON = {
+    "янв": 0, "фев": 1, "мар": 2, "апр": 3, "мая": 4, "май": 4, "июн": 5,
+    "июл": 6, "авг": 7, "сен": 8, "окт": 9, "ноя": 10, "дек": 11,
+}
+
+
+def eng_parse_date(value, infer_year: int | None = None) -> date | None:
+    """Best-effort mirror of engParseDate() in the English UI."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        # Excel serial date
+        try:
+            return (datetime(1899, 12, 30) + timedelta(days=float(value))).date()
+        except Exception:
+            return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    s = str(value).strip()
+    if not s:
+        return None
+    # ISO-ish with a year
+    if re.search(r"\d{4}", s):
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+        except Exception:
+            pass
+    m = re.match(r"(\d{1,2})\s+([а-яё]+)\s*(\d{4})?", s, re.I)
+    if m:
+        mon = -1
+        ms = m.group(2).lower()
+        for k, v in _ENG_RU_MON.items():
+            if ms.startswith(k):
+                mon = v
+                break
+        if mon >= 0:
+            year = int(m.group(3)) if m.group(3) else (infer_year or today_msk().year)
+            try:
+                return date(year, mon + 1, int(m.group(1)))
+            except Exception:
+                return None
+    m = re.match(r"(\d{1,4})[./-](\d{1,2})[./-](\d{1,4})", s)
+    if m:
+        a, b, c = m.group(1), m.group(2), m.group(3)
+        try:
+            if len(a) == 4:
+                return date(int(a), int(b), int(c))
+            return date(int(c), int(b), int(a))
+        except Exception:
+            return None
+    return None
+
+
+def load_eng_words(app_data: dict) -> list:
+    """Vocabulary source for daily Telegram picks.
+
+    Prefer the in-app DB (engWords). Fall back to a few likely aliases so a
+    parallel agent landing under a nearby key still wires up without a second
+    pass. Entries may be archived/deleted — skip those.
+    """
+    for key in ("engWords", "englishWords", "engWordBank"):
+        raw = app_data.get(key)
+        if isinstance(raw, list) and raw:
+            return [w for w in raw if isinstance(w, dict) and not w.get("archived") and not w.get("deleted")]
+    return []
+
+
+def select_eng_words_for_reminder(words: list, reminder: dict, today: date) -> list:
+    """Filter/order/limit words the same way FlashcardsTab.startSession does."""
+    pool = list(words)
+    date_range = str(reminder.get("dateRange") or "all")
+    if date_range != "all":
+        try:
+            days = int(date_range)
+        except Exception:
+            days = 0
+        if days > 0:
+            cutoff = today - timedelta(days=days)
+            filtered = []
+            for w in pool:
+                d = eng_parse_date(w.get("date") or w.get("createdAt") or w.get("addedAt"), today.year)
+                if d is None:
+                    # Keep undated words so a brand-new DB without dates still
+                    # produces a non-empty daily set.
+                    filtered.append(w)
+                elif d >= cutoff:
+                    filtered.append(w)
+            pool = filtered
+
+    order = reminder.get("order") or "random"
+    if order == "random":
+        random.shuffle(pool)
+    elif order == "newest":
+        pool.sort(
+            key=lambda w: (
+                eng_parse_date(w.get("date") or w.get("createdAt") or w.get("addedAt"), today.year)
+                or date.min
+            ),
+            reverse=True,
+        )
+    elif order == "oldest":
+        pool.sort(
+            key=lambda w: (
+                eng_parse_date(w.get("date") or w.get("createdAt") or w.get("addedAt"), today.year)
+                or date.max
+            )
+        )
+
+    try:
+        count = max(1, min(50, int(reminder.get("count") or 5)))
+    except Exception:
+        count = 5
+    return pool[:count]
+
+
+def format_eng_words_message(words: list, reminder: dict) -> str:
+    order_labels = {"random": "рандом", "newest": "самые новые", "oldest": "самые старые"}
+    range_labels = {"7": "7 дней", "14": "14 дней", "30": "30 дней", "all": "всё время"}
+    order = order_labels.get(reminder.get("order"), reminder.get("order") or "")
+    rng = range_labels.get(str(reminder.get("dateRange")), str(reminder.get("dateRange") or ""))
+    lines = [
+        "📚 <b>Слова на сегодня</b>",
+        f"<i>{len(words)} шт · {html.escape(str(order))} · {html.escape(str(rng))}</i>",
+        "",
+    ]
+    for i, w in enumerate(words, 1):
+        en = html.escape(str(w.get("en") or w.get("word") or w.get("english") or "").strip())
+        ru = html.escape(str(w.get("ru") or w.get("translation") or w.get("russian") or "").strip())
+        if not en:
+            continue
+        if ru:
+            lines.append(f"{i}. <b>{en}</b> — {ru}")
+        else:
+            lines.append(f"{i}. <b>{en}</b>")
+    lines.append("")
+    lines.append("Используй их в сегодняшнем speaking practice 🎙")
+    return "\n".join(lines)
+
+
 def _tick():
     token = get_token()
     if not token:
@@ -3946,6 +4092,37 @@ def _tick():
                     })
     except Exception as e:
         print(f"[{now_str} MSK] diet reminder error: {e}")
+
+    # ── English daily words: speak-practice vocabulary pick ────────────────
+    try:
+        eng_reminder = app_data_raw.get("engWordReminder") or {}
+        cfg_time = str(eng_reminder.get("time", "")).strip()
+        if eng_reminder.get("enabled") and cfg_time == now_str:
+            days = eng_reminder.get("days", [1, 2, 3, 4, 5]) or []
+            recipients = recipients_for(app_data_raw, subs, "english")
+            if today_js not in days:
+                print(f"[{now_str} MSK] eng words: today ({today_js}) not in days {days}")
+            elif _already_fired("eng_words", "daily", today_iso, now_str):
+                print(f"[{now_str} MSK] eng words: already fired this minute")
+            elif not recipients:
+                print(f"[{now_str} MSK] eng words: no subscribers routed to english")
+            else:
+                words = load_eng_words(app_data_raw)
+                if not words:
+                    # База слов ещё не залита в app data — настройки и
+                    # маршрутизация уже работают; досылать нечего.
+                    print(f"[{now_str} MSK] eng words: engWords empty — skip send ({len(recipients)} subscriber(s) ready)")
+                else:
+                    picked = select_eng_words_for_reminder(words, eng_reminder, today_date)
+                    if not picked:
+                        print(f"[{now_str} MSK] eng words: filter/order left an empty set")
+                    else:
+                        text = format_eng_words_message(picked, eng_reminder)
+                        print(f"[{now_str} MSK] → eng words ({len(picked)} of {len(words)}) to {len(recipients)} subscriber(s)")
+                        for cid in recipients:
+                            send_message(token, cid, text)
+    except Exception as e:
+        print(f"[{now_str} MSK] eng words reminder error: {e}")
 
     # ── Daily checklist reminder ───────────────────────────────────────────
     try:
