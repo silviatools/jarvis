@@ -352,6 +352,37 @@
   .hard-toggle.will-mark{background:rgba(109,213,140,.12);color:var(--green);border-color:var(--green)}
   .hard-toggle.will-unmark{background:rgba(154,149,140,.12);color:var(--text-dim);border-color:var(--text-dim);text-decoration:line-through}
   .hard-toggle .star{font-size:13px}
+
+  .nav-tab.wordbase-tab{
+    background:rgba(15,118,110,.14);color:#5eead4;border:1px solid rgba(45,212,191,.35);
+    font-weight:600;
+  }
+  .nav-tab.wordbase-tab.active{
+    background:#0f766e;color:#f0fdfa;border-color:#0f766e;
+  }
+  .nav-tab.wordbase-tab:hover:not(.active){background:rgba(15,118,110,.22);color:#99f6e4}
+
+  .wb-wrap{display:flex;flex-direction:column;gap:14px}
+  .wb-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  .wb-toolbar h2{font-family:'Fraunces',serif;font-size:20px;margin:0}
+  .wb-table-wrap{overflow:auto;border:1px solid var(--border);border-radius:14px;background:var(--panel)}
+  .wb-table{width:100%;border-collapse:collapse;min-width:560px}
+  .wb-table th{
+    text-align:left;font-family:'JetBrains Mono',monospace;font-size:10px;
+    color:var(--text-dim);text-transform:uppercase;letter-spacing:.12em;
+    padding:12px 14px;border-bottom:1px solid var(--border);
+  }
+  .wb-table td{padding:6px 8px;border-bottom:1px solid var(--border)}
+  .wb-table tr.dirty td{background:rgba(15,118,110,.08)}
+  .wb-table input{
+    width:100%;background:transparent;border:1px solid transparent;color:var(--text);
+    padding:8px 10px;border-radius:8px;font-family:inherit;font-size:14px;
+  }
+  .wb-table input:focus{outline:none;border-color:var(--accent);background:var(--bg-2)}
+  .wb-msg{font-size:13px;padding:10px 14px;border-radius:10px;border:1px solid var(--border)}
+  .wb-msg.ok{background:rgba(109,213,140,.08);color:var(--green);border-color:rgba(109,213,140,.3)}
+  .wb-msg.err{background:rgba(255,94,108,.08);color:var(--red);border-color:rgba(255,94,108,.3)}
+  .wb-msg.loading{background:rgba(240,193,75,.08);color:var(--accent);border-color:rgba(240,193,75,.3)}
 </style>
 </head>
 <body>
@@ -371,12 +402,39 @@
   </header>
 
   <nav class="nav-tabs">
+    <button class="nav-tab wordbase-tab" data-page="wordbase">📚 Word base</button>
     <button class="nav-tab active" data-page="cards">🃏 Flashcards</button>
     <button class="nav-tab" data-page="fill">✍ Fill-in-the-blank</button>
     <button class="nav-tab" data-page="mysentence">📝 My Sentence</button>
     <button class="nav-tab" data-page="cipher">🔐 Cipher Sentences</button>
     <button class="nav-tab" data-page="typing">⌨ Typing mode</button>
   </nav>
+
+  <!-- PAGE: WORD BASE -->
+  <div class="page" id="page-wordbase">
+    <div class="panel wb-wrap">
+      <div class="wb-toolbar">
+        <div>
+          <h2>Word base</h2>
+          <div class="hint" style="margin-top:4px">Словарь из Google Sheets. Правки сохраняются только по кнопке «Сохранить».</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span id="wbCount" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text-dim)"></span>
+          <span id="wbDirty" style="display:none;font-size:11px;padding:4px 10px;border-radius:8px;background:rgba(240,193,75,.12);color:var(--accent);border:1px solid rgba(240,193,75,.3)">не сохранено</span>
+          <button id="btnWbSave" class="primary" disabled>Сохранить</button>
+        </div>
+      </div>
+      <div id="wbMsg" class="wb-msg" style="display:none"></div>
+      <div class="wb-table-wrap">
+        <table class="wb-table">
+          <thead>
+            <tr><th style="width:28%">Дата</th><th style="width:36%">English</th><th style="width:36%">Русский</th></tr>
+          </thead>
+          <tbody id="wbBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 
   <!-- PAGE: CARDS -->
   <div class="page active" id="page-cards">
@@ -869,6 +927,10 @@ $('btnLoad').onclick = async () => {
     localStorage.setItem('eng_raw_data', JSON.stringify(parsed));
     localStorage.setItem('eng_raw_at', S.rawDataAt);
     setStatus('ok', `Loaded ${parsed.length} words · just now`);
+    if(WB.seeded || document.querySelector('.nav-tab.active')?.dataset.page==='wordbase'){
+      WB.acceptReload = true;
+      wbLoadFromData();
+    }
   } catch(e){
     setStatus('err', 'Error: ' + e.message);
   }
@@ -1423,14 +1485,194 @@ document.addEventListener('keydown', e => {
 /* Open modal at start if no key */
 if(!S.apiKey) setTimeout(openModal, 300);
 
+
+/* ============== WORD BASE ============== */
+const WB = {
+  rows: [],
+  saving: false,
+  seeded: false,
+  acceptReload: false,
+};
+const WB_PAD = 5;
+const WB_MON = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+function wbToday(){
+  const d = new Date();
+  return `${d.getDate()} ${WB_MON[d.getMonth()]} ${d.getFullYear()}`;
+}
+function wbDisplayDate(v){
+  if(v===null||v===undefined||v==='') return '';
+  const d = parseDate(v);
+  if(d) return `${d.getDate()} ${WB_MON[d.getMonth()]} ${d.getFullYear()}`;
+  return String(v);
+}
+function wbUid(){ return 'wb_'+Math.random().toString(36).slice(2,10); }
+function wbBlank(){ return { id: wbUid(), rowIndex: null, date:'', en:'', ru:'', baseline: null }; }
+function wbIsDirty(r){
+  const has = !!(r.en.trim()||r.ru.trim()||r.date.trim());
+  if(!r.baseline) return has;
+  return r.date!==r.baseline.date || r.en!==r.baseline.en || r.ru!==r.baseline.ru;
+}
+function wbAnyDirty(){ return WB.rows.some(wbIsDirty); }
+function wbFromRaw(list){
+  const rows = (list||[]).map(w=>{
+    const date = wbDisplayDate(w.date), en=w.en||'', ru=w.ru||'';
+    return { id: wbUid(), rowIndex: w.rowIndex, date, en, ru, baseline: { date, en, ru, rowIndex: w.rowIndex } };
+  });
+  let trail = 0;
+  for(let i=rows.length-1;i>=0;i--){
+    if(!rows[i].en && !rows[i].ru && !rows[i].date) trail++; else break;
+  }
+  while(trail < WB_PAD){ rows.push(wbBlank()); trail++; }
+  return rows;
+}
+function wbEnsurePad(list){
+  const next = list.slice();
+  let trail = 0;
+  for(let i=next.length-1;i>=0;i--){
+    if(!next[i].en && !next[i].ru && !next[i].date) trail++; else break;
+  }
+  while(trail < WB_PAD){ next.push(wbBlank()); trail++; }
+  return next;
+}
+function wbSetMsg(type, text){
+  const el = $('wbMsg');
+  if(!text){ el.style.display='none'; return; }
+  el.style.display='block';
+  el.className = 'wb-msg'+(type?(' '+type):'');
+  el.textContent = text;
+}
+function wbSyncToolbar(){
+  const dirty = wbAnyDirty();
+  const filled = WB.rows.filter(r=>r.en.trim()).length;
+  $('wbCount').textContent = filled+' слов';
+  $('wbDirty').style.display = dirty ? '' : 'none';
+  $('btnWbSave').disabled = WB.saving || !dirty;
+  $('btnWbSave').textContent = WB.saving ? '⏳ Сохранение…' : 'Сохранить';
+}
+function wbRender(){
+  const body = $('wbBody');
+  body.innerHTML = WB.rows.map((r,i)=>`
+    <tr class="${wbIsDirty(r)?'dirty':''}" data-id="${r.id}">
+      <td><input data-f="date" value="${escapeHtml(r.date)}" placeholder="Сегодня" ${WB.saving?'disabled':''} /></td>
+      <td><input data-f="en" value="${escapeHtml(r.en)}" placeholder="word" ${WB.saving?'disabled':''} /></td>
+      <td><input data-f="ru" value="${escapeHtml(r.ru)}" placeholder="перевод" ${WB.saving?'disabled':''} /></td>
+    </tr>
+  `).join('');
+  body.querySelectorAll('input').forEach(inp=>{
+    inp.oninput = () => {
+      const id = inp.closest('tr').dataset.id;
+      const f = inp.dataset.f;
+      const val = inp.value;
+      WB.rows = wbEnsurePad(WB.rows.map(r=>{
+        if(r.id!==id) return r;
+        const patch = {...r, [f]: val};
+        if((f==='en'||f==='ru') && val.trim() && !String(patch.date||'').trim()) patch.date = wbToday();
+        return patch;
+      }));
+      // update date field in DOM if auto-filled
+      const row = WB.rows.find(x=>x.id===id);
+      if(row && (f==='en'||f==='ru')){
+        const dateInp = inp.closest('tr').querySelector('input[data-f="date"]');
+        if(dateInp && dateInp.value !== row.date) dateInp.value = row.date;
+      }
+      inp.closest('tr').classList.toggle('dirty', wbIsDirty(row));
+      wbSyncToolbar();
+      wbSetMsg('','');
+      // if last rows filled, re-render to show new blanks
+      const last = WB.rows[WB.rows.length-1];
+      if(last && (last.en||last.ru||last.date)) wbRender();
+    };
+  });
+  wbSyncToolbar();
+}
+function wbLoadFromData(){
+  if(wbAnyDirty() && WB.seeded && !WB.acceptReload) return;
+  WB.acceptReload = false;
+  WB.rows = wbFromRaw(S.rawData);
+  WB.seeded = true;
+  wbRender();
+}
+async function wbSave(){
+  if(WB.saving) return;
+  const changed = WB.rows.filter(wbIsDirty);
+  const toWrite = changed.filter(r=>r.en.trim());
+  const incomplete = changed.filter(r=>!r.en.trim() && (r.ru.trim()||r.date.trim()));
+  if(!toWrite.length && !incomplete.length){ wbSetMsg('','Нет изменений'); return; }
+  if(incomplete.length){ wbSetMsg('err',`У ${incomplete.length} строк(и) нет английского слова`); return; }
+  WB.saving = true; wbSyncToolbar();
+  wbSetMsg('loading','Сохранение… таблица останется открытой до завершения');
+  try{
+    await new Promise((resolve,reject)=>{
+      requireAuth(async()=>{
+        try{
+          const updates = toWrite.filter(r=>r.rowIndex).map(r=>({
+            range: `${S.sheetName}!A${r.rowIndex}:C${r.rowIndex}`,
+            values: [[r.date.trim(), r.en.trim(), r.ru.trim()]]
+          }));
+          if(updates.length){
+            const r = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${S.sheetId}/values:batchUpdate`,{
+              method:'POST',
+              headers:{'Authorization':'Bearer '+S.accessToken,'Content-Type':'application/json'},
+              body: JSON.stringify({valueInputOption:'USER_ENTERED', data: updates})
+            });
+            if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.error?.message||'HTTP '+r.status); }
+          }
+          const appends = toWrite.filter(r=>!r.rowIndex).map(r=>[
+            r.date.trim()||wbToday(), r.en.trim(), r.ru.trim(), '', '', false, false, false, false
+          ]);
+          if(appends.length){
+            const r = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${S.sheetId}/values/${encodeURIComponent(S.sheetName)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,{
+              method:'POST',
+              headers:{'Authorization':'Bearer '+S.accessToken,'Content-Type':'application/json'},
+              body: JSON.stringify({values: appends})
+            });
+            if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.error?.message||'HTTP '+r.status); }
+          }
+          wbSetMsg('loading','Сохранено. Обновляю таблицу…');
+          WB.acceptReload = true;
+          // reload sheets
+          const range = encodeURIComponent(S.sheetName);
+          const url = `https://sheets.googleapis.com/v4/spreadsheets/${S.sheetId}/values/${range}?key=${S.apiKey}&dateTimeRenderOption=FORMATTED_STRING&valueRenderOption=UNFORMATTED_VALUE`;
+          const rr = await fetch(url);
+          if(!rr.ok){ const e=await rr.json().catch(()=>({})); throw new Error(e.error?.message||'HTTP '+rr.status); }
+          const data = await rr.json();
+          const parsed = parseRows(data.values||[]);
+          S.rawData = parsed;
+          S.rawDataAt = new Date().toISOString();
+          localStorage.setItem('eng_raw_data', JSON.stringify(parsed));
+          localStorage.setItem('eng_raw_at', S.rawDataAt);
+          setStatus('ok', `Loaded ${parsed.length} words · just now`);
+          wbLoadFromData();
+          wbSetMsg('ok', `✓ Сохранено (${toWrite.length})`);
+          resolve();
+        }catch(e){ reject(e); }
+      });
+    });
+  }catch(e){
+    wbSetMsg('err','✗ '+e.message);
+  }finally{
+    WB.saving = false; wbSyncToolbar();
+  }
+}
+$('btnWbSave').onclick = wbSave;
+
 /* ============== NAVIGATION ============== */
 document.querySelectorAll('.nav-tab').forEach(tab => {
   tab.onclick = () => {
     if(tab.dataset.page === 'more') return;
+    const cur = document.querySelector('.nav-tab.active');
+    const curPage = cur && cur.dataset.page;
+    if(WB.saving){ alert('Дождитесь окончания сохранения Word base.'); return; }
+    if(curPage === 'wordbase' && tab.dataset.page !== 'wordbase' && wbAnyDirty()
+      && !confirm('В Word base есть несохранённые изменения. Уйти без сохранения?')) return;
     document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
     document.getElementById('page-' + tab.dataset.page).classList.add('active');
+    if(tab.dataset.page === 'wordbase'){
+      wbLoadFromData();
+      if((!S.rawData || !S.rawData.length) && S.apiKey) $('btnLoad').click();
+    }
     if(tab.dataset.page === 'fill') fillInit();
     if(tab.dataset.page === 'typing' && S.rawData) {
       const count = S.rawData.length;
@@ -1879,6 +2121,7 @@ function levenshtein(a, b){
 
 // init fill if data already loaded
 if(S.rawData) setTimeout(fillInit, 100);
+if(S.rawData) setTimeout(()=>{ WB.rows = wbFromRaw(S.rawData); WB.seeded = true; }, 50);
 
 /* ============== MY SENTENCE (write your own example + say it out loud) ============== */
 const MYSENT_DEFAULT_PROMPT = `You are a friendly, encouraging English teacher. The student was given the word "{word}" (translation: "{translation}") and wrote their own example sentence with it:

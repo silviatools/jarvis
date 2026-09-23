@@ -1640,6 +1640,8 @@ function App() {
   // «Назад» браузера, авто-переключение на бездействии) не должен молча
   // стирать его — см. использование ниже.
   const [budgetPlansDirty, setBudgetPlansDirty] = useState(false);
+  // Word base в English: несохранённые правки таблицы — не уходить молча.
+  const [engWordBaseDirty, setEngWordBaseDirty] = useState(false);
 
   // On mount: try to load from server, merge with localStorage to prevent data loss
   useEffect(() => {
@@ -1799,6 +1801,12 @@ function App() {
           return;
         }
       }
+      if (tab === 'misc' && miscTab === 'english' && engWordBaseDirty && getMiscSubFromPath() !== 'english') {
+        if (!confirm('В Word base есть несохранённые изменения. Уйти без сохранения?')) {
+          window.history.pushState(null, '', '/misc');
+          return;
+        }
+      }
       navFromPopstate.current = true;
       setTab(getTabFromPath());
       setPlannerTab(getPlannerSubFromPath());
@@ -1806,7 +1814,7 @@ function App() {
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [tab, budgetPlansDirty]);
+  }, [tab, budgetPlansDirty, miscTab, engWordBaseDirty]);
 
   // Разовая миграция legacy-рационов: строки блюд → массивы {product, amount}.
   // Раньше нормализация была только «на лету» и никогда не сохранялась, так что
@@ -1851,9 +1859,11 @@ function App() {
   // То же самое для «Бюджет → Планы» с открытым несохранённым черновиком —
   // молчаливый переход на главную стирал бы правки.
   const inGym = tab === 'misc' && miscTab === 'gym';
+  // English: длинные сессии (карточки / Word base) — не выкидывать на главную.
+  const inEnglish = tab === 'misc' && miscTab === 'english';
   const inDirtyBudgetPlan = tab === 'budget' && budgetPlansDirty;
   useEffect(() => {
-    if (!weatherAutoSwitch || inGym || inDirtyBudgetPlan) return;
+    if (!weatherAutoSwitch || inGym || inEnglish || inDirtyBudgetPlan) return;
     const intervalMs = Math.max(0.5, Number(weatherAutoSwitchMinutes) || 2) * 60 * 1000;
     let timerId = null;
 
@@ -1872,7 +1882,7 @@ function App() {
       if (timerId) clearTimeout(timerId);
       events.forEach(ev => window.removeEventListener(ev, reset));
     };
-  }, [weatherAutoSwitch, weatherAutoSwitchMinutes, inGym, inDirtyBudgetPlan]);
+  }, [weatherAutoSwitch, weatherAutoSwitchMinutes, inGym, inEnglish, inDirtyBudgetPlan]);
 
   // Авто-синхронизация конфига уведомлений с jarvis.py
   useEffect(() => {
@@ -1905,6 +1915,8 @@ function App() {
   const requestSetTab = (id) => {
     if (id !== tab && tab === 'budget' && budgetPlansDirty
       && !confirm('В открытом плане бюджета есть несохранённые изменения. Уйти без сохранения?')) return;
+    if (id !== tab && tab === 'misc' && miscTab === 'english' && engWordBaseDirty
+      && !confirm('В Word base есть несохранённые изменения. Уйти без сохранения?')) return;
     setTab(id);
   };
 
@@ -1936,6 +1948,8 @@ function App() {
               setSettingsTab={setSettingsTab}
               voiceFocus={voiceFocus}
               onVoiceFocusConsumed={() => setVoiceFocus(null)}
+              engWordBaseDirty={engWordBaseDirty}
+              onEngWordBaseDirty={setEngWordBaseDirty}
             />
           )}
         </main>
@@ -8116,6 +8130,18 @@ class EngErrorBoundary extends React.Component {
 }
 
 const _ENG_RU_MON = {'январ':0,'феврал':1,'март':2,'апрел':3,'мая':4,'май':4,'июн':5,'июл':6,'август':7,'сентябр':8,'октябр':9,'ноябр':10,'декабр':11};
+const _ENG_RU_MON_NAMES = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+function engFormatRuDate(d){
+  if(!(d instanceof Date) || isNaN(d)) return '';
+  return `${d.getDate()} ${_ENG_RU_MON_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+}
+function engFormatRuToday(){ return engFormatRuDate(new Date()); }
+function engDisplayDate(v){
+  if(v===null||v===undefined||v==='') return '';
+  const d = engParseDate(v);
+  if(d) return engFormatRuDate(d);
+  return String(v);
+}
 function engParseDate(s,inferYear){
   if(s===null||s===undefined||s==='') return null;
   if(typeof s==='number'){const d=new Date((s-25569)*86400000);return isNaN(d)?null:d;}
@@ -8347,6 +8373,283 @@ const ENG_CARD_S={
   face:{position:'absolute',inset:0,backfaceVisibility:'hidden',WebkitBackfaceVisibility:'hidden',borderRadius:'1rem',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'28px',textAlign:'center',background:'var(--surface)',border:'1px solid var(--border)'},
   back:{transform:'rotateY(180deg)'},
 };
+
+
+function WordBaseTab({ rawData, setRawData, cfg, loadSheets, onDirtyChange, savingRef }){
+  const PAD = 5;
+  const uid = () => 'wb_' + Math.random().toString(36).slice(2, 10);
+  const blank = () => ({ id: uid(), rowIndex: null, date: '', en: '', ru: '', baseline: null });
+  const fromRaw = (list) => {
+    const rows = (list || []).map(w => {
+      const date = engDisplayDate(w.date);
+      const en = w.en || '';
+      const ru = w.ru || '';
+      return { id: uid(), rowIndex: w.rowIndex, date, en, ru, baseline: { date, en, ru, rowIndex: w.rowIndex } };
+    });
+    let trail = 0;
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (!rows[i].en && !rows[i].ru && !rows[i].date) trail++;
+      else break;
+    }
+    while (trail < PAD) { rows.push(blank()); trail++; }
+    return rows;
+  };
+
+  const [rows, setRows] = useState(() => fromRaw(rawData));
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [msgType, setMsgType] = useState('');
+  const seededRef = useRef(false);
+  const tcRef = useRef(null);
+  const atRef = useRef(null);
+
+  const isDirtyRow = (r) => {
+    const has = !!(r.en.trim() || r.ru.trim() || r.date.trim());
+    if (!r.baseline) return has;
+    return r.date !== r.baseline.date || r.en !== r.baseline.en || r.ru !== r.baseline.ru;
+  };
+  const dirty = rows.some(isDirtyRow);
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
+  const acceptReloadRef = useRef(false);
+
+  useEffect(() => { onDirtyChange && onDirtyChange(dirty); }, [dirty]);
+  useEffect(() => () => { onDirtyChange && onDirtyChange(false); }, []);
+  useEffect(() => { if (savingRef) savingRef.current = saving; }, [saving]);
+
+  // Первичное заполнение из Google Sheets (и обновление после Load / Save),
+  // но не затираем локальные несохранённые правки.
+  useEffect(() => {
+    if (dirtyRef.current && seededRef.current && !acceptReloadRef.current) return;
+    acceptReloadRef.current = false;
+    setRows(fromRaw(rawData));
+    seededRef.current = true;
+    setMsg(m => m); // keep save status message
+  }, [rawData]);
+
+  // Если данных ещё нет — подтянуть лист автоматически при открытии вкладки.
+  useEffect(() => {
+    if (rawData && rawData.length) return;
+    if (!cfg.apiKey) return;
+    loadSheets && loadSheets();
+  }, []);
+
+  useEffect(() => {
+    if (!cfg.clientId) return;
+    const load = () => {
+      if (!window.google?.accounts) return;
+      try {
+        tcRef.current = window.google.accounts.oauth2.initTokenClient({
+          client_id: cfg.clientId,
+          scope: 'https://www.googleapis.com/auth/spreadsheets',
+          callback: (r) => { if (r.access_token) atRef.current = r.access_token; },
+        });
+      } catch (e) {}
+    };
+    if (window.google?.accounts) { load(); return; }
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.onload = () => setTimeout(load, 300);
+    document.head.appendChild(s);
+  }, [cfg.clientId]);
+
+  const ensurePad = (list) => {
+    const next = list.slice();
+    let trail = 0;
+    for (let i = next.length - 1; i >= 0; i--) {
+      if (!next[i].en && !next[i].ru && !next[i].date) trail++;
+      else break;
+    }
+    while (trail < PAD) { next.push(blank()); trail++; }
+    return next;
+  };
+
+  const updateCell = (id, field, value) => {
+    setRows(prev => {
+      const next = prev.map(r => {
+        if (r.id !== id) return r;
+        const patch = { ...r, [field]: value };
+        // Дата «Сегодня» — когда впервые появляется значение в EN/RU при пустой дате.
+        if ((field === 'en' || field === 'ru') && value.trim() && !String(patch.date || '').trim()) {
+          patch.date = engFormatRuToday();
+        }
+        return patch;
+      });
+      return ensurePad(next);
+    });
+    setMsg('');
+  };
+
+  const requireToken = () => new Promise((resolve, reject) => {
+    if (atRef.current) { resolve(atRef.current); return; }
+    if (!cfg.clientId) { reject(new Error('OAuth Client ID не задан в ⚙ Settings')); return; }
+    if (!tcRef.current) { reject(new Error('OAuth ещё не готов — попробуйте снова')); return; }
+    tcRef.current.requestAccessToken({ prompt: 'consent' });
+    let tries = 0;
+    const wait = setInterval(() => {
+      if (atRef.current) { clearInterval(wait); resolve(atRef.current); }
+      else if (++tries > 40) { clearInterval(wait); reject(new Error('OAuth timeout')); }
+    }, 500);
+  });
+
+  const save = async () => {
+    if (saving) return;
+    const changed = rows.filter(isDirtyRow);
+    const toWrite = changed.filter(r => r.en.trim());
+    const incomplete = changed.filter(r => !r.en.trim() && (r.ru.trim() || r.date.trim()));
+    if (!toWrite.length && !incomplete.length) {
+      setMsgType(''); setMsg('Нет изменений для сохранения'); return;
+    }
+    if (incomplete.length) {
+      setMsgType('err');
+      setMsg(`У ${incomplete.length} строк(и) нет английского слова — заполните EN или очистите строку`);
+      return;
+    }
+    if (!cfg.sheetId || !cfg.sheetName) {
+      setMsgType('err'); setMsg('Spreadsheet ID / sheet name не заданы'); return;
+    }
+
+    setSaving(true);
+    setMsgType('loading');
+    setMsg('Сохранение… таблица останется открытой до завершения');
+    try {
+      const token = await requireToken();
+      const updates = toWrite.filter(r => r.rowIndex).map(r => ({
+        range: `${cfg.sheetName}!A${r.rowIndex}:C${r.rowIndex}`,
+        values: [[r.date.trim(), r.en.trim(), r.ru.trim()]],
+      }));
+      if (updates.length) {
+        const r = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values:batchUpdate`,
+          {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: updates }),
+          }
+        );
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          throw new Error(e.error?.message || 'HTTP ' + r.status);
+        }
+      }
+      const appends = toWrite.filter(r => !r.rowIndex).map(r => [
+        r.date.trim() || engFormatRuToday(),
+        r.en.trim(),
+        r.ru.trim(),
+        '', '', false, false, false, false,
+      ]);
+      if (appends.length) {
+        const r = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent(cfg.sheetName)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+          {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ values: appends }),
+          }
+        );
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          throw new Error(e.error?.message || 'HTTP ' + r.status);
+        }
+      }
+
+      // Перечитать лист → таблица остаётся открытой, строки обновляются с rowIndex.
+      setMsgType('loading');
+      setMsg('Сохранено. Обновляю таблицу…');
+      acceptReloadRef.current = true;
+      onDirtyChange && onDirtyChange(false);
+      if (loadSheets) await loadSheets();
+      setMsgType('ok');
+      setMsg(`✓ Сохранено: ${updates.length ? updates.length + ' обновл.' : ''}${updates.length && appends.length ? ' · ' : ''}${appends.length ? appends.length + ' нов.' : ''}`);
+    } catch (e) {
+      setMsgType('err');
+      setMsg('✗ ' + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const filled = rows.filter(r => r.en.trim()).length;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="font-display text-xl">Word base</h2>
+          <p className="text-sm text-[var(--text-muted)] mt-1">
+            Словарь из Google Sheets. Правки сохраняются только по кнопке «Сохранить».
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-[var(--text-subtle)] font-mono">{filled} слов</span>
+          {dirty && <span className="text-xs px-2 py-1 rounded-lg bg-amber-50 text-amber-700 border border-amber-200">не сохранено</span>}
+          <button
+            onClick={save}
+            disabled={saving || !dirty}
+            className="btn-primary text-sm py-2 px-4 disabled:opacity-40"
+          >{saving ? '⏳ Сохранение…' : 'Сохранить'}</button>
+        </div>
+      </div>
+
+      {msg && (
+        <div className={`text-sm px-3 py-2 rounded-xl border ${
+          msgType === 'err' ? 'bg-red-50 text-red-700 border-red-200'
+          : msgType === 'ok' ? 'bg-green-50 text-green-700 border-green-200'
+          : msgType === 'loading' ? 'bg-amber-50 text-amber-800 border-amber-200'
+          : 'bg-[var(--surface)] text-[var(--text-muted)] border-[var(--border)]'
+        }`}>{msg}</div>
+      )}
+
+      <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
+        <table className="w-full text-sm" style={{ borderCollapse: 'collapse', minWidth: 560 }}>
+          <thead>
+            <tr className="text-left text-[11px] uppercase tracking-wider text-[var(--text-subtle)] border-b border-[var(--border)]">
+              <th className="px-3 py-2.5 font-medium w-[28%]">Дата</th>
+              <th className="px-3 py-2.5 font-medium w-[36%]">English</th>
+              <th className="px-3 py-2.5 font-medium w-[36%]">Русский</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={r.id} className={`border-b border-[var(--border)] last:border-0 ${isDirtyRow(r) ? 'bg-teal-50/40' : ''}`}>
+                <td className="p-1.5">
+                  <input
+                    value={r.date}
+                    disabled={saving}
+                    onChange={e => updateCell(r.id, 'date', e.target.value)}
+                    placeholder="Сегодня"
+                    className="w-full bg-transparent border border-transparent focus:border-[var(--border-strong)] rounded-lg px-2 py-1.5 outline-none"
+                  />
+                </td>
+                <td className="p-1.5">
+                  <input
+                    value={r.en}
+                    disabled={saving}
+                    onChange={e => updateCell(r.id, 'en', e.target.value)}
+                    placeholder="word"
+                    className="w-full bg-transparent border border-transparent focus:border-[var(--border-strong)] rounded-lg px-2 py-1.5 outline-none font-medium"
+                  />
+                </td>
+                <td className="p-1.5">
+                  <input
+                    value={r.ru}
+                    disabled={saving}
+                    onChange={e => updateCell(r.id, 'ru', e.target.value)}
+                    placeholder="перевод"
+                    className="w-full bg-transparent border border-transparent focus:border-[var(--border-strong)] rounded-lg px-2 py-1.5 outline-none"
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-xs text-[var(--text-subtle)]">
+        Пустые строки внизу появляются сами. Дата подставляется автоматически (сегодня), её можно изменить.
+      </p>
+    </div>
+  );
+}
 
 function EngSyncBtn({cfg,toMark,toUnmark,rawData,tcRef,atRef}){
   const [st,setSt]=useState('idle');const [msg,setMsg]=useState('');
@@ -9346,7 +9649,7 @@ const engLegacyAI = () => ({
   ollamaModel: localStorage.getItem('ai_ollama_model') || 'llama3',
 });
 
-function EnglishView({ data, setData, embedded }){
+function EnglishView({ data, setData, embedded, onDirtyChange }){
   // Источник правды — синхронизируемая БД (data.engConfig / data.engAI), как
   // у всех остальных настроек: переживает чистку localStorage и доступна со
   // всех устройств. localStorage остаётся только как источник миграции.
@@ -9364,6 +9667,19 @@ function EnglishView({ data, setData, embedded }){
   const [showCfg,setShowCfg]=useState(false);
   const [showAI,setShowAI]=useState(false);
   const [showPlan,setShowPlan]=useState(false);
+  const [wordBaseDirty,setWordBaseDirty]=useState(false);
+  const wordBaseSavingRef=useRef(false);
+
+  useEffect(()=>{ onDirtyChange && onDirtyChange(wordBaseDirty); }, [wordBaseDirty]);
+  useEffect(()=>()=>{ onDirtyChange && onDirtyChange(false); }, []);
+
+  const requestEngTab=(id)=>{
+    if(id===engTab) return;
+    if(wordBaseSavingRef.current){ alert('Дождитесь окончания сохранения Word base.'); return; }
+    if(engTab==='wordbase' && wordBaseDirty
+      && !confirm('В Word base есть несохранённые изменения. Уйти без сохранения?')) return;
+    setEngTab(id);
+  };
 
   const saveCfg=(c)=>setData(d=>({...d, engConfig:{...c, updatedAt: Date.now()}}));
   const saveAI=(a)=>setData(d=>({...d, engAI:{...a, updatedAt: Date.now()}}));
@@ -9422,12 +9738,21 @@ function EnglishView({ data, setData, embedded }){
             <button onClick={loadSheets} disabled={loading} className="btn-primary text-sm py-2 px-4">{loading?'⏳':'↻'} Load</button>
           </div>
         </div>
-        <div className="flex gap-2 py-3 border-b border-[var(--border)]">
+        <div className="flex gap-2 py-3 border-b border-[var(--border)] overflow-x-auto">
+          <button
+            onClick={()=>requestEngTab('wordbase')}
+            className={`px-3.5 py-2 rounded-xl text-sm font-semibold transition-all flex-shrink-0 border ${
+              engTab==='wordbase'
+                ? 'bg-teal-700 text-white border-teal-700 shadow-sm'
+                : 'bg-teal-50 text-teal-800 border-teal-300 hover:bg-teal-100'
+            }`}
+          >📚 Word base</button>
           {[['cards','🃏 Flashcards'],['fill','✍ Fill in the blank'],['mysentence','📝 My Sentence'],['cipher','🔐 Cipher'],['story','📖 Story'],['typing','⌨ Typing']].map(([id,l])=>(
-            <button key={id} onClick={()=>setEngTab(id)} className={`px-3 py-2 rounded-xl text-sm font-medium transition-all ${engTab===id?'bg-[var(--text)] text-white':'text-[var(--text-muted)] hover:text-[var(--text)]'}`}>{l}</button>
+            <button key={id} onClick={()=>requestEngTab(id)} className={`px-3 py-2 rounded-xl text-sm font-medium transition-all flex-shrink-0 ${engTab===id?'bg-[var(--text)] text-white':'text-[var(--text-muted)] hover:text-[var(--text)]'}`}>{l}</button>
           ))}
         </div>
         <div className="pt-6">
+          {engTab==='wordbase'&&<WordBaseTab rawData={rawData} setRawData={setRawData} cfg={cfg} loadSheets={loadSheets} onDirtyChange={setWordBaseDirty} savingRef={wordBaseSavingRef}/>}
           {engTab==='cards'&&<FlashcardsTab rawData={rawData} cfg={cfg} ai={ai}/>}
           {engTab==='fill'&&<FillTab rawData={rawData} ai={ai}/>}
           {engTab==='mysentence'&&<MySentenceTab rawData={rawData} ai={ai} prompt={mySentPrompt} onSavePrompt={saveMySentPrompt}/>}
@@ -31049,7 +31374,7 @@ const resolveMiscLayout = (data, preferredRows = 3) => {
   return { slots, cols, rows: Math.ceil(slots.length / cols) };
 };
 
-function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voiceFocus, onVoiceFocusConsumed }) {
+function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voiceFocus, onVoiceFocusConsumed, engWordBaseDirty, onEngWordBaseDirty }) {
   const app = MISC_APPS.find(a => a.id === sub);
   const [editMode, setEditMode] = useState(false);
   const [draggingId, setDraggingId] = useState(null);
@@ -31214,7 +31539,11 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
     <div className="fade-in">
       <div className="mb-5 flex items-center justify-between gap-4">
         <button
-          onClick={() => setSub('')}
+          onClick={() => {
+            if (sub === 'english' && engWordBaseDirty
+              && !confirm('В Word base есть несохранённые изменения. Уйти без сохранения?')) return;
+            setSub('');
+          }}
           className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)]"
         >
           <Icon name="chevronLeft" size={16} />
@@ -31231,7 +31560,7 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
           onFocusConsumed={onVoiceFocusConsumed}
         />
       )}
-      {sub === 'english' && <EngErrorBoundary><EnglishView data={data} setData={setData} embedded /></EngErrorBoundary>}
+      {sub === 'english' && <EngErrorBoundary><EnglishView data={data} setData={setData} embedded onDirtyChange={onEngWordBaseDirty} /></EngErrorBoundary>}
       {sub === 'cars' && <CarsView data={data} setData={setData} />}
       {sub === 'settings' && (
         <SettingsView
