@@ -8470,19 +8470,27 @@ function WordBaseTab({ words, onSaveWords, onImportSheets, importedAt, importing
   const PAD = 5;
   const uid = () => engNewWordId();
   const blank = () => ({ id: uid(), date: '', en: '', ru: '', baseline: null, meta: null });
+  // Новее выше: по дате слова, иначе по createdAt. Пустые строки для ввода — сверху.
+  const wordRecency = (w) => {
+    const d = engParseDate(w && w.date);
+    if (d) return d.getTime();
+    const c = w && w.createdAt;
+    return typeof c === 'number' ? c : 0;
+  };
   const fromItems = (list) => {
-    const rows = (list || []).map(w => {
+    const sorted = (list || []).slice().sort((a, b) => wordRecency(b) - wordRecency(a));
+    const rows = sorted.map(w => {
       const date = engDisplayDate(w.date);
       const en = w.en || '';
       const ru = w.ru || '';
       return { id: w.id || uid(), date, en, ru, baseline: { date, en, ru }, meta: w };
     });
-    let trail = 0;
-    for (let i = rows.length - 1; i >= 0; i--) {
-      if (!rows[i].en && !rows[i].ru && !rows[i].date) trail++;
+    let lead = 0;
+    for (let i = 0; i < rows.length; i++) {
+      if (!rows[i].en && !rows[i].ru && !rows[i].date) lead++;
       else break;
     }
-    while (trail < PAD) { rows.push(blank()); trail++; }
+    while (lead < PAD) { rows.unshift(blank()); lead++; }
     return rows;
   };
 
@@ -8516,12 +8524,12 @@ function WordBaseTab({ words, onSaveWords, onImportSheets, importedAt, importing
 
   const ensurePad = (list) => {
     const next = list.slice();
-    let trail = 0;
-    for (let i = next.length - 1; i >= 0; i--) {
-      if (!next[i].en && !next[i].ru && !next[i].date) trail++;
+    let lead = 0;
+    for (let i = 0; i < next.length; i++) {
+      if (!next[i].en && !next[i].ru && !next[i].date) lead++;
       else break;
     }
-    while (trail < PAD) { next.push(blank()); trail++; }
+    while (lead < PAD) { next.unshift(blank()); lead++; }
     return next;
   };
 
@@ -8558,8 +8566,10 @@ function WordBaseTab({ words, onSaveWords, onImportSheets, importedAt, importing
     setMsg('Сохранение в Jarvis…');
     try {
       const now = Date.now();
+      // Порядок таблицы: сверху новые. Сохраняем в том же порядке.
       const items = toWrite.map(r => {
         const prev = r.meta || {};
+        const isNew = !prev || !prev.en;
         return {
           id: r.id || engNewWordId(),
           date: r.date.trim() || engFormatRuToday(),
@@ -8572,7 +8582,7 @@ function WordBaseTab({ words, onSaveWords, onImportSheets, importedAt, importing
           showSent: !!prev.showSent,
           hard: !!prev.hard,
           rowIndex: prev.rowIndex ?? null,
-          createdAt: prev.createdAt || now,
+          createdAt: isNew ? now : (prev.createdAt || now),
         };
       });
       acceptReloadRef.current = true;
@@ -8700,7 +8710,7 @@ function WordBaseTab({ words, onSaveWords, onImportSheets, importedAt, importing
         </table>
       </div>
       <p className="text-xs text-[var(--text-subtle)]">
-        Пустые строки внизу появляются сами. Дата подставляется автоматически (сегодня), её можно изменить.
+        Новые слова — сверху, старые внизу. Пустые строки для ввода появляются сверху. Дата подставляется автоматически (сегодня).
       </p>
     </div>
   );
