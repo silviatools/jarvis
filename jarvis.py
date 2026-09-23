@@ -3901,7 +3901,8 @@ def format_eng_words_message(words: list, reminder: dict, *, test: bool = False)
             continue
         hard = " ★" if w.get("hard") else ""
         if ru:
-            entries.append(f"<b>{en}</b>{hard} — {ru}")
+            # Telegram HTML spoiler: hidden until tapped (Bot API tg-spoiler).
+            entries.append(f"<b>{en}</b>{hard} — <tg-spoiler>{ru}</tg-spoiler>")
         else:
             entries.append(f"<b>{en}</b>{hard}")
     title = "📚 <b>Words for today</b>" + (" <i>(test)</i>" if test else "")
