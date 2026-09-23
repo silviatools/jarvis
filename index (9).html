@@ -80,6 +80,36 @@
     to { opacity: 1; max-height: 1000px; }
   }
   .slide-down { animation: slideDown 0.3s ease both; overflow: hidden; }
+
+  /* Прочее: тряска иконок в режиме правки порядка (как на iOS) */
+  @keyframes miscAppJiggle {
+    0%   { transform: rotate(-1.4deg); }
+    50%  { transform: rotate(1.4deg); }
+    100% { transform: rotate(-1.4deg); }
+  }
+  .misc-app-jiggle {
+    animation: miscAppJiggle 0.28s ease-in-out infinite;
+    transform-origin: 50% 50%;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .misc-app-jiggle:nth-child(2n) { animation-delay: -0.07s; }
+  .misc-app-jiggle:nth-child(3n) { animation-delay: -0.14s; }
+  .misc-app-jiggle:nth-child(4n) { animation-delay: -0.21s; }
+  .misc-app-dragging {
+    animation: none !important;
+    opacity: 0.55;
+    transform: scale(1.06);
+    z-index: 2;
+  }
+  .misc-app-drop-target .misc-app-icon {
+    outline: 2px solid var(--text);
+    outline-offset: 3px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .misc-app-jiggle { animation: none; }
+  }
   .input-display {
     font-family: 'Fraunces', serif;
     font-size: 1.25rem;
@@ -613,6 +643,10 @@ const DEFAULT_DATA = () => ({
   // они подмешиваются в его системный промпт, чтобы он отвечал, понимая,
   // с кем говорит, а не спрашивал одно и то же каждый раз.
   knowledgeNotes: [],
+  // Прочее: порядок иконок на домашнем экране раздела. Цельный объект со
+  // штампом updatedAt — LWW между устройствами (как engStudyPlan), а не
+  // plain-массив id: иначе mergeIdArrays сделал бы union и сбил порядок.
+  miscAppsOrder: { ids: [], updatedAt: 0 },
   // Музыка: сами треки лежат файлами на сервере, а плейлисты — обычный
   // id-массив со списком id треков внутри, поэтому синхронизируются как всё
   // остальное. Встроенные треки собраны в плейлист по умолчанию.
@@ -30911,22 +30945,121 @@ const MISC_APPS = [
   { id: 'settings', label: 'Настройки',  icon: 'settings',   color: '#4b5563' },
 ];
 
+// Порядок иконок «Прочего»: сохранённые id первыми, новые приложения
+// из MISC_APPS (которых ещё нет в сохранённом списке) — в конце в дефолтном
+// порядке. Неизвестные/удалённые id из старого сохранения отбрасываем.
+const orderedMiscApps = (data) => {
+  const byId = Object.fromEntries(MISC_APPS.map(a => [a.id, a]));
+  const saved = (data && data.miscAppsOrder && Array.isArray(data.miscAppsOrder.ids))
+    ? data.miscAppsOrder.ids : [];
+  const seen = new Set();
+  const out = [];
+  saved.forEach(id => {
+    if (byId[id] && !seen.has(id)) { out.push(byId[id]); seen.add(id); }
+  });
+  MISC_APPS.forEach(a => { if (!seen.has(a.id)) out.push(a); });
+  return out;
+};
+
 function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voiceFocus, onVoiceFocusConsumed }) {
   const app = MISC_APPS.find(a => a.id === sub);
+  const [editMode, setEditMode] = useState(false);
+  const [draggingId, setDraggingId] = useState(null);
+  const [dropTargetId, setDropTargetId] = useState(null);
+  const dragRef = useRef(null);
+  const apps = orderedMiscApps(data);
+
+  const moveMiscApp = (fromId, toId) => {
+    if (!fromId || !toId || fromId === toId) return;
+    // Читаем актуальный порядок из data внутри setData — иначе при быстром
+    // drag до re-render все moveMiscApp видели бы один и тот же apps[].
+    setData(d => {
+      const current = orderedMiscApps(d).map(a => a.id);
+      const from = current.indexOf(fromId);
+      const to = current.indexOf(toId);
+      if (from < 0 || to < 0 || from === to) return d;
+      const ids = [...current];
+      ids.splice(from, 1);
+      ids.splice(to, 0, fromId);
+      return { ...d, miscAppsOrder: { ids, updatedAt: Date.now() } };
+    });
+  };
+
+  const onAppPointerDown = (e, id) => {
+    if (!editMode) return;
+    // Только основной палец/кнопка — иначе правый клик и мультитач ломают сетку.
+    if (e.button != null && e.button !== 0) return;
+    e.preventDefault();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+    dragRef.current = { id, startX: e.clientX, startY: e.clientY, moved: false };
+    setDraggingId(id);
+    setDropTargetId(null);
+  };
+
+  const onAppPointerMove = (e) => {
+    const drag = dragRef.current;
+    if (!drag || !editMode) return;
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    if (!drag.moved && Math.hypot(dx, dy) < 10) return;
+    drag.moved = true;
+    // Временно прячем перетаскиваемый узел из hit-test, иначе elementFromPoint
+    // всегда возвращает его самого и соседние плитки не находятся.
+    const prev = e.currentTarget.style.pointerEvents;
+    e.currentTarget.style.pointerEvents = 'none';
+    const under = document.elementFromPoint(e.clientX, e.clientY);
+    e.currentTarget.style.pointerEvents = prev;
+    const tile = under && under.closest ? under.closest('[data-misc-app]') : null;
+    const toId = tile ? tile.getAttribute('data-misc-app') : null;
+    if (toId && toId !== drag.id) {
+      setDropTargetId(toId);
+      moveMiscApp(drag.id, toId);
+    } else if (!toId) {
+      setDropTargetId(null);
+    }
+  };
+
+  const onAppPointerUp = () => {
+    dragRef.current = null;
+    setDraggingId(null);
+    setDropTargetId(null);
+  };
 
   if (!app) {
     return (
       <div className="fade-in">
-        <div className="mb-6 font-display text-2xl">Прочее</div>
+        <div className="mb-6 flex items-center justify-between gap-3">
+          <div className="font-display text-2xl">Прочее</div>
+          <button
+            type="button"
+            onClick={() => setEditMode(v => !v)}
+            className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
+            title={editMode ? 'Готово' : 'Изменить порядок'}
+            aria-label={editMode ? 'Готово' : 'Изменить порядок'}
+          >
+            <Icon name={editMode ? 'check' : 'edit'} size={16} />
+          </button>
+        </div>
         <div className="grid grid-cols-4 gap-4">
-          {MISC_APPS.map(a => (
+          {apps.map(a => (
             <button
               key={a.id}
-              onClick={() => setSub(a.id)}
-              className="flex flex-col items-center gap-2 text-center"
+              type="button"
+              data-misc-app={a.id}
+              onClick={() => { if (!editMode) setSub(a.id); }}
+              onPointerDown={e => onAppPointerDown(e, a.id)}
+              onPointerMove={onAppPointerMove}
+              onPointerUp={onAppPointerUp}
+              onPointerCancel={onAppPointerUp}
+              className={[
+                'flex flex-col items-center gap-2 text-center',
+                editMode ? 'misc-app-jiggle' : '',
+                draggingId === a.id ? 'misc-app-dragging' : '',
+                dropTargetId === a.id ? 'misc-app-drop-target' : '',
+              ].filter(Boolean).join(' ')}
             >
               <div
-                className="w-16 h-16 rounded-2xl flex items-center justify-center text-white shadow-sm transition-transform active:scale-95"
+                className="misc-app-icon w-16 h-16 rounded-2xl flex items-center justify-center text-white shadow-sm transition-transform active:scale-95"
                 style={{ background: a.color }}
               >
                 <Icon name={a.icon} size={28} />
