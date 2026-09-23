@@ -711,8 +711,11 @@ const DEFAULT_DATA = () => ({
   deletedIds: {},
   // План обучения English: произвольная заметка, LWW по updatedAt между устройствами
   engStudyPlan: { text: '', updatedAt: 0 },
+  // Словарь English (Word base) — источник правды в Jarvis. LWW по updatedAt.
+  // Разовый импорт из Google Sheets ставит importedAt; дальше правки только здесь.
+  engWords: { items: [], updatedAt: 0, importedAt: 0 },
   // Ежедневная выборка слов в Telegram: дни/время/кол-во/порядок/период.
-  // LWW по updatedAt. Сами слова — в engWords (база в приложении); рассылка в jarvis.py _tick.
+  // LWW по updatedAt. Берёт слова из engWords; рассылка в jarvis.py _tick.
   engWordReminder: { enabled: false, time: '09:00', days: [1, 2, 3, 4, 5], count: 5, order: 'random', dateRange: '7', updatedAt: 0 },
   settings: { ...DEFAULT_SETTINGS },
 });
@@ -8242,7 +8245,7 @@ async function engPrefetchSentences(ai,words,cache,onChunk){
   }
 }
 
-function EngCfgModal({cfg, reminder, onSave, onClose, hasToken}){
+function EngCfgModal({cfg, reminder, onSave, onClose, hasToken, wordsCount}){
   const defaultReminder = { enabled: false, time: '09:00', days: [1, 2, 3, 4, 5], count: 5, order: 'random', dateRange: '7' };
   const [f,setF]=useState({...cfg});
   const [r,setR]=useState({ ...defaultReminder, ...(reminder || {}) });
@@ -8254,9 +8257,11 @@ function EngCfgModal({cfg, reminder, onSave, onClose, hasToken}){
     <Modal onClose={onClose} title="Настройки">
       <div className="space-y-5">
         <div className="space-y-4">
-          <div className="text-sm font-medium">Google Sheets</div>
+          <div>
+            <div className="text-sm font-medium">Google Sheets — разовый импорт</div>
+            <p className="text-xs text-[var(--text-muted)] mt-1">Нужен только чтобы один раз перенести словарь в Word base. Дальше слова правятся только в Jarvis.</p>
+          </div>
           <div><label>API Key (read)</label><input type="password" value={f.apiKey} onChange={e=>setF(x=>({...x,apiKey:e.target.value}))} placeholder="AIzaSy..."/></div>
-          <div><label>OAuth Client ID (write, optional)</label><input value={f.clientId} onChange={e=>setF(x=>({...x,clientId:e.target.value}))} placeholder="...apps.googleusercontent.com"/></div>
           <div><label>Spreadsheet ID</label><input value={f.sheetId} onChange={e=>setF(x=>({...x,sheetId:e.target.value}))}/><p className="text-xs text-[var(--text-subtle)] mt-1">ID found in the URL: spreadsheets/d/<b>ID</b>/edit</p></div>
           <div><label>Sheet name</label><input value={f.sheetName} onChange={e=>setF(x=>({...x,sheetName:e.target.value}))}/></div>
         </div>
@@ -8317,6 +8322,10 @@ function EngCfgModal({cfg, reminder, onSave, onClose, hasToken}){
               </div>
             </div>
           )}
+          <div className="text-xs text-[var(--text-muted)]">
+            В Word base: <span className="font-mono text-[var(--text)]">{wordsCount || 0}</span> слов
+            {(wordsCount || 0) === 0 ? ' — сделайте разовый импорт из Sheets или добавьте слова во вкладке Word base.' : '.'}
+          </div>
           {!hasToken && (
             <div className="text-xs text-amber-600 bg-amber-500/10 border border-amber-500/20 rounded-xl px-3 py-2">
               Укажите токен Telegram-бота в Настройках → Общее, и включите категорию English в Маршрутизации.
@@ -8457,16 +8466,16 @@ const ENG_CARD_S={
 };
 
 
-function WordBaseTab({ rawData, setRawData, cfg, loadSheets, onDirtyChange, savingRef }){
+function WordBaseTab({ words, onSaveWords, onImportSheets, importedAt, importing, onDirtyChange, savingRef }){
   const PAD = 5;
-  const uid = () => 'wb_' + Math.random().toString(36).slice(2, 10);
-  const blank = () => ({ id: uid(), rowIndex: null, date: '', en: '', ru: '', baseline: null });
-  const fromRaw = (list) => {
+  const uid = () => engNewWordId();
+  const blank = () => ({ id: uid(), date: '', en: '', ru: '', baseline: null, meta: null });
+  const fromItems = (list) => {
     const rows = (list || []).map(w => {
       const date = engDisplayDate(w.date);
       const en = w.en || '';
       const ru = w.ru || '';
-      return { id: uid(), rowIndex: w.rowIndex, date, en, ru, baseline: { date, en, ru, rowIndex: w.rowIndex } };
+      return { id: w.id || uid(), date, en, ru, baseline: { date, en, ru }, meta: w };
     });
     let trail = 0;
     for (let i = rows.length - 1; i >= 0; i--) {
@@ -8477,13 +8486,12 @@ function WordBaseTab({ rawData, setRawData, cfg, loadSheets, onDirtyChange, savi
     return rows;
   };
 
-  const [rows, setRows] = useState(() => fromRaw(rawData));
+  const [rows, setRows] = useState(() => fromItems(words));
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState('');
   const seededRef = useRef(false);
-  const tcRef = useRef(null);
-  const atRef = useRef(null);
+  const acceptReloadRef = useRef(false);
 
   const isDirtyRow = (r) => {
     const has = !!(r.en.trim() || r.ru.trim() || r.date.trim());
@@ -8493,47 +8501,18 @@ function WordBaseTab({ rawData, setRawData, cfg, loadSheets, onDirtyChange, savi
   const dirty = rows.some(isDirtyRow);
   const dirtyRef = useRef(false);
   dirtyRef.current = dirty;
-  const acceptReloadRef = useRef(false);
 
   useEffect(() => { onDirtyChange && onDirtyChange(dirty); }, [dirty]);
   useEffect(() => () => { onDirtyChange && onDirtyChange(false); }, []);
   useEffect(() => { if (savingRef) savingRef.current = saving; }, [saving]);
 
-  // Первичное заполнение из Google Sheets (и обновление после Load / Save),
-  // но не затираем локальные несохранённые правки.
+  // Подтянуть строки из DB, не затирая локальный черновик.
   useEffect(() => {
     if (dirtyRef.current && seededRef.current && !acceptReloadRef.current) return;
     acceptReloadRef.current = false;
-    setRows(fromRaw(rawData));
+    setRows(fromItems(words));
     seededRef.current = true;
-    setMsg(m => m); // keep save status message
-  }, [rawData]);
-
-  // Если данных ещё нет — подтянуть лист автоматически при открытии вкладки.
-  useEffect(() => {
-    if (rawData && rawData.length) return;
-    if (!cfg.apiKey) return;
-    loadSheets && loadSheets();
-  }, []);
-
-  useEffect(() => {
-    if (!cfg.clientId) return;
-    const load = () => {
-      if (!window.google?.accounts) return;
-      try {
-        tcRef.current = window.google.accounts.oauth2.initTokenClient({
-          client_id: cfg.clientId,
-          scope: 'https://www.googleapis.com/auth/spreadsheets',
-          callback: (r) => { if (r.access_token) atRef.current = r.access_token; },
-        });
-      } catch (e) {}
-    };
-    if (window.google?.accounts) { load(); return; }
-    const s = document.createElement('script');
-    s.src = 'https://accounts.google.com/gsi/client';
-    s.onload = () => setTimeout(load, 300);
-    document.head.appendChild(s);
-  }, [cfg.clientId]);
+  }, [words]);
 
   const ensurePad = (list) => {
     const next = list.slice();
@@ -8551,7 +8530,6 @@ function WordBaseTab({ rawData, setRawData, cfg, loadSheets, onDirtyChange, savi
       const next = prev.map(r => {
         if (r.id !== id) return r;
         const patch = { ...r, [field]: value };
-        // Дата «Сегодня» — когда впервые появляется значение в EN/RU при пустой дате.
         if ((field === 'en' || field === 'ru') && value.trim() && !String(patch.date || '').trim()) {
           patch.date = engFormatRuToday();
         }
@@ -8562,24 +8540,12 @@ function WordBaseTab({ rawData, setRawData, cfg, loadSheets, onDirtyChange, savi
     setMsg('');
   };
 
-  const requireToken = () => new Promise((resolve, reject) => {
-    if (atRef.current) { resolve(atRef.current); return; }
-    if (!cfg.clientId) { reject(new Error('OAuth Client ID не задан в ⚙ Settings')); return; }
-    if (!tcRef.current) { reject(new Error('OAuth ещё не готов — попробуйте снова')); return; }
-    tcRef.current.requestAccessToken({ prompt: 'consent' });
-    let tries = 0;
-    const wait = setInterval(() => {
-      if (atRef.current) { clearInterval(wait); resolve(atRef.current); }
-      else if (++tries > 40) { clearInterval(wait); reject(new Error('OAuth timeout')); }
-    }, 500);
-  });
-
   const save = async () => {
     if (saving) return;
     const changed = rows.filter(isDirtyRow);
-    const toWrite = changed.filter(r => r.en.trim());
+    const toWrite = rows.filter(r => r.en.trim());
     const incomplete = changed.filter(r => !r.en.trim() && (r.ru.trim() || r.date.trim()));
-    if (!toWrite.length && !incomplete.length) {
+    if (!changed.length) {
       setMsgType(''); setMsg('Нет изменений для сохранения'); return;
     }
     if (incomplete.length) {
@@ -8587,71 +8553,61 @@ function WordBaseTab({ rawData, setRawData, cfg, loadSheets, onDirtyChange, savi
       setMsg(`У ${incomplete.length} строк(и) нет английского слова — заполните EN или очистите строку`);
       return;
     }
-    if (!cfg.sheetId || !cfg.sheetName) {
-      setMsgType('err'); setMsg('Spreadsheet ID / sheet name не заданы'); return;
-    }
-
     setSaving(true);
     setMsgType('loading');
-    setMsg('Сохранение… таблица останется открытой до завершения');
+    setMsg('Сохранение в Jarvis…');
     try {
-      const token = await requireToken();
-      const updates = toWrite.filter(r => r.rowIndex).map(r => ({
-        range: `${cfg.sheetName}!A${r.rowIndex}:C${r.rowIndex}`,
-        values: [[r.date.trim(), r.en.trim(), r.ru.trim()]],
-      }));
-      if (updates.length) {
-        const r = await fetch(
-          `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values:batchUpdate`,
-          {
-            method: 'POST',
-            headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: updates }),
-          }
-        );
-        if (!r.ok) {
-          const e = await r.json().catch(() => ({}));
-          throw new Error(e.error?.message || 'HTTP ' + r.status);
-        }
-      }
-      const appends = toWrite.filter(r => !r.rowIndex).map(r => [
-        r.date.trim() || engFormatRuToday(),
-        r.en.trim(),
-        r.ru.trim(),
-        '', '', false, false, false, false,
-      ]);
-      if (appends.length) {
-        const r = await fetch(
-          `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent(cfg.sheetName)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
-          {
-            method: 'POST',
-            headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ values: appends }),
-          }
-        );
-        if (!r.ok) {
-          const e = await r.json().catch(() => ({}));
-          throw new Error(e.error?.message || 'HTTP ' + r.status);
-        }
-      }
-
-      // Перечитать лист → таблица остаётся открытой, строки обновляются с rowIndex.
-      setMsgType('loading');
-      setMsg('Сохранено. Обновляю таблицу…');
+      const now = Date.now();
+      const items = toWrite.map(r => {
+        const prev = r.meta || {};
+        return {
+          id: r.id || engNewWordId(),
+          date: r.date.trim() || engFormatRuToday(),
+          en: r.en.trim(),
+          ru: r.ru.trim(),
+          syn: prev.syn || '',
+          sentence: prev.sentence || '',
+          showNew: !!prev.showNew,
+          showTrans: !!prev.showTrans,
+          showSent: !!prev.showSent,
+          hard: !!prev.hard,
+          rowIndex: prev.rowIndex ?? null,
+          createdAt: prev.createdAt || now,
+        };
+      });
       acceptReloadRef.current = true;
       onDirtyChange && onDirtyChange(false);
-      if (loadSheets) await loadSheets();
+      await Promise.resolve(onSaveWords(items));
       setMsgType('ok');
-      setMsg(`✓ Сохранено: ${updates.length ? updates.length + ' обновл.' : ''}${updates.length && appends.length ? ' · ' : ''}${appends.length ? appends.length + ' нов.' : ''}`);
+      setMsg(`✓ Сохранено в Word base: ${items.length} слов`);
     } catch (e) {
       setMsgType('err');
-      setMsg('✗ ' + e.message);
+      setMsg('✗ ' + (e.message || e));
     } finally {
       setSaving(false);
     }
   };
 
+  const doImport = async () => {
+    if (!onImportSheets) return;
+    if (importedAt && (words || []).length) {
+      if (!confirm('Словарь уже импортирован. Заменить все слова данными из Google Sheets?')) return;
+    }
+    setMsgType('loading');
+    setMsg('Импорт из Google Sheets…');
+    try {
+      acceptReloadRef.current = true;
+      const n = await onImportSheets();
+      setMsgType('ok');
+      setMsg(`✓ Импортировано ${n} слов. Дальше правки только в Jarvis.`);
+    } catch (e) {
+      setMsgType('err');
+      setMsg('✗ ' + (e.message || e));
+    }
+  };
+
   const filled = rows.filter(r => r.en.trim()).length;
+  const showImport = !importedAt || filled === 0;
 
   return (
     <div className="space-y-4">
@@ -8659,12 +8615,19 @@ function WordBaseTab({ rawData, setRawData, cfg, loadSheets, onDirtyChange, savi
         <div>
           <h2 className="font-display text-xl">Word base</h2>
           <p className="text-sm text-[var(--text-muted)] mt-1">
-            Словарь из Google Sheets. Правки сохраняются только по кнопке «Сохранить».
+            Словарь Jarvis. Новые слова добавляйте здесь — без Google Sheets.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
           <span className="text-xs text-[var(--text-subtle)] font-mono">{filled} слов</span>
           {dirty && <span className="text-xs px-2 py-1 rounded-lg bg-amber-50 text-amber-700 border border-amber-200">не сохранено</span>}
+          {showImport && (
+            <button
+              onClick={doImport}
+              disabled={saving || importing}
+              className="btn-secondary text-sm py-2 px-3 disabled:opacity-40"
+            >{importing ? '⏳ Импорт…' : '📥 Импорт из Sheets'}</button>
+          )}
           <button
             onClick={save}
             disabled={saving || !dirty}
@@ -8682,6 +8645,16 @@ function WordBaseTab({ rawData, setRawData, cfg, loadSheets, onDirtyChange, savi
         }`}>{msg}</div>
       )}
 
+      {importedAt ? (
+        <div className="text-xs text-[var(--text-subtle)]">
+          Импорт из Sheets выполнен {new Date(importedAt).toLocaleString('ru-RU')} — повторно не подтягиваем.
+        </div>
+      ) : (
+        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+          Один раз импортируйте словарь из Google Sheets, затем работайте только здесь.
+        </div>
+      )}
+
       <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
         <table className="w-full text-sm" style={{ borderCollapse: 'collapse', minWidth: 560 }}>
           <thead>
@@ -8692,7 +8665,7 @@ function WordBaseTab({ rawData, setRawData, cfg, loadSheets, onDirtyChange, savi
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, i) => (
+            {rows.map((r) => (
               <tr key={r.id} className={`border-b border-[var(--border)] last:border-0 ${isDirtyRow(r) ? 'bg-teal-50/40' : ''}`}>
                 <td className="p-1.5">
                   <input
@@ -8733,37 +8706,29 @@ function WordBaseTab({ rawData, setRawData, cfg, loadSheets, onDirtyChange, savi
   );
 }
 
-function EngSyncBtn({cfg,toMark,toUnmark,rawData,tcRef,atRef}){
+
+function EngSyncBtn({toMark,toUnmark,onApplyHard}){
   const [st,setSt]=useState('idle');const [msg,setMsg]=useState('');
   const sync=async()=>{
-    if(!cfg.clientId){alert('OAuth Client ID is not set in ⚙ Settings');return;}
-    setSt('loading');setMsg('Authorizing...');
-    const doSync=async()=>{
-      try{
-        setMsg('Writing...');
-        const data=[...toMark.map(i=>({range:`${cfg.sheetName}!I${i}`,values:[[true]]})),...toUnmark.map(i=>({range:`${cfg.sheetName}!I${i}`,values:[[false]]}))];
-        const r=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values:batchUpdate`,{method:'POST',headers:{'Authorization':'Bearer '+atRef.current,'Content-Type':'application/json'},body:JSON.stringify({valueInputOption:'USER_ENTERED',data})});
-        if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'HTTP '+r.status);}
-        setSt('done');setMsg(`✓ ${toMark.length?'+'+toMark.length+' marked':''}${toUnmark.length?' −'+toUnmark.length+' unmarked':''}`);
-      }catch(e){setSt('err');setMsg('✗ '+e.message);}
-    };
-    if(atRef.current){await doSync();return;}
-    if(!tcRef.current){alert('OAuth not ready');setSt('idle');return;}
-    tcRef.current.requestAccessToken({prompt:'consent'});
-    let tries=0;
-    const wait=setInterval(async()=>{if(atRef.current){clearInterval(wait);await doSync();}else if(++tries>30){clearInterval(wait);setSt('err');setMsg('Timeout');}},500);
+    if(!onApplyHard){alert('Сохранение hard-флагов недоступно');return;}
+    setSt('loading');setMsg('Saving...');
+    try{
+      onApplyHard(toMark, toUnmark);
+      setSt('done');setMsg(`✓ ${toMark.length?'+'+toMark.length+' hard':''}${toMark.length&&toUnmark.length?' · ':''}${toUnmark.length?'−'+toUnmark.length+' hard':''}`);
+    }catch(e){setSt('err');setMsg('✗ '+(e.message||e));}
   };
   return(
     <div>
       <button onClick={sync} disabled={st==='loading'||st==='done'} className="btn-primary w-full py-3">
-        {st==='loading'?'⏳ '+msg:st==='done'?msg:'↻ Sync to spreadsheet'}
+        {st==='loading'?'⏳ '+msg:st==='done'?msg:'💾 Сохранить hard в Word base'}
       </button>
       {st==='err'&&<p className="text-xs text-red-500 mt-1">{msg}</p>}
     </div>
   );
 }
 
-function FlashcardsTab({rawData,cfg,ai}){
+
+function FlashcardsTab({rawData,cfg,ai,onApplyHard}){
   const [phase,setPhase]=useState('setup');
   const [settings,setSettings]=useState({direction:'en-ru',count:20,order:'random',filter:'all',dateRange:'all',sentence:true,synonyms:true,tts:false,repeat:true,auto:false});
   const [sess,setSess]=useState(null);
@@ -8840,10 +8805,11 @@ function FlashcardsTab({rawData,cfg,ai}){
     if(settings.sentence) engPrefetchSentences(ai,batch,sentCache,mergeSentCache); // background, never awaited
   };
 
+  const wordKey=(w)=>w.id != null ? w.id : w.rowIndex;
   const toggleHard=()=>setSess(s=>{
     if(!s) return s;
     const w=s.queue[s.cur];if(!w) return s;
-    const idx=w.rowIndex;const nm=new Set(s.markHard),nu=new Set(s.unmarkHard);
+    const idx=wordKey(w);const nm=new Set(s.markHard),nu=new Set(s.unmarkHard);
     if(w.hard){nu.has(idx)?nu.delete(idx):nu.add(idx);}else{nm.has(idx)?nm.delete(idx):nm.add(idx);}
     return{...s,markHard:nm,unmarkHard:nu};
   });
@@ -8896,7 +8862,7 @@ function FlashcardsTab({rawData,cfg,ai}){
     const s=sess.stats;const correct=s.good+s.easy,total=s.again+s.hard+s.good+s.easy;
     const pct=total?Math.round(correct/total*100):0;
     const toMark=[...sess.markHard],toUnmark=[...sess.unmarkHard];
-    const wFor=(idx)=>{const w=rawData.find(x=>x.rowIndex===idx);return w?w.en:`row ${idx}`;};
+    const wFor=(idx)=>{const w=rawData.find(x=>x.id===idx||x.rowIndex===idx);return w?w.en:`${idx}`;};
     return(
       <div className="text-center py-8 max-w-lg mx-auto pb-12">
         <div className="font-display text-7xl font-bold mb-1">{pct}%</div>
@@ -8914,7 +8880,7 @@ function FlashcardsTab({rawData,cfg,ai}){
           <div className="mb-6 text-left space-y-3">
             {toMark.length>0&&<div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4"><div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-2">+ Mark as hard ({toMark.length})</div><div className="text-sm">{toMark.map(wFor).join(', ')}</div></div>}
             {toUnmark.length>0&&<div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4"><div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-2">− Remove hard mark ({toUnmark.length})</div><div className="text-sm">{toUnmark.map(wFor).join(', ')}</div></div>}
-            <EngSyncBtn cfg={cfg} toMark={toMark} toUnmark={toUnmark} rawData={rawData} tcRef={tcRef} atRef={atRef}/>
+            <EngSyncBtn toMark={toMark} toUnmark={toUnmark} onApplyHard={onApplyHard}/>
           </div>
         )}
         <button onClick={()=>{setSess(null);setPhase('setup');}} className="btn-primary px-8 py-3">↻ New session</button>
@@ -8928,7 +8894,7 @@ function FlashcardsTab({rawData,cfg,ai}){
   const front=dir==='en-ru'?w.en:w.ru;const back=dir==='en-ru'?w.ru:w.en;
   const total=sess.queue.length+sess.done.length;
   const prog=sess.done.length/Math.max(total,1)*100;
-  const isHard=sess.markHard.has(w.rowIndex)?'marking':(sess.unmarkHard.has(w.rowIndex)?'unmarking':(w.hard?'hard':'none'));
+  const isHard=sess.markHard.has(wordKey(w))?'marking':(sess.unmarkHard.has(wordKey(w))?'unmarking':(w.hard?'hard':'none'));
   if(settings.tts&&!sess.flipped){const u=new SpeechSynthesisUtterance(dir==='en-ru'?w.en:'');u.lang='en-US';u.rate=.9;window.speechSynthesis?.cancel();window.speechSynthesis?.speak(u);}
   const cachedSent=getSent(w.en);
   const pendingSent=settings.sentence&&engAIConfigured(ai)?sess.queue.concat(sess.again).filter(x=>!getSent(x.en)).length:0;
@@ -9731,89 +9697,189 @@ const engLegacyAI = () => ({
   ollamaModel: localStorage.getItem('ai_ollama_model') || 'llama3',
 });
 
+
+// Словарь English → нормализованные записи engWords.items (источник правды в DB).
+const engNewWordId = () => 'ew_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+const engWordsToItems = (parsed) => (parsed || [])
+  .filter(w => w && String(w.en || '').trim())
+  .map(w => ({
+    id: w.id || (w.rowIndex != null ? `row-${w.rowIndex}` : engNewWordId()),
+    date: w.date ?? '',
+    en: String(w.en || '').trim(),
+    ru: String(w.ru || '').trim(),
+    syn: String(w.syn || '').trim(),
+    sentence: String(w.sentence || '').trim(),
+    showNew: !!w.showNew,
+    showTrans: !!w.showTrans,
+    showSent: !!w.showSent,
+    hard: !!w.hard,
+    rowIndex: w.rowIndex ?? null,
+    createdAt: w.createdAt || Date.now(),
+  }));
+
+// Для режимов учёбы (Flashcards и т.д.) — тот же shape, что раньше давал engParseRows.
+const engItemsToRaw = (items) => (items || []).map(w => ({
+  rowIndex: w.rowIndex ?? w.id,
+  date: w.date ?? '',
+  en: w.en || '',
+  ru: w.ru || '',
+  syn: w.syn || '',
+  sentence: w.sentence || '',
+  showNew: !!w.showNew,
+  showTrans: !!w.showTrans,
+  showSent: !!w.showSent,
+  hard: !!w.hard,
+  id: w.id,
+  createdAt: w.createdAt,
+}));
+
 function EnglishView({ data, setData, embedded, onDirtyChange }){
-  // Источник правды — синхронизируемая БД (data.engConfig / data.engAI), как
-  // у всех остальных настроек: переживает чистку localStorage и доступна со
-  // всех устройств. localStorage остаётся только как источник миграции.
+  // Источник правды словаря — data.engWords (Word base в Jarvis).
+  // Google Sheets нужен только для разового импорта после деплоя.
   const cfg = data.engConfig || engLegacyCfg();
   const ai = data.engAI || engLegacyAI();
   const studyPlan = data.engStudyPlan || { text: '', updatedAt: 0 };
   const wordReminder = data.engWordReminder || { enabled: false, time: '09:00', days: [1, 2, 3, 4, 5], count: 5, order: 'random', dateRange: '7', updatedAt: 0 };
+  const engWordsSnap = data.engWords || { items: [], updatedAt: 0, importedAt: 0 };
+  const engWordsItems = Array.isArray(engWordsSnap.items) ? engWordsSnap.items : [];
+  const engWordsCount = engWordsItems.length;
+  const importedAt = engWordsSnap.importedAt || 0;
   const hasTgToken = !!(data.settings && data.settings.telegramToken);
   const mySentPrompt = typeof data.engMySentPrompt === 'string' ? data.engMySentPrompt : ENG_MYSENT_DEFAULT_PROMPT;
   const cipherPrompt = typeof data.engCipherPrompt === 'string' ? data.engCipherPrompt : ENG_CIPHER_DEFAULT_PROMPT;
   const storyPrompt = typeof data.engStoryPrompt === 'string' ? data.engStoryPrompt : ENG_STORY_DEFAULT_PROMPT;
-  const [rawData,setRawData]=useState(()=>{try{return JSON.parse(localStorage.getItem('eng_raw_data')||'null');}catch{return null;}});
-  const [loading,setLoading]=useState(false);
-  const initStatus=()=>{try{const d=localStorage.getItem('eng_raw_data');return d?{type:'ok',text:`${JSON.parse(d).length} words`}:{type:'',text:'Load from Google Sheets'};}catch{return{type:'',text:'Load from Google Sheets'};}};
-  const [status,setStatus]=useState(initStatus);
-  const [engTab,setEngTab]=useState('cards');
-  const [showCfg,setShowCfg]=useState(false);
-  const [showAI,setShowAI]=useState(false);
-  const [showPlan,setShowPlan]=useState(false);
-  const [wordBaseDirty,setWordBaseDirty]=useState(false);
-  const wordBaseSavingRef=useRef(false);
 
-  useEffect(()=>{ onDirtyChange && onDirtyChange(wordBaseDirty); }, [wordBaseDirty]);
-  useEffect(()=>()=>{ onDirtyChange && onDirtyChange(false); }, []);
+  // Режимы учёбы читают тот же словарь, что и Word base.
+  const rawData = engWordsCount ? engItemsToRaw(engWordsItems) : null;
 
-  const requestEngTab=(id)=>{
-    if(id===engTab) return;
-    if(wordBaseSavingRef.current){ alert('Дождитесь окончания сохранения Word base.'); return; }
-    if(engTab==='wordbase' && wordBaseDirty
+  const [importing, setImporting] = useState(false);
+  const [status, setStatus] = useState(() => (
+    engWordsCount
+      ? { type: 'ok', text: `${engWordsCount} слов в Word base` }
+      : { type: '', text: 'Импортируйте слова или добавьте в Word base' }
+  ));
+  useEffect(() => {
+    setStatus(engWordsCount
+      ? { type: 'ok', text: `${engWordsCount} слов в Word base` }
+      : { type: '', text: 'Импортируйте слова или добавьте в Word base' });
+  }, [engWordsCount]);
+
+  const [engTab, setEngTab] = useState('wordbase');
+  const [showCfg, setShowCfg] = useState(false);
+  const [showAI, setShowAI] = useState(false);
+  const [showPlan, setShowPlan] = useState(false);
+  const [wordBaseDirty, setWordBaseDirty] = useState(false);
+  const wordBaseSavingRef = useRef(false);
+
+  useEffect(() => { onDirtyChange && onDirtyChange(wordBaseDirty); }, [wordBaseDirty]);
+  useEffect(() => () => { onDirtyChange && onDirtyChange(false); }, []);
+
+  const requestEngTab = (id) => {
+    if (id === engTab) return;
+    if (wordBaseSavingRef.current) { alert('Дождитесь окончания сохранения Word base.'); return; }
+    if (engTab === 'wordbase' && wordBaseDirty
       && !confirm('В Word base есть несохранённые изменения. Уйти без сохранения?')) return;
     setEngTab(id);
   };
 
-  const saveCfg=(c)=>setData(d=>({...d, engConfig:{...c, updatedAt: Date.now()}}));
-  const saveAI=(a)=>setData(d=>({...d, engAI:{...a, updatedAt: Date.now()}}));
-  const saveStudyPlan=(p)=>setData(d=>({...d, engStudyPlan:{ text: p.text || '', updatedAt: p.updatedAt || Date.now() }}));
-  const saveWordReminder=(rem)=>setData(d=>({...d, engWordReminder:{
-    enabled: !!rem.enabled,
-    time: rem.time || '09:00',
-    days: Array.isArray(rem.days) ? rem.days : [1, 2, 3, 4, 5],
-    count: Math.max(1, Math.min(50, parseInt(rem.count, 10) || 5)),
-    order: ['random', 'newest', 'oldest'].includes(rem.order) ? rem.order : 'random',
-    dateRange: ['7', '14', '30', 'all'].includes(String(rem.dateRange)) ? String(rem.dateRange) : '7',
-    updatedAt: Date.now(),
-  }}));
-  const saveMySentPrompt=(p)=>setData(d=>({...d, engMySentPrompt: p}));
-  const saveCipherPrompt=(p)=>setData(d=>({...d, engCipherPrompt: p}));
-  const saveStoryPrompt=(p)=>setData(d=>({...d, engStoryPrompt: p}));
+  const saveCfg = (c) => setData(d => ({ ...d, engConfig: { ...c, updatedAt: Date.now() } }));
+  const saveAI = (a) => setData(d => ({ ...d, engAI: { ...a, updatedAt: Date.now() } }));
+  const saveStudyPlan = (p) => setData(d => ({ ...d, engStudyPlan: { text: p.text || '', updatedAt: p.updatedAt || Date.now() } }));
+  const saveWordReminder = (rem) => setData(d => ({
+    ...d,
+    engWordReminder: {
+      enabled: !!rem.enabled,
+      time: rem.time || '09:00',
+      days: Array.isArray(rem.days) ? rem.days : [1, 2, 3, 4, 5],
+      count: Math.max(1, Math.min(50, parseInt(rem.count, 10) || 5)),
+      order: ['random', 'newest', 'oldest'].includes(rem.order) ? rem.order : 'random',
+      dateRange: ['7', '14', '30', 'all'].includes(String(rem.dateRange)) ? String(rem.dateRange) : '7',
+      updatedAt: Date.now(),
+    },
+  }));
+  const saveMySentPrompt = (p) => setData(d => ({ ...d, engMySentPrompt: p }));
+  const saveCipherPrompt = (p) => setData(d => ({ ...d, engCipherPrompt: p }));
+  const saveStoryPrompt = (p) => setData(d => ({ ...d, engStoryPrompt: p }));
 
-  // One-time migration: keys entered before this fix only live in this
-  // browser's localStorage — move them into the DB so they stop getting lost.
-  useEffect(()=>{
-    if(!data.engConfig){
-      const legacy = engLegacyCfg();
-      if(legacy.apiKey || legacy.clientId) saveCfg(legacy);
-    }
-    if(!data.engAI){
-      const legacy = engLegacyAI();
-      if(legacy.anthropicKey || legacy.openaiKey) saveAI(legacy);
-    }
-  },[]);
+  const writeEngWords = (items, { imported = false } = {}) => setData(d => {
+    const prev = d.engWords || { items: [], updatedAt: 0, importedAt: 0 };
+    return {
+      ...d,
+      engWords: {
+        items,
+        updatedAt: Date.now(),
+        importedAt: imported ? Date.now() : (prev.importedAt || 0),
+      },
+    };
+  });
 
-  const loadSheets=async()=>{
-    if(!cfg.apiKey){setShowCfg(true);return;}
-    setLoading(true);setStatus({type:'loading',text:'Loading...'});
-    try{
-      const r=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent(cfg.sheetName)}?key=${cfg.apiKey}&dateTimeRenderOption=FORMATTED_STRING&valueRenderOption=UNFORMATTED_VALUE`);
-      if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'HTTP '+r.status);}
-      const data=await r.json();
-      if((data.values||[]).length<2) throw new Error('No data in the sheet');
-      const parsed=engParseRows(data.values);
-      localStorage.setItem('eng_raw_data',JSON.stringify(parsed));localStorage.setItem('eng_raw_at',new Date().toISOString());
-      setRawData(parsed);setStatus({type:'ok',text:`Loaded ${parsed.length} words`});
-    }catch(e){setStatus({type:'err',text:'Error: '+e.message});}
-    finally{setLoading(false);}
+  const saveWordBase = (items) => writeEngWords(items, { imported: false });
+
+  const applyHardFlags = (toMark, toUnmark) => {
+    const mark = new Set(toMark || []);
+    const unmark = new Set(toUnmark || []);
+    const items = engWordsItems.map(w => {
+      const key = w.id != null ? w.id : w.rowIndex;
+      if (mark.has(key)) return { ...w, hard: true };
+      if (unmark.has(key)) return { ...w, hard: false };
+      return w;
+    });
+    writeEngWords(items);
   };
 
-  useEffect(()=>{if(!cfg.apiKey)setTimeout(()=>setShowCfg(true),400);},[]);
+  // Разовый импорт из Google Sheets → engWords. Не используется как постоянный источник.
+  const importFromSheets = async () => {
+    if (!cfg.apiKey) { setShowCfg(true); throw new Error('Укажите API Key в Настройках для разового импорта'); }
+    if (!cfg.sheetId || !cfg.sheetName) { setShowCfg(true); throw new Error('Укажите Spreadsheet ID и Sheet name'); }
+    setImporting(true);
+    setStatus({ type: 'loading', text: 'Импорт из Google Sheets…' });
+    try {
+      const r = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent(cfg.sheetName)}?key=${cfg.apiKey}&dateTimeRenderOption=FORMATTED_STRING&valueRenderOption=UNFORMATTED_VALUE`
+      );
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.error?.message || 'HTTP ' + r.status);
+      }
+      const sheetData = await r.json();
+      if ((sheetData.values || []).length < 2) throw new Error('В таблице нет данных');
+      const parsed = engParseRows(sheetData.values);
+      const items = engWordsToItems(parsed);
+      writeEngWords(items, { imported: true });
+      // Старый кэш больше не источник правды — чистим, чтобы не путать.
+      try { localStorage.removeItem('eng_raw_data'); localStorage.removeItem('eng_raw_at'); } catch (e) {}
+      setStatus({ type: 'ok', text: `${items.length} слов в Word base` });
+      return items.length;
+    } catch (e) {
+      setStatus({ type: 'err', text: 'Импорт: ' + e.message });
+      throw e;
+    } finally {
+      setImporting(false);
+    }
+  };
 
-  // embedded: вложен в «Прочее» — там уже своя ширина/отступы/нижний зазор
-  // (см. HolidaysView с тем же пропом), дублировать их здесь не нужно.
-  return(
+  // Миграция ключей + разовый подъём старого localStorage-кэша в engWords (если БД пуста).
+  useEffect(() => {
+    if (!data.engConfig) {
+      const legacy = engLegacyCfg();
+      if (legacy.apiKey || legacy.clientId) saveCfg(legacy);
+    }
+    if (!data.engAI) {
+      const legacy = engLegacyAI();
+      if (legacy.anthropicKey || legacy.openaiKey) saveAI(legacy);
+    }
+    if (engWordsCount > 0) return;
+    try {
+      const cached = JSON.parse(localStorage.getItem('eng_raw_data') || 'null');
+      if (cached && cached.length) {
+        writeEngWords(engWordsToItems(cached), { imported: true });
+        localStorage.removeItem('eng_raw_data');
+        localStorage.removeItem('eng_raw_at');
+      }
+    } catch (e) {}
+  }, []);
+
+  return (
     <div className={embedded ? '' : 'pb-24 md:pb-8'}>
       <div className={embedded ? '' : 'max-w-4xl mx-auto px-4 sm:px-6'}>
         <div className="pt-5 pb-4 border-b border-[var(--border)] flex items-center justify-between gap-3 flex-wrap">
@@ -9825,41 +9891,65 @@ function EnglishView({ data, setData, embedded, onDirtyChange }){
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            <button onClick={()=>setShowPlan(true)} className="btn-secondary text-sm py-2 px-3">Study Plan</button>
-            <button onClick={()=>setShowAI(true)} className="btn-secondary text-sm py-2 px-3">🤖 {ai.provider==='anthropic'?'Anthropic':ai.provider==='openai'?'OpenAI':'Ollama'}</button>
-            <button onClick={()=>setShowCfg(true)} className="btn-secondary text-sm py-2 px-3"><Icon name="settings" size={15}/></button>
-            <button onClick={loadSheets} disabled={loading} className="btn-primary text-sm py-2 px-4">{loading?'⏳':'↻'} Load</button>
+            <button onClick={() => setShowPlan(true)} className="btn-secondary text-sm py-2 px-3">Study Plan</button>
+            <button onClick={() => setShowAI(true)} className="btn-secondary text-sm py-2 px-3">🤖 {ai.provider==='anthropic'?'Anthropic':ai.provider==='openai'?'OpenAI':'Ollama'}</button>
+            <button onClick={() => setShowCfg(true)} className="btn-secondary text-sm py-2 px-3"><Icon name="settings" size={15}/></button>
+            {!importedAt && (
+              <button onClick={() => importFromSheets().catch(() => {})} disabled={importing} className="btn-primary text-sm py-2 px-4">
+                {importing ? '⏳' : '📥'} Импорт
+              </button>
+            )}
           </div>
         </div>
         <div className="flex gap-2 py-3 border-b border-[var(--border)] overflow-x-auto">
           <button
-            onClick={()=>requestEngTab('wordbase')}
+            onClick={() => requestEngTab('wordbase')}
             className={`px-3.5 py-2 rounded-xl text-sm font-semibold transition-all flex-shrink-0 border ${
               engTab==='wordbase'
                 ? 'bg-teal-700 text-white border-teal-700 shadow-sm'
                 : 'bg-teal-50 text-teal-800 border-teal-300 hover:bg-teal-100'
             }`}
           >📚 Word base</button>
-          {[['cards','🃏 Flashcards'],['fill','✍ Fill in the blank'],['mysentence','📝 My Sentence'],['cipher','🔐 Cipher'],['story','📖 Story'],['typing','⌨ Typing']].map(([id,l])=>(
-            <button key={id} onClick={()=>requestEngTab(id)} className={`px-3 py-2 rounded-xl text-sm font-medium transition-all flex-shrink-0 ${engTab===id?'bg-[var(--text)] text-white':'text-[var(--text-muted)] hover:text-[var(--text)]'}`}>{l}</button>
+          {[['cards','🃏 Flashcards'],['fill','✍ Fill in the blank'],['mysentence','📝 My Sentence'],['cipher','🔐 Cipher'],['story','📖 Story'],['typing','⌨ Typing']].map(([id,l]) => (
+            <button key={id} onClick={() => requestEngTab(id)} className={`px-3 py-2 rounded-xl text-sm font-medium transition-all flex-shrink-0 ${engTab===id?'bg-[var(--text)] text-white':'text-[var(--text-muted)] hover:text-[var(--text)]'}`}>{l}</button>
           ))}
         </div>
         <div className="pt-6">
-          {engTab==='wordbase'&&<WordBaseTab rawData={rawData} setRawData={setRawData} cfg={cfg} loadSheets={loadSheets} onDirtyChange={setWordBaseDirty} savingRef={wordBaseSavingRef}/>}
-          {engTab==='cards'&&<FlashcardsTab rawData={rawData} cfg={cfg} ai={ai}/>}
-          {engTab==='fill'&&<FillTab rawData={rawData} ai={ai}/>}
-          {engTab==='mysentence'&&<MySentenceTab rawData={rawData} ai={ai} prompt={mySentPrompt} onSavePrompt={saveMySentPrompt}/>}
-          {engTab==='cipher'&&<CipherTab rawData={rawData} ai={ai} prompt={cipherPrompt} onSavePrompt={saveCipherPrompt}/>}
-          {engTab==='story'&&<StoryTab rawData={rawData} ai={ai} prompt={storyPrompt} onSavePrompt={saveStoryPrompt}/>}
-          {engTab==='typing'&&<TypingTab rawData={rawData} ai={ai}/>}
+          {engTab==='wordbase' && (
+            <WordBaseTab
+              words={engWordsItems}
+              onSaveWords={saveWordBase}
+              onImportSheets={importFromSheets}
+              importedAt={importedAt}
+              importing={importing}
+              onDirtyChange={setWordBaseDirty}
+              savingRef={wordBaseSavingRef}
+            />
+          )}
+          {engTab==='cards' && <FlashcardsTab rawData={rawData} cfg={cfg} ai={ai} onApplyHard={applyHardFlags}/>}
+          {engTab==='fill' && <FillTab rawData={rawData} ai={ai}/>}
+          {engTab==='mysentence' && <MySentenceTab rawData={rawData} ai={ai} prompt={mySentPrompt} onSavePrompt={saveMySentPrompt}/>}
+          {engTab==='cipher' && <CipherTab rawData={rawData} ai={ai} prompt={cipherPrompt} onSavePrompt={saveCipherPrompt}/>}
+          {engTab==='story' && <StoryTab rawData={rawData} ai={ai} prompt={storyPrompt} onSavePrompt={saveStoryPrompt}/>}
+          {engTab==='typing' && <TypingTab rawData={rawData} ai={ai}/>}
         </div>
       </div>
-      {showCfg&&<EngCfgModal cfg={cfg} reminder={wordReminder} hasToken={hasTgToken} onSave={(payload)=>{saveCfg(payload.cfg);saveWordReminder(payload.reminder);setShowCfg(false);}} onClose={()=>setShowCfg(false)}/>}
-      {showAI&&<EngAIModal ai={ai} onSave={(a)=>{saveAI(a);setShowAI(false);}} onClose={()=>setShowAI(false)}/>}
-      {showPlan&&<EngStudyPlanModal plan={studyPlan} onSave={(p)=>{saveStudyPlan(p);setShowPlan(false);}} onClose={()=>setShowPlan(false)}/>}
+      {showCfg && (
+        <EngCfgModal
+          cfg={cfg}
+          reminder={wordReminder}
+          hasToken={hasTgToken}
+          wordsCount={engWordsCount}
+          onSave={(payload) => { saveCfg(payload.cfg); saveWordReminder(payload.reminder); setShowCfg(false); }}
+          onClose={() => setShowCfg(false)}
+        />
+      )}
+      {showAI && <EngAIModal ai={ai} onSave={(a) => { saveAI(a); setShowAI(false); }} onClose={() => setShowAI(false)}/>}
+      {showPlan && <EngStudyPlanModal plan={studyPlan} onSave={(p) => { saveStudyPlan(p); setShowPlan(false); }} onClose={() => setShowPlan(false)}/>}
     </div>
   );
 }
+
 
 // ============== VOICE ASSISTANT ==============
 

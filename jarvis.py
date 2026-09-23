@@ -3812,17 +3812,42 @@ def eng_parse_date(value, infer_year: int | None = None) -> date | None:
 
 
 def load_eng_words(app_data: dict) -> list:
-    """Vocabulary source for daily Telegram picks.
+    """Vocabulary source for daily Telegram picks — engWords in app data.
 
-    Prefer the in-app DB (engWords). Fall back to a few likely aliases so a
-    parallel agent landing under a nearby key still wires up without a second
-    pass. Entries may be archived/deleted — skip those.
+    Shape: { items: [...], updatedAt, importedAt } (LWW object). Also accepts
+    a bare list for older drafts. Words live in Jarvis after a one-time Sheets
+    import; we do not fetch Google Sheets from the notifier.
     """
-    for key in ("engWords", "englishWords", "engWordBank"):
-        raw = app_data.get(key)
-        if isinstance(raw, list) and raw:
-            return [w for w in raw if isinstance(w, dict) and not w.get("archived") and not w.get("deleted")]
-    return []
+    raw = app_data.get("engWords")
+    items = None
+    if isinstance(raw, dict):
+        items = raw.get("items")
+    elif isinstance(raw, list):
+        items = raw
+    if not isinstance(items, list):
+        return []
+    return [
+        w for w in items
+        if isinstance(w, dict)
+        and str(w.get("en") or w.get("word") or "").strip()
+        and not w.get("archived")
+        and not w.get("deleted")
+    ]
+
+
+def eng_word_sort_date(w: dict, today: date) -> date:
+    """Best date for filter/order: explicit date, else createdAt ms, else unknown."""
+    d = eng_parse_date(w.get("date"), today.year)
+    if d is not None:
+        return d
+    created = w.get("createdAt") or w.get("addedAt")
+    if isinstance(created, (int, float)) and created > 10_000_000_000:  # ms epoch
+        try:
+            return datetime.fromtimestamp(created / 1000, tz=MSK).date()
+        except Exception:
+            pass
+    d = eng_parse_date(created, today.year)
+    return d
 
 
 def select_eng_words_for_reminder(words: list, reminder: dict, today: date) -> list:
@@ -3838,7 +3863,7 @@ def select_eng_words_for_reminder(words: list, reminder: dict, today: date) -> l
             cutoff = today - timedelta(days=days)
             filtered = []
             for w in pool:
-                d = eng_parse_date(w.get("date") or w.get("createdAt") or w.get("addedAt"), today.year)
+                d = eng_word_sort_date(w, today)
                 if d is None:
                     # Keep undated words so a brand-new DB without dates still
                     # produces a non-empty daily set.
@@ -3851,20 +3876,9 @@ def select_eng_words_for_reminder(words: list, reminder: dict, today: date) -> l
     if order == "random":
         random.shuffle(pool)
     elif order == "newest":
-        pool.sort(
-            key=lambda w: (
-                eng_parse_date(w.get("date") or w.get("createdAt") or w.get("addedAt"), today.year)
-                or date.min
-            ),
-            reverse=True,
-        )
+        pool.sort(key=lambda w: eng_word_sort_date(w, today) or date.min, reverse=True)
     elif order == "oldest":
-        pool.sort(
-            key=lambda w: (
-                eng_parse_date(w.get("date") or w.get("createdAt") or w.get("addedAt"), today.year)
-                or date.max
-            )
-        )
+        pool.sort(key=lambda w: eng_word_sort_date(w, today) or date.max)
 
     try:
         count = max(1, min(50, int(reminder.get("count") or 5)))
@@ -4111,7 +4125,7 @@ def _tick():
                 if not words:
                     # База слов ещё не залита в app data — настройки и
                     # маршрутизация уже работают; досылать нечего.
-                    print(f"[{now_str} MSK] eng words: engWords empty — skip send ({len(recipients)} subscriber(s) ready)")
+                    print(f"[{now_str} MSK] eng words: Word base empty — skip send ({len(recipients)} subscriber(s) ready). Import once from Sheets or add words in Jarvis.")
                 else:
                     picked = select_eng_words_for_reminder(words, eng_reminder, today_date)
                     if not picked:
