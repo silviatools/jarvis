@@ -3835,19 +3835,20 @@ def load_eng_words(app_data: dict) -> list:
     ]
 
 
-def eng_word_sort_date(w: dict, today: date) -> date:
-    """Best date for filter/order: explicit date, else createdAt ms, else unknown."""
+def eng_word_sort_date(w: dict, today: date) -> date | None:
+    """Best date for filter/order: explicit date, else createdAt (ms or sec)."""
     d = eng_parse_date(w.get("date"), today.year)
     if d is not None:
         return d
     created = w.get("createdAt") or w.get("addedAt")
-    if isinstance(created, (int, float)) and created > 10_000_000_000:  # ms epoch
+    if isinstance(created, (int, float)) and created > 0:
         try:
-            return datetime.fromtimestamp(created / 1000, tz=MSK).date()
+            # Heuristic: ≥ 1e12 → milliseconds, else seconds.
+            ts = created / 1000.0 if created >= 10_000_000_000 else float(created)
+            return datetime.fromtimestamp(ts, tz=MSK).date()
         except Exception:
             pass
-    d = eng_parse_date(created, today.year)
-    return d
+    return eng_parse_date(created, today.year)
 
 
 def select_eng_words_for_reminder(words: list, reminder: dict, today: date) -> list:
@@ -3887,28 +3888,57 @@ def select_eng_words_for_reminder(words: list, reminder: dict, today: date) -> l
     return pool[:count]
 
 
-def format_eng_words_message(words: list, reminder: dict) -> str:
-    order_labels = {"random": "рандом", "newest": "самые новые", "oldest": "самые старые"}
-    range_labels = {"7": "7 дней", "14": "14 дней", "30": "30 дней", "all": "всё время"}
+def format_eng_words_message(words: list, reminder: dict, *, test: bool = False) -> str:
+    order_labels = {"random": "random", "newest": "newest", "oldest": "oldest"}
+    range_labels = {"7": "last 7 days", "14": "last 14 days", "30": "last 30 days", "all": "all time"}
     order = order_labels.get(reminder.get("order"), reminder.get("order") or "")
     rng = range_labels.get(str(reminder.get("dateRange")), str(reminder.get("dateRange") or ""))
-    lines = [
-        "📚 <b>Слова на сегодня</b>",
-        f"<i>{len(words)} шт · {html.escape(str(order))} · {html.escape(str(rng))}</i>",
-        "",
-    ]
-    for i, w in enumerate(words, 1):
+    entries = []
+    for w in words:
         en = html.escape(str(w.get("en") or w.get("word") or w.get("english") or "").strip())
         ru = html.escape(str(w.get("ru") or w.get("translation") or w.get("russian") or "").strip())
         if not en:
             continue
+        hard = " ★" if w.get("hard") else ""
         if ru:
-            lines.append(f"{i}. <b>{en}</b> — {ru}")
+            entries.append(f"<b>{en}</b>{hard} — {ru}")
         else:
-            lines.append(f"{i}. <b>{en}</b>")
-    lines.append("")
-    lines.append("Используй их в сегодняшнем speaking practice 🎙")
+            entries.append(f"<b>{en}</b>{hard}")
+    title = "📚 <b>Words for today</b>" + (" <i>(test)</i>" if test else "")
+    lines = [
+        title,
+        f"<i>{len(entries)} words · {html.escape(str(order))} · {html.escape(str(rng))}</i>",
+        "",
+    ]
+    for i, entry in enumerate(entries, 1):
+        lines.append(f"{i}. {entry}")
+    if not entries:
+        lines.append("<i>No words matched the current filters.</i>")
+    else:
+        lines.append("")
+        lines.append("Use them in today's speaking practice 🎙")
     return "\n".join(lines)
+
+
+def send_eng_words_now(app_data: dict, reminder: dict, *, test: bool = False) -> dict:
+    """Pick words by reminder settings and send to English-routed subscribers."""
+    token = get_token()
+    if not token:
+        return {"ok": False, "error": "Telegram bot token not configured"}
+    subs = load_subscribers()
+    recipients = recipients_for(app_data, subs, "english")
+    if not recipients:
+        return {"ok": False, "error": "no subscribers routed to english"}
+    words = load_eng_words(app_data)
+    if not words:
+        return {"ok": False, "error": "Word base is empty — import or add words first"}
+    picked = select_eng_words_for_reminder(words, reminder, today_msk())
+    if not picked:
+        return {"ok": False, "error": "no words matched the current filters", "pool": len(words)}
+    text = format_eng_words_message(picked, reminder, test=test)
+    for cid in recipients:
+        send_message(token, cid, text)
+    return {"ok": True, "sent": len(recipients), "words": len(picked), "pool": len(words)}
 
 
 def _tick():
@@ -4112,29 +4142,21 @@ def _tick():
         eng_reminder = app_data_raw.get("engWordReminder") or {}
         cfg_time = str(eng_reminder.get("time", "")).strip()
         if eng_reminder.get("enabled") and cfg_time == now_str:
-            days = eng_reminder.get("days", [1, 2, 3, 4, 5]) or []
-            recipients = recipients_for(app_data_raw, subs, "english")
+            days_raw = eng_reminder.get("days", [1, 2, 3, 4, 5]) or []
+            days = []
+            for d in days_raw:
+                try: days.append(int(d))
+                except Exception: pass
             if today_js not in days:
                 print(f"[{now_str} MSK] eng words: today ({today_js}) not in days {days}")
             elif _already_fired("eng_words", "daily", today_iso, now_str):
                 print(f"[{now_str} MSK] eng words: already fired this minute")
-            elif not recipients:
-                print(f"[{now_str} MSK] eng words: no subscribers routed to english")
             else:
-                words = load_eng_words(app_data_raw)
-                if not words:
-                    # База слов ещё не залита в app data — настройки и
-                    # маршрутизация уже работают; досылать нечего.
-                    print(f"[{now_str} MSK] eng words: Word base empty — skip send ({len(recipients)} subscriber(s) ready). Import once from Sheets or add words in Jarvis.")
+                result = send_eng_words_now(app_data_raw, eng_reminder, test=False)
+                if result.get("ok"):
+                    print(f"[{now_str} MSK] → eng words ({result.get('words')} of {result.get('pool')}) to {result.get('sent')} subscriber(s)")
                 else:
-                    picked = select_eng_words_for_reminder(words, eng_reminder, today_date)
-                    if not picked:
-                        print(f"[{now_str} MSK] eng words: filter/order left an empty set")
-                    else:
-                        text = format_eng_words_message(picked, eng_reminder)
-                        print(f"[{now_str} MSK] → eng words ({len(picked)} of {len(words)}) to {len(recipients)} subscriber(s)")
-                        for cid in recipients:
-                            send_message(token, cid, text)
+                    print(f"[{now_str} MSK] eng words: skip — {result.get('error')}")
     except Exception as e:
         print(f"[{now_str} MSK] eng words reminder error: {e}")
 
@@ -6548,6 +6570,40 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                     "response": {"text": "Извините, не получилось загрузить дела.", "end_session": True},
                 }
             self._json(200, result)
+        elif self.path == "/api/english/send-words-test":
+            # Test pick using current (optional) reminder overrides from the modal.
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except Exception:
+                length = 0
+            body = {}
+            if length > 0:
+                try:
+                    body = json.loads(self.rfile.read(length))
+                    if not isinstance(body, dict):
+                        body = {}
+                except Exception:
+                    self._json(400, {"error": "invalid json"})
+                    return
+            try:
+                app_data = load_app_data()
+                saved = app_data.get("engWordReminder") or {}
+                override = body.get("reminder") if isinstance(body.get("reminder"), dict) else {}
+                reminder = {
+                    "enabled": True,
+                    "time": override.get("time", saved.get("time", "09:00")),
+                    "days": override.get("days", saved.get("days", [1, 2, 3, 4, 5])),
+                    "count": override.get("count", saved.get("count", 5)),
+                    "order": override.get("order", saved.get("order", "random")),
+                    "dateRange": override.get("dateRange", saved.get("dateRange", "7")),
+                }
+                result = send_eng_words_now(app_data, reminder, test=True)
+                if result.get("ok"):
+                    self._json(200, result)
+                else:
+                    self._json(400, result)
+            except Exception as e:
+                self._json(500, {"error": str(e)})
         elif self.path == "/api/backup/send-now":
             token = get_token()
             if not token:
