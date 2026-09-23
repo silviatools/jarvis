@@ -92,9 +92,14 @@
     flex-direction: column;
     /* Высота экрана минус нижняя навигация и её safe-area */
     min-height: calc(100dvh - 5.75rem - env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - 5.75rem - env(safe-area-inset-bottom, 0px));
+    overflow: hidden;
   }
   @media (min-width: 768px) {
-    .misc-home { min-height: calc(100dvh - 2rem); }
+    .misc-home {
+      min-height: calc(100dvh - 2rem);
+      max-height: calc(100dvh - 2rem);
+    }
   }
   .misc-home-grid {
     display: grid;
@@ -30994,6 +30999,9 @@ const MISC_GRID_COLS = 4;
 // Мин. высота ячейки (иконка 64 + подпись + зазор) — сколько рядов влезет
 // на экран. Ниже — сетка скроллится, выше — ряды растягиваются.
 const MISC_CELL_MIN_PX = 96;
+// Жёсткий потолок рядов: иначе ResizeObserver по растущему контенту
+// разгоняет slots до сотен тысяч ячеек и раздувает /api/data.
+const MISC_MAX_ROWS = 8;
 
 const miscAppById = () => Object.fromEntries(MISC_APPS.map(a => [a.id, a]));
 
@@ -31006,6 +31014,7 @@ const resolveMiscLayout = (data, preferredRows = 3) => {
   const byId = miscAppById();
   const raw = (data && data.miscAppsOrder) || {};
   const cols = MISC_GRID_COLS;
+  const rowCap = Math.min(MISC_MAX_ROWS, Math.max(3, preferredRows | 0));
   let slots;
   if (Array.isArray(raw.slots)) {
     slots = raw.slots.map(id => (id && byId[id] ? id : null));
@@ -31022,31 +31031,48 @@ const resolveMiscLayout = (data, preferredRows = 3) => {
     seen.add(id);
     return id;
   });
+  // Если slots раздуты багом (сотни тысяч null) — оставляем только префикс
+  // до последней занятой ячейки в пределах потолка; приложения за потолком
+  // потом сядут в свободные ячейки.
+  const hardMax = cols * MISC_MAX_ROWS;
+  if (slots.length > hardMax) {
+    const kept = slots.slice(0, hardMax);
+    const keptSeen = new Set(kept.filter(Boolean));
+    slots.forEach((id, i) => {
+      if (i < hardMax || !id || keptSeen.has(id)) return;
+      // приложение оказалось за потолком — вернём в первую дырку
+      const empty = kept.findIndex(x => x == null);
+      if (empty >= 0) { kept[empty] = id; keptSeen.add(id); }
+    });
+    slots = kept;
+    seen.clear();
+    slots.forEach(id => { if (id) seen.add(id); });
+  }
   MISC_APPS.forEach(a => {
     if (seen.has(a.id)) return;
     const empty = slots.findIndex(x => x == null);
     if (empty >= 0) slots[empty] = a.id;
-    else slots.push(a.id);
+    else if (slots.length < hardMax) slots.push(a.id);
     seen.add(a.id);
   });
   let lastOcc = -1;
   slots.forEach((id, i) => { if (id) lastOcc = i; });
-  const minRows = Math.max(
-    Math.ceil(MISC_APPS.length / cols),
-    Math.floor(lastOcc / cols) + 1,
-    preferredRows | 0,
-    1
+  const minRows = Math.min(
+    MISC_MAX_ROWS,
+    Math.max(
+      Math.ceil(MISC_APPS.length / cols),
+      Math.floor(Math.max(lastOcc, 0) / cols) + 1,
+      rowCap,
+      1
+    )
   );
   const need = minRows * cols;
   if (slots.length < need) {
     while (slots.length < need) slots.push(null);
-  } else if (slots.length > need) {
-    // Не обрезаем занятые ячейки; хвост пустых можно укоротить до need.
-    const keep = Math.max(need, lastOcc + 1);
-    slots = slots.slice(0, keep);
-    while (slots.length % cols) slots.push(null);
+  } else {
+    slots = slots.slice(0, need);
   }
-  return { slots, cols, rows: Math.ceil(slots.length / cols) };
+  return { slots, cols, rows: minRows };
 };
 
 function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voiceFocus, onVoiceFocusConsumed }) {
@@ -31060,35 +31086,53 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
   const byId = miscAppById();
   const layout = resolveMiscLayout(data, preferredRows);
 
-  // Сколько рядов влезает в оставшуюся высоту экрана — сетка покрывает
-  // всю площадь домашнего экрана «Прочего», а не только занятые иконки.
+  // Сколько рядов влезает в окно — считаем от viewport, НЕ от высоты
+  // контейнера: иначе сетка растёт → ResizeObserver видит больше → ещё
+  // ряды → slots раздуваются без конца.
   useEffect(() => {
     if (app) return undefined;
-    const el = gridWrapRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return undefined;
     const measure = () => {
-      const h = el.clientHeight || 0;
-      const next = Math.max(3, Math.floor(h / MISC_CELL_MIN_PX));
+      const navApprox = 5.75 * 16;
+      const headerApprox = 64;
+      const avail = Math.max(0, (window.innerHeight || 0) - navApprox - headerApprox);
+      const next = Math.min(MISC_MAX_ROWS, Math.max(3, Math.floor(avail / MISC_CELL_MIN_PX)));
       setPreferredRows(prev => (prev === next ? prev : next));
     };
     measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
   }, [app]);
+
+  // Разовое лечение раздутого miscAppsOrder (после бага с ResizeObserver).
+  const slotsLen = (data && data.miscAppsOrder && Array.isArray(data.miscAppsOrder.slots))
+    ? data.miscAppsOrder.slots.length : 0;
+  useEffect(() => {
+    if (slotsLen <= MISC_GRID_COLS * MISC_MAX_ROWS) return;
+    setData(d => {
+      const cur = d.miscAppsOrder;
+      if (!cur || !Array.isArray(cur.slots) || cur.slots.length <= MISC_GRID_COLS * MISC_MAX_ROWS) return d;
+      const fixed = resolveMiscLayout(d, preferredRows);
+      return {
+        ...d,
+        miscAppsOrder: { slots: fixed.slots, cols: fixed.cols, updatedAt: Date.now() },
+      };
+    });
+  }, [slotsLen, preferredRows, setData]);
 
   const moveMiscToSlot = (fromId, toSlot) => {
     if (!fromId || toSlot == null || toSlot < 0) return;
+    const maxSlot = MISC_GRID_COLS * MISC_MAX_ROWS - 1;
+    if (toSlot > maxSlot) return;
     setData(d => {
-      // preferredRows берём из текущего замыкания — высота экрана та же.
       const cur = resolveMiscLayout(d, preferredRows);
       const slots = [...cur.slots];
-      while (toSlot >= slots.length) slots.push(null);
+      while (toSlot >= slots.length && slots.length <= maxSlot) slots.push(null);
+      if (toSlot >= slots.length) return d;
       const from = slots.indexOf(fromId);
       if (from < 0 || from === toSlot) return d;
       const tmp = slots[toSlot];
       slots[toSlot] = fromId;
-      slots[from] = tmp; // null или другое приложение (swap)
+      slots[from] = tmp;
       return {
         ...d,
         miscAppsOrder: {
