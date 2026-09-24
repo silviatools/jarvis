@@ -2497,10 +2497,10 @@ ASSISTANT_DATA_DOMAINS = {
             "plans": app.get("plannerPlans", []),
             "holidays": [h for h in app.get("holidays", []) if not h.get("archived")],
         }),
-    "camping": ("Кемпинг: справочник вещей и поездки со сборами",
+    "camping": ("Кемпинг: справочник вещей, места куда съездить и поездки со сборами",
         lambda app: {
             "items": app.get("campingItems", []), "categories": app.get("campingCategories", []),
-            "trips": app.get("campingTrips", []),
+            "trips": app.get("campingTrips", []), "places": app.get("campingPlaces", []),
         }),
     "meals": ("Питание: вкладки План/Готовка/Контейнеры/Счётчик/Закупка/База продуктов — рационы, планы готовки, контейнеры для взвешивания, остаток порций, БАДы, списки покупок, свои блюда",
         lambda app: {
@@ -2690,6 +2690,7 @@ WRITE_REGISTRY = {
     },
     "campingItems": {"label": "Кемпинг-вещь (справочник)", "create_defaults": lambda: {"isBag": False}},
     "campingTrips": {"label": "Кемпинг-поездка", "create_defaults": lambda: {"packing": {"bags": [], "items": []}}},
+    "campingPlaces": {"label": "Кемпинг-место (куда съездить)", "create_defaults": lambda: {"visited": False, "visitedDate": ""}},
     "meals": {"label": "Рацион (приём пищи)", "create_defaults": lambda: {"breakfast": [], "snack": [], "lunch": [], "dinner": [], "archived": False}},
     "supplements": {"label": "БАД (обычный список)", "create_defaults": lambda: {"form": "Таблетки", "frequency": "daily_morning", "archived": False}},
     "workoutSupplements": {"label": "БАД (тренировочный список)", "create_defaults": lambda: {"form": "Таблетки", "frequency": "daily_morning", "archived": False}},
