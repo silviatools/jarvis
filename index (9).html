@@ -24741,10 +24741,11 @@ const campingNormPacking = (p) => {
 };
 
 function PlannerCampingView({ data, setData }) {
-  const [inner, setInner] = useState('checklist'); // catalog | checklist
+  const [inner, setInner] = useState('checklist'); // catalog | places | checklist
   const tabs = [
     { id: 'checklist', label: 'Чек лист'   },
     { id: 'catalog',   label: 'Справочник' },
+    { id: 'places',    label: 'Места'      },
   ];
   return (
     <div>
@@ -24762,6 +24763,7 @@ function PlannerCampingView({ data, setData }) {
         ))}
       </div>
       {inner === 'catalog'   && <CampingCatalogView data={data} setData={setData} />}
+      {inner === 'places'    && <CampingPlacesView data={data} setData={setData} />}
       {inner === 'checklist' && <CampingChecklistView data={data} setData={setData} />}
     </div>
   );
@@ -25174,6 +25176,243 @@ function CampingItemForm({ initial, categories, ensureCategory, onSave, onCancel
             В сумку можно будет класть другие вещи при сборах в поездку.
           </div>
         )}
+      </div>
+
+      <div className="flex gap-3">
+        <button onClick={requestClose} className="btn-secondary flex-1">Отмена</button>
+        <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Места ──────────────────────────────────────────────────────────────────
+// Список мест, куда хочется съездить: название, адрес, координаты, описание,
+// плюс отметка «был(а)» с датой (по умолчанию — сегодня, но можно изменить,
+// например указать прошлогоднюю поездку).
+function CampingPlacesView({ data, setData }) {
+  const [editing, setEditing] = useState(null); // null | place | 'new'
+  const places = data.campingPlaces || [];
+
+  const sorted = useMemo(() => [...places].sort((a, b) => {
+    if (!!a.visited !== !!b.visited) return a.visited ? 1 : -1;
+    return (a.name || '').localeCompare(b.name || '', 'ru');
+  }), [places]);
+
+  const savePlace = (place) => {
+    const entry = {
+      ...place,
+      name: place.name.trim(),
+      address: (place.address || '').trim(),
+      coords: (place.coords || '').trim(),
+      description: (place.description || '').trim(),
+    };
+    if (!entry.name) return alert('Введите название');
+    setData(d => {
+      const list = d.campingPlaces || [];
+      const exists = list.some(x => x.id === entry.id);
+      return {
+        ...d,
+        campingPlaces: exists ? list.map(x => x.id === entry.id ? entry : x) : [...list, entry],
+      };
+    });
+    setEditing(null);
+  };
+
+  const removePlace = (place) => {
+    if (!confirm(`Удалить «${place.name}» из мест?`)) return;
+    setData(d => ({
+      ...d,
+      campingPlaces: (d.campingPlaces || []).filter(x => x.id !== place.id),
+      deletedIds: withDeletedId(d, 'campingPlaces', place.id),
+    }));
+  };
+
+  const setVisited = (place, patch) => {
+    setData(d => ({
+      ...d,
+      campingPlaces: (d.campingPlaces || []).map(p => p.id === place.id ? { ...p, ...patch } : p),
+    }));
+  };
+
+  if (editing) {
+    return (
+      <CampingPlaceForm
+        initial={editing === 'new'
+          ? { id: crypto.randomUUID(), name: '', address: '', coords: '', description: '', visited: false, visitedDate: '', createdAt: Date.now() }
+          : editing}
+        onSave={savePlace}
+        onCancel={() => setEditing(null)}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <button
+        onClick={() => setEditing('new')}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-4"
+      >
+        <Icon name="plus" size={18} /> Добавить место
+      </button>
+
+      {sorted.length === 0 ? (
+        <EmptyState title="Пока нет мест" text="Добавьте места, куда хотите съездить" />
+      ) : (
+        <div className="space-y-2">
+          {sorted.map(p => (
+            <CampingPlaceRow
+              key={p.id}
+              place={p}
+              onEdit={() => setEditing(p)}
+              onRemove={() => removePlace(p)}
+              onMarkVisited={date => setVisited(p, { visited: true, visitedDate: date })}
+              onUnmarkVisited={() => setVisited(p, { visited: false, visitedDate: '' })}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CampingPlaceRow({ place, onEdit, onRemove, onMarkVisited, onUnmarkVisited }) {
+  const [editingDate, setEditingDate] = useState(false);
+  const [dateVal, setDateVal] = useState(place.visitedDate || getTodayKey());
+
+  const startEditDate = () => {
+    setDateVal(place.visitedDate || getTodayKey());
+    setEditingDate(true);
+  };
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-3.5">
+      <div className="flex items-center gap-3">
+        <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${
+          place.visited ? 'bg-[var(--text)] text-white' : 'bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]'
+        }`}>
+          <Icon name="mapPin" size={16} />
+        </div>
+        <button onClick={onEdit} className="flex-1 min-w-0 text-left">
+          <div className="font-medium truncate">{place.name}</div>
+          {(place.address || place.coords) && (
+            <div className="text-xs text-[var(--text-subtle)] truncate">
+              {[place.address, place.coords].filter(Boolean).join(' · ')}
+            </div>
+          )}
+        </button>
+        <div className="flex gap-1 flex-shrink-0">
+          <button onClick={onEdit} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+            <Icon name="edit" size={15} />
+          </button>
+          <button onClick={onRemove} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500">
+            <Icon name="trash" size={15} />
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-2.5 pt-2.5 border-t border-[var(--border)]">
+        {editingDate ? (
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={dateVal}
+              max={getTodayKey()}
+              onChange={e => setDateVal(e.target.value)}
+              className="!py-1.5 !text-sm flex-1"
+              autoFocus
+            />
+            <button
+              onClick={() => { onMarkVisited(dateVal || getTodayKey()); setEditingDate(false); }}
+              className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Сохранить"
+            ><Icon name="check" size={15} /></button>
+            <button
+              onClick={() => setEditingDate(false)}
+              className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Отмена"
+            ><Icon name="x" size={15} /></button>
+          </div>
+        ) : place.visited ? (
+          <div className="flex items-center gap-2 text-sm">
+            <Icon name="check" size={14} />
+            <button onClick={startEditDate} className="text-[var(--text-muted)] hover:text-[var(--text)]">
+              Был{place.visitedDate ? `: ${plannerFmtDate(place.visitedDate)}` : ''}
+            </button>
+            <button
+              onClick={onUnmarkVisited}
+              className="ml-auto text-xs text-[var(--text-subtle)] hover:text-[var(--text)]"
+            >Отменить отметку</button>
+          </div>
+        ) : (
+          <button
+            onClick={() => onMarkVisited(getTodayKey())}
+            className="flex items-center gap-1.5 text-sm text-[var(--text-muted)] hover:text-[var(--text)]"
+          >
+            <Icon name="check" size={14} /> Отметить, что был
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CampingPlaceForm({ initial, onSave, onCancel }) {
+  const [f, setF] = useState({
+    name: initial.name || '',
+    address: initial.address || '',
+    coords: initial.coords || '',
+    description: initial.description || '',
+  });
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const dirty = useRef(false);
+
+  const requestClose = () => {
+    if (dirty.current && !confirm('Закрыть без сохранения? Изменения будут потеряны.')) return;
+    onCancel();
+  };
+
+  const submit = () => {
+    if (!f.name.trim()) return alert('Введите название');
+    onSave({ ...initial, ...f });
+  };
+
+  return (
+    <div className="fade-in space-y-5">
+      <div className="flex items-center gap-3">
+        <button onClick={requestClose} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]" aria-label="Закрыть">
+          <Icon name="x" size={20} />
+        </button>
+        <h2 className="font-display text-2xl">{initial.name ? 'Место' : 'Новое место'}</h2>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div>
+          <label>Название</label>
+          <input
+            value={f.name}
+            onChange={e => { dirty.current = true; set('name', e.target.value); }}
+            placeholder="Например, база отдыха «Сосны»"
+            autoFocus
+          />
+        </div>
+        <div>
+          <label>Адрес</label>
+          <input value={f.address} onChange={e => { dirty.current = true; set('address', e.target.value); }} placeholder="Город, улица…" />
+        </div>
+        <div>
+          <label>Координаты</label>
+          <input value={f.coords} onChange={e => { dirty.current = true; set('coords', e.target.value); }} placeholder="55.7558, 37.6176" />
+        </div>
+        <div>
+          <label>Описание</label>
+          <textarea
+            value={f.description}
+            onChange={e => { dirty.current = true; set('description', e.target.value); }}
+            rows={3}
+            placeholder="Заметки о месте"
+            className="w-full"
+            style={{ resize: 'vertical' }}
+          />
+        </div>
       </div>
 
       <div className="flex gap-3">
