@@ -177,6 +177,16 @@
   .pb-safe { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
   .bottom-nav { padding-bottom: env(safe-area-inset-bottom, 0); }
 
+  /* iOS Safari визуально «отклеивает» position:fixed элементы от края экрана
+     во время инерционного скролла — особенно вместе с backdrop-filter (тут
+     на нижней панели и кнопке голоса). Перевод в свой GPU-слой это чинит. */
+  .gpu-fixed {
+    transform: translateZ(0);
+    -webkit-transform: translateZ(0);
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+  }
+
   /* Инпуты */
   input, select, textarea {
     font-family: 'Inter', sans-serif;
@@ -2094,7 +2104,7 @@ function BottomNav({ tab, setTab }) {
 
   return (
     <>
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 bg-[var(--bg)]/90 backdrop-blur-xl border-t border-[var(--border)] bottom-nav">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 bg-[var(--bg)]/90 backdrop-blur-xl border-t border-[var(--border)] bottom-nav gpu-fixed">
         <div className="flex items-center justify-around px-1 pt-2 pb-safe">
           {mainItems.map(item => (
             <button
@@ -12063,7 +12073,7 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
         </div>
       )}
 
-      <div className="fixed bottom-24 right-4 z-30 flex flex-col items-end gap-2 md:bottom-8">
+      <div className="fixed bottom-24 right-4 z-30 flex flex-col items-end gap-2 md:bottom-8 gpu-fixed">
         {/* Постоянная прослушка «Джарвис, ...» — не отдельная кнопка, а долгое
             нажатие на эту же: кольцо вокруг неё показывает состояние режима. */}
         <div className="relative">
