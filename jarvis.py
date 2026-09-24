@@ -334,7 +334,7 @@ def subscriber_name(subs: dict, chat_id) -> str:
 # entry in data.settings.notifyRouting receives NOTHING (default-deny). Anyone
 # who messages the bot is auto-subscribed with zero categories; an owner has
 # to explicitly opt them into each category from Settings → Маршрутизация.
-NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "tasks", "backup", "english"}
+NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "tasks", "backup", "english", "health"}
 
 
 def recipients_for(app_data: dict, subs: dict, category: str) -> list:
@@ -4116,6 +4116,31 @@ def _tick():
                     send_message(token, cid, text)
     except Exception as e:
         print(f"[{now_str} MSK] tasks reminder error: {e}")
+
+    # ── Здоровье: разовое напоминание at notifyDate + notifyTime (MSK) ─────
+    try:
+        health_events = app_data_raw.get("healthEvents") or []
+        health_conditions = {c.get("id"): c.get("name") for c in (app_data_raw.get("healthConditions") or [])}
+        for event in health_events:
+            if not event.get("notify"):
+                continue
+            if event.get("notifyDate", "") != today_iso:
+                continue
+            if event.get("notifyTime", "") != now_str:
+                continue
+            if _already_fired("health", event.get("id"), today_iso, now_str):
+                continue
+            note = event.get("notifyNote") or event.get("title") or "Напоминание"
+            text = f"🩺 <b>Здоровье — напоминание</b>\n\n{note}"
+            condition_name = health_conditions.get(event.get("conditionId"))
+            if condition_name:
+                text += f"\n<i>{condition_name}</i>"
+            recipients = recipients_for(app_data_raw, subs, "health")
+            print(f"[{now_str} MSK] → health: {note} ({len(recipients)} subscriber(s))")
+            for cid in recipients:
+                send_message(token, cid, text)
+    except Exception as e:
+        print(f"[{now_str} MSK] health reminder error: {e}")
 
     # ── Diet compliance: recurring «Как ты кушал сегодня?» ────────────────
     try:
