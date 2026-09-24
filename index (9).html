@@ -451,6 +451,7 @@ const NOTIFICATION_CATEGORIES = [
   { id: 'tasks',     label: 'Задачи' },
   { id: 'backup',    label: 'Бэкапы' },
   { id: 'english',   label: 'English' },
+  { id: 'health',    label: 'Здоровье' },
 ];
 
 // ── MSK time helpers ─────────────────────────────────────────────────────
@@ -10263,7 +10264,10 @@ const WRITE_REGISTRY = {
     createDefaults: () => ({ tags: [] }),
     cascadeOrphan: [{ collection: 'healthEvents', field: 'conditionId' }],
   },
-  healthEvents: { label: 'Событие здоровья (визит/болезнь/процедура)', createDefaults: () => ({ tags: [], medications: [] }) },
+  healthEvents: {
+    label: 'Событие здоровья (визит/болезнь/процедура). Поля notify/notifyDate/notifyTime/notifyNote — разовое напоминание в Telegram на дату (как у долгов/задач): notify true только если задана notifyDate.',
+    createDefaults: () => ({ tags: [], medications: [], notify: false, notifyDate: '', notifyTime: '10:00', notifyNote: '' }),
+  },
   loyaltyCards: { label: 'Карта лояльности магазина', createDefaults: () => ({ format: 'auto' }) },
   knowledgeNotes: {
     label: 'Запись в «Базе данных» — факт о пользователе (title, text, category)',
@@ -14343,6 +14347,7 @@ function HealthEventRow({ event, conditionName, onView, onEdit, onDelete }) {
             <span>{formatHealthDate(event.date)}{event.endDate ? ` — ${formatHealthDate(event.endDate)}` : ''}</span>
             {conditionName && <span>· {conditionName}</span>}
             {event.doctor && <span>· {event.doctor}</span>}
+            {event.notify && event.notifyDate && <span>· 🔔 {formatHealthDate(event.notifyDate)}</span>}
           </div>
         </button>
         <div className="flex gap-1 shrink-0">
@@ -14435,6 +14440,15 @@ function HealthEventDetail({ event, conditionName, onClose, onEdit, onDelete }) 
         {event.outcome && (
           <Section label="Результат / исход">
             <div className="text-sm bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 italic">{event.outcome}</div>
+          </Section>
+        )}
+
+        {event.notify && event.notifyDate && (
+          <Section label="Напоминание в Telegram">
+            <div className="text-sm bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3">
+              🔔 {formatHealthDate(event.notifyDate)}{event.notifyTime ? `, ${event.notifyTime}` : ''}
+              {event.notifyNote && <div className="text-[var(--text-muted)] mt-0.5">{event.notifyNote}</div>}
+            </div>
           </Section>
         )}
 
@@ -14685,6 +14699,8 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
         ...form,
         medications: form.medications.filter(m => (m.name || '').trim()),
         photos: [...form.photos, ...uploaded],
+        notify: !!(form.notify && form.notifyDate),
+        notifyTime: form.notifyTime || '10:00',
       });
     } finally {
       setUploading(false);
@@ -14836,6 +14852,32 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
           <label>Результат / исход</label>
           <textarea value={form.outcome} rows={2} onChange={e => set('outcome', e.target.value)} style={{ resize: 'vertical' }} placeholder="Помогло, симптомы прошли за..., не помогло..." />
+        </div>
+
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-3">
+          <label className="flex items-center gap-2 cursor-pointer !mb-0">
+            <input type="checkbox" className="!w-auto" checked={!!form.notify} onChange={e => set('notify', e.target.checked)} />
+            <span className="text-sm font-medium">Напоминание в Telegram</span>
+          </label>
+          {form.notify && (
+            <div className="space-y-3 fade-in">
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <label>Дата</label>
+                  <input type="date" value={form.notifyDate || ''} onChange={e => set('notifyDate', e.target.value)} />
+                </div>
+                <div className="w-28">
+                  <label>Время</label>
+                  <MskTimeInput value={form.notifyTime || '10:00'} onChange={t => set('notifyTime', t)} />
+                </div>
+              </div>
+              <div>
+                <label>Что напомнить (необязательно)</label>
+                <input value={form.notifyNote || ''} onChange={e => set('notifyNote', e.target.value)}
+                  placeholder="Например, повторный рентген пазух носа" />
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
