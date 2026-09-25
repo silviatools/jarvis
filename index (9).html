@@ -794,25 +794,21 @@ const computeFoodMacros = (food, grams) => ({
 
 // Поиск продукта — по названию, бренду (без учёта регистра) или по штрихкоду
 // (магазинные товары из Open Food Facts несут поля brand/barcode). Возвращает
-// оценку релевантности (0 — не совпало), а не просто true/false: у многих
-// запросов (например «протеин») в базе десятки совпадений, и без ранжирования
-// нужный продукт мог не попасть в обрезанный до N шт. список подсказок —
-// показывались первые N по порядку в массиве, а не по релевантности.
-const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
+// оценку релевантности (0 — не совпало), а не просто true/false — сортировка
+// по ней: 1) название НАЧИНАЕТСЯ с запроса, 2) запрос просто где-то в названии
+// или бренде. Два уровня нарочно, не больше: например «сыр» в середине слова
+// совпадает и с «Сыр чеддер», и с «Говядина, сырая» (сырая — тоже начинается
+// на «сыр») — «начинается с запроса» их не путает, а промежуточный уровень
+// по границе слова путал (оба считались одинаково релевантными).
 const foodQueryScore = (food, rawQuery) => {
   const q = (rawQuery || '').trim();
   if (!q) return 0;
-  if (food.barcode && food.barcode.includes(q)) return 6;
+  if (food.barcode && food.barcode.includes(q)) return 3;
   const ql = q.toLowerCase();
   const name = food.name.toLowerCase();
-  let score = 0;
-  if (name === ql) score = 5;
-  else if (name.startsWith(ql)) score = 4;
-  else if (new RegExp('(^|[^а-яёa-z0-9])' + escapeRegExp(ql), 'i').test(name)) score = 3;
-  else if (name.includes(ql)) score = 1;
-  if (food.brand && food.brand.toLowerCase().includes(ql)) score = Math.max(score, 2);
-  return score;
+  if (name.startsWith(ql)) return 2;
+  if (name.includes(ql) || (food.brand && food.brand.toLowerCase().includes(ql))) return 1;
+  return 0;
 };
 
 const foodMatchesQuery = (food, rawQuery) => foodQueryScore(food, rawQuery) > 0;
@@ -2950,10 +2946,13 @@ function FoodDatabaseView({ data, setData }) {
   const grouped = useMemo(() => {
     const byCat = {};
     filtered.forEach(f => { (byCat[f.category] = byCat[f.category] || []).push(f); });
+    const sortItems = (items) => query.trim()
+      ? sortFoodsByRelevance(items, query)
+      : [...items].sort((a, b) => a.name.localeCompare(b.name, 'ru'));
     return allCategories
-      .map(c => ({ cat: c, items: (byCat[c.id] || []).sort((a, b) => a.name.localeCompare(b.name, 'ru')) }))
+      .map(c => ({ cat: c, items: sortItems(byCat[c.id] || []) }))
       .filter(g => g.items.length > 0);
-  }, [filtered, allCategories]);
+  }, [filtered, allCategories, query]);
 
   if (loading) return <div className="text-center py-8 text-[var(--text-subtle)] text-sm">Загрузка справочника…</div>;
   if (error) return <EmptyState title="Не удалось загрузить" text="Попробуйте обновить страницу" />;
