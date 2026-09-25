@@ -1476,6 +1476,12 @@ function speak(text){
 document.addEventListener('keydown', e => {
   if(modal.classList.contains('show')) return;
   if(!S.session) return;
+  // Прогресс карточек живёт при уходе на Word base / другие вкладки —
+  // хоткеи только пока открыт Flashcards.
+  const cardsPage = document.getElementById('page-cards');
+  if(!cardsPage || !cardsPage.classList.contains('active')) return;
+  const tag = (e.target && e.target.tagName || '').toLowerCase();
+  if(tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable)) return;
   if(e.code === 'Space'){ e.preventDefault(); flip(); }
   else if(e.key === 'h' || e.key === 'H' || e.key === 'р' || e.key === 'Р'){ toggleHardCurrent(); }
   else if(S.session.flipped && ['1','2','3','4'].includes(e.key)){
@@ -1693,8 +1699,8 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
     const cur = document.querySelector('.nav-tab.active');
     const curPage = cur && cur.dataset.page;
     if(WB.saving){ alert('Дождитесь окончания сохранения Word base.'); return; }
-    if(curPage === 'wordbase' && tab.dataset.page !== 'wordbase' && wbAnyDirty()
-      && !confirm('В Word base есть несохранённые изменения. Уйти без сохранения?')) return;
+    // Страницы остаются в DOM — прогресс упражнения и черновик Word base
+    // не сбрасываются при переключении вкладок.
     document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
