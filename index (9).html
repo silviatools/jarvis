@@ -8575,8 +8575,17 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState('');
+  const [toast, setToast] = useState('');
+  const toastTimerRef = useRef(null);
   const seededRef = useRef(false);
   const acceptReloadRef = useRef(false);
+
+  const showToast = (text) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(text);
+    toastTimerRef.current = setTimeout(() => setToast(''), 3200);
+  };
+  useEffect(() => () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); }, []);
 
   const isDirtyRow = (r) => {
     const has = !!(r.en.trim() || r.ru.trim() || r.date.trim());
@@ -8674,8 +8683,9 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
       acceptReloadRef.current = true;
       onDirtyChange && onDirtyChange(false);
       await Promise.resolve(onSaveWords(items));
-      setMsgType('ok');
-      setMsg(`✓ Saved to Word base: ${items.length} words`);
+      setMsgType('');
+      setMsg('');
+      showToast(`✓ Saved to Word base: ${items.length} words`);
     } catch (e) {
       setMsgType('err');
       setMsg('✗ ' + (e.message || e));
@@ -8714,6 +8724,12 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
 
   return (
     <div className="space-y-4">
+      {toast && (
+        <div
+          className="fixed bottom-24 md:bottom-8 right-4 z-[80] max-w-sm px-4 py-3 rounded-2xl shadow-lg border border-green-200 bg-green-50 text-green-800 text-sm font-medium fade-in"
+          role="status"
+        >{toast}</div>
+      )}
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h2 className="font-display text-xl">Word base</h2>
@@ -8763,11 +8779,7 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
         }`}>{msg}</div>
       )}
 
-      {importedAt ? (
-        <div className="text-xs text-[var(--text-subtle)]">
-          Sheets import done {new Date(importedAt).toLocaleString('en-GB')} — we will not pull again.
-        </div>
-      ) : (
+      {!importedAt && (
         <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
           Import from Google Sheets once, then edit only here.
         </div>
@@ -8840,7 +8852,7 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
 }
 
 
-function FlashcardsTab({rawData,cfg,ai,onToggleHard}){
+function FlashcardsTab({rawData,cfg,ai,onToggleHard,active=true}){
   const [phase,setPhase]=useState('setup');
   const [settings,setSettings]=useState({direction:'en-ru',count:20,order:'random',filter:'all',dateRange:'all',sentence:true,synonyms:true,tts:false,repeat:true,auto:false});
   const [sess,setSess]=useState(null);
@@ -8869,8 +8881,12 @@ function FlashcardsTab({rawData,cfg,ai,onToggleHard}){
   },[cfg.clientId]);
 
   useEffect(()=>{
+    if(!active) return;
     const h=(e)=>{
       const s=sessRef.current;if(!s||phase!=='study') return;
+      // Не перехватывать клавиши, пока фокус в поле ввода (Word base и т.п.).
+      const tag=(e.target&&e.target.tagName||'').toLowerCase();
+      if(tag==='input'||tag==='textarea'||(e.target&&e.target.isContentEditable)) return;
       if(e.code==='Space'){e.preventDefault();setSess(x=>x?{...x,flipped:!x.flipped}:x);}
       else if(e.key==='h'||e.key==='H') toggleHard();
       else if(s.flipped&&['1','2','3','4'].includes(e.key)){doAnswer({'1':'again','2':'hard','3':'good','4':'easy'}[e.key]);}
@@ -8880,15 +8896,15 @@ function FlashcardsTab({rawData,cfg,ai,onToggleHard}){
       }
     };
     window.addEventListener('keydown',h);return()=>window.removeEventListener('keydown',h);
-  },[phase]);
+  },[phase,active]);
 
   const autoRef=useRef(null);
   useEffect(()=>{
     if(autoRef.current) clearTimeout(autoRef.current);
-    if(!sess||sess.flipped||!settings.auto||phase!=='study') return;
+    if(!active||!sess||sess.flipped||!settings.auto||phase!=='study') return;
     autoRef.current=setTimeout(()=>setSess(s=>s?{...s,flipped:true}:s),5000);
     return()=>clearTimeout(autoRef.current);
-  },[sess?.cur,sess?.flipped,settings.auto,phase]);
+  },[sess?.cur,sess?.flipped,settings.auto,phase,active]);
 
   const getIY=(data)=>{const ys=data.map(w=>engParseDate(w.date)?.getFullYear()).filter(Boolean);return ys.length?Math.max(...ys):new Date().getFullYear();};
 
@@ -9065,7 +9081,7 @@ function FlashcardsTab({rawData,cfg,ai,onToggleHard}){
   );
 }
 
-function FillTab({rawData,ai}){
+function FillTab({rawData,ai,active=true}){
   const [filter,setFilter]=useState('random');
   const [count,setCount]=useState(0);
   const [hideWords,setHideWords]=useState(false);
@@ -9165,7 +9181,7 @@ function FillTab({rawData,ai}){
   );
 }
 
-function TypingTab({rawData,ai}){
+function TypingTab({rawData,ai,active=true}){
   const [filter,setFilter]=useState('random');
   const [count,setCount]=useState(20);
   const [aiMode,setAiMode]=useState('always');
@@ -9176,12 +9192,12 @@ function TypingTab({rawData,ai}){
   const [answer,setAnswer]=useState('');
   const [result,setResult]=useState(null);
   const inputRef=useRef(null);
-  useEffect(()=>{if(phase==='study'&&inputRef.current)inputRef.current.focus();},[cur,phase]);
+  useEffect(()=>{if(active&&phase==='study'&&inputRef.current)inputRef.current.focus();},[cur,phase,active]);
   useEffect(()=>{
-    if(phase!=='study'||result) return;
+    if(!active||phase!=='study'||result) return;
     const h=(e)=>{if(e.key==='Enter'&&answer.trim())check();};
     window.addEventListener('keydown',h);return()=>window.removeEventListener('keydown',h);
-  },[phase,result,answer]);
+  },[phase,result,answer,active]);
 
   const start=()=>{
     if(!rawData){alert('Load data first');return;}
@@ -9299,7 +9315,7 @@ Be warm and to the point, no markdown, no headings.`;
 // but instead of translating, the student composes their own example, and the AI
 // gives feedback via a customizable prompt (stored in the DB with the other
 // English settings).
-function MySentenceTab({rawData,ai,prompt,onSavePrompt}){
+function MySentenceTab({rawData,ai,prompt,onSavePrompt,active=true}){
   const [filter,setFilter]=useState('random');
   const [count,setCount]=useState(15);
   const [phase,setPhase]=useState('setup');
@@ -9455,7 +9471,7 @@ Be warm and to the point, no markdown, no headings.`;
 // then AI reviews the translation. All sentences for the session are
 // generated up front, in parallel chunks (same pattern as engPrefetchSentences),
 // so there's no AI wait between cards during study.
-function CipherTab({rawData,ai,prompt,onSavePrompt}){
+function CipherTab({rawData,ai,prompt,onSavePrompt,active=true}){
   const [filter,setFilter]=useState('all');
   const [order,setOrder]=useState('random');
   const [dateRange,setDateRange]=useState('all');
@@ -9666,7 +9682,7 @@ Be warm and concise, no markdown, no headings.`;
 // all of them, then AI reviews whether every word was used and used
 // correctly. English translations are hidden behind a button so the
 // student has to recall them, but can peek if stuck.
-function StoryTab({rawData,ai,prompt,onSavePrompt}){
+function StoryTab({rawData,ai,prompt,onSavePrompt,active=true}){
   const [filter,setFilter]=useState('all');
   const [order,setOrder]=useState('random');
   const [dateRange,setDateRange]=useState('all');
@@ -9883,8 +9899,8 @@ function EnglishView({ data, setData, embedded, onDirtyChange }){
   const requestEngTab = (id) => {
     if (id === engTab) return;
     if (wordBaseSavingRef.current) { alert('Please wait until Word base finishes saving.'); return; }
-    if (engTab === 'wordbase' && wordBaseDirty
-      && !confirm('Word base has unsaved changes. Leave without saving?')) return;
+    // Вкладки упражнений и Word base остаются смонтированными — прогресс
+    // и черновик базы не сбрасываются при переключении (только Finish / Save).
     setEngTab(id);
   };
 
@@ -10019,7 +10035,10 @@ function EnglishView({ data, setData, embedded, onDirtyChange }){
           ))}
         </div>
         <div className="pt-6">
-          {engTab==='wordbase' && (
+          {/* Все вкладки остаются смонтированными: прогресс упражнения
+              не сбрасывается при уходе в Word base или другой режим,
+              пока пользователь сам не нажмёт Finish. */}
+          <div style={{ display: engTab === 'wordbase' ? undefined : 'none' }}>
             <WordBaseTab
               words={engWordsItems}
               onSaveWords={saveWordBase}
@@ -10030,13 +10049,25 @@ function EnglishView({ data, setData, embedded, onDirtyChange }){
               onDirtyChange={setWordBaseDirty}
               savingRef={wordBaseSavingRef}
             />
-          )}
-          {engTab==='cards' && <FlashcardsTab rawData={rawData} cfg={cfg} ai={ai} onToggleHard={toggleWordHard}/>}
-          {engTab==='fill' && <FillTab rawData={rawData} ai={ai}/>}
-          {engTab==='mysentence' && <MySentenceTab rawData={rawData} ai={ai} prompt={mySentPrompt} onSavePrompt={saveMySentPrompt}/>}
-          {engTab==='cipher' && <CipherTab rawData={rawData} ai={ai} prompt={cipherPrompt} onSavePrompt={saveCipherPrompt}/>}
-          {engTab==='story' && <StoryTab rawData={rawData} ai={ai} prompt={storyPrompt} onSavePrompt={saveStoryPrompt}/>}
-          {engTab==='typing' && <TypingTab rawData={rawData} ai={ai}/>}
+          </div>
+          <div style={{ display: engTab === 'cards' ? undefined : 'none' }}>
+            <FlashcardsTab active={engTab === 'cards'} rawData={rawData} cfg={cfg} ai={ai} onToggleHard={toggleWordHard}/>
+          </div>
+          <div style={{ display: engTab === 'fill' ? undefined : 'none' }}>
+            <FillTab active={engTab === 'fill'} rawData={rawData} ai={ai}/>
+          </div>
+          <div style={{ display: engTab === 'mysentence' ? undefined : 'none' }}>
+            <MySentenceTab active={engTab === 'mysentence'} rawData={rawData} ai={ai} prompt={mySentPrompt} onSavePrompt={saveMySentPrompt}/>
+          </div>
+          <div style={{ display: engTab === 'cipher' ? undefined : 'none' }}>
+            <CipherTab active={engTab === 'cipher'} rawData={rawData} ai={ai} prompt={cipherPrompt} onSavePrompt={saveCipherPrompt}/>
+          </div>
+          <div style={{ display: engTab === 'story' ? undefined : 'none' }}>
+            <StoryTab active={engTab === 'story'} rawData={rawData} ai={ai} prompt={storyPrompt} onSavePrompt={saveStoryPrompt}/>
+          </div>
+          <div style={{ display: engTab === 'typing' ? undefined : 'none' }}>
+            <TypingTab active={engTab === 'typing'} rawData={rawData} ai={ai}/>
+          </div>
         </div>
       </div>
       {showCfg && (
