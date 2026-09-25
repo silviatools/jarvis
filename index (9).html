@@ -692,15 +692,34 @@ const computeFoodMacros = (food, grams) => ({
 });
 
 // Поиск продукта — по названию, бренду (без учёта регистра) или по штрихкоду
-// (магазинные товары из Open Food Facts несут поля brand/barcode).
-const foodMatchesQuery = (food, rawQuery) => {
+// (магазинные товары из Open Food Facts несут поля brand/barcode). Возвращает
+// оценку релевантности (0 — не совпало), а не просто true/false: у многих
+// запросов (например «протеин») в базе десятки совпадений, и без ранжирования
+// нужный продукт мог не попасть в обрезанный до N шт. список подсказок —
+// показывались первые N по порядку в массиве, а не по релевантности.
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const foodQueryScore = (food, rawQuery) => {
   const q = (rawQuery || '').trim();
-  if (!q) return true;
+  if (!q) return 0;
+  if (food.barcode && food.barcode.includes(q)) return 6;
   const ql = q.toLowerCase();
-  return food.name.toLowerCase().includes(ql)
-    || (food.brand && food.brand.toLowerCase().includes(ql))
-    || (food.barcode && food.barcode.includes(q));
+  const name = food.name.toLowerCase();
+  let score = 0;
+  if (name === ql) score = 5;
+  else if (name.startsWith(ql)) score = 4;
+  else if (new RegExp('(^|[^а-яёa-z0-9])' + escapeRegExp(ql), 'i').test(name)) score = 3;
+  else if (name.includes(ql)) score = 1;
+  if (food.brand && food.brand.toLowerCase().includes(ql)) score = Math.max(score, 2);
+  return score;
 };
+
+const foodMatchesQuery = (food, rawQuery) => foodQueryScore(food, rawQuery) > 0;
+
+// Отсортировать совпадения по релевантности (для подсказок автокомплита,
+// которые всегда режутся до нескольких штук — .slice(0, N)).
+const sortFoodsByRelevance = (foods, rawQuery) =>
+  [...foods].sort((a, b) => foodQueryScore(b, rawQuery) - foodQueryScore(a, rawQuery) || a.name.length - b.name.length);
 
 // «Название · Бренд» — единый способ показать бренд рядом с продуктом
 // везде, где выводится f.name (карточка в базе, подсказки автокомплита).
@@ -2958,7 +2977,7 @@ function DishModal({ dish, foods, onSave, onClose }) {
 
   const suggestions = useMemo(() => {
     if (selectedFood || !query.trim()) return [];
-    return foods.filter(f => foodMatchesQuery(f, query)).slice(0, 6);
+    return sortFoodsByRelevance(foods.filter(f => foodMatchesQuery(f, query)), query).slice(0, 8);
   }, [foods, query, selectedFood]);
 
   const pick = (f) => { setSelectedFood(f); setQuery(f.name); setAmount(''); setUnit(f.unitWeight ? 'pcs' : 'g'); };
@@ -5865,7 +5884,7 @@ function MealItemAddForm({ foods, onAdd, onCancel }) {
 
   const suggestions = useMemo(() => {
     if (selectedFood || !query.trim()) return [];
-    return foods.filter(f => foodMatchesQuery(f, query)).slice(0, 6);
+    return sortFoodsByRelevance(foods.filter(f => foodMatchesQuery(f, query)), query).slice(0, 8);
   }, [foods, query, selectedFood]);
 
   const qty = parseFloat(amount.replace(',', '.'));
