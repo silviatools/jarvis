@@ -22,6 +22,7 @@ import hashlib
 import html
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -333,7 +334,7 @@ def subscriber_name(subs: dict, chat_id) -> str:
 # entry in data.settings.notifyRouting receives NOTHING (default-deny). Anyone
 # who messages the bot is auto-subscribed with zero categories; an owner has
 # to explicitly opt them into each category from Settings → Маршрутизация.
-NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "tasks", "backup"}
+NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "tasks", "backup", "english"}
 
 
 def recipients_for(app_data: dict, subs: dict, category: str) -> list:
@@ -1767,6 +1768,19 @@ def _apple_find(uid: str, comp: str):
 
 # ── Календарь: запись ──────────────────────────────────────────────────────
 
+def _apple_alarm_lines(description: str = "Напоминание", minutes_before: int = 0) -> list:
+    """VALARM для события календаря: оповещение за N минут до начала (0 = в момент старта)."""
+    mins = max(0, int(minutes_before or 0))
+    trigger = "PT0S" if mins == 0 else f"-PT{mins}M"
+    return [
+        "BEGIN:VALARM",
+        "ACTION:DISPLAY",
+        f"DESCRIPTION:{_ics_escape(description)}",
+        f"TRIGGER:{trigger}",
+        "END:VALARM",
+    ]
+
+
 def _apple_event_lines(fields: dict, uid: str) -> list:
     title = (fields.get("title") or "").strip()
     if not title:
@@ -1792,6 +1806,13 @@ def _apple_event_lines(fields: dict, uid: str) -> list:
         lines.append(f"LOCATION:{_ics_escape(fields['location'])}")
     if fields.get("notes"):
         lines.append(f"DESCRIPTION:{_ics_escape(fields['notes'])}")
+    # Оповещение о событии — только когда пользователь просит напомнить о событии
+    # календаря. Это не замена Apple Напоминаний.
+    if fields.get("alarm") or fields.get("alarmMinutesBefore") is not None:
+        mins = fields.get("alarmMinutesBefore")
+        if mins is None:
+            mins = 0
+        lines += _apple_alarm_lines(title, mins)
     return lines
 
 
@@ -2092,26 +2113,47 @@ def apple_reminders_list(list_name=None, include_done=False, limit=200) -> dict:
     raise AppleError("Напоминания не подключены: ни списков дел в iCloud, ни моста Быстрых команд (APPLE_BRIDGE_TOKEN).")
 
 
+def _apple_bridge_alive() -> bool:
+    """Быстрая команда хотя бы раз забирала очередь — иначе токен бесполезен."""
+    return bool(bridge_load().get("lastPullAt"))
+
+
 def apple_reminders_create(fields: dict) -> dict:
     title = (fields.get("title") or "").strip()
     if not title:
         raise AppleError("У напоминания должно быть название.")
+    due_raw = fields.get("due") or ""
+
     if apple_reminders_backend() == "caldav":
         disc = apple_discover()
         coll = _apple_pick(disc["todoLists"], fields.get("list"))
         uid = str(uuid.uuid4()).upper()
         lines = [f"UID:{uid}", f"DTSTAMP:{_ics_stamp()}", f"SUMMARY:{_ics_escape(title)}", "STATUS:NEEDS-ACTION"]
-        if fields.get("due"):
-            due = apple_parse_dt(fields["due"])
+        if due_raw:
+            due = apple_parse_dt(due_raw)
             lines.append(_ics_write_dt("DUE", due, isinstance(due, date) and not isinstance(due, datetime)))
         if fields.get("notes"):
             lines.append(f"DESCRIPTION:{_ics_escape(fields['notes'])}")
         _apple_put(urljoin(coll["href"], uid + ".ics"), _apple_wrap("VTODO", lines))
         return {"ok": True, "id": uid, "list": coll["name"], "title": title}
-    if apple_bridge_token():
+
+    # Мост: только если телефон уже хотя бы раз забирал очередь. Иначе «создал»
+    # врёт — без Shortcuts в Apple Напоминания ничего не попадёт.
+    # Напоминание ≠ событие календаря: сюда не подставляем календарный fallback.
+    if apple_bridge_token() and _apple_bridge_alive():
         return bridge_enqueue("create", {"title": title, "list": fields.get("list") or "",
-                                         "due": fields.get("due") or "", "notes": fields.get("notes") or ""})
-    raise AppleError("Напоминания не подключены: ни списков дел в iCloud, ни моста Быстрых команд (APPLE_BRIDGE_TOKEN).")
+                                         "due": due_raw, "notes": fields.get("notes") or ""})
+    if apple_bridge_token():
+        raise AppleError(
+            "Напоминания через iCloud недоступны, а мост Быстрых команд ещё ни разу "
+            "не синхронизировался. Запусти на телефоне команду «Jarvis Напоминания» "
+            "(см. apple-setup.md) — после первого обмена смогу создавать напоминания."
+        )
+    raise AppleError(
+        "Напоминания не подключены: iCloud не отдаёт списки дел, мост Быстрых команд "
+        "не настроен. Настрой Shortcuts по apple-setup.md — «напомни» создаёт именно "
+        "напоминание Apple, не событие календаря."
+    )
 
 
 def apple_reminders_update(rid: str, patch: dict) -> dict:
@@ -2120,9 +2162,9 @@ def apple_reminders_update(rid: str, patch: dict) -> dict:
         coll, url, etag, text = _apple_find(rid, "VTODO")
         _apple_put(url, _apple_patch_ics(text, "VTODO", patch, "todo"), etag)
         return {"ok": True, "id": rid, "list": coll["name"]}
-    if apple_bridge_token():
+    if apple_bridge_token() and _apple_bridge_alive():
         return bridge_enqueue("update", {"id": rid, "patch": patch})
-    raise AppleError("Напоминания не подключены.")
+    raise AppleError("Напоминания не подключены (нет iCloud-списков дел и не работает мост Shortcuts).")
 
 
 def apple_reminders_delete(rid: str) -> dict:
@@ -2132,9 +2174,9 @@ def apple_reminders_delete(rid: str) -> dict:
         if r.status_code not in (200, 204, 404):
             raise AppleError(f"iCloud не удалил напоминание ({r.status_code}).")
         return {"ok": True, "id": rid, "list": coll["name"]}
-    if apple_bridge_token():
+    if apple_bridge_token() and _apple_bridge_alive():
         return bridge_enqueue("delete", {"id": rid})
-    raise AppleError("Напоминания не подключены.")
+    raise AppleError("Напоминания не подключены (нет iCloud-списков дел и не работает мост Shortcuts).")
 
 
 def apple_status() -> dict:
@@ -2163,7 +2205,14 @@ def apple_status() -> dict:
         "lastPullAt": bridge.get("lastPullAt") or 0,
     }
     out["remindersBackend"] = ("caldav" if out["todoLists"]
-                               else ("bridge" if out["bridgeConfigured"] else ""))
+                               else ("bridge" if out["bridgeConfigured"] and (bridge.get("lastPullAt") or 0)
+                                     else ("bridge_pending" if out["bridgeConfigured"] else "")))
+    if out["remindersBackend"] == "bridge_pending":
+        out["remindersHint"] = ("Токен моста есть, но Быстрая команда ещё ни разу не "
+                                "синхронизировалась — запусти «Jarvis Напоминания» на телефоне.")
+    elif not out["remindersBackend"] and out["calendarConfigured"]:
+        out["remindersHint"] = ("Списки дел iCloud не видны. Чтобы «напомни» создавало "
+                                "напоминания Apple, настрой Shortcuts (apple-setup.md).")
     return out
 
 
@@ -2184,7 +2233,10 @@ APPLE_TOOLS = [
     },
     {
         "name": "calendar_create_event",
-        "description": "Создать событие в Apple Календаре. ТОЛЬКО после явного согласия пользователя: сначала опиши, что собираешься создать, и спроси подтверждение.",
+        "description": ("Создать событие в Apple Календаре. ТОЛЬКО после явного согласия пользователя. "
+                        "Если просят событие и напомнить о нём — передай alarmMinutesBefore "
+                        "(минуты до начала; 0 = в момент старта). Это оповещение о событии, "
+                        "не Apple Напоминание. «Напомни купить X» — это reminders_create, не этот инструмент."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2195,6 +2247,10 @@ APPLE_TOOLS = [
                 "location": {"type": "string"},
                 "notes": {"type": "string"},
                 "calendar": {"type": "string"},
+                "alarmMinutesBefore": {
+                    "type": "integer",
+                    "description": "Оповещение за N минут до начала события. 0 — в момент старта. Не передавай, если оповещение не нужно.",
+                },
                 "confirmed": {"type": "boolean", "description": "true только после явного согласия пользователя."},
             },
             "required": ["title", "start"],
@@ -2236,7 +2292,9 @@ APPLE_TOOLS = [
     },
     {
         "name": "reminders_create",
-        "description": "Создать напоминание Apple. Требует подтверждения пользователя.",
+        "description": ("Создать напоминание Apple (кружок в Напоминаниях). Требует подтверждения. "
+                        "Не подменяет напоминание событием календаря. Если напоминания не подключены — "
+                        "вернёт error; скажи пользователю настроить Shortcuts."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2439,10 +2497,10 @@ ASSISTANT_DATA_DOMAINS = {
             "plans": app.get("plannerPlans", []),
             "holidays": [h for h in app.get("holidays", []) if not h.get("archived")],
         }),
-    "camping": ("Кемпинг: справочник вещей и поездки со сборами",
+    "camping": ("Кемпинг: справочник вещей, места куда съездить и поездки со сборами",
         lambda app: {
             "items": app.get("campingItems", []), "categories": app.get("campingCategories", []),
-            "trips": app.get("campingTrips", []),
+            "trips": app.get("campingTrips", []), "places": app.get("campingPlaces", []),
         }),
     "meals": ("Питание: вкладки План/Готовка/Контейнеры/Счётчик/Закупка/База продуктов — рационы, планы готовки, контейнеры для взвешивания, остаток порций, БАДы, списки покупок, свои блюда",
         lambda app: {
@@ -2632,6 +2690,7 @@ WRITE_REGISTRY = {
     },
     "campingItems": {"label": "Кемпинг-вещь (справочник)", "create_defaults": lambda: {"isBag": False}},
     "campingTrips": {"label": "Кемпинг-поездка", "create_defaults": lambda: {"packing": {"bags": [], "items": []}}},
+    "campingPlaces": {"label": "Кемпинг-место (куда съездить)", "create_defaults": lambda: {"visited": False, "visitedDate": ""}},
     "meals": {"label": "Рацион (приём пищи)", "create_defaults": lambda: {"breakfast": [], "snack": [], "lunch": [], "dinner": [], "archived": False}},
     "supplements": {"label": "БАД (обычный список)", "create_defaults": lambda: {"form": "Таблетки", "frequency": "daily_morning", "archived": False}},
     "workoutSupplements": {"label": "БАД (тренировочный список)", "create_defaults": lambda: {"form": "Таблетки", "frequency": "daily_morning", "archived": False}},
@@ -3130,7 +3189,133 @@ ASSISTANT_TOOLS = [
             "required": ["planId", "ingredientId"],
         },
     },
+    {
+        "name": "get_weather",
+        "description": "Погода для города. Раздел «Погода» — это НЕ данные проекта (не через get_data), а живой внешний запрос. Без date/date_from — текущая погода и краткий прогноз на 3 дня. С date (конкретный день) или date_from/date_to (диапазон, например «на следующей неделе») — погода на эти даты, доступно на 16 дней вперёд от сегодня. Даты вычисляй сам от даты СЕГОДНЯ из системного промпта.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "Название города, например «Москва». Необязательно — по умолчанию город из настроек."},
+                "date": {"type": "string", "description": "Конкретная дата YYYY-MM-DD, например для «в субботу» или «22 сентября»."},
+                "date_from": {"type": "string", "description": "Начало диапазона дат YYYY-MM-DD, например для «на следующей неделе»."},
+                "date_to": {"type": "string", "description": "Конец диапазона дат YYYY-MM-DD."},
+            },
+        },
+    },
 ] + APPLE_TOOLS
+
+
+def _weather_code_label(code) -> str:
+    """WMO-код погоды → текст. Зеркалит getWeatherInfo в index (9).html."""
+    if code == 0:
+        return "ясно"
+    if code in (1, 2):
+        return "переменная облачность"
+    if code == 3:
+        return "пасмурно"
+    if code in (45, 48):
+        return "туман"
+    if code is not None and 51 <= code <= 57:
+        return "морось"
+    if code is not None and 61 <= code <= 67:
+        return "дождь"
+    if code is not None and 71 <= code <= 77:
+        return "снег"
+    if code is not None and 80 <= code <= 82:
+        return "ливень"
+    if code is not None and 85 <= code <= 86:
+        return "снегопад"
+    if code is not None and 95 <= code <= 99:
+        return "гроза"
+    return "облачно"
+
+
+def get_weather(app: dict, city: str = "", date: str = "", date_from: str = "", date_to: str = "") -> dict:
+    """Погода — не часть данных проекта (пользователь её только смотрит, ничего
+    не хранит), поэтому не домен ASSISTANT_DATA_DOMAINS, а живой запрос:
+    геокодинг через Nominatim + прогноз через Open-Meteo — тот же API, что и
+    у самой вкладки «Погода» в браузере. Всегда тянем полные 16 дней вперёд
+    (максимум бесплатного прогноза Open-Meteo) одним запросом — «на следующей
+    неделе» и подобное просто фильтруются из того же ответа."""
+    if not requests:
+        return {"error": "Погода недоступна: на сервере не установлен requests"}
+    city = (city or "").strip() or ((app.get("settings") or {}).get("weatherCity") or "").strip()
+    if not city:
+        return {"error": "Не указан город, и город не сохранён в настройках (Погода → город)"}
+    try:
+        geo = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": city, "format": "json", "limit": 1},
+            headers={"Accept-Language": "ru", "User-Agent": "Jarvis/1.0"},
+            timeout=10,
+        )
+        results = geo.json() if geo.ok else []
+        if not results:
+            return {"error": f"Город «{city}» не найден"}
+        lat, lon = float(results[0]["lat"]), float(results[0]["lon"])
+        name = (results[0].get("display_name") or city).split(",")[0].strip()
+        fc = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m",
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+                "timezone": "auto",
+                "forecast_days": 16,
+            },
+            timeout=10,
+        )
+        if not fc.ok:
+            return {"error": "Не удалось загрузить погоду"}
+        w = fc.json()
+    except Exception as e:
+        return {"error": f"Ошибка запроса погоды: {e}"}
+
+    cur = w.get("current") or {}
+    daily = w.get("daily") or {}
+    days = daily.get("time") or []
+    wc = daily.get("weather_code") or []
+    tmin = daily.get("temperature_2m_min") or []
+    tmax = daily.get("temperature_2m_max") or []
+    precip = daily.get("precipitation_probability_max") or []
+
+    def day_entry(i):
+        return {
+            "date": days[i],
+            "condition": _weather_code_label(wc[i]) if i < len(wc) else None,
+            "min_c": tmin[i] if i < len(tmin) else None,
+            "max_c": tmax[i] if i < len(tmax) else None,
+            "precip_probability_percent": precip[i] if i < len(precip) else None,
+        }
+
+    # Конкретная дата или диапазон — «в субботу», «на следующей неделе»:
+    # модель сама вычисляет YYYY-MM-DD от даты СЕГОДНЯ из системного промпта.
+    if date or date_from or date_to:
+        rng_from = date_from or date or date_to
+        rng_to = date_to or date or date_from
+        wanted = [date] if date else [d for d in days if rng_from <= d <= rng_to]
+        requested = []
+        for d in wanted:
+            requested.append(
+                day_entry(days.index(d)) if d in days
+                else {"date": d, "error": "Нет данных на эту дату — прогноз доступен только на ближайшие 16 дней"}
+            )
+        return {"city": name, "requested": requested}
+
+    forecast = [day_entry(i) for i in range(min(3, len(days)))]
+    return {
+        "city": name,
+        "current": {
+            "condition": _weather_code_label(cur.get("weather_code")),
+            "temperature_c": cur.get("temperature_2m"),
+            "feels_like_c": cur.get("apparent_temperature"),
+            "humidity_percent": cur.get("relative_humidity_2m"),
+            "wind_kmh": cur.get("wind_speed_10m"),
+        },
+        "forecast": forecast,
+    }
+
 
 KNOWLEDGE_PROMPT_LIMIT = 6000
 
@@ -3167,10 +3352,16 @@ def build_assistant_system_prompt(app: dict = None) -> str:
         "ЧТО ИЗВЕСТНО О ПОЛЬЗОВАТЕЛЕ (раздел «База данных», он сам это записал — "
         f"считай фактами и учитывай в ответах):\n{about}\n\n"
     ) if about else ""
+    # День недели считаем сами и подсовываем готовым — модели плохо даётся
+    # счёт дней недели по дате в уме (путала «22 сентября» с «понедельник»,
+    # хотя это был вторник).
+    today = today_msk()
+    weekday_str = WEEKDAYS_RU_NOMINATIVE[today.weekday()]
     return (
         "Ты ассистент приложения Jarvis, отвечаешь в Telegram. "
         "Отвечай кратко и по-русски, обычным текстом без markdown-разметки и JSON — сообщение уходит как есть.\n\n"
-        f"СЕГОДНЯ: {today_msk().isoformat()}\n\n"
+        f"СЕГОДНЯ: {today.isoformat()}, {weekday_str}. Используй эту дату и день недели как факт — не вычисляй "
+        "день недели сам по числу, он уже дан.\n\n"
         f"{about_block}"
         "У тебя есть инструменты, покрывающие весь проект — всё то же самое, что пользователь делает руками:\n\n"
         f"1. get_data(domain) — прочитать актуальные данные раздела. Разделы:\n{domain_list}\n\n"
@@ -3190,8 +3381,17 @@ def build_assistant_system_prompt(app: dict = None) -> str:
         "спроса. ЛЮБАЯ ЗАПИСЬ — добавление, изменение, удаление — только после явного согласия пользователя: "
         "сначала коротко скажи, что именно собираешься записать (название, дату и время), и спроси подтверждение, "
         "потом повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple "
-        "Календарь — разные места: если не сказано куда, уточни или добавь в Apple Календарь, когда речь про "
-        "«календарь», и в Напоминания, когда про «напомни».\n\n"
+        "Календарь — разные места. «В календарь» / «создай событие» → calendar_create_event; если ещё и "
+        "напомнить о событии — alarmMinutesBefore. «Напомни …» / напоминание → только reminders_create "
+        "(настоящее Apple Напоминание), никогда не подменяй его событием календаря. Если queued:true — "
+        "скажи, что попадёт в Напоминания после синхронизации Быстрой команды, НЕ говори «создал». "
+        "Если error — честно скажи, что не удалось, и почему.\n\n"
+        "8. get_weather(city?, date?, date_from?, date_to?) — погода для города. Раздел «Погода» тоже НЕ данные "
+        "приложения (внешний сервис), а живой запрос — используй этот инструмент, а не navigate/get_data. Город "
+        "можно не указывать — тогда берётся сохранённый в настройках (Погода → город). Без date — текущая погода "
+        "и 3 дня вперёд. Для конкретного дня или диапазона («в субботу», «на следующей неделе») передай date или "
+        "date_from/date_to в формате YYYY-MM-DD — вычисли даты сам от СЕГОДНЯ (прогноз доступен на 16 дней "
+        "вперёд).\n\n"
         "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
         "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
         "— вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми "
@@ -3216,6 +3416,11 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str) -> di
     # у них свой исполнитель, общий с браузерным ассистентом.
     if name in APPLE_TOOL_NAMES:
         return execute_apple_tool(name, inp)
+    if name == "get_weather":
+        return get_weather(
+            app, inp.get("city") or "",
+            date=inp.get("date") or "", date_from=inp.get("date_from") or "", date_to=inp.get("date_to") or "",
+        )
     if name == "get_data":
         entry = ASSISTANT_DATA_DOMAINS.get(inp.get("domain"))
         if not entry:
@@ -3548,6 +3753,196 @@ def _already_fired(kind: str, ident, today_iso: str, now_str: str) -> bool:
     return False
 
 
+# ── English daily word picks (Telegram) ────────────────────────────────────
+# Settings live in app data as engWordReminder (enabled/time/days/count/order/
+# dateRange). Words themselves come from engWords once the in-app vocabulary
+# DB is filled — until then the tick logs and skips the send.
+_ENG_RU_MON = {
+    "янв": 0, "фев": 1, "мар": 2, "апр": 3, "мая": 4, "май": 4, "июн": 5,
+    "июл": 6, "авг": 7, "сен": 8, "окт": 9, "ноя": 10, "дек": 11,
+}
+
+
+def eng_parse_date(value, infer_year: int | None = None) -> date | None:
+    """Best-effort mirror of engParseDate() in the English UI."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        # Excel serial date
+        try:
+            return (datetime(1899, 12, 30) + timedelta(days=float(value))).date()
+        except Exception:
+            return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    s = str(value).strip()
+    if not s:
+        return None
+    # ISO-ish with a year
+    if re.search(r"\d{4}", s):
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+        except Exception:
+            pass
+    m = re.match(r"(\d{1,2})\s+([а-яё]+)\s*(\d{4})?", s, re.I)
+    if m:
+        mon = -1
+        ms = m.group(2).lower()
+        for k, v in _ENG_RU_MON.items():
+            if ms.startswith(k):
+                mon = v
+                break
+        if mon >= 0:
+            year = int(m.group(3)) if m.group(3) else (infer_year or today_msk().year)
+            try:
+                return date(year, mon + 1, int(m.group(1)))
+            except Exception:
+                return None
+    m = re.match(r"(\d{1,4})[./-](\d{1,2})[./-](\d{1,4})", s)
+    if m:
+        a, b, c = m.group(1), m.group(2), m.group(3)
+        try:
+            if len(a) == 4:
+                return date(int(a), int(b), int(c))
+            return date(int(c), int(b), int(a))
+        except Exception:
+            return None
+    return None
+
+
+def load_eng_words(app_data: dict) -> list:
+    """Vocabulary source for daily Telegram picks — engWords in app data.
+
+    Shape: { items: [...], updatedAt, importedAt } (LWW object). Also accepts
+    a bare list for older drafts. Words live in Jarvis after a one-time Sheets
+    import; we do not fetch Google Sheets from the notifier.
+    """
+    raw = app_data.get("engWords")
+    items = None
+    if isinstance(raw, dict):
+        items = raw.get("items")
+    elif isinstance(raw, list):
+        items = raw
+    if not isinstance(items, list):
+        return []
+    return [
+        w for w in items
+        if isinstance(w, dict)
+        and str(w.get("en") or w.get("word") or "").strip()
+        and not w.get("archived")
+        and not w.get("deleted")
+    ]
+
+
+def eng_word_sort_date(w: dict, today: date) -> date | None:
+    """Best date for filter/order: explicit date, else createdAt (ms or sec)."""
+    d = eng_parse_date(w.get("date"), today.year)
+    if d is not None:
+        return d
+    created = w.get("createdAt") or w.get("addedAt")
+    if isinstance(created, (int, float)) and created > 0:
+        try:
+            # Heuristic: ≥ 1e12 → milliseconds, else seconds.
+            ts = created / 1000.0 if created >= 10_000_000_000 else float(created)
+            return datetime.fromtimestamp(ts, tz=MSK).date()
+        except Exception:
+            pass
+    return eng_parse_date(created, today.year)
+
+
+def select_eng_words_for_reminder(words: list, reminder: dict, today: date) -> list:
+    """Filter/order/limit words the same way FlashcardsTab.startSession does."""
+    pool = list(words)
+    date_range = str(reminder.get("dateRange") or "all")
+    if date_range != "all":
+        try:
+            days = int(date_range)
+        except Exception:
+            days = 0
+        if days > 0:
+            cutoff = today - timedelta(days=days)
+            filtered = []
+            for w in pool:
+                d = eng_word_sort_date(w, today)
+                if d is None:
+                    # Keep undated words so a brand-new DB without dates still
+                    # produces a non-empty daily set.
+                    filtered.append(w)
+                elif d >= cutoff:
+                    filtered.append(w)
+            pool = filtered
+
+    order = reminder.get("order") or "random"
+    if order == "random":
+        random.shuffle(pool)
+    elif order == "newest":
+        pool.sort(key=lambda w: eng_word_sort_date(w, today) or date.min, reverse=True)
+    elif order == "oldest":
+        pool.sort(key=lambda w: eng_word_sort_date(w, today) or date.max)
+
+    try:
+        count = max(1, min(50, int(reminder.get("count") or 5)))
+    except Exception:
+        count = 5
+    return pool[:count]
+
+
+def format_eng_words_message(words: list, reminder: dict, *, test: bool = False) -> str:
+    order_labels = {"random": "random", "newest": "newest", "oldest": "oldest"}
+    range_labels = {"7": "last 7 days", "14": "last 14 days", "30": "last 30 days", "all": "all time"}
+    order = order_labels.get(reminder.get("order"), reminder.get("order") or "")
+    rng = range_labels.get(str(reminder.get("dateRange")), str(reminder.get("dateRange") or ""))
+    entries = []
+    for w in words:
+        en = html.escape(str(w.get("en") or w.get("word") or w.get("english") or "").strip())
+        ru = html.escape(str(w.get("ru") or w.get("translation") or w.get("russian") or "").strip())
+        if not en:
+            continue
+        hard = " ★" if w.get("hard") else ""
+        if ru:
+            # Telegram HTML spoiler: hidden until tapped (Bot API tg-spoiler).
+            entries.append(f"<b>{en}</b>{hard} — <tg-spoiler>{ru}</tg-spoiler>")
+        else:
+            entries.append(f"<b>{en}</b>{hard}")
+    title = "📚 <b>Words for today</b>" + (" <i>(test)</i>" if test else "")
+    lines = [
+        title,
+        f"<i>{len(entries)} words · {html.escape(str(order))} · {html.escape(str(rng))}</i>",
+        "",
+    ]
+    for i, entry in enumerate(entries, 1):
+        lines.append(f"{i}. {entry}")
+    if not entries:
+        lines.append("<i>No words matched the current filters.</i>")
+    else:
+        lines.append("")
+        lines.append("Use them in today's speaking practice 🎙")
+    return "\n".join(lines)
+
+
+def send_eng_words_now(app_data: dict, reminder: dict, *, test: bool = False) -> dict:
+    """Pick words by reminder settings and send to English-routed subscribers."""
+    token = get_token()
+    if not token:
+        return {"ok": False, "error": "Telegram bot token not configured"}
+    subs = load_subscribers()
+    recipients = recipients_for(app_data, subs, "english")
+    if not recipients:
+        return {"ok": False, "error": "no subscribers routed to english"}
+    words = load_eng_words(app_data)
+    if not words:
+        return {"ok": False, "error": "Word base is empty — import or add words first"}
+    picked = select_eng_words_for_reminder(words, reminder, today_msk())
+    if not picked:
+        return {"ok": False, "error": "no words matched the current filters", "pool": len(words)}
+    text = format_eng_words_message(picked, reminder, test=test)
+    for cid in recipients:
+        send_message(token, cid, text)
+    return {"ok": True, "sent": len(recipients), "words": len(picked), "pool": len(words)}
+
+
 def _tick():
     token = get_token()
     if not token:
@@ -3744,6 +4139,29 @@ def _tick():
     except Exception as e:
         print(f"[{now_str} MSK] diet reminder error: {e}")
 
+    # ── English daily words: speak-practice vocabulary pick ────────────────
+    try:
+        eng_reminder = app_data_raw.get("engWordReminder") or {}
+        cfg_time = str(eng_reminder.get("time", "")).strip()
+        if eng_reminder.get("enabled") and cfg_time == now_str:
+            days_raw = eng_reminder.get("days", [1, 2, 3, 4, 5]) or []
+            days = []
+            for d in days_raw:
+                try: days.append(int(d))
+                except Exception: pass
+            if today_js not in days:
+                print(f"[{now_str} MSK] eng words: today ({today_js}) not in days {days}")
+            elif _already_fired("eng_words", "daily", today_iso, now_str):
+                print(f"[{now_str} MSK] eng words: already fired this minute")
+            else:
+                result = send_eng_words_now(app_data_raw, eng_reminder, test=False)
+                if result.get("ok"):
+                    print(f"[{now_str} MSK] → eng words ({result.get('words')} of {result.get('pool')}) to {result.get('sent')} subscriber(s)")
+                else:
+                    print(f"[{now_str} MSK] eng words: skip — {result.get('error')}")
+    except Exception as e:
+        print(f"[{now_str} MSK] eng words reminder error: {e}")
+
     # ── Daily checklist reminder ───────────────────────────────────────────
     try:
         checklist_reminder = app_data_raw.get("dailyChecklistReminder") or {}
@@ -3820,6 +4238,8 @@ def _tick():
 
 WEEKDAYS_RU_ACCUSATIVE = ["понедельник", "вторник", "среду", "четверг",
                           "пятницу", "субботу", "воскресенье"]
+WEEKDAYS_RU_NOMINATIVE = ["понедельник", "вторник", "среда", "четверг",
+                          "пятница", "суббота", "воскресенье"]
 
 
 def get_boss_period() -> str | None:
@@ -6152,6 +6572,40 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                     "response": {"text": "Извините, не получилось загрузить дела.", "end_session": True},
                 }
             self._json(200, result)
+        elif self.path == "/api/english/send-words-test":
+            # Test pick using current (optional) reminder overrides from the modal.
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except Exception:
+                length = 0
+            body = {}
+            if length > 0:
+                try:
+                    body = json.loads(self.rfile.read(length))
+                    if not isinstance(body, dict):
+                        body = {}
+                except Exception:
+                    self._json(400, {"error": "invalid json"})
+                    return
+            try:
+                app_data = load_app_data()
+                saved = app_data.get("engWordReminder") or {}
+                override = body.get("reminder") if isinstance(body.get("reminder"), dict) else {}
+                reminder = {
+                    "enabled": True,
+                    "time": override.get("time", saved.get("time", "09:00")),
+                    "days": override.get("days", saved.get("days", [1, 2, 3, 4, 5])),
+                    "count": override.get("count", saved.get("count", 5)),
+                    "order": override.get("order", saved.get("order", "random")),
+                    "dateRange": override.get("dateRange", saved.get("dateRange", "7")),
+                }
+                result = send_eng_words_now(app_data, reminder, test=True)
+                if result.get("ok"):
+                    self._json(200, result)
+                else:
+                    self._json(400, result)
+            except Exception as e:
+                self._json(500, {"error": str(e)})
         elif self.path == "/api/backup/send-now":
             token = get_token()
             if not token:

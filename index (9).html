@@ -80,6 +80,85 @@
     to { opacity: 1; max-height: 1000px; }
   }
   .slide-down { animation: slideDown 0.3s ease both; overflow: hidden; }
+
+  /* Прочее: тряска иконок в режиме правки (как на iOS) + свободная сетка */
+  @keyframes miscAppJiggle {
+    0%   { transform: rotate(-1.4deg); }
+    50%  { transform: rotate(1.4deg); }
+    100% { transform: rotate(-1.4deg); }
+  }
+  .misc-home {
+    display: flex;
+    flex-direction: column;
+    /* Высота экрана минус нижняя навигация и её safe-area */
+    min-height: calc(100dvh - 5.75rem - env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - 5.75rem - env(safe-area-inset-bottom, 0px));
+    overflow: hidden;
+  }
+  @media (min-width: 768px) {
+    .misc-home {
+      min-height: calc(100dvh - 2rem);
+      max-height: calc(100dvh - 2rem);
+    }
+  }
+  .misc-home-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.75rem 0.5rem;
+    flex: 1 1 auto;
+    min-height: 0;
+    align-content: stretch;
+  }
+  .misc-app-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.4rem;
+    text-align: center;
+    min-width: 0;
+    min-height: 0;
+    padding-top: 0.15rem;
+  }
+  .misc-app-jiggle {
+    animation: miscAppJiggle 0.28s ease-in-out infinite;
+    transform-origin: 50% 50%;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .misc-app-jiggle:nth-child(2n) { animation-delay: -0.07s; }
+  .misc-app-jiggle:nth-child(3n) { animation-delay: -0.14s; }
+  .misc-app-jiggle:nth-child(4n) { animation-delay: -0.21s; }
+  .misc-app-dragging {
+    animation: none !important;
+    opacity: 0.55;
+    transform: scale(1.06);
+    z-index: 2;
+  }
+  .misc-app-drop-target .misc-app-icon,
+  .misc-app-slot-empty.misc-app-drop-target {
+    outline: 2px solid var(--text);
+    outline-offset: 3px;
+  }
+  .misc-app-slot-empty {
+    width: 4rem;
+    height: 4rem;
+    border-radius: 1rem;
+    border: 1.5px dashed color-mix(in srgb, var(--text-muted) 55%, transparent);
+    background: color-mix(in srgb, var(--text-muted) 6%, transparent);
+    margin-top: 0.15rem;
+  }
+  .misc-app-slot-spacer {
+    width: 4rem;
+    height: 4rem;
+    margin-top: 0.15rem;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .misc-app-jiggle { animation: none; }
+  }
   .input-display {
     font-family: 'Fraunces', serif;
     font-size: 1.25rem;
@@ -97,6 +176,16 @@
   /* iOS safe area */
   .pb-safe { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
   .bottom-nav { padding-bottom: env(safe-area-inset-bottom, 0); }
+
+  /* iOS Safari визуально «отклеивает» position:fixed элементы от края экрана
+     во время инерционного скролла — особенно вместе с backdrop-filter (тут
+     на нижней панели и кнопке голоса). Перевод в свой GPU-слой это чинит. */
+  .gpu-fixed {
+    transform: translateZ(0);
+    -webkit-transform: translateZ(0);
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+  }
 
   /* Инпуты */
   input, select, textarea {
@@ -361,11 +450,12 @@ const NOTIFICATION_CATEGORIES = [
   { id: 'checklist', label: 'Чек-лист' },
   { id: 'tasks',     label: 'Задачи' },
   { id: 'backup',    label: 'Бэкапы' },
+  { id: 'english',   label: 'English' },
 ];
 
 // ── MSK time helpers ─────────────────────────────────────────────────────
 // All Telegram reminder times (chores, boss tasks, holidays, debts, diet,
-// checklist) are compared against the SERVER's Moscow-time clock. If the
+// checklist, english words) are compared against the SERVER's Moscow-time clock. If the
 // user's device is not in the Moscow timezone, a time entered "as-is" would
 // never match. MskTimeInput below shows/edits the value in the user's own
 // local time while transparently storing/comparing it as MSK — so the
@@ -613,6 +703,11 @@ const DEFAULT_DATA = () => ({
   // они подмешиваются в его системный промпт, чтобы он отвечал, понимая,
   // с кем говорит, а не спрашивал одно и то же каждый раз.
   knowledgeNotes: [],
+  // Прочее: раскладка иконок на домашнем экране. slots[i] = id приложения
+  // или null (пустая ячейка) — можно ставить в любое место сетки. Цельный
+  // объект со штампом updatedAt — LWW между устройствами (как engStudyPlan).
+  // Старый формат { ids: [...] } ещё читается в resolveMiscLayout.
+  miscAppsOrder: { slots: [], cols: 4, updatedAt: 0 },
   // Музыка: сами треки лежат файлами на сервере, а плейлисты — обычный
   // id-массив со списком id треков внутри, поэтому синхронизируются как всё
   // остальное. Встроенные треки собраны в плейлист по умолчанию.
@@ -626,6 +721,12 @@ const DEFAULT_DATA = () => ({
   deletedIds: {},
   // План обучения English: произвольная заметка, LWW по updatedAt между устройствами
   engStudyPlan: { text: '', updatedAt: 0 },
+  // Словарь English (Word base) — источник правды в Jarvis. LWW по updatedAt.
+  // Разовый импорт из Google Sheets ставит importedAt; дальше правки только здесь.
+  engWords: { items: [], updatedAt: 0, importedAt: 0 },
+  // Ежедневная выборка слов в Telegram: дни/время/кол-во/порядок/период.
+  // LWW по updatedAt. Берёт слова из engWords; рассылка в jarvis.py _tick.
+  engWordReminder: { enabled: false, time: '09:00', days: [1, 2, 3, 4, 5], count: 5, order: 'random', dateRange: '7', updatedAt: 0 },
   settings: { ...DEFAULT_SETTINGS },
 });
 
@@ -1580,6 +1681,8 @@ function App() {
   // «Назад» браузера, авто-переключение на бездействии) не должен молча
   // стирать его — см. использование ниже.
   const [budgetPlansDirty, setBudgetPlansDirty] = useState(false);
+  // Word base в English: несохранённые правки таблицы — не уходить молча.
+  const [engWordBaseDirty, setEngWordBaseDirty] = useState(false);
 
   // On mount: try to load from server, merge with localStorage to prevent data loss
   useEffect(() => {
@@ -1739,6 +1842,12 @@ function App() {
           return;
         }
       }
+      if (tab === 'misc' && miscTab === 'english' && engWordBaseDirty && getMiscSubFromPath() !== 'english') {
+        if (!confirm('В Word base есть несохранённые изменения. Уйти без сохранения?')) {
+          window.history.pushState(null, '', '/misc');
+          return;
+        }
+      }
       navFromPopstate.current = true;
       setTab(getTabFromPath());
       setPlannerTab(getPlannerSubFromPath());
@@ -1746,7 +1855,7 @@ function App() {
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [tab, budgetPlansDirty]);
+  }, [tab, budgetPlansDirty, miscTab, engWordBaseDirty]);
 
   // Разовая миграция legacy-рационов: строки блюд → массивы {product, amount}.
   // Раньше нормализация была только «на лету» и никогда не сохранялась, так что
@@ -1791,9 +1900,11 @@ function App() {
   // То же самое для «Бюджет → Планы» с открытым несохранённым черновиком —
   // молчаливый переход на главную стирал бы правки.
   const inGym = tab === 'misc' && miscTab === 'gym';
+  // English: длинные сессии (карточки / Word base) — не выкидывать на главную.
+  const inEnglish = tab === 'misc' && miscTab === 'english';
   const inDirtyBudgetPlan = tab === 'budget' && budgetPlansDirty;
   useEffect(() => {
-    if (!weatherAutoSwitch || inGym || inDirtyBudgetPlan) return;
+    if (!weatherAutoSwitch || inGym || inEnglish || inDirtyBudgetPlan) return;
     const intervalMs = Math.max(0.5, Number(weatherAutoSwitchMinutes) || 2) * 60 * 1000;
     let timerId = null;
 
@@ -1812,7 +1923,7 @@ function App() {
       if (timerId) clearTimeout(timerId);
       events.forEach(ev => window.removeEventListener(ev, reset));
     };
-  }, [weatherAutoSwitch, weatherAutoSwitchMinutes, inGym, inDirtyBudgetPlan]);
+  }, [weatherAutoSwitch, weatherAutoSwitchMinutes, inGym, inEnglish, inDirtyBudgetPlan]);
 
   // Авто-синхронизация конфига уведомлений с jarvis.py
   useEffect(() => {
@@ -1845,6 +1956,8 @@ function App() {
   const requestSetTab = (id) => {
     if (id !== tab && tab === 'budget' && budgetPlansDirty
       && !confirm('В открытом плане бюджета есть несохранённые изменения. Уйти без сохранения?')) return;
+    if (id !== tab && tab === 'misc' && miscTab === 'english' && engWordBaseDirty
+      && !confirm('Word base has unsaved changes. Leave without saving?')) return;
     setTab(id);
   };
 
@@ -1876,6 +1989,8 @@ function App() {
               setSettingsTab={setSettingsTab}
               voiceFocus={voiceFocus}
               onVoiceFocusConsumed={() => setVoiceFocus(null)}
+              engWordBaseDirty={engWordBaseDirty}
+              onEngWordBaseDirty={setEngWordBaseDirty}
             />
           )}
         </main>
@@ -2008,7 +2123,7 @@ function BottomNav({ tab, setTab }) {
 
   return (
     <>
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 bg-[var(--bg)]/90 backdrop-blur-xl border-t border-[var(--border)] bottom-nav">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-20 bg-[var(--bg)]/90 backdrop-blur-xl border-t border-[var(--border)] bottom-nav gpu-fixed">
         <div className="flex items-center justify-around px-1 pt-2 pb-safe">
           {mainItems.map(item => (
             <button
@@ -4434,7 +4549,9 @@ function AppleConnectionCard() {
 
   const s = state;
   const remindersLabel = s.remindersBackend === 'caldav' ? 'через iCloud'
-    : s.remindersBackend === 'bridge' ? 'через Быструю команду' : 'не подключены';
+    : s.remindersBackend === 'bridge' ? 'через Быструю команду'
+    : s.remindersBackend === 'bridge_pending' ? 'мост ждёт Shortcuts'
+    : 'не подключены';
   const ago = (ms) => {
     if (!ms) return 'ещё ни разу';
     const min = Math.round((Date.now() - ms) / 60000);
@@ -4473,6 +4590,7 @@ function AppleConnectionCard() {
               </span>
             )}
           </div>
+          {s.remindersHint && <div className="text-amber-600 text-sm">{s.remindersHint}</div>}
           {s.error && <div className="text-amber-600">{s.error}</div>}
           {!s.calendarConfigured && (
             <p className="text-xs text-[var(--text-subtle)] pt-1">
@@ -8053,6 +8171,18 @@ class EngErrorBoundary extends React.Component {
 }
 
 const _ENG_RU_MON = {'январ':0,'феврал':1,'март':2,'апрел':3,'мая':4,'май':4,'июн':5,'июл':6,'август':7,'сентябр':8,'октябр':9,'ноябр':10,'декабр':11};
+const _ENG_RU_MON_NAMES = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+function engFormatRuDate(d){
+  if(!(d instanceof Date) || isNaN(d)) return '';
+  return `${d.getDate()} ${_ENG_RU_MON_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+}
+function engFormatRuToday(){ return engFormatRuDate(new Date()); }
+function engDisplayDate(v){
+  if(v===null||v===undefined||v==='') return '';
+  const d = engParseDate(v);
+  if(d) return engFormatRuDate(d);
+  return String(v);
+}
 function engParseDate(s,inferYear){
   if(s===null||s===undefined||s==='') return null;
   if(typeof s==='number'){const d=new Date((s-25569)*86400000);return isNaN(d)?null:d;}
@@ -8144,16 +8274,143 @@ async function engPrefetchSentences(ai,words,cache,onChunk){
   }
 }
 
-function EngCfgModal({cfg,onSave,onClose}){
+function EngCfgModal({cfg, reminder, onSave, onClose, hasToken, wordsCount}){
+  const defaultReminder = { enabled: false, time: '09:00', days: [1, 2, 3, 4, 5], count: 5, order: 'random', dateRange: '7' };
   const [f,setF]=useState({...cfg});
+  const [r,setR]=useState({ ...defaultReminder, ...(reminder || {}) });
+  const [testing, setTesting] = useState(false);
+  const [testMsg, setTestMsg] = useState('');
+  const [testOk, setTestOk] = useState(null);
+  const toggleDay = (dayId) => {
+    const cur = r.days || [];
+    setR(x => ({ ...x, days: cur.includes(dayId) ? cur.filter(d => d !== dayId) : [...cur, dayId].sort() }));
+  };
+  const sendTest = async () => {
+    if (testing) return;
+    setTesting(true); setTestMsg(''); setTestOk(null);
+    try {
+      const res = await fetch('/api/english/send-words-test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reminder: {
+            time: r.time || '09:00',
+            days: Array.isArray(r.days) ? r.days : [1, 2, 3, 4, 5],
+            count: Math.max(1, Math.min(50, parseInt(r.count, 10) || 5)),
+            order: r.order || 'random',
+            dateRange: r.dateRange || '7',
+          },
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.ok) {
+        setTestOk(true);
+        setTestMsg(`Sent ${json.words} words to ${json.sent} chat(s)`);
+      } else {
+        setTestOk(false);
+        setTestMsg(json.error || 'Failed to send');
+      }
+    } catch (e) {
+      setTestOk(false);
+      setTestMsg('Could not reach the server');
+    }
+    setTesting(false);
+  };
   return(
-    <Modal onClose={onClose} title="Google Sheets">
-      <div className="space-y-4">
-        <div><label>API Key (read)</label><input type="password" value={f.apiKey} onChange={e=>setF(x=>({...x,apiKey:e.target.value}))} placeholder="AIzaSy..."/></div>
-        <div><label>OAuth Client ID (write, optional)</label><input value={f.clientId} onChange={e=>setF(x=>({...x,clientId:e.target.value}))} placeholder="...apps.googleusercontent.com"/></div>
-        <div><label>Spreadsheet ID</label><input value={f.sheetId} onChange={e=>setF(x=>({...x,sheetId:e.target.value}))}/><p className="text-xs text-[var(--text-subtle)] mt-1">ID found in the URL: spreadsheets/d/<b>ID</b>/edit</p></div>
-        <div><label>Sheet name</label><input value={f.sheetName} onChange={e=>setF(x=>({...x,sheetName:e.target.value}))}/></div>
-        <div className="flex gap-3 pt-2"><button onClick={onClose} className="btn-secondary flex-1">Cancel</button><button onClick={()=>onSave(f)} className="btn-primary flex-1">Save</button></div>
+    <Modal onClose={onClose} title="Настройки">
+      <div className="space-y-5">
+        <div className="space-y-4">
+          <div>
+            <div className="text-sm font-medium">Google Sheets — разовый импорт</div>
+            <p className="text-xs text-[var(--text-muted)] mt-1">Нужен только чтобы один раз перенести словарь в Word base. Дальше слова правятся только в Jarvis.</p>
+          </div>
+          <div><label>API Key (read)</label><input type="password" value={f.apiKey} onChange={e=>setF(x=>({...x,apiKey:e.target.value}))} placeholder="AIzaSy..."/></div>
+          <div><label>Spreadsheet ID</label><input value={f.sheetId} onChange={e=>setF(x=>({...x,sheetId:e.target.value}))}/><p className="text-xs text-[var(--text-subtle)] mt-1">ID found in the URL: spreadsheets/d/<b>ID</b>/edit</p></div>
+          <div><label>Sheet name</label><input value={f.sheetName} onChange={e=>setF(x=>({...x,sheetName:e.target.value}))}/></div>
+        </div>
+
+        <div className="border-t border-[var(--border)] pt-4 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium">Words in Telegram</div>
+              <div className="text-xs text-[var(--text-muted)] mt-0.5">Daily pick for speaking practice</div>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button
+                type="button"
+                onClick={sendTest}
+                disabled={testing || !hasToken || !(wordsCount > 0)}
+                title={!hasToken ? 'Set Telegram bot token first' : !(wordsCount > 0) ? 'Word base is empty' : 'Send a test message with the current filters'}
+                className="text-xs px-2.5 py-1 rounded-lg border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--text)] disabled:opacity-40 transition-all"
+              >{testing ? '…' : 'Test'}</button>
+              <button type="button" onClick={() => setR(x => ({ ...x, enabled: !x.enabled }))}
+                className={`relative w-11 h-6 rounded-full transition-colors ${r.enabled ? 'bg-green-500' : 'bg-[var(--border)]'}`}>
+                <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${r.enabled ? 'translate-x-5' : ''}`} />
+              </button>
+            </div>
+          </div>
+          {testMsg && (
+            <div className={`text-xs px-3 py-2 rounded-xl border ${testOk ? 'bg-green-50 text-green-700 border-green-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`}>
+              {testMsg}
+            </div>
+          )}
+          {r.enabled && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Time</label>
+                <MskTimeInput value={r.time || '09:00'} onChange={t => setR(x => ({ ...x, time: t }))} hint
+                  className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)] w-full" />
+              </div>
+              <div>
+                <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Days</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {WEEKDAYS.map(w => {
+                    const on = (r.days || []).includes(w.id);
+                    return (
+                      <button key={w.id} type="button" onClick={() => toggleDay(w.id)}
+                        className={`w-10 h-10 rounded-xl text-sm font-medium transition-all ${on ? 'bg-[var(--text)] text-white' : 'bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
+                        {w.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div>
+                <label>Word count</label>
+                <input type="number" min="1" max="50" value={r.count ?? 5}
+                  onChange={e => setR(x => ({ ...x, count: Math.max(1, Math.min(50, parseInt(e.target.value, 10) || 1)) }))} />
+              </div>
+              <div>
+                <label>Order</label>
+                <select value={r.order || 'random'} onChange={e => setR(x => ({ ...x, order: e.target.value }))}>
+                  <option value="random">Random</option>
+                  <option value="newest">Newest</option>
+                  <option value="oldest">Oldest</option>
+                </select>
+              </div>
+              <div>
+                <label>Date range</label>
+                <select value={r.dateRange || '7'} onChange={e => setR(x => ({ ...x, dateRange: e.target.value }))}>
+                  <option value="7">Last 7 days</option>
+                  <option value="14">Last 14 days</option>
+                  <option value="30">Last 30 days</option>
+                  <option value="all">All time</option>
+                </select>
+              </div>
+            </div>
+          )}
+          <div className="text-xs text-[var(--text-muted)]">
+            Word base: <span className="font-mono text-[var(--text)]">{wordsCount || 0}</span> words
+            {(wordsCount || 0) === 0 ? ' — import once from Sheets or add words in Word base.' : '.'}
+          </div>
+          {!hasToken && (
+            <div className="text-xs text-amber-600 bg-amber-500/10 border border-amber-500/20 rounded-xl px-3 py-2">
+              Set the Telegram bot token in Settings → General, and enable the English category in Routing.
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-3 pt-2"><button onClick={onClose} className="btn-secondary flex-1">Cancel</button><button onClick={()=>onSave({ cfg: f, reminder: r })} className="btn-primary flex-1">Save</button></div>
       </div>
     </Modal>
   );
@@ -8285,37 +8542,306 @@ const ENG_CARD_S={
   back:{transform:'rotateY(180deg)'},
 };
 
-function EngSyncBtn({cfg,toMark,toUnmark,rawData,tcRef,atRef}){
-  const [st,setSt]=useState('idle');const [msg,setMsg]=useState('');
-  const sync=async()=>{
-    if(!cfg.clientId){alert('OAuth Client ID is not set in ⚙ Settings');return;}
-    setSt('loading');setMsg('Authorizing...');
-    const doSync=async()=>{
-      try{
-        setMsg('Writing...');
-        const data=[...toMark.map(i=>({range:`${cfg.sheetName}!I${i}`,values:[[true]]})),...toUnmark.map(i=>({range:`${cfg.sheetName}!I${i}`,values:[[false]]}))];
-        const r=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values:batchUpdate`,{method:'POST',headers:{'Authorization':'Bearer '+atRef.current,'Content-Type':'application/json'},body:JSON.stringify({valueInputOption:'USER_ENTERED',data})});
-        if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'HTTP '+r.status);}
-        setSt('done');setMsg(`✓ ${toMark.length?'+'+toMark.length+' marked':''}${toUnmark.length?' −'+toUnmark.length+' unmarked':''}`);
-      }catch(e){setSt('err');setMsg('✗ '+e.message);}
-    };
-    if(atRef.current){await doSync();return;}
-    if(!tcRef.current){alert('OAuth not ready');setSt('idle');return;}
-    tcRef.current.requestAccessToken({prompt:'consent'});
-    let tries=0;
-    const wait=setInterval(async()=>{if(atRef.current){clearInterval(wait);await doSync();}else if(++tries>30){clearInterval(wait);setSt('err');setMsg('Timeout');}},500);
+
+function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importedAt, importing, onDirtyChange, savingRef }){
+  const PAD = 5;
+  const uid = () => engNewWordId();
+  const blank = () => ({ id: uid(), date: '', en: '', ru: '', hard: false, baseline: null, meta: null });
+  // Новее выше: по дате слова, иначе по createdAt. Пустые строки для ввода — сверху.
+  const wordRecency = (w) => {
+    const d = engParseDate(w && w.date);
+    if (d) return d.getTime();
+    const c = w && w.createdAt;
+    return typeof c === 'number' ? c : 0;
   };
-  return(
-    <div>
-      <button onClick={sync} disabled={st==='loading'||st==='done'} className="btn-primary w-full py-3">
-        {st==='loading'?'⏳ '+msg:st==='done'?msg:'↻ Sync to spreadsheet'}
-      </button>
-      {st==='err'&&<p className="text-xs text-red-500 mt-1">{msg}</p>}
+  const fromItems = (list) => {
+    const sorted = (list || []).slice().sort((a, b) => wordRecency(b) - wordRecency(a));
+    const rows = sorted.map(w => {
+      const date = engDisplayDate(w.date);
+      const en = w.en || '';
+      const ru = w.ru || '';
+      return { id: w.id || uid(), date, en, ru, hard: !!w.hard, baseline: { date, en, ru }, meta: w };
+    });
+    let lead = 0;
+    for (let i = 0; i < rows.length; i++) {
+      if (!rows[i].en && !rows[i].ru && !rows[i].date) lead++;
+      else break;
+    }
+    while (lead < PAD) { rows.unshift(blank()); lead++; }
+    return rows;
+  };
+
+  const [rows, setRows] = useState(() => fromItems(words));
+  const [query, setQuery] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [msgType, setMsgType] = useState('');
+  const seededRef = useRef(false);
+  const acceptReloadRef = useRef(false);
+
+  const isDirtyRow = (r) => {
+    const has = !!(r.en.trim() || r.ru.trim() || r.date.trim());
+    if (!r.baseline) return has;
+    return r.date !== r.baseline.date || r.en !== r.baseline.en || r.ru !== r.baseline.ru;
+  };
+  const dirty = rows.some(isDirtyRow);
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
+
+  useEffect(() => { onDirtyChange && onDirtyChange(dirty); }, [dirty]);
+  useEffect(() => () => { onDirtyChange && onDirtyChange(false); }, []);
+  useEffect(() => { if (savingRef) savingRef.current = saving; }, [saving]);
+
+  // Подтянуть строки из DB, не затирая локальный черновик.
+  useEffect(() => {
+    if (dirtyRef.current && seededRef.current && !acceptReloadRef.current) return;
+    acceptReloadRef.current = false;
+    setRows(fromItems(words));
+    seededRef.current = true;
+  }, [words]);
+
+  const ensurePad = (list) => {
+    const next = list.slice();
+    let lead = 0;
+    for (let i = 0; i < next.length; i++) {
+      if (!next[i].en && !next[i].ru && !next[i].date) lead++;
+      else break;
+    }
+    while (lead < PAD) { next.unshift(blank()); lead++; }
+    return next;
+  };
+
+  const updateCell = (id, field, value) => {
+    setRows(prev => {
+      const next = prev.map(r => {
+        if (r.id !== id) return r;
+        const patch = { ...r, [field]: value };
+        if ((field === 'en' || field === 'ru') && value.trim() && !String(patch.date || '').trim()) {
+          patch.date = engFormatRuToday();
+        }
+        return patch;
+      });
+      return ensurePad(next);
+    });
+    setMsg('');
+  };
+
+  // Hard flag writes to engWords immediately — does not use Save.
+  const toggleHardNow = (id) => {
+    const row = rows.find(r => r.id === id);
+    if (!row || !row.en.trim()) return;
+    const nextHard = !row.hard;
+    setRows(prev => prev.map(r => r.id === id ? { ...r, hard: nextHard, meta: { ...(r.meta || {}), hard: nextHard } } : r));
+    onToggleHard && onToggleHard(id, nextHard);
+  };
+
+  const save = async () => {
+    if (saving) return;
+    const changed = rows.filter(isDirtyRow);
+    const toWrite = rows.filter(r => r.en.trim());
+    const incomplete = changed.filter(r => !r.en.trim() && (r.ru.trim() || r.date.trim()));
+    if (!changed.length) {
+      setMsgType(''); setMsg('Nothing to save'); return;
+    }
+    if (incomplete.length) {
+      setMsgType('err');
+      setMsg(`${incomplete.length} row(s) missing an English word — fill EN or clear the row`);
+      return;
+    }
+    setSaving(true);
+    setMsgType('loading');
+    setMsg('Saving to Jarvis…');
+    try {
+      const now = Date.now();
+      // Порядок таблицы: сверху новые. Сохраняем в том же порядке.
+      const items = toWrite.map(r => {
+        const prev = r.meta || {};
+        const isNew = !prev || !prev.en;
+        return {
+          id: r.id || engNewWordId(),
+          date: r.date.trim() || engFormatRuToday(),
+          en: r.en.trim(),
+          ru: r.ru.trim(),
+          syn: prev.syn || '',
+          sentence: prev.sentence || '',
+          showNew: !!prev.showNew,
+          showTrans: !!prev.showTrans,
+          showSent: !!prev.showSent,
+          hard: !!prev.hard,
+          rowIndex: prev.rowIndex ?? null,
+          createdAt: isNew ? now : (prev.createdAt || now),
+        };
+      });
+      acceptReloadRef.current = true;
+      onDirtyChange && onDirtyChange(false);
+      await Promise.resolve(onSaveWords(items));
+      setMsgType('ok');
+      setMsg(`✓ Saved to Word base: ${items.length} words`);
+    } catch (e) {
+      setMsgType('err');
+      setMsg('✗ ' + (e.message || e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const doImport = async () => {
+    if (!onImportSheets) return;
+    if (importedAt && (words || []).length) {
+      if (!confirm('Vocabulary already imported. Replace all words from Google Sheets?')) return;
+    }
+    setMsgType('loading');
+    setMsg('Importing from Google Sheets…');
+    try {
+      acceptReloadRef.current = true;
+      const n = await onImportSheets();
+      setMsgType('ok');
+      setMsg(`✓ Imported ${n} words. Edit only in Jarvis from now on.`);
+    } catch (e) {
+      setMsgType('err');
+      setMsg('✗ ' + (e.message || e));
+    }
+  };
+
+  const filled = rows.filter(r => r.en.trim()).length;
+  const showImport = !importedAt || filled === 0;
+  const q = query.trim().toLowerCase();
+  const visibleRows = !q ? rows : rows.filter(r => {
+    const en = (r.en || '').toLowerCase();
+    const ru = (r.ru || '').toLowerCase();
+    if (!en && !ru && !r.date) return false; // hide empty pad rows while searching
+    return en.includes(q) || ru.includes(q);
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="font-display text-xl">Word base</h2>
+          <p className="text-sm text-[var(--text-muted)] mt-1">
+            Jarvis vocabulary. Add new words here — no Google Sheets.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <span className="text-xs text-[var(--text-subtle)] font-mono">{filled} words</span>
+          {dirty && <span className="text-xs px-2 py-1 rounded-lg bg-amber-50 text-amber-700 border border-amber-200">unsaved</span>}
+          {showImport && (
+            <button
+              onClick={doImport}
+              disabled={saving || importing}
+              className="btn-secondary text-sm py-2 px-3 disabled:opacity-40"
+            >{importing ? '⏳ Importing…' : '📥 Import from Sheets'}</button>
+          )}
+          <button
+            onClick={save}
+            disabled={saving || !dirty}
+            className="btn-primary text-sm py-2 px-4 disabled:opacity-40"
+          >{saving ? '⏳ Saving…' : 'Save'}</button>
+        </div>
+      </div>
+
+      <div className="relative">
+        <input
+          type="search"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder="Search EN / RU…"
+          className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[var(--border-strong)]"
+        />
+        {q && (
+          <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[var(--text-subtle)] font-mono pointer-events-none">
+            {visibleRows.length} found
+          </div>
+        )}
+      </div>
+
+      {msg && (
+        <div className={`text-sm px-3 py-2 rounded-xl border ${
+          msgType === 'err' ? 'bg-red-50 text-red-700 border-red-200'
+          : msgType === 'ok' ? 'bg-green-50 text-green-700 border-green-200'
+          : msgType === 'loading' ? 'bg-amber-50 text-amber-800 border-amber-200'
+          : 'bg-[var(--surface)] text-[var(--text-muted)] border-[var(--border)]'
+        }`}>{msg}</div>
+      )}
+
+      {importedAt ? (
+        <div className="text-xs text-[var(--text-subtle)]">
+          Sheets import done {new Date(importedAt).toLocaleString('en-GB')} — we will not pull again.
+        </div>
+      ) : (
+        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+          Import from Google Sheets once, then edit only here.
+        </div>
+      )}
+
+      <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
+        <table className="w-full text-sm" style={{ borderCollapse: 'collapse', minWidth: 560 }}>
+          <thead>
+            <tr className="text-left text-[11px] uppercase tracking-wider text-[var(--text-subtle)] border-b border-[var(--border)]">
+              <th className="px-3 py-2.5 font-medium w-[22%]">Date</th>
+              <th className="px-3 py-2.5 font-medium w-[34%]">English</th>
+              <th className="px-3 py-2.5 font-medium w-[34%]">Russian</th>
+              <th className="px-3 py-2.5 font-medium w-[10%] text-center">Hard</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleRows.length === 0 ? (
+              <tr><td colSpan={4} className="px-3 py-8 text-center text-sm text-[var(--text-muted)]">Nothing found</td></tr>
+            ) : visibleRows.map((r) => (
+              <tr key={r.id} className={`border-b border-[var(--border)] last:border-0 ${isDirtyRow(r) ? 'bg-teal-50/40' : ''} ${r.hard ? 'bg-amber-50/50' : ''}`}>
+                <td className="p-1.5">
+                  <input
+                    value={r.date}
+                    disabled={saving}
+                    onChange={e => updateCell(r.id, 'date', e.target.value)}
+                    placeholder="Today"
+                    className="w-full bg-transparent border border-transparent focus:border-[var(--border-strong)] rounded-lg px-2 py-1.5 outline-none"
+                  />
+                </td>
+                <td className="p-1.5">
+                  <input
+                    value={r.en}
+                    disabled={saving}
+                    onChange={e => updateCell(r.id, 'en', e.target.value)}
+                    placeholder="word"
+                    className="w-full bg-transparent border border-transparent focus:border-[var(--border-strong)] rounded-lg px-2 py-1.5 outline-none font-medium"
+                  />
+                </td>
+                <td className="p-1.5">
+                  <input
+                    value={r.ru}
+                    disabled={saving}
+                    onChange={e => updateCell(r.id, 'ru', e.target.value)}
+                    placeholder="translation"
+                    className="w-full bg-transparent border border-transparent focus:border-[var(--border-strong)] rounded-lg px-2 py-1.5 outline-none"
+                  />
+                </td>
+                <td className="p-1.5 text-center">
+                  {r.en.trim() ? (
+                    <button
+                      type="button"
+                      title={r.hard ? 'Unmark as hard' : 'Mark as hard'}
+                      onClick={() => toggleHardNow(r.id)}
+                      className={`text-xs px-2 py-1 rounded-lg border transition-all ${r.hard ? 'border-amber-400 text-amber-600 bg-amber-50' : 'border-[var(--border)] text-[var(--text-subtle)] hover:border-amber-300'}`}
+                    >{r.hard ? '★ Hard' : '☆ Hard'}</button>
+                  ) : (
+                    <span className="text-[var(--border-strong)] text-xs">—</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-xs text-[var(--text-subtle)]">
+        Newest on top, oldest at the bottom. Empty rows for new words appear at the top. Date fills in automatically (today).
+      </p>
     </div>
   );
 }
 
-function FlashcardsTab({rawData,cfg,ai}){
+
+function FlashcardsTab({rawData,cfg,ai,onToggleHard}){
   const [phase,setPhase]=useState('setup');
   const [settings,setSettings]=useState({direction:'en-ru',count:20,order:'random',filter:'all',dateRange:'all',sentence:true,synonyms:true,tts:false,repeat:true,auto:false});
   const [sess,setSess]=useState(null);
@@ -8387,17 +8913,21 @@ function FlashcardsTab({rawData,cfg,ai}){
     const pd=()=>settings.direction==='mixed'?(Math.random()<.5?'en-ru':'ru-en'):settings.direction;
     const cnt=settings.count>0&&settings.count<pool.length?settings.count:pool.length;
     const batch=pool.slice(0,cnt).map(w=>({...w,_dir:pd()}));
-    setSess({queue:batch,again:[],done:[],cur:0,flipped:false,markHard:new Set(),unmarkHard:new Set(),stats:{again:0,hard:0,good:0,easy:0},iy});
+    setSess({queue:batch,again:[],done:[],cur:0,flipped:false,stats:{again:0,hard:0,good:0,easy:0},iy});
     setPhase('study');
     if(settings.sentence) engPrefetchSentences(ai,batch,sentCache,mergeSentCache); // background, never awaited
   };
 
+  const wordKey=(w)=>w.id != null ? w.id : w.rowIndex;
+  // Hard flag → engWords immediately (same as Word base Hard button).
   const toggleHard=()=>setSess(s=>{
     if(!s) return s;
     const w=s.queue[s.cur];if(!w) return s;
-    const idx=w.rowIndex;const nm=new Set(s.markHard),nu=new Set(s.unmarkHard);
-    if(w.hard){nu.has(idx)?nu.delete(idx):nu.add(idx);}else{nm.has(idx)?nm.delete(idx):nm.add(idx);}
-    return{...s,markHard:nm,unmarkHard:nu};
+    const nextHard=!(w.hard);
+    const queue=s.queue.map((x,i)=>i===s.cur?{...x,hard:nextHard}:x);
+    const again=(s.again||[]).map(x=>wordKey(x)===wordKey(w)?{...x,hard:nextHard}:x);
+    try{ onToggleHard && onToggleHard(wordKey(w), nextHard); }catch(e){}
+    return{...s,queue,again};
   });
 
   const doAnswer=(type)=>setSess(s=>{
@@ -8447,8 +8977,6 @@ function FlashcardsTab({rawData,cfg,ai}){
   if(phase==='finish'&&sess){
     const s=sess.stats;const correct=s.good+s.easy,total=s.again+s.hard+s.good+s.easy;
     const pct=total?Math.round(correct/total*100):0;
-    const toMark=[...sess.markHard],toUnmark=[...sess.unmarkHard];
-    const wFor=(idx)=>{const w=rawData.find(x=>x.rowIndex===idx);return w?w.en:`row ${idx}`;};
     return(
       <div className="text-center py-8 max-w-lg mx-auto pb-12">
         <div className="font-display text-7xl font-bold mb-1">{pct}%</div>
@@ -8462,13 +8990,6 @@ function FlashcardsTab({rawData,cfg,ai}){
             </div>
           ))}
         </div>
-        {(toMark.length>0||toUnmark.length>0)&&(
-          <div className="mb-6 text-left space-y-3">
-            {toMark.length>0&&<div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4"><div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-2">+ Mark as hard ({toMark.length})</div><div className="text-sm">{toMark.map(wFor).join(', ')}</div></div>}
-            {toUnmark.length>0&&<div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl p-4"><div className="text-xs text-[var(--text-subtle)] uppercase tracking-wide mb-2">− Remove hard mark ({toUnmark.length})</div><div className="text-sm">{toUnmark.map(wFor).join(', ')}</div></div>}
-            <EngSyncBtn cfg={cfg} toMark={toMark} toUnmark={toUnmark} rawData={rawData} tcRef={tcRef} atRef={atRef}/>
-          </div>
-        )}
         <button onClick={()=>{setSess(null);setPhase('setup');}} className="btn-primary px-8 py-3">↻ New session</button>
       </div>
     );
@@ -8480,7 +9001,7 @@ function FlashcardsTab({rawData,cfg,ai}){
   const front=dir==='en-ru'?w.en:w.ru;const back=dir==='en-ru'?w.ru:w.en;
   const total=sess.queue.length+sess.done.length;
   const prog=sess.done.length/Math.max(total,1)*100;
-  const isHard=sess.markHard.has(w.rowIndex)?'marking':(sess.unmarkHard.has(w.rowIndex)?'unmarking':(w.hard?'hard':'none'));
+  const isHard=w.hard?'hard':'none';
   if(settings.tts&&!sess.flipped){const u=new SpeechSynthesisUtterance(dir==='en-ru'?w.en:'');u.lang='en-US';u.rate=.9;window.speechSynthesis?.cancel();window.speechSynthesis?.speak(u);}
   const cachedSent=getSent(w.en);
   const pendingSent=settings.sentence&&engAIConfigured(ai)?sess.queue.concat(sess.again).filter(x=>!getSent(x.en)).length:0;
@@ -8498,16 +9019,16 @@ function FlashcardsTab({rawData,cfg,ai}){
         <div key={w.rowIndex + '_' + w._dir} style={ENG_CARD_S.card(sess.flipped)}>
           <div style={ENG_CARD_S.face}>
             <div className="absolute top-3 left-4 text-[10px] uppercase tracking-widest text-[var(--text-subtle)]">{dir==='en-ru'?'ENGLISH':'RUSSIAN'}</div>
-            <button onClick={e=>{e.stopPropagation();toggleHard();}} className={`absolute top-2 right-3 text-xs px-2.5 py-1 rounded-full border transition-all ${isHard==='hard'||isHard==='marking'?'border-amber-400 text-amber-500':'border-[var(--border)] text-[var(--text-subtle)]'}`}>
-              {isHard==='marking'?'★ +hard':isHard==='unmarking'?'✕ −hard':isHard==='hard'?'★ hard':'☆ hard'}
+            <button onClick={e=>{e.stopPropagation();toggleHard();}} className={`absolute top-2 right-3 text-xs px-2.5 py-1 rounded-full border transition-all ${isHard==='hard'?'border-amber-400 text-amber-500':'border-[var(--border)] text-[var(--text-subtle)]'}`}>
+              {isHard==='hard'?'★ Hard':'☆ Hard'}
             </button>
             <div className="font-display text-4xl sm:text-5xl font-bold leading-tight mb-3">{front}</div>
             <div className="absolute bottom-3 text-[10px] text-[var(--text-subtle)]">↻ click or press Space</div>
           </div>
           <div style={{...ENG_CARD_S.face,...ENG_CARD_S.back}}>
             <div className="absolute top-3 left-4 text-[10px] uppercase tracking-widest text-[var(--text-subtle)]">{dir==='en-ru'?'RUSSIAN':'ENGLISH'}</div>
-            <button onClick={e=>{e.stopPropagation();toggleHard();}} className={`absolute top-2 right-3 text-xs px-2.5 py-1 rounded-full border transition-all ${isHard==='hard'||isHard==='marking'?'border-amber-400 text-amber-500':'border-[var(--border)] text-[var(--text-subtle)]'}`}>
-              {isHard==='marking'?'★ +hard':isHard==='hard'?'★ hard':'☆ hard'}
+            <button onClick={e=>{e.stopPropagation();toggleHard();}} className={`absolute top-2 right-3 text-xs px-2.5 py-1 rounded-full border transition-all ${isHard==='hard'?'border-amber-400 text-amber-500':'border-[var(--border)] text-[var(--text-subtle)]'}`}>
+              {isHard==='hard'?'★ Hard':'☆ Hard'}
             </button>
             <div className="font-display text-4xl sm:text-5xl font-bold leading-tight mb-3">{back}</div>
             {settings.sentence&&(cachedSent
@@ -9283,65 +9804,187 @@ const engLegacyAI = () => ({
   ollamaModel: localStorage.getItem('ai_ollama_model') || 'llama3',
 });
 
-function EnglishView({ data, setData, embedded }){
-  // Источник правды — синхронизируемая БД (data.engConfig / data.engAI), как
-  // у всех остальных настроек: переживает чистку localStorage и доступна со
-  // всех устройств. localStorage остаётся только как источник миграции.
+
+// Словарь English → нормализованные записи engWords.items (источник правды в DB).
+const engNewWordId = () => 'ew_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+const engWordsToItems = (parsed) => (parsed || [])
+  .filter(w => w && String(w.en || '').trim())
+  .map(w => ({
+    id: w.id || (w.rowIndex != null ? `row-${w.rowIndex}` : engNewWordId()),
+    date: w.date ?? '',
+    en: String(w.en || '').trim(),
+    ru: String(w.ru || '').trim(),
+    syn: String(w.syn || '').trim(),
+    sentence: String(w.sentence || '').trim(),
+    showNew: !!w.showNew,
+    showTrans: !!w.showTrans,
+    showSent: !!w.showSent,
+    hard: !!w.hard,
+    rowIndex: w.rowIndex ?? null,
+    createdAt: w.createdAt || Date.now(),
+  }));
+
+// Для режимов учёбы (Flashcards и т.д.) — тот же shape, что раньше давал engParseRows.
+const engItemsToRaw = (items) => (items || []).map(w => ({
+  rowIndex: w.rowIndex ?? w.id,
+  date: w.date ?? '',
+  en: w.en || '',
+  ru: w.ru || '',
+  syn: w.syn || '',
+  sentence: w.sentence || '',
+  showNew: !!w.showNew,
+  showTrans: !!w.showTrans,
+  showSent: !!w.showSent,
+  hard: !!w.hard,
+  id: w.id,
+  createdAt: w.createdAt,
+}));
+
+function EnglishView({ data, setData, embedded, onDirtyChange }){
+  // Источник правды словаря — data.engWords (Word base в Jarvis).
+  // Google Sheets нужен только для разового импорта после деплоя.
   const cfg = data.engConfig || engLegacyCfg();
   const ai = data.engAI || engLegacyAI();
   const studyPlan = data.engStudyPlan || { text: '', updatedAt: 0 };
+  const wordReminder = data.engWordReminder || { enabled: false, time: '09:00', days: [1, 2, 3, 4, 5], count: 5, order: 'random', dateRange: '7', updatedAt: 0 };
+  const engWordsSnap = data.engWords || { items: [], updatedAt: 0, importedAt: 0 };
+  const engWordsItems = Array.isArray(engWordsSnap.items) ? engWordsSnap.items : [];
+  const engWordsCount = engWordsItems.length;
+  const importedAt = engWordsSnap.importedAt || 0;
+  const hasTgToken = !!(data.settings && data.settings.telegramToken);
   const mySentPrompt = typeof data.engMySentPrompt === 'string' ? data.engMySentPrompt : ENG_MYSENT_DEFAULT_PROMPT;
   const cipherPrompt = typeof data.engCipherPrompt === 'string' ? data.engCipherPrompt : ENG_CIPHER_DEFAULT_PROMPT;
   const storyPrompt = typeof data.engStoryPrompt === 'string' ? data.engStoryPrompt : ENG_STORY_DEFAULT_PROMPT;
-  const [rawData,setRawData]=useState(()=>{try{return JSON.parse(localStorage.getItem('eng_raw_data')||'null');}catch{return null;}});
-  const [loading,setLoading]=useState(false);
-  const initStatus=()=>{try{const d=localStorage.getItem('eng_raw_data');return d?{type:'ok',text:`${JSON.parse(d).length} words`}:{type:'',text:'Load from Google Sheets'};}catch{return{type:'',text:'Load from Google Sheets'};}};
-  const [status,setStatus]=useState(initStatus);
-  const [engTab,setEngTab]=useState('cards');
-  const [showCfg,setShowCfg]=useState(false);
-  const [showAI,setShowAI]=useState(false);
-  const [showPlan,setShowPlan]=useState(false);
 
-  const saveCfg=(c)=>setData(d=>({...d, engConfig:{...c, updatedAt: Date.now()}}));
-  const saveAI=(a)=>setData(d=>({...d, engAI:{...a, updatedAt: Date.now()}}));
-  const saveStudyPlan=(p)=>setData(d=>({...d, engStudyPlan:{ text: p.text || '', updatedAt: p.updatedAt || Date.now() }}));
-  const saveMySentPrompt=(p)=>setData(d=>({...d, engMySentPrompt: p}));
-  const saveCipherPrompt=(p)=>setData(d=>({...d, engCipherPrompt: p}));
-  const saveStoryPrompt=(p)=>setData(d=>({...d, engStoryPrompt: p}));
+  // Режимы учёбы читают тот же словарь, что и Word base.
+  const rawData = engWordsCount ? engItemsToRaw(engWordsItems) : null;
 
-  // One-time migration: keys entered before this fix only live in this
-  // browser's localStorage — move them into the DB so they stop getting lost.
-  useEffect(()=>{
-    if(!data.engConfig){
-      const legacy = engLegacyCfg();
-      if(legacy.apiKey || legacy.clientId) saveCfg(legacy);
-    }
-    if(!data.engAI){
-      const legacy = engLegacyAI();
-      if(legacy.anthropicKey || legacy.openaiKey) saveAI(legacy);
-    }
-  },[]);
+  const [importing, setImporting] = useState(false);
+  const [status, setStatus] = useState(() => (
+    engWordsCount
+      ? { type: 'ok', text: `${engWordsCount} words in Word base` }
+      : { type: '', text: 'Import words or add them in Word base' }
+  ));
+  useEffect(() => {
+    setStatus(engWordsCount
+      ? { type: 'ok', text: `${engWordsCount} words in Word base` }
+      : { type: '', text: 'Import words or add them in Word base' });
+  }, [engWordsCount]);
 
-  const loadSheets=async()=>{
-    if(!cfg.apiKey){setShowCfg(true);return;}
-    setLoading(true);setStatus({type:'loading',text:'Loading...'});
-    try{
-      const r=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent(cfg.sheetName)}?key=${cfg.apiKey}&dateTimeRenderOption=FORMATTED_STRING&valueRenderOption=UNFORMATTED_VALUE`);
-      if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error?.message||'HTTP '+r.status);}
-      const data=await r.json();
-      if((data.values||[]).length<2) throw new Error('No data in the sheet');
-      const parsed=engParseRows(data.values);
-      localStorage.setItem('eng_raw_data',JSON.stringify(parsed));localStorage.setItem('eng_raw_at',new Date().toISOString());
-      setRawData(parsed);setStatus({type:'ok',text:`Loaded ${parsed.length} words`});
-    }catch(e){setStatus({type:'err',text:'Error: '+e.message});}
-    finally{setLoading(false);}
+  const [engTab, setEngTab] = useState('wordbase');
+  const [showCfg, setShowCfg] = useState(false);
+  const [showAI, setShowAI] = useState(false);
+  const [showPlan, setShowPlan] = useState(false);
+  const [wordBaseDirty, setWordBaseDirty] = useState(false);
+  const wordBaseSavingRef = useRef(false);
+
+  useEffect(() => { onDirtyChange && onDirtyChange(wordBaseDirty); }, [wordBaseDirty]);
+  useEffect(() => () => { onDirtyChange && onDirtyChange(false); }, []);
+
+  const requestEngTab = (id) => {
+    if (id === engTab) return;
+    if (wordBaseSavingRef.current) { alert('Please wait until Word base finishes saving.'); return; }
+    if (engTab === 'wordbase' && wordBaseDirty
+      && !confirm('Word base has unsaved changes. Leave without saving?')) return;
+    setEngTab(id);
   };
 
-  useEffect(()=>{if(!cfg.apiKey)setTimeout(()=>setShowCfg(true),400);},[]);
+  const saveCfg = (c) => setData(d => ({ ...d, engConfig: { ...c, updatedAt: Date.now() } }));
+  const saveAI = (a) => setData(d => ({ ...d, engAI: { ...a, updatedAt: Date.now() } }));
+  const saveStudyPlan = (p) => setData(d => ({ ...d, engStudyPlan: { text: p.text || '', updatedAt: p.updatedAt || Date.now() } }));
+  const saveWordReminder = (rem) => setData(d => ({
+    ...d,
+    engWordReminder: {
+      enabled: !!rem.enabled,
+      time: rem.time || '09:00',
+      days: Array.isArray(rem.days) ? rem.days : [1, 2, 3, 4, 5],
+      count: Math.max(1, Math.min(50, parseInt(rem.count, 10) || 5)),
+      order: ['random', 'newest', 'oldest'].includes(rem.order) ? rem.order : 'random',
+      dateRange: ['7', '14', '30', 'all'].includes(String(rem.dateRange)) ? String(rem.dateRange) : '7',
+      updatedAt: Date.now(),
+    },
+  }));
+  const saveMySentPrompt = (p) => setData(d => ({ ...d, engMySentPrompt: p }));
+  const saveCipherPrompt = (p) => setData(d => ({ ...d, engCipherPrompt: p }));
+  const saveStoryPrompt = (p) => setData(d => ({ ...d, engStoryPrompt: p }));
 
-  // embedded: вложен в «Прочее» — там уже своя ширина/отступы/нижний зазор
-  // (см. HolidaysView с тем же пропом), дублировать их здесь не нужно.
-  return(
+  const writeEngWords = (items, { imported = false } = {}) => setData(d => {
+    const prev = d.engWords || { items: [], updatedAt: 0, importedAt: 0 };
+    return {
+      ...d,
+      engWords: {
+        items,
+        updatedAt: Date.now(),
+        importedAt: imported ? Date.now() : (prev.importedAt || 0),
+      },
+    };
+  });
+
+  const saveWordBase = (items) => writeEngWords(items, { imported: false });
+
+  // Immediate hard toggle from Word base or exercise modes → engWords DB.
+  const toggleWordHard = (id, hard) => {
+    const items = engWordsItems.map(w => {
+      const key = w.id != null ? w.id : w.rowIndex;
+      if (key === id || w.id === id) return { ...w, hard: !!hard };
+      return w;
+    });
+    writeEngWords(items);
+  };
+
+  // Разовый импорт из Google Sheets → engWords. Не используется как постоянный источник.
+  const importFromSheets = async () => {
+    if (!cfg.apiKey) { setShowCfg(true); throw new Error('Set API Key in Settings for one-time import'); }
+    if (!cfg.sheetId || !cfg.sheetName) { setShowCfg(true); throw new Error('Set Spreadsheet ID and Sheet name'); }
+    setImporting(true);
+    setStatus({ type: 'loading', text: 'Importing from Google Sheets…' });
+    try {
+      const r = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent(cfg.sheetName)}?key=${cfg.apiKey}&dateTimeRenderOption=FORMATTED_STRING&valueRenderOption=UNFORMATTED_VALUE`
+      );
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.error?.message || 'HTTP ' + r.status);
+      }
+      const sheetData = await r.json();
+      if ((sheetData.values || []).length < 2) throw new Error('No data in the sheet');
+      const parsed = engParseRows(sheetData.values);
+      const items = engWordsToItems(parsed);
+      writeEngWords(items, { imported: true });
+      // Старый кэш больше не источник правды — чистим, чтобы не путать.
+      try { localStorage.removeItem('eng_raw_data'); localStorage.removeItem('eng_raw_at'); } catch (e) {}
+      setStatus({ type: 'ok', text: `${items.length} words in Word base` });
+      return items.length;
+    } catch (e) {
+      setStatus({ type: 'err', text: 'Import: ' + e.message });
+      throw e;
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  // Миграция ключей + разовый подъём старого localStorage-кэша в engWords (если БД пуста).
+  useEffect(() => {
+    if (!data.engConfig) {
+      const legacy = engLegacyCfg();
+      if (legacy.apiKey || legacy.clientId) saveCfg(legacy);
+    }
+    if (!data.engAI) {
+      const legacy = engLegacyAI();
+      if (legacy.anthropicKey || legacy.openaiKey) saveAI(legacy);
+    }
+    if (engWordsCount > 0) return;
+    try {
+      const cached = JSON.parse(localStorage.getItem('eng_raw_data') || 'null');
+      if (cached && cached.length) {
+        writeEngWords(engWordsToItems(cached), { imported: true });
+        localStorage.removeItem('eng_raw_data');
+        localStorage.removeItem('eng_raw_at');
+      }
+    } catch (e) {}
+  }, []);
+
+  return (
     <div className={embedded ? '' : 'pb-24 md:pb-8'}>
       <div className={embedded ? '' : 'max-w-4xl mx-auto px-4 sm:px-6'}>
         <div className="pt-5 pb-4 border-b border-[var(--border)] flex items-center justify-between gap-3 flex-wrap">
@@ -9353,32 +9996,66 @@ function EnglishView({ data, setData, embedded }){
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            <button onClick={()=>setShowPlan(true)} className="btn-secondary text-sm py-2 px-3">Study Plan</button>
-            <button onClick={()=>setShowAI(true)} className="btn-secondary text-sm py-2 px-3">🤖 {ai.provider==='anthropic'?'Anthropic':ai.provider==='openai'?'OpenAI':'Ollama'}</button>
-            <button onClick={()=>setShowCfg(true)} className="btn-secondary text-sm py-2 px-3"><Icon name="settings" size={15}/></button>
-            <button onClick={loadSheets} disabled={loading} className="btn-primary text-sm py-2 px-4">{loading?'⏳':'↻'} Load</button>
+            <button onClick={() => setShowPlan(true)} className="btn-secondary text-sm py-2 px-3">Study Plan</button>
+            <button onClick={() => setShowAI(true)} className="btn-secondary text-sm py-2 px-3">🤖 {ai.provider==='anthropic'?'Anthropic':ai.provider==='openai'?'OpenAI':'Ollama'}</button>
+            <button onClick={() => setShowCfg(true)} className="btn-secondary text-sm py-2 px-3"><Icon name="settings" size={15}/></button>
+            {!importedAt && (
+              <button onClick={() => importFromSheets().catch(() => {})} disabled={importing} className="btn-primary text-sm py-2 px-4">
+                {importing ? '⏳' : '📥'} Импорт
+              </button>
+            )}
           </div>
         </div>
-        <div className="flex gap-2 py-3 border-b border-[var(--border)]">
-          {[['cards','🃏 Flashcards'],['fill','✍ Fill in the blank'],['mysentence','📝 My Sentence'],['cipher','🔐 Cipher'],['story','📖 Story'],['typing','⌨ Typing']].map(([id,l])=>(
-            <button key={id} onClick={()=>setEngTab(id)} className={`px-3 py-2 rounded-xl text-sm font-medium transition-all ${engTab===id?'bg-[var(--text)] text-white':'text-[var(--text-muted)] hover:text-[var(--text)]'}`}>{l}</button>
+        <div className="flex gap-2 py-3 border-b border-[var(--border)] overflow-x-auto">
+          <button
+            onClick={() => requestEngTab('wordbase')}
+            className={`px-3.5 py-2 rounded-xl text-sm font-semibold transition-all flex-shrink-0 border ${
+              engTab==='wordbase'
+                ? 'bg-teal-700 text-white border-teal-700 shadow-sm'
+                : 'bg-teal-50 text-teal-800 border-teal-300 hover:bg-teal-100'
+            }`}
+          >📚 Word base</button>
+          {[['cards','🃏 Flashcards'],['fill','✍ Fill in the blank'],['mysentence','📝 My Sentence'],['cipher','🔐 Cipher'],['story','📖 Story'],['typing','⌨ Typing']].map(([id,l]) => (
+            <button key={id} onClick={() => requestEngTab(id)} className={`px-3 py-2 rounded-xl text-sm font-medium transition-all flex-shrink-0 ${engTab===id?'bg-[var(--text)] text-white':'text-[var(--text-muted)] hover:text-[var(--text)]'}`}>{l}</button>
           ))}
         </div>
         <div className="pt-6">
-          {engTab==='cards'&&<FlashcardsTab rawData={rawData} cfg={cfg} ai={ai}/>}
-          {engTab==='fill'&&<FillTab rawData={rawData} ai={ai}/>}
-          {engTab==='mysentence'&&<MySentenceTab rawData={rawData} ai={ai} prompt={mySentPrompt} onSavePrompt={saveMySentPrompt}/>}
-          {engTab==='cipher'&&<CipherTab rawData={rawData} ai={ai} prompt={cipherPrompt} onSavePrompt={saveCipherPrompt}/>}
-          {engTab==='story'&&<StoryTab rawData={rawData} ai={ai} prompt={storyPrompt} onSavePrompt={saveStoryPrompt}/>}
-          {engTab==='typing'&&<TypingTab rawData={rawData} ai={ai}/>}
+          {engTab==='wordbase' && (
+            <WordBaseTab
+              words={engWordsItems}
+              onSaveWords={saveWordBase}
+              onToggleHard={toggleWordHard}
+              onImportSheets={importFromSheets}
+              importedAt={importedAt}
+              importing={importing}
+              onDirtyChange={setWordBaseDirty}
+              savingRef={wordBaseSavingRef}
+            />
+          )}
+          {engTab==='cards' && <FlashcardsTab rawData={rawData} cfg={cfg} ai={ai} onToggleHard={toggleWordHard}/>}
+          {engTab==='fill' && <FillTab rawData={rawData} ai={ai}/>}
+          {engTab==='mysentence' && <MySentenceTab rawData={rawData} ai={ai} prompt={mySentPrompt} onSavePrompt={saveMySentPrompt}/>}
+          {engTab==='cipher' && <CipherTab rawData={rawData} ai={ai} prompt={cipherPrompt} onSavePrompt={saveCipherPrompt}/>}
+          {engTab==='story' && <StoryTab rawData={rawData} ai={ai} prompt={storyPrompt} onSavePrompt={saveStoryPrompt}/>}
+          {engTab==='typing' && <TypingTab rawData={rawData} ai={ai}/>}
         </div>
       </div>
-      {showCfg&&<EngCfgModal cfg={cfg} onSave={(c)=>{saveCfg(c);setShowCfg(false);}} onClose={()=>setShowCfg(false)}/>}
-      {showAI&&<EngAIModal ai={ai} onSave={(a)=>{saveAI(a);setShowAI(false);}} onClose={()=>setShowAI(false)}/>}
-      {showPlan&&<EngStudyPlanModal plan={studyPlan} onSave={(p)=>{saveStudyPlan(p);setShowPlan(false);}} onClose={()=>setShowPlan(false)}/>}
+      {showCfg && (
+        <EngCfgModal
+          cfg={cfg}
+          reminder={wordReminder}
+          hasToken={hasTgToken}
+          wordsCount={engWordsCount}
+          onSave={(payload) => { saveCfg(payload.cfg); saveWordReminder(payload.reminder); setShowCfg(false); }}
+          onClose={() => setShowCfg(false)}
+        />
+      )}
+      {showAI && <EngAIModal ai={ai} onSave={(a) => { saveAI(a); setShowAI(false); }} onClose={() => setShowAI(false)}/>}
+      {showPlan && <EngStudyPlanModal plan={studyPlan} onSave={(p) => { saveStudyPlan(p); setShowPlan(false); }} onClose={() => setShowPlan(false)}/>}
     </div>
   );
 }
+
 
 // ============== VOICE ASSISTANT ==============
 
@@ -9976,7 +10653,7 @@ const APPLE_AGENT_TOOLS = [
   },
   {
     name: 'calendar_create_event',
-    description: 'Создать событие в Apple Календаре. ТОЛЬКО после явного согласия пользователя: сначала опиши, что собираешься создать, и спроси подтверждение.',
+    description: 'Создать событие в Apple Календаре. ТОЛЬКО после явного согласия. Если просят событие и напомнить о нём — alarmMinutesBefore (0 = в момент старта). Это оповещение о событии, не Apple Напоминание. «Напомни купить X» — reminders_create.',
     input_schema: {
       type: 'object',
       properties: {
@@ -9987,6 +10664,7 @@ const APPLE_AGENT_TOOLS = [
         location: { type: 'string' },
         notes: { type: 'string' },
         calendar: { type: 'string' },
+        alarmMinutesBefore: { type: 'integer', description: 'Оповещение за N минут до начала. 0 — в момент старта. Не передавай, если не нужно.' },
         confirmed: { type: 'boolean', description: 'true только после явного согласия пользователя.' },
       },
       required: ['title', 'start'],
@@ -10028,7 +10706,7 @@ const APPLE_AGENT_TOOLS = [
   },
   {
     name: 'reminders_create',
-    description: 'Создать напоминание Apple. Требует подтверждения пользователя.',
+    description: 'Создать напоминание Apple (кружок в Напоминаниях). Требует подтверждения. Не подменяет напоминание событием календаря. Если напоминания не подключены — вернёт error; скажи пользователю настроить Shortcuts.',
     input_schema: {
       type: 'object',
       properties: {
@@ -10316,6 +10994,19 @@ const VOICE_AGENT_TOOLS = [
       required: ['planId', 'ingredientId'],
     },
   },
+  {
+    name: 'get_weather',
+    description: 'Погода для города. Раздел «Погода» — это НЕ данные проекта (не через get_data), а живой внешний запрос. Без date/date_from — текущая погода и краткий прогноз на 3 дня. С date (конкретный день) или date_from/date_to (диапазон, например «на следующей неделе») — погода на эти даты, доступно на 16 дней вперёд от сегодня. Даты вычисляй сам от даты СЕГОДНЯ из системного промпта.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        city: { type: 'string', description: 'Название города, например «Москва». Необязательно — по умолчанию город из настроек.' },
+        date: { type: 'string', description: 'Конкретная дата YYYY-MM-DD, например для «в субботу» или «22 сентября».' },
+        date_from: { type: 'string', description: 'Начало диапазона дат YYYY-MM-DD, например для «на следующей неделе».' },
+        date_to: { type: 'string', description: 'Конец диапазона дат YYYY-MM-DD.' },
+      },
+    },
+  },
   ...APPLE_AGENT_TOOLS,
 ];
 
@@ -10328,11 +11019,16 @@ function buildVoiceAgentSystemPrompt(data) {
   const domainList = Object.entries(VOICE_DATA_DOMAINS).map(([k, v]) => `  • ${k} — ${v.label}`).join('\n');
   const navList = Object.entries(VOICE_NAV_LABELS).map(([k, v]) => `  • ${k} — ${v}`).join('\n');
   const writeList = Object.entries(WRITE_REGISTRY).map(([k, v]) => `  • ${k} — ${v.label}${v.requireConfirm ? ' (финансовое — подтверждение)' : ''}`).join('\n');
-  const todayStr = dateToLocalStr(new Date());
+  const now = new Date();
+  const todayStr = dateToLocalStr(now);
+  // День недели считаем сами и подсовываем готовым — модели плохо даётся
+  // счёт дней недели по дате в уме, отсюда были неверные ответы вида
+  // «22 сентября» + «сегодня понедельник» (это был вторник).
+  const weekdayStr = WEEKDAY_FULL[now.getDay()].toLowerCase();
 
   return `Ты ассистент приложения Jarvis. Отвечай кратко и по-русски, разговорным языком.
 
-СЕГОДНЯ: ${todayStr}
+СЕГОДНЯ: ${todayStr}, ${weekdayStr}. Используй эту дату и день недели как факт — не вычисляй день недели сам по числу, он уже дан.
 ${about ? `
 ЧТО ИЗВЕСТНО О ПОЛЬЗОВАТЕЛЕ (раздел «База данных», он сам это записал — считай фактами и учитывай в ответах):
 ${about}
@@ -10355,7 +11051,9 @@ ${writeList}
 
 6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и готового веса), cooking_plan_delete_ingredient.
 
-7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без спроса. ЛЮБАЯ ЗАПИСЬ — добавить, изменить, удалить — только после явного согласия пользователя: сначала коротко скажи, что именно запишешь (название, дату и время), и спроси подтверждение, а после согласия повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места: «в календарь» и «напомни» — это Apple, «в планировщик» — раздел приложения.
+7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без спроса. ЛЮБАЯ ЗАПИСЬ — добавить, изменить, удалить — только после явного согласия пользователя: сначала коротко скажи, что именно запишешь (название, дату и время), и спроси подтверждение, а после согласия повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места. «В календарь» / «создай событие» → calendar_create_event; если ещё и напомнить о событии — alarmMinutesBefore. «Напомни …» → только reminders_create (настоящее Apple Напоминание), никогда не подменяй его событием календаря. Если queued:true — скажи, что попадёт в Напоминания после синхронизации Быстрой команды, НЕ говори «создал». Если error — честно скажи, что не удалось, и почему.
+
+8. get_weather(city?, date?, date_from?, date_to?) — погода для города. Раздел «Погода» тоже НЕ данные приложения (внешний сервис), а живой запрос — используй этот инструмент, а не navigate/get_data. Город можно не указывать — тогда берётся сохранённый в настройках (Погода → город). Без date — текущая погода и 3 дня вперёд. Для конкретного дня или диапазона («в субботу», «на следующей неделе») передай date или date_from/date_to в формате YYYY-MM-DD — вычисли даты сам от СЕГОДНЯ (прогноз доступен на 16 дней вперёд).
 
 ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
@@ -10368,12 +11066,93 @@ ${writeList}
 - Никогда не удаляй и не меняй финансовые данные без подтверждения, даже если пользователь говорит это как бы между делом.`;
 }
 
+// Погода — не часть данных проекта (пользователь её только смотрит, ничего
+// не хранит), поэтому не домен get_data, а отдельный живой запрос: геокодинг
+// города через Nominatim + прогноз через Open-Meteo, тот же API, что и у
+// самой вкладки «Погода» (WeatherView/MiniWeatherCard). Всегда тянем полные
+// 16 дней вперёд (максимум бесплатного прогноза Open-Meteo) одним запросом —
+// «на следующей неделе» и подобное просто фильтруются из того же ответа, без
+// второго похода в сеть.
+async function fetchAssistantWeather(cityInput, settings, opts) {
+  opts = opts || {};
+  const city = (cityInput || '').trim() || ((settings || {}).weatherCity || '').trim();
+  if (!city) return { error: 'Не указан город, и город не сохранён в настройках (Погода → город)' };
+  try {
+    const geoRes = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(city)}&format=json&limit=1`,
+      { headers: { 'Accept-Language': 'ru' } }
+    );
+    const results = geoRes.ok ? await geoRes.json() : [];
+    if (!results.length) return { error: `Город «${city}» не найден` };
+    const lat = parseFloat(results[0].lat);
+    const lon = parseFloat(results[0].lon);
+    const name = (results[0].display_name || city).split(',')[0].trim();
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+      `&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m` +
+      `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
+      `&timezone=auto&forecast_days=16`;
+    const res = await fetch(url);
+    if (!res.ok) return { error: 'Не удалось загрузить погоду' };
+    const w = await res.json();
+    const cur = w.current || {};
+    const daily = w.daily || {};
+    const days = daily.time || [];
+    const wc = daily.weather_code || [];
+    const tmin = daily.temperature_2m_min || [];
+    const tmax = daily.temperature_2m_max || [];
+    const precip = daily.precipitation_probability_max || [];
+    const dayEntry = (i) => ({
+      date: days[i],
+      condition: getWeatherInfo(wc[i]).label.toLowerCase(),
+      min_c: tmin[i],
+      max_c: tmax[i],
+      precip_probability_percent: precip[i],
+    });
+
+    // Конкретная дата или диапазон — «в субботу», «на следующей неделе»:
+    // модель сама вычисляет YYYY-MM-DD от даты СЕГОДНЯ из системного промпта.
+    if (opts.date || opts.date_from || opts.date_to) {
+      const from = opts.date_from || opts.date || opts.date_to;
+      const to = opts.date_to || opts.date || opts.date_from;
+      const wanted = opts.date ? [opts.date] : days.filter(d => d >= from && d <= to);
+      const requested = wanted.map(d => {
+        const i = days.indexOf(d);
+        return i === -1
+          ? { date: d, error: 'Нет данных на эту дату — прогноз доступен только на ближайшие 16 дней' }
+          : dayEntry(i);
+      });
+      return { city: name, requested };
+    }
+
+    const forecast = [];
+    for (let i = 0; i < Math.min(3, days.length); i++) forecast.push(dayEntry(i));
+    return {
+      city: name,
+      current: {
+        condition: getWeatherInfo(cur.weather_code).label.toLowerCase(),
+        temperature_c: cur.temperature_2m,
+        feels_like_c: cur.apparent_temperature,
+        humidity_percent: cur.relative_humidity_2m,
+        wind_kmh: cur.wind_speed_10m,
+      },
+      forecast,
+    };
+  } catch (e) {
+    return { error: `Ошибка запроса погоды: ${e.message}` };
+  }
+}
+
 // Асинхронная: инструменты Apple ходят на сервер (iCloud), всё остальное
 // считается на месте и возвращается сразу.
 async function executeVoiceTool(name, input, nav, data) {
   input = input || {};
   const noop = (output) => ({ output, data });
   if (APPLE_TOOL_NAMES.has(name)) return noop(await executeAppleTool(name, input));
+  if (name === 'get_weather') {
+    return noop(await fetchAssistantWeather(input.city, (data || {}).settings, {
+      date: input.date, date_from: input.date_from, date_to: input.date_to,
+    }));
+  }
   const applied = (result, output) => {
     if (result.error) return noop({ error: result.error });
     nav.setData(result.data);
@@ -11338,7 +12117,7 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
         </div>
       )}
 
-      <div className="fixed bottom-24 right-4 z-30 flex flex-col items-end gap-2 md:bottom-8">
+      <div className="fixed bottom-24 right-4 z-30 flex flex-col items-end gap-2 md:bottom-8 gpu-fixed">
         {/* Постоянная прослушка «Джарвис, ...» — не отдельная кнопка, а долгое
             нажатие на эту же: кольцо вокруг неё показывает состояние режима. */}
         <div className="relative">
@@ -24006,10 +24785,11 @@ const campingNormPacking = (p) => {
 };
 
 function PlannerCampingView({ data, setData }) {
-  const [inner, setInner] = useState('checklist'); // catalog | checklist
+  const [inner, setInner] = useState('checklist'); // catalog | places | checklist
   const tabs = [
     { id: 'checklist', label: 'Чек лист'   },
     { id: 'catalog',   label: 'Справочник' },
+    { id: 'places',    label: 'Места'      },
   ];
   return (
     <div>
@@ -24027,6 +24807,7 @@ function PlannerCampingView({ data, setData }) {
         ))}
       </div>
       {inner === 'catalog'   && <CampingCatalogView data={data} setData={setData} />}
+      {inner === 'places'    && <CampingPlacesView data={data} setData={setData} />}
       {inner === 'checklist' && <CampingChecklistView data={data} setData={setData} />}
     </div>
   );
@@ -24439,6 +25220,243 @@ function CampingItemForm({ initial, categories, ensureCategory, onSave, onCancel
             В сумку можно будет класть другие вещи при сборах в поездку.
           </div>
         )}
+      </div>
+
+      <div className="flex gap-3">
+        <button onClick={requestClose} className="btn-secondary flex-1">Отмена</button>
+        <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Места ──────────────────────────────────────────────────────────────────
+// Список мест, куда хочется съездить: название, адрес, координаты, описание,
+// плюс отметка «был(а)» с датой (по умолчанию — сегодня, но можно изменить,
+// например указать прошлогоднюю поездку).
+function CampingPlacesView({ data, setData }) {
+  const [editing, setEditing] = useState(null); // null | place | 'new'
+  const places = data.campingPlaces || [];
+
+  const sorted = useMemo(() => [...places].sort((a, b) => {
+    if (!!a.visited !== !!b.visited) return a.visited ? 1 : -1;
+    return (a.name || '').localeCompare(b.name || '', 'ru');
+  }), [places]);
+
+  const savePlace = (place) => {
+    const entry = {
+      ...place,
+      name: place.name.trim(),
+      address: (place.address || '').trim(),
+      coords: (place.coords || '').trim(),
+      description: (place.description || '').trim(),
+    };
+    if (!entry.name) return alert('Введите название');
+    setData(d => {
+      const list = d.campingPlaces || [];
+      const exists = list.some(x => x.id === entry.id);
+      return {
+        ...d,
+        campingPlaces: exists ? list.map(x => x.id === entry.id ? entry : x) : [...list, entry],
+      };
+    });
+    setEditing(null);
+  };
+
+  const removePlace = (place) => {
+    if (!confirm(`Удалить «${place.name}» из мест?`)) return;
+    setData(d => ({
+      ...d,
+      campingPlaces: (d.campingPlaces || []).filter(x => x.id !== place.id),
+      deletedIds: withDeletedId(d, 'campingPlaces', place.id),
+    }));
+  };
+
+  const setVisited = (place, patch) => {
+    setData(d => ({
+      ...d,
+      campingPlaces: (d.campingPlaces || []).map(p => p.id === place.id ? { ...p, ...patch } : p),
+    }));
+  };
+
+  if (editing) {
+    return (
+      <CampingPlaceForm
+        initial={editing === 'new'
+          ? { id: crypto.randomUUID(), name: '', address: '', coords: '', description: '', visited: false, visitedDate: '', createdAt: Date.now() }
+          : editing}
+        onSave={savePlace}
+        onCancel={() => setEditing(null)}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <button
+        onClick={() => setEditing('new')}
+        className="btn-primary w-full flex items-center justify-center gap-2 mb-4"
+      >
+        <Icon name="plus" size={18} /> Добавить место
+      </button>
+
+      {sorted.length === 0 ? (
+        <EmptyState title="Пока нет мест" text="Добавьте места, куда хотите съездить" />
+      ) : (
+        <div className="space-y-2">
+          {sorted.map(p => (
+            <CampingPlaceRow
+              key={p.id}
+              place={p}
+              onEdit={() => setEditing(p)}
+              onRemove={() => removePlace(p)}
+              onMarkVisited={date => setVisited(p, { visited: true, visitedDate: date })}
+              onUnmarkVisited={() => setVisited(p, { visited: false, visitedDate: '' })}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CampingPlaceRow({ place, onEdit, onRemove, onMarkVisited, onUnmarkVisited }) {
+  const [editingDate, setEditingDate] = useState(false);
+  const [dateVal, setDateVal] = useState(place.visitedDate || getTodayKey());
+
+  const startEditDate = () => {
+    setDateVal(place.visitedDate || getTodayKey());
+    setEditingDate(true);
+  };
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-3.5">
+      <div className="flex items-center gap-3">
+        <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${
+          place.visited ? 'bg-[var(--text)] text-white' : 'bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]'
+        }`}>
+          <Icon name="mapPin" size={16} />
+        </div>
+        <button onClick={onEdit} className="flex-1 min-w-0 text-left">
+          <div className="font-medium truncate">{place.name}</div>
+          {(place.address || place.coords) && (
+            <div className="text-xs text-[var(--text-subtle)] truncate">
+              {[place.address, place.coords].filter(Boolean).join(' · ')}
+            </div>
+          )}
+        </button>
+        <div className="flex gap-1 flex-shrink-0">
+          <button onClick={onEdit} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+            <Icon name="edit" size={15} />
+          </button>
+          <button onClick={onRemove} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500">
+            <Icon name="trash" size={15} />
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-2.5 pt-2.5 border-t border-[var(--border)]">
+        {editingDate ? (
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={dateVal}
+              max={getTodayKey()}
+              onChange={e => setDateVal(e.target.value)}
+              className="!py-1.5 !text-sm flex-1"
+              autoFocus
+            />
+            <button
+              onClick={() => { onMarkVisited(dateVal || getTodayKey()); setEditingDate(false); }}
+              className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Сохранить"
+            ><Icon name="check" size={15} /></button>
+            <button
+              onClick={() => setEditingDate(false)}
+              className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Отмена"
+            ><Icon name="x" size={15} /></button>
+          </div>
+        ) : place.visited ? (
+          <div className="flex items-center gap-2 text-sm">
+            <Icon name="check" size={14} />
+            <button onClick={startEditDate} className="text-[var(--text-muted)] hover:text-[var(--text)]">
+              Был{place.visitedDate ? `: ${plannerFmtDate(place.visitedDate)}` : ''}
+            </button>
+            <button
+              onClick={onUnmarkVisited}
+              className="ml-auto text-xs text-[var(--text-subtle)] hover:text-[var(--text)]"
+            >Отменить отметку</button>
+          </div>
+        ) : (
+          <button
+            onClick={() => onMarkVisited(getTodayKey())}
+            className="flex items-center gap-1.5 text-sm text-[var(--text-muted)] hover:text-[var(--text)]"
+          >
+            <Icon name="check" size={14} /> Отметить, что был
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CampingPlaceForm({ initial, onSave, onCancel }) {
+  const [f, setF] = useState({
+    name: initial.name || '',
+    address: initial.address || '',
+    coords: initial.coords || '',
+    description: initial.description || '',
+  });
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const dirty = useRef(false);
+
+  const requestClose = () => {
+    if (dirty.current && !confirm('Закрыть без сохранения? Изменения будут потеряны.')) return;
+    onCancel();
+  };
+
+  const submit = () => {
+    if (!f.name.trim()) return alert('Введите название');
+    onSave({ ...initial, ...f });
+  };
+
+  return (
+    <div className="fade-in space-y-5">
+      <div className="flex items-center gap-3">
+        <button onClick={requestClose} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]" aria-label="Закрыть">
+          <Icon name="x" size={20} />
+        </button>
+        <h2 className="font-display text-2xl">{initial.name ? 'Место' : 'Новое место'}</h2>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div>
+          <label>Название</label>
+          <input
+            value={f.name}
+            onChange={e => { dirty.current = true; set('name', e.target.value); }}
+            placeholder="Например, база отдыха «Сосны»"
+            autoFocus
+          />
+        </div>
+        <div>
+          <label>Адрес</label>
+          <input value={f.address} onChange={e => { dirty.current = true; set('address', e.target.value); }} placeholder="Город, улица…" />
+        </div>
+        <div>
+          <label>Координаты</label>
+          <input value={f.coords} onChange={e => { dirty.current = true; set('coords', e.target.value); }} placeholder="55.7558, 37.6176" />
+        </div>
+        <div>
+          <label>Описание</label>
+          <textarea
+            value={f.description}
+            onChange={e => { dirty.current = true; set('description', e.target.value); }}
+            rows={3}
+            placeholder="Заметки о месте"
+            className="w-full"
+            style={{ resize: 'vertical' }}
+          />
+        </div>
       </div>
 
       <div className="flex gap-3">
@@ -30825,29 +31843,260 @@ const MISC_APPS = [
   { id: 'settings', label: 'Настройки',  icon: 'settings',   color: '#4b5563' },
 ];
 
-function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voiceFocus, onVoiceFocusConsumed }) {
+const MISC_GRID_COLS = 4;
+// Мин. высота ячейки (иконка 64 + подпись + зазор) — сколько рядов влезет
+// на экран. Ниже — сетка скроллится, выше — ряды растягиваются.
+const MISC_CELL_MIN_PX = 96;
+// Жёсткий потолок рядов: иначе ResizeObserver по растущему контенту
+// разгоняет slots до сотен тысяч ячеек и раздувает /api/data.
+const MISC_MAX_ROWS = 8;
+
+const miscAppById = () => Object.fromEntries(MISC_APPS.map(a => [a.id, a]));
+
+// Раскладка «Прочего»: slots длины cols*rows, элемент — id или null.
+// Старый формат { ids } мигрирует в плотную раскладку с начала сетки.
+// Новые приложения (которых ещё нет в slots) садятся в первые свободные
+// ячейки; неизвестные id выкидываем. preferredRows — сколько рядов нужно
+// под текущую высоту экрана (пустые ячейки заполняют остальную площадь).
+const resolveMiscLayout = (data, preferredRows = 3) => {
+  const byId = miscAppById();
+  const raw = (data && data.miscAppsOrder) || {};
+  const cols = MISC_GRID_COLS;
+  const rowCap = Math.min(MISC_MAX_ROWS, Math.max(3, preferredRows | 0));
+  let slots;
+  if (Array.isArray(raw.slots)) {
+    slots = raw.slots.map(id => (id && byId[id] ? id : null));
+  } else if (Array.isArray(raw.ids) && raw.ids.length) {
+    slots = raw.ids.filter(id => byId[id]);
+  } else {
+    slots = MISC_APPS.map(a => a.id);
+  }
+  // Дедуп: оставляем первое вхождение, остальные → пусто.
+  const seen = new Set();
+  slots = slots.map(id => {
+    if (!id) return null;
+    if (seen.has(id)) return null;
+    seen.add(id);
+    return id;
+  });
+  // Если slots раздуты багом (сотни тысяч null) — оставляем только префикс
+  // до последней занятой ячейки в пределах потолка; приложения за потолком
+  // потом сядут в свободные ячейки.
+  const hardMax = cols * MISC_MAX_ROWS;
+  if (slots.length > hardMax) {
+    const kept = slots.slice(0, hardMax);
+    const keptSeen = new Set(kept.filter(Boolean));
+    slots.forEach((id, i) => {
+      if (i < hardMax || !id || keptSeen.has(id)) return;
+      // приложение оказалось за потолком — вернём в первую дырку
+      const empty = kept.findIndex(x => x == null);
+      if (empty >= 0) { kept[empty] = id; keptSeen.add(id); }
+    });
+    slots = kept;
+    seen.clear();
+    slots.forEach(id => { if (id) seen.add(id); });
+  }
+  MISC_APPS.forEach(a => {
+    if (seen.has(a.id)) return;
+    const empty = slots.findIndex(x => x == null);
+    if (empty >= 0) slots[empty] = a.id;
+    else if (slots.length < hardMax) slots.push(a.id);
+    seen.add(a.id);
+  });
+  let lastOcc = -1;
+  slots.forEach((id, i) => { if (id) lastOcc = i; });
+  const minRows = Math.min(
+    MISC_MAX_ROWS,
+    Math.max(
+      Math.ceil(MISC_APPS.length / cols),
+      Math.floor(Math.max(lastOcc, 0) / cols) + 1,
+      rowCap,
+      1
+    )
+  );
+  const need = minRows * cols;
+  if (slots.length < need) {
+    while (slots.length < need) slots.push(null);
+  } else {
+    slots = slots.slice(0, need);
+  }
+  return { slots, cols, rows: minRows };
+};
+
+function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voiceFocus, onVoiceFocusConsumed, engWordBaseDirty, onEngWordBaseDirty }) {
   const app = MISC_APPS.find(a => a.id === sub);
+  const [editMode, setEditMode] = useState(false);
+  const [draggingId, setDraggingId] = useState(null);
+  const [dropSlot, setDropSlot] = useState(null);
+  const [preferredRows, setPreferredRows] = useState(3);
+  const dragRef = useRef(null);
+  const gridWrapRef = useRef(null);
+  const byId = miscAppById();
+  const layout = resolveMiscLayout(data, preferredRows);
+
+  // Сколько рядов влезает в окно — считаем от viewport, НЕ от высоты
+  // контейнера: иначе сетка растёт → ResizeObserver видит больше → ещё
+  // ряды → slots раздуваются без конца.
+  useEffect(() => {
+    if (app) return undefined;
+    const measure = () => {
+      const navApprox = 5.75 * 16;
+      const headerApprox = 64;
+      const avail = Math.max(0, (window.innerHeight || 0) - navApprox - headerApprox);
+      const next = Math.min(MISC_MAX_ROWS, Math.max(3, Math.floor(avail / MISC_CELL_MIN_PX)));
+      setPreferredRows(prev => (prev === next ? prev : next));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [app]);
+
+  // Разовое лечение раздутого miscAppsOrder (после бага с ResizeObserver).
+  const slotsLen = (data && data.miscAppsOrder && Array.isArray(data.miscAppsOrder.slots))
+    ? data.miscAppsOrder.slots.length : 0;
+  useEffect(() => {
+    if (slotsLen <= MISC_GRID_COLS * MISC_MAX_ROWS) return;
+    setData(d => {
+      const cur = d.miscAppsOrder;
+      if (!cur || !Array.isArray(cur.slots) || cur.slots.length <= MISC_GRID_COLS * MISC_MAX_ROWS) return d;
+      const fixed = resolveMiscLayout(d, preferredRows);
+      return {
+        ...d,
+        miscAppsOrder: { slots: fixed.slots, cols: fixed.cols, updatedAt: Date.now() },
+      };
+    });
+  }, [slotsLen, preferredRows, setData]);
+
+  const moveMiscToSlot = (fromId, toSlot) => {
+    if (!fromId || toSlot == null || toSlot < 0) return;
+    const maxSlot = MISC_GRID_COLS * MISC_MAX_ROWS - 1;
+    if (toSlot > maxSlot) return;
+    setData(d => {
+      const cur = resolveMiscLayout(d, preferredRows);
+      const slots = [...cur.slots];
+      while (toSlot >= slots.length && slots.length <= maxSlot) slots.push(null);
+      if (toSlot >= slots.length) return d;
+      const from = slots.indexOf(fromId);
+      if (from < 0 || from === toSlot) return d;
+      const tmp = slots[toSlot];
+      slots[toSlot] = fromId;
+      slots[from] = tmp;
+      return {
+        ...d,
+        miscAppsOrder: {
+          slots,
+          cols: cur.cols,
+          updatedAt: Date.now(),
+        },
+      };
+    });
+  };
+
+  const onAppPointerDown = (e, id) => {
+    if (!editMode) return;
+    if (e.button != null && e.button !== 0) return;
+    e.preventDefault();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+    dragRef.current = { id, startX: e.clientX, startY: e.clientY, moved: false };
+    setDraggingId(id);
+    setDropSlot(null);
+  };
+
+  const onAppPointerMove = (e) => {
+    const drag = dragRef.current;
+    if (!drag || !editMode) return;
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    if (!drag.moved && Math.hypot(dx, dy) < 10) return;
+    drag.moved = true;
+    const prev = e.currentTarget.style.pointerEvents;
+    e.currentTarget.style.pointerEvents = 'none';
+    const under = document.elementFromPoint(e.clientX, e.clientY);
+    e.currentTarget.style.pointerEvents = prev;
+    const cell = under && under.closest ? under.closest('[data-misc-slot]') : null;
+    if (!cell) { setDropSlot(null); return; }
+    const toSlot = parseInt(cell.getAttribute('data-misc-slot'), 10);
+    if (Number.isNaN(toSlot)) { setDropSlot(null); return; }
+    const occ = cell.getAttribute('data-misc-app');
+    if (occ === drag.id) { setDropSlot(null); return; }
+    setDropSlot(toSlot);
+    moveMiscToSlot(drag.id, toSlot);
+  };
+
+  const onAppPointerUp = () => {
+    dragRef.current = null;
+    setDraggingId(null);
+    setDropSlot(null);
+  };
 
   if (!app) {
     return (
-      <div className="fade-in">
-        <div className="mb-6 font-display text-2xl">Прочее</div>
-        <div className="grid grid-cols-4 gap-4">
-          {MISC_APPS.map(a => (
-            <button
-              key={a.id}
-              onClick={() => setSub(a.id)}
-              className="flex flex-col items-center gap-2 text-center"
-            >
-              <div
-                className="w-16 h-16 rounded-2xl flex items-center justify-center text-white shadow-sm transition-transform active:scale-95"
-                style={{ background: a.color }}
-              >
-                <Icon name={a.icon} size={28} />
-              </div>
-              <span className="text-xs font-medium text-[var(--text-muted)] leading-tight">{a.label}</span>
-            </button>
-          ))}
+      <div className="fade-in misc-home">
+        <div className="mb-4 flex items-center justify-between gap-3 flex-shrink-0">
+          <div className="font-display text-2xl">Прочее</div>
+          <button
+            type="button"
+            onClick={() => setEditMode(v => !v)}
+            className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
+            title={editMode ? 'Готово' : 'Изменить расположение'}
+            aria-label={editMode ? 'Готово' : 'Изменить расположение'}
+          >
+            <Icon name={editMode ? 'check' : 'edit'} size={16} />
+          </button>
+        </div>
+        <div ref={gridWrapRef} className="flex-1 min-h-0 flex flex-col">
+          <div
+            className="misc-home-grid"
+            style={{ gridTemplateRows: `repeat(${layout.rows}, minmax(${MISC_CELL_MIN_PX}px, 1fr))` }}
+          >
+            {layout.slots.map((id, slotIndex) => {
+              const a = id ? byId[id] : null;
+              const isDrop = dropSlot === slotIndex;
+              if (a) {
+                return (
+                  <button
+                    key={a.id}
+                    type="button"
+                    data-misc-slot={slotIndex}
+                    data-misc-app={a.id}
+                    onClick={() => { if (!editMode) setSub(a.id); }}
+                    onPointerDown={e => onAppPointerDown(e, a.id)}
+                    onPointerMove={onAppPointerMove}
+                    onPointerUp={onAppPointerUp}
+                    onPointerCancel={onAppPointerUp}
+                    className={[
+                      'misc-app-cell',
+                      editMode ? 'misc-app-jiggle' : '',
+                      draggingId === a.id ? 'misc-app-dragging' : '',
+                      isDrop ? 'misc-app-drop-target' : '',
+                    ].filter(Boolean).join(' ')}
+                  >
+                    <div
+                      className="misc-app-icon w-16 h-16 rounded-2xl flex items-center justify-center text-white shadow-sm transition-transform active:scale-95 flex-shrink-0"
+                      style={{ background: a.color }}
+                    >
+                      <Icon name={a.icon} size={28} />
+                    </div>
+                    <span className="text-xs font-medium text-[var(--text-muted)] leading-tight">{a.label}</span>
+                  </button>
+                );
+              }
+              return (
+                <div
+                  key={`empty-${slotIndex}`}
+                  data-misc-slot={slotIndex}
+                  className={[
+                    'misc-app-cell',
+                    isDrop ? 'misc-app-drop-target' : '',
+                  ].filter(Boolean).join(' ')}
+                  aria-hidden
+                >
+                  <div className={editMode ? 'misc-app-slot-empty' : 'misc-app-slot-spacer'} />
+                  {editMode && <span className="text-xs leading-tight invisible">.</span>}
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     );
@@ -30857,7 +32106,11 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
     <div className="fade-in">
       <div className="mb-5 flex items-center justify-between gap-4">
         <button
-          onClick={() => setSub('')}
+          onClick={() => {
+            if (sub === 'english' && engWordBaseDirty
+              && !confirm('Word base has unsaved changes. Leave without saving?')) return;
+            setSub('');
+          }}
           className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)]"
         >
           <Icon name="chevronLeft" size={16} />
@@ -30874,7 +32127,7 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
           onFocusConsumed={onVoiceFocusConsumed}
         />
       )}
-      {sub === 'english' && <EngErrorBoundary><EnglishView data={data} setData={setData} embedded /></EngErrorBoundary>}
+      {sub === 'english' && <EngErrorBoundary><EnglishView data={data} setData={setData} embedded onDirtyChange={onEngWordBaseDirty} /></EngErrorBoundary>}
       {sub === 'cars' && <CarsView data={data} setData={setData} />}
       {sub === 'settings' && (
         <SettingsView
