@@ -425,6 +425,11 @@
         </div>
       </div>
       <div id="wbMsg" class="wb-msg" style="display:none"></div>
+      <div class="field" style="margin:0">
+        <input type="search" id="wbSearch" placeholder="Поиск EN / RU…" autocomplete="off"
+          style="width:100%;background:var(--bg-2);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:10px;font-family:inherit;font-size:14px" />
+        <div id="wbSearchMeta" class="hint" style="margin-top:6px;display:none"></div>
+      </div>
       <div class="wb-table-wrap">
         <table class="wb-table">
           <thead>
@@ -1492,6 +1497,7 @@ const WB = {
   saving: false,
   seeded: false,
   acceptReload: false,
+  query: '',
 };
 const WB_PAD = 5;
 const WB_MON = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
@@ -1541,6 +1547,15 @@ function wbSetMsg(type, text){
   el.className = 'wb-msg'+(type?(' '+type):'');
   el.textContent = text;
 }
+function wbVisibleRows(){
+  const q = (WB.query||'').trim().toLowerCase();
+  if(!q) return WB.rows;
+  return WB.rows.filter(r=>{
+    const en=(r.en||'').toLowerCase(), ru=(r.ru||'').toLowerCase();
+    if(!en && !ru && !r.date) return false;
+    return en.includes(q) || ru.includes(q);
+  });
+}
 function wbSyncToolbar(){
   const dirty = wbAnyDirty();
   const filled = WB.rows.filter(r=>r.en.trim()).length;
@@ -1548,10 +1563,24 @@ function wbSyncToolbar(){
   $('wbDirty').style.display = dirty ? '' : 'none';
   $('btnWbSave').disabled = WB.saving || !dirty;
   $('btnWbSave').textContent = WB.saving ? '⏳ Сохранение…' : 'Сохранить';
+  const meta = $('wbSearchMeta');
+  const q = (WB.query||'').trim();
+  if(q){
+    meta.style.display = '';
+    meta.textContent = wbVisibleRows().length + ' найдено';
+  } else {
+    meta.style.display = 'none';
+  }
 }
 function wbRender(){
   const body = $('wbBody');
-  body.innerHTML = WB.rows.map((r,i)=>`
+  const visible = wbVisibleRows();
+  if(!visible.length){
+    body.innerHTML = `<tr><td colspan="3" style="padding:28px;text-align:center;color:var(--text-dim);font-size:13px">Ничего не найдено</td></tr>`;
+    wbSyncToolbar();
+    return;
+  }
+  body.innerHTML = visible.map((r,i)=>`
     <tr class="${wbIsDirty(r)?'dirty':''}" data-id="${r.id}">
       <td><input data-f="date" value="${escapeHtml(r.date)}" placeholder="Сегодня" ${WB.saving?'disabled':''} /></td>
       <td><input data-f="en" value="${escapeHtml(r.en)}" placeholder="word" ${WB.saving?'disabled':''} /></td>
@@ -1655,6 +1684,7 @@ async function wbSave(){
   }
 }
 $('btnWbSave').onclick = wbSave;
+$('wbSearch').oninput = e => { WB.query = e.target.value; wbRender(); };
 
 /* ============== NAVIGATION ============== */
 document.querySelectorAll('.nav-tab').forEach(tab => {
