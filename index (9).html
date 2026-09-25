@@ -8553,6 +8553,7 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
   };
 
   const [rows, setRows] = useState(() => fromItems(words));
+  const [query, setQuery] = useState('');
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const [msgType, setMsgType] = useState('');
@@ -8685,6 +8686,13 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
 
   const filled = rows.filter(r => r.en.trim()).length;
   const showImport = !importedAt || filled === 0;
+  const q = query.trim().toLowerCase();
+  const visibleRows = !q ? rows : rows.filter(r => {
+    const en = (r.en || '').toLowerCase();
+    const ru = (r.ru || '').toLowerCase();
+    if (!en && !ru && !r.date) return false; // hide empty pad rows while searching
+    return en.includes(q) || ru.includes(q);
+  });
 
   return (
     <div className="space-y-4">
@@ -8711,6 +8719,21 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
             className="btn-primary text-sm py-2 px-4 disabled:opacity-40"
           >{saving ? '⏳ Saving…' : 'Save'}</button>
         </div>
+      </div>
+
+      <div className="relative">
+        <input
+          type="search"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder="Search EN / RU…"
+          className="w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm outline-none focus:border-[var(--border-strong)]"
+        />
+        {q && (
+          <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[var(--text-subtle)] font-mono pointer-events-none">
+            {visibleRows.length} found
+          </div>
+        )}
       </div>
 
       {msg && (
@@ -8743,7 +8766,9 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {visibleRows.length === 0 ? (
+              <tr><td colSpan={4} className="px-3 py-8 text-center text-sm text-[var(--text-muted)]">Nothing found</td></tr>
+            ) : visibleRows.map((r) => (
               <tr key={r.id} className={`border-b border-[var(--border)] last:border-0 ${isDirtyRow(r) ? 'bg-teal-50/40' : ''} ${r.hard ? 'bg-amber-50/50' : ''}`}>
                 <td className="p-1.5">
                   <input
