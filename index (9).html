@@ -15496,6 +15496,17 @@ const addMonthsStr = (ym, n) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 };
 
+// Постоянный платёж в архиве: archived = true + archivedFrom = 'YYYY-MM' —
+// первый месяц без плана (следующий за месяцем архивации). В месяцах до него
+// платёж по-прежнему даёт план в «По месяцу», поэтому история не теряется.
+// Старые записи с archived = true без archivedFrom (удалённые до появления
+// архива) не учитываются ни в каком месяце — как и раньше.
+// ДЕРЖАТЬ В СИНХРОНЕ с _pf_rec_active_in() из jarvis.py.
+const recurringActiveIn = (r, month) =>
+  !!r && (!r.archived || (!!r.archivedFrom && month < r.archivedFrom));
+// Платёж, который хоть где-то даёт план: активный или архивный с историей.
+const recurringHasHistory = (r) => !!r && (!r.archived || !!r.archivedFrom);
+
 const lastDayOfMonthStr = (ym) => {
   if (!ym) return '';
   const [y, m] = ym.split('-').map(Number);
@@ -15779,7 +15790,9 @@ const cashflowArticles = (data) => {
   });
   const recCats = getRecurringCats(data);
   const activeRecItems = (data.budgetRecurring || []).filter(r => r && !r.archived);
-  const usedRec = [...new Set(activeRecItems.map(r => r.category).filter(Boolean))];
+  // Категория остаётся статьёй, пока в ней есть хоть один платёж с историей —
+  // иначе старые операции ДДС по архивному платежу потеряли бы свою статью.
+  const usedRec = [...new Set((data.budgetRecurring || []).filter(recurringHasHistory).map(r => r.category).filter(Boolean))];
   usedRec.forEach(cid => {
     const c = recCats.find(x => x.id === cid) || {};
     out.push({
@@ -16409,7 +16422,8 @@ function BudgetMonthlyView({ data, setData }) {
   const expCats      = getExpenseCats(data);
   const recCats      = getRecurringCats(data);
   const activeExp    = (data.budgetExpenses  || []).filter(e => !e.archived);
-  const activeRec    = (data.budgetRecurring || []).filter(r => !r.archived);
+  // Постоянные: активные + архивные, у которых в этом году ещё был план.
+  const activeRec    = (data.budgetRecurring || []).filter(r => r && months.some(m => recurringActiveIn(r, m)));
   const savTx        = data.savingsTransactions || [];
   const debtTx       = data.debtTransactions || [];
   const planDebts    = (data.budgetDebts || []).filter(d => d.startDate && d.targetDate);
@@ -16445,6 +16459,7 @@ function BudgetMonthlyView({ data, setData }) {
     const mNum = parseInt(String(month).split('-')[1], 10);
     return activeRec
       .filter(r => r.category === catId)
+      .filter(r => recurringActiveIn(r, month))
       .filter(r => !(Array.isArray(r.skipMonths) && r.skipMonths.includes(mNum)))
       .reduce((s, r) => s + (r.amount || 0), 0);
   };
@@ -20275,9 +20290,14 @@ function BudgetRecurringView({ data, setData }) {
   const [filterCats,   setFilterCats]   = useState([]);
   const [sortCol,      setSortCol]      = useState('name');
   const [sortDir,      setSortDir]      = useState('asc');
+  const [showArchive,  setShowArchive]  = useState(false);
 
   const cats  = getRecurringCats(data);
   const items = (data.budgetRecurring || []).filter(r => !r.archived);
+  // В архиве показываем только платежи с историей (archivedFrom) — старые
+  // archived без неё никак не использовались и так и остаются скрытыми.
+  const archivedItems = (data.budgetRecurring || []).filter(r => r && r.archived && r.archivedFrom)
+    .sort((a, b) => String(b.archivedFrom).localeCompare(String(a.archivedFrom)));
 
   const save = (item) => {
     item = { ...item, updatedAt: Date.now() };
@@ -20290,8 +20310,28 @@ function BudgetRecurringView({ data, setData }) {
   };
 
   const remove = (id) => {
-    if (!confirm('Удалить платёж?')) return;
+    if (!confirm('Удалить платёж совсем?\n\nОн пропадёт и из прошлых месяцев в «По месяцу». Чтобы сохранить историю, используйте «В архив».')) return;
     setData(d => ({ ...d, budgetRecurring: (d.budgetRecurring || []).filter(r => r.id !== id), deletedIds: withDeletedId(d, 'budgetRecurring', id) }));
+  };
+
+  const patch = (id, fields) => setData(d => ({
+    ...d,
+    budgetRecurring: (d.budgetRecurring || []).map(r => r.id === id ? { ...r, ...fields, updatedAt: Date.now() } : r),
+  }));
+
+  // В архив: план остаётся по текущий месяц включительно, со следующего — нет.
+  const archive = (r) => {
+    const from = addMonthsStr(getCurrentMonthStr(), 1);
+    const [y, m] = getCurrentMonthStr().split('-');
+    if (!confirm(`Перенести «${r.name || 'платёж'}» в архив?\n\nПлан и факт по ${m}.${y} включительно сохранятся в «По месяцу», со следующего месяца плана не будет.`)) return;
+    patch(r.id, { archived: true, archivedFrom: from });
+  };
+
+  const unarchive = (r) => patch(r.id, { archived: false, archivedFrom: null });
+
+  const monthLabel = (ym) => {
+    const [y, m] = String(ym || '').split('-');
+    return y && m ? `${m}.${y}` : '—';
   };
 
   const newItem = () => setEditing({
@@ -20400,7 +20440,8 @@ function BudgetRecurringView({ data, setData }) {
                         <td className="px-2 py-3">
                           <div className="flex gap-1 justify-end">
                             <button onClick={() => setEditing(r)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit"  size={14} /></button>
-                            <button onClick={() => remove(r.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
+                            <button onClick={() => archive(r)} title="В архив — прошлые месяцы сохранятся" className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="archive" size={14} /></button>
+                            <button onClick={() => remove(r.id)} title="Удалить совсем — пропадёт и из прошлых месяцев" className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
                           </div>
                         </td>
                       </tr>
@@ -20415,6 +20456,42 @@ function BudgetRecurringView({ data, setData }) {
             </div>
           </div>
         </>
+      )}
+
+      {archivedItems.length > 0 && (
+        <div className="mt-6">
+          <button onClick={() => setShowArchive(v => !v)}
+            className="inline-flex items-center gap-2 text-sm text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">
+            <Icon name="archive" size={14} />Архив ({archivedItems.length}) {showArchive ? '▴' : '▾'}
+          </button>
+          {showArchive && (
+            <div className="mt-3 bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
+              <div className="overflow-x-auto">
+                <table className="text-sm w-max max-w-full">
+                  <tbody>
+                    {archivedItems.map(r => {
+                      const cat = cats.find(c => c.id === r.category) || { emoji: '📌', label: r.category };
+                      return (
+                        <tr key={r.id} className="border-b border-[var(--border)] last:border-0 text-[var(--text-muted)]">
+                          <td className="px-3 py-3 font-medium whitespace-nowrap">{r.name}</td>
+                          <td className="px-3 py-3 whitespace-nowrap">{cat.emoji} {cat.label}</td>
+                          <td className="px-3 py-3 text-right whitespace-nowrap">{formatRub(r.amount)} ₽</td>
+                          <td className="px-3 py-3 whitespace-nowrap text-xs text-[var(--text-subtle)]">план по {monthLabel(addMonthsStr(r.archivedFrom, -1))}</td>
+                          <td className="px-2 py-3">
+                            <div className="flex gap-1 justify-end">
+                              <button onClick={() => unarchive(r)} title="Вернуть из архива" className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="restore" size={14} /></button>
+                              <button onClick={() => remove(r.id)} title="Удалить совсем — пропадёт и из прошлых месяцев" className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {editing && <BudgetRecurringModal item={editing} cats={cats} onSave={save} onClose={() => setEditing(null)} />}

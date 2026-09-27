@@ -4911,6 +4911,17 @@ ADJUSTMENT_ARTICLES = [
 ]
 
 
+def _pf_rec_active_in(r: dict, month: str) -> bool:
+    """Даёт ли постоянный платёж план в месяце. Архивный платёж с archivedFrom
+    ('YYYY-MM' — первый месяц без плана) учитывается в месяцах до него;
+    archived без archivedFrom — ни в каком. ДЕРЖАТЬ В СИНХРОНЕ с
+    recurringActiveIn() из index (9).html."""
+    if not r.get("archived"):
+        return True
+    frm = str(r.get("archivedFrom") or "")
+    return bool(frm) and month < frm
+
+
 def find_budget_user(app: dict, token: str):
     """(uid, user) пользователя бюджета с активной ссылкой на приложение.
     Отключённая ссылка (financeShareEnabled = false) — то же самое, что
@@ -5037,13 +5048,19 @@ def pf_articles(sl: dict) -> list:
     seen_rec = []
     rec_items_by_cat = {}
     for r in _pf_list(sl, "budgetRecurring"):
-        if not isinstance(r, dict) or r.get("archived"):
+        if not isinstance(r, dict):
+            continue
+        # Архивный платёж с историей (archivedFrom) держит статью категории,
+        # чтобы старые операции ДДС по ней не остались без статьи.
+        if r.get("archived") and not r.get("archivedFrom"):
             continue
         cid = str(r.get("category") or "")
         if not cid:
             continue
         if cid not in seen_rec:
             seen_rec.append(cid)
+        if r.get("archived"):
+            continue
         name = str(r.get("name") or "").strip()
         if name:
             rec_items_by_cat.setdefault(cid, []).append(name)
@@ -5134,7 +5151,7 @@ def pf_budget_rows(sl: dict, month: str) -> list:
     rec_by_id = {str(c.get("id")): c for c in rec_cats if isinstance(c, dict) and c.get("id")}
     rec_plan_by_cat = {}
     for r in _pf_list(sl, "budgetRecurring"):
-        if not isinstance(r, dict) or r.get("archived"):
+        if not isinstance(r, dict) or not _pf_rec_active_in(r, month):
             continue
         cid = str(r.get("category") or "")
         if not cid:
