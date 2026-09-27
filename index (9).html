@@ -1163,7 +1163,16 @@ const mergeBudgetSlice = (localSlice, serverSlice, preferLocal, mergedDeletedIds
       out[sk] = mergeIdArrays(lv, sv, preferLocal, mergedDeletedIds[sk]);
       if (sk === 'budgetStatementRows') out[sk] = dedupeStatementRows(out[sk]);
     } else if (isPlainObject(lv) && isPlainObject(sv)) {
-      out[sk] = preferLocal ? { ...sv, ...lv } : { ...lv, ...sv };
+      // budgetCashflowSettings пишет приложение /pf/ со штампом updatedAt —
+      // новее побеждает целиком (как и в merge_app_data на сервере), иначе
+      // старая локальная копия затирала выбранный в приложении счёт.
+      const lTs = typeof lv.updatedAt === 'number' ? lv.updatedAt : null;
+      const sTs = typeof sv.updatedAt === 'number' ? sv.updatedAt : null;
+      if (lTs != null || sTs != null) {
+        out[sk] = (sTs != null && (lTs == null || sTs > lTs)) ? sv : lv;
+      } else {
+        out[sk] = preferLocal ? { ...sv, ...lv } : { ...lv, ...sv };
+      }
     } else {
       out[sk] = preferLocal ? lv : sv;
     }
