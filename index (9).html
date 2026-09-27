@@ -21328,35 +21328,50 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
     }
   };
 
-  const effective = (Number(form.amount) || 0) + (increased || 0);
-  const remaining = Math.max(effective - (paid || 0), 0);
   const months = !noSchedule && form.startDate && form.targetDate ? monthsBetweenStr(form.startDate, form.targetDate) : 0;
-  const monthsLeft = noSchedule ? 0 : monthsLeftFor({ ...form, amount: effective });
-  const evenMonthly = (!noSchedule && form.targetDate && effective > 0)
-    ? calcMonthly({ ...form, amount: effective })
-    : 0;
   const customOn = !noSchedule && !!form.customPlan;
   const scheduleMonths = (!noSchedule && form.startDate && form.targetDate && form.startDate <= form.targetDate)
     ? Array.from({ length: months }, (_, i) => addMonthsStr(form.startDate, i))
     : [];
   const planOf = (mo) => (form.monthlyPlan || {})[mo];
   const customTotal = scheduleMonths.reduce((s, mo) => s + (Number(planOf(mo)) || 0), 0);
-  const customDiff = effective - customTotal;
+  // Со своим планом сумма долга — это итого по месяцам (вместе с довнесениями):
+  // сама сумма в поле считается из плана, а не вводится.
+  const amountFromPlan = Math.max(customTotal - (increased || 0), 0);
+  const effective = customOn ? customTotal : (Number(form.amount) || 0) + (increased || 0);
+  const remaining = Math.max(effective - (paid || 0), 0);
+  const monthsLeft = noSchedule ? 0 : monthsLeftFor({ ...form, amount: effective });
+  const evenMonthly = (!noSchedule && form.targetDate && effective > 0)
+    ? calcMonthly({ ...form, amount: effective })
+    : 0;
   const monthly = customOn ? debtCustomPlanVal(form, getCurrentMonthStr()) : evenMonthly;
 
   const setMonthPlan = (mo, v) => setForm(f => ({ ...f, monthlyPlan: { ...(f.monthlyPlan || {}), [mo]: v } }));
 
-  // Включили свой план — заполняем пустые месяцы равным делением, чтобы
-  // было от чего отталкиваться, а не вбивать всё с нуля.
+  // Делим сумму на n месяцев в целых рублях без потерь: остаток от деления
+  // уходит в последний месяц, итог плана ровно равен сумме.
+  const splitEven = (total, n) => {
+    if (!n) return [];
+    const base = Math.floor(total / n);
+    return Array.from({ length: n }, (_, i) => i === n - 1 ? Math.round(total - base * (n - 1)) : base);
+  };
+
+  // Включили свой план — пустой план заполняем равным делением суммы, чтобы
+  // было от чего отталкиваться. Выключили — сумма долга остаётся равной
+  // итогу плана, а не откатывается к старому значению в поле.
   const toggleCustom = (v) => setForm(f => {
-    if (!v) return { ...f, customPlan: false };
+    if (!v) return { ...f, customPlan: false, amount: amountFromPlan > 0 ? amountFromPlan : f.amount };
     const plan = { ...(f.monthlyPlan || {}) };
-    scheduleMonths.forEach(mo => { if (plan[mo] == null || plan[mo] === '') plan[mo] = evenMonthly || 0; });
+    const hasAny = scheduleMonths.some(mo => Number(plan[mo]) > 0);
+    if (!hasAny) {
+      const parts = splitEven(effective, scheduleMonths.length);
+      scheduleMonths.forEach((mo, i) => { plan[mo] = parts[i]; });
+    }
     return { ...f, customPlan: true, monthlyPlan: plan };
   });
 
-  // «Поровну»: остаток суммы (минус вписанное в прошлые месяцы) делится на
-  // текущий и будущие месяцы графика.
+  // «Поровну»: итог плана (минус вписанное в прошлые месяцы) заново делится
+  // на текущий и будущие месяцы графика — сумма долга не меняется.
   const fillEvenly = () => setForm(f => {
     const cur = getCurrentMonthStr();
     const future = scheduleMonths.filter(mo => mo >= cur);
@@ -21364,14 +21379,18 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
     const fixed = scheduleMonths.filter(mo => !target.includes(mo))
       .reduce((s, mo) => s + (Number((f.monthlyPlan || {})[mo]) || 0), 0);
     const rest = Math.max(effective - fixed, 0);
-    const per = target.length ? Math.ceil(rest / target.length) : 0;
+    const parts = splitEven(rest, target.length);
     const plan = { ...(f.monthlyPlan || {}) };
-    target.forEach(mo => { plan[mo] = per; });
+    target.forEach((mo, i) => { plan[mo] = parts[i]; });
     return { ...f, monthlyPlan: plan };
   });
 
   const submit = () => {
-    if (!form.amount || Number(form.amount) <= 0) return;
+    if (customOn && !(amountFromPlan > 0)) {
+      alert('Заполните план по месяцам — сумма долга считается из него');
+      return;
+    }
+    if (!customOn && (!form.amount || Number(form.amount) <= 0)) return;
     if (!form.debtor.trim()) return;
     if (!noSchedule && form.startDate && form.targetDate && form.startDate > form.targetDate) {
       alert('Дата начала выплат должна быть раньше или равна дате окончания');
@@ -21390,7 +21409,7 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
       ...form,
       customPlan: customOn,
       monthlyPlan: customOn ? monthlyPlan : (form.monthlyPlan || {}),
-      amount: Number(form.amount),
+      amount: customOn ? amountFromPlan : Number(form.amount),
       debtor: form.debtor.trim(),
       comment: (form.comment || '').trim(),
       startDate: noSchedule ? '' : form.startDate,
@@ -21408,9 +21427,15 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
         <div>
           <label>Сумма долга (₽)</label>
           <input type="number" inputMode="numeric" min="1" autoFocus
-            value={form.amount || ''}
+            value={customOn ? amountFromPlan : (form.amount || '')}
             onChange={e => set('amount', e.target.value)}
+            disabled={customOn}
             placeholder="5 000" />
+          {customOn && (
+            <div className="text-xs text-[var(--text-subtle)] mt-1">
+              Считается из плана по месяцам{increased > 0 ? ` (итого ${formatRub(customTotal)} ₽ минус довнесения ${formatRub(increased)} ₽)` : ''}
+            </div>
+          )}
         </div>
 
         <div>
@@ -21453,7 +21478,7 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-medium">Свой план по месяцам</div>
-                <div className="text-xs text-[var(--text-subtle)] mt-0.5">Сумма на каждый месяц вручную вместо равного деления — так и попадёт в «По месяцу»</div>
+                <div className="text-xs text-[var(--text-subtle)] mt-0.5">Сумма на каждый месяц вручную вместо равного деления — так и попадёт в «По месяцу», а сумма долга станет равна итогу плана</div>
               </div>
               <Toggle checked={customOn} onChange={toggleCustom} />
             </div>
@@ -21473,11 +21498,7 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
                 <div className="flex items-center justify-between gap-3 mt-3 text-sm">
                   <span className="text-[var(--text-muted)]">
                     Итого по плану: <b className="text-[var(--text)]">{formatRub(customTotal)} ₽</b>
-                    {Math.round(customDiff) !== 0 && (
-                      <span className={customDiff > 0 ? 'text-amber-600' : 'text-red-500'}>
-                        {' '}· {customDiff > 0 ? `не распределено ${formatRub(customDiff)} ₽` : `больше долга на ${formatRub(-customDiff)} ₽`}
-                      </span>
-                    )}
+                    {paid > 0 && <span> · выплачено {formatRub(paid)} ₽</span>}
                   </span>
                   <button type="button" onClick={fillEvenly} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] underline whitespace-nowrap">Поровну</button>
                 </div>
