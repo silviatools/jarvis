@@ -850,6 +850,14 @@ const dishToFoodShape = (dish) => {
   };
 };
 
+// «Мои продукты» (data.customFoods) — свой продукт: название + Б/Ж/У на
+// 100 г, ккал считаются по формуле Атвотера (4Б+9Ж+4У), а не вводятся
+// руками. Хранится уже в форме обычного продукта — отдельного приведения,
+// в отличие от блюд, не требует.
+const MY_FOOD_CATEGORY = { id: 'myFoods', name: 'Мои продукты' };
+const kcalFromBFU = (protein, fat, carbs) =>
+  round1(4 * (Number(protein) || 0) + 9 * (Number(fat) || 0) + 4 * (Number(carbs) || 0));
+
 // Список продуктов грузится один раз и кэшируется на модуль — форма рациона
 // может открываться много раз за сессию, база маленькая и статическая.
 let _foodsListCache = null;
@@ -2899,6 +2907,7 @@ function FoodDatabaseView({ data, setData }) {
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [dishModal, setDishModal] = useState(null); // 'new' | dish | null
+  const [myFoodModal, setMyFoodModal] = useState(null); // 'new' | food | null
 
   useEffect(() => {
     fetch('/api/foods')
@@ -2912,8 +2921,12 @@ function FoodDatabaseView({ data, setData }) {
   }, []);
 
   const dishes = data.customDishes || [];
-  const allCategories = useMemo(() => [...categories, CUSTOM_DISH_CATEGORY], [categories]);
-  const foods = useMemo(() => [...dbFoods, ...dishes.map(dishToFoodShape)], [dbFoods, dishes]);
+  const myFoods = data.customFoods || [];
+  const allCategories = useMemo(() => [...categories, CUSTOM_DISH_CATEGORY, MY_FOOD_CATEGORY], [categories]);
+  const foods = useMemo(
+    () => [...dbFoods, ...dishes.map(dishToFoodShape), ...myFoods.map(f => ({ ...f, isCustomFood: true }))],
+    [dbFoods, dishes, myFoods]
+  );
 
   const dropUnitWeight = (f) => { const { unitWeight, ...rest } = f; return rest; };
 
@@ -2952,6 +2965,26 @@ function FoodDatabaseView({ data, setData }) {
       ...d,
       customDishes: (d.customDishes || []).filter(x => x.id !== dish.id),
       deletedIds: withDeletedId(d, 'customDishes', dish.id),
+    }));
+  };
+
+  // Свои продукты — так же в data.customFoods, доступны в MealModal через
+  // проп customFoods (см. MealSettings) и как ингредиенты в конструкторе блюд.
+  const saveMyFood = (food) => {
+    setData(d => {
+      const list = d.customFoods || [];
+      const exists = list.some(x => x.id === food.id);
+      return { ...d, customFoods: exists ? list.map(x => x.id === food.id ? food : x) : [...list, food] };
+    });
+    setMyFoodModal(null);
+  };
+
+  const deleteMyFood = (food) => {
+    if (!confirm(`Удалить продукт «${food.name}»?`)) return;
+    setData(d => ({
+      ...d,
+      customFoods: (d.customFoods || []).filter(x => x.id !== food.id),
+      deletedIds: withDeletedId(d, 'customFoods', food.id),
     }));
   };
 
@@ -2997,12 +3030,20 @@ function FoodDatabaseView({ data, setData }) {
         <a href="https://opendatacommons.org/licenses/odbl/" target="_blank" rel="noopener noreferrer" className="underline">ODbL</a>
       </div>
 
-      <button
-        onClick={() => setDishModal('new')}
-        className="btn-primary w-full flex items-center justify-center gap-2 text-sm"
-      >
-        <Icon name="plus" size={16} /> Создать блюдо
-      </button>
+      <div className="flex gap-2">
+        <button
+          onClick={() => setMyFoodModal('new')}
+          className="btn-primary flex-1 flex items-center justify-center gap-2 text-sm"
+        >
+          <Icon name="plus" size={16} /> Свой продукт
+        </button>
+        <button
+          onClick={() => setDishModal('new')}
+          className="btn-primary flex-1 flex items-center justify-center gap-2 text-sm"
+        >
+          <Icon name="plus" size={16} /> Создать блюдо
+        </button>
+      </div>
 
       <div className="flex gap-2 overflow-x-auto pb-1">
         <button
@@ -3060,6 +3101,14 @@ function FoodDatabaseView({ data, setData }) {
                         <button type="button" onClick={() => deleteDish(dishes.find(d => d.id === f.dishId))}
                           className="text-xs text-[var(--text-muted)] hover:text-red-500">Удалить</button>
                       </div>
+                    ) : f.isCustomFood ? (
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-[var(--text-subtle)] flex-1">ккал считаются автоматически (4Б+9Ж+4У)</span>
+                        <button type="button" onClick={() => setMyFoodModal(f)}
+                          className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]">Редактировать</button>
+                        <button type="button" onClick={() => deleteMyFood(f)}
+                          className="text-xs text-[var(--text-muted)] hover:text-red-500">Удалить</button>
+                      </div>
                     ) : editingId === f.id ? (
                       <div className="flex items-center gap-2">
                         <input
@@ -3091,12 +3140,85 @@ function FoodDatabaseView({ data, setData }) {
       {dishModal && (
         <DishModal
           dish={dishModal === 'new' ? null : dishModal}
-          foods={dbFoods}
+          foods={[...dbFoods, ...myFoods]}
           onSave={saveDish}
           onClose={() => setDishModal(null)}
         />
       )}
+
+      {myFoodModal && (
+        <MyFoodModal
+          food={myFoodModal === 'new' ? null : myFoodModal}
+          onSave={saveMyFood}
+          onClose={() => setMyFoodModal(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function MyFoodModal({ food, onSave, onClose }) {
+  const [name, setName] = useState(food?.name || '');
+  const [protein, setProtein] = useState(food?.protein ?? '');
+  const [fat, setFat] = useState(food?.fat ?? '');
+  const [carbs, setCarbs] = useState(food?.carbs ?? '');
+
+  const kcal = kcalFromBFU(protein, fat, carbs);
+
+  const submit = () => {
+    if (!name.trim()) return alert('Введите название продукта');
+    onSave({
+      id: food?.id || `myfood-${crypto.randomUUID()}`,
+      name: name.trim(),
+      category: MY_FOOD_CATEGORY.id,
+      protein: Number(protein) || 0,
+      fat: Number(fat) || 0,
+      carbs: Number(carbs) || 0,
+      kcal,
+      updatedAt: Date.now(),
+    });
+  };
+
+  return (
+    <Modal onClose={onClose} title={food ? 'Редактировать продукт' : 'Новый продукт'}>
+      <div className="space-y-4">
+        <div>
+          <label>Название продукта</label>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="Например, Домашний творог" autoFocus />
+        </div>
+
+        <div>
+          <label>Б/Ж/У на 100 г</label>
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <input type="number" inputMode="decimal" min="0" value={protein}
+                onChange={e => setProtein(e.target.value)} placeholder="Б" style={{ textAlign: 'center' }} />
+              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">Белки</div>
+            </div>
+            <div>
+              <input type="number" inputMode="decimal" min="0" value={fat}
+                onChange={e => setFat(e.target.value)} placeholder="Ж" style={{ textAlign: 'center' }} />
+              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">Жиры</div>
+            </div>
+            <div>
+              <input type="number" inputMode="decimal" min="0" value={carbs}
+                onChange={e => setCarbs(e.target.value)} placeholder="У" style={{ textAlign: 'center' }} />
+              <div className="text-xs text-[var(--text-subtle)] text-center mt-1 uppercase tracking-wider">Углеводы</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 text-center">
+          <div className="font-display text-2xl">{kcal}</div>
+          <div className="text-[10px] text-[var(--text-subtle)] uppercase tracking-wider mt-0.5">ккал на 100 г — считается автоматически</div>
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -5793,7 +5915,7 @@ function MealSettings({ data, setData }) {
       )}
 
       {editing && (
-        <MealModal meal={editing} customDishes={data.customDishes || []} onSave={save} onClose={() => setEditing(null)} />
+        <MealModal meal={editing} customDishes={data.customDishes || []} customFoods={data.customFoods || []} onSave={save} onClose={() => setEditing(null)} />
       )}
     </div>
   );
@@ -5823,12 +5945,12 @@ function SettingsMealRow({ meal, archived, onEdit, onArchive, onDelete }) {
   );
 }
 
-function MealModal({ meal, customDishes, onSave, onClose }) {
+function MealModal({ meal, customDishes, customFoods, onSave, onClose }) {
   const [form, setForm] = useState(() => normalizeMeal(meal));
   const dbFoods = useFoodsList();
   const foods = useMemo(
-    () => [...dbFoods, ...(customDishes || []).map(dishToFoodShape)],
-    [dbFoods, customDishes]
+    () => [...dbFoods, ...(customDishes || []).map(dishToFoodShape), ...(customFoods || [])],
+    [dbFoods, customDishes, customFoods]
   );
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
