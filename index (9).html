@@ -1673,7 +1673,7 @@ function App() {
   const [plannerTab, setPlannerTab] = useState(getPlannerSubFromPath); // plans | holidays | events | camping
   const [miscTab, setMiscTab] = useState(getMiscSubFromPath); // '' (домашний экран) | wishlist | cards | english | cars
   const [settingsTab, setSettingsTab] = useState('general');
-  const [houseTab, setHouseTab] = useState('boss');
+  const [houseTab, setHouseTab] = useState('tasks');
   const [mealTab, setMealTab] = useState('plan');
   // Заявка от голосового ассистента открыть конкретную запись (например,
   // карту лояльности) после навигации в раздел — { target, id } | null.
@@ -7483,8 +7483,8 @@ function KanbanView({ data, setData }) {
 // ============== HOUSE VIEW ==============
 function HouseView({ data, setData, houseTab, setHouseTab }) {
   const tabs = [
-    { id: 'boss',     label: 'Босс'    },
     { id: 'tasks',    label: 'Задачи'  },
+    { id: 'boss',     label: 'Босс'    },
     { id: 'cleaning', label: 'По дому' },
   ];
 
