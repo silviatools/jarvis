@@ -8551,7 +8551,7 @@ const ENG_CARD_S={
 };
 
 
-function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importedAt, importing, onDirtyChange, savingRef }){
+function WordBaseTab({ words, ai, onSaveWords, onToggleHard, onImportSheets, importedAt, importing, onDirtyChange, savingRef }){
   const PAD = 5;
   const uid = () => engNewWordId();
   const blank = () => ({ id: uid(), date: '', en: '', ru: '', hard: false, baseline: null, meta: null });
@@ -8595,6 +8595,58 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
     toastTimerRef.current = setTimeout(() => setToast(''), 3200);
   };
   useEffect(() => () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); }, []);
+
+  const [translatingId, setTranslatingId] = useState(null);
+  const [trPopup, setTrPopup] = useState(null); // { rowId, en, primary, variants, explanation }
+
+  const translateRow = async (id) => {
+    const row = rows.find(r => r.id === id);
+    if (!row || !row.en.trim()) return;
+    if (!engAIConfigured(ai)) {
+      setMsgType('err');
+      setMsg('Configure AI (🤖) first — translation needs a provider key.');
+      return;
+    }
+    if (translatingId) return;
+    setTranslatingId(id);
+    setMsg('');
+    const word = row.en.trim();
+    const prompt = `You are an English→Russian dictionary for a language learner.
+Translate the English word or short phrase below into Russian.
+
+Word: "${word}"
+
+Return ONLY valid JSON (no markdown, no backticks):
+{
+  "primary": "лучший основной перевод для словарной карточки",
+  "variants": [
+    {"ru": "вариант", "pos": "часть речи на русском или en", "sense": "краткое значение/оттенок на русском"}
+  ],
+  "explanation": "2–5 предложений на русском: значение, употребление, нюансы, пример на английском с переводом"
+}
+
+Rules:
+- primary — один короткий перевод (как в колонке словаря), без скобок и транскрипции
+- variants — все основные смыслы (3–8), включая primary
+- explanation — понятно и по делу, на русском`;
+    try {
+      const raw = await engCallAI(ai, prompt);
+      const m = String(raw).match(/\{[\s\S]*\}/);
+      if (!m) throw new Error('AI returned invalid format');
+      const data = JSON.parse(m[0]);
+      const primary = String(data.primary || '').trim();
+      if (!primary) throw new Error('Empty translation');
+      const variants = Array.isArray(data.variants) ? data.variants : [];
+      const explanation = String(data.explanation || '').trim();
+      updateCell(id, 'ru', primary);
+      setTrPopup({ rowId: id, en: word, primary, variants, explanation });
+    } catch (e) {
+      setMsgType('err');
+      setMsg('✗ Translate: ' + (e.message || e));
+    } finally {
+      setTranslatingId(null);
+    }
+  };
 
   const isDirtyRow = (r) => {
     const has = !!(r.en.trim() || r.ru.trim() || r.date.trim());
@@ -8828,13 +8880,24 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
                   />
                 </td>
                 <td className="p-1.5">
-                  <input
-                    value={r.ru}
-                    disabled={saving}
-                    onChange={e => updateCell(r.id, 'ru', e.target.value)}
-                    placeholder="translation"
-                    className="w-full bg-transparent border border-transparent focus:border-[var(--border-strong)] rounded-lg px-2 py-1.5 outline-none"
-                  />
+                  <div className="flex items-center gap-1">
+                    <input
+                      value={r.ru}
+                      disabled={saving || translatingId === r.id}
+                      onChange={e => updateCell(r.id, 'ru', e.target.value)}
+                      placeholder="translation"
+                      className="w-full min-w-0 bg-transparent border border-transparent focus:border-[var(--border-strong)] rounded-lg px-2 py-1.5 outline-none"
+                    />
+                    {r.en.trim() ? (
+                      <button
+                        type="button"
+                        title="Перевести English → Russian"
+                        disabled={saving || !!translatingId}
+                        onClick={() => translateRow(r.id)}
+                        className="flex-shrink-0 text-[11px] font-semibold px-1.5 py-1 rounded-md border border-teal-300 text-teal-700 bg-teal-50 hover:bg-teal-100 disabled:opacity-40"
+                      >{translatingId === r.id ? '…' : 'RU'}</button>
+                    ) : null}
+                  </div>
                 </td>
                 <td className="p-1.5 text-center">
                   {r.en.trim() ? (
@@ -8854,8 +8917,48 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
         </table>
       </div>
       <p className="text-xs text-[var(--text-subtle)]">
-        Newest on top, oldest at the bottom. Empty rows for new words appear at the top. Date fills in automatically (today).
+        Newest on top, oldest at the bottom. Empty rows for new words appear at the top. Date fills in automatically (today). Кнопка RU — автоперевод из English.
       </p>
+
+      {trPopup && (
+        <Modal title={`Перевод: ${trPopup.en}`} onClose={() => setTrPopup(null)} wide>
+          <div className="p-4 sm:p-6 space-y-4">
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-[var(--text-subtle)] mb-1">В карточку</div>
+              <div className="font-display text-2xl text-teal-800">{trPopup.primary}</div>
+            </div>
+            {trPopup.variants && trPopup.variants.length > 0 && (
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-[var(--text-subtle)] mb-2">Варианты</div>
+                <ul className="space-y-2">
+                  {trPopup.variants.map((v, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm border border-[var(--border)] rounded-xl px-3 py-2 bg-[var(--surface)]">
+                      <button
+                        type="button"
+                        className="font-medium text-teal-700 hover:underline flex-shrink-0"
+                        title="Подставить в колонку Russian"
+                        onClick={() => {
+                          if (trPopup.rowId && v.ru) updateCell(trPopup.rowId, 'ru', String(v.ru).trim());
+                        }}
+                      >{String(v.ru || '')}</button>
+                      <span className="text-[var(--text-muted)]">
+                        {[v.pos, v.sense].filter(Boolean).join(' — ')}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {trPopup.explanation && (
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-[var(--text-subtle)] mb-2">Объяснение</div>
+                <p className="text-sm leading-relaxed text-[var(--text)] whitespace-pre-wrap">{trPopup.explanation}</p>
+              </div>
+            )}
+            <button onClick={() => setTrPopup(null)} className="btn-primary w-full py-2.5">Закрыть</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -10050,6 +10153,7 @@ function EnglishView({ data, setData, embedded, onDirtyChange }){
           <div style={{ display: engTab === 'wordbase' ? undefined : 'none' }}>
             <WordBaseTab
               words={engWordsItems}
+              ai={ai}
               onSaveWords={saveWordBase}
               onToggleHard={toggleWordHard}
               onImportSheets={importFromSheets}
