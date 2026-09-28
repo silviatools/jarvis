@@ -2676,13 +2676,23 @@ function MealSection({ title, items }) {
   return (
     <div>
       <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] mb-2 font-medium">{title}</div>
-      <div className="space-y-1">
-        {items.map(item => (
-          <div key={item.id} className="flex items-baseline justify-between gap-3 text-[var(--text)] leading-relaxed">
-            <span>{item.product}</span>
-            {item.amount && <span className="text-[var(--text-muted)] text-sm shrink-0">{item.amount}</span>}
-          </div>
-        ))}
+      <div className="space-y-2">
+        {items.map(item => {
+          const hasMacros = item.kcal !== '' && item.kcal != null;
+          return (
+            <div key={item.id} className="text-[var(--text)] leading-relaxed">
+              <div className="flex items-baseline justify-between gap-3">
+                <span>{item.product}</span>
+                {item.amount && <span className="text-[var(--text-muted)] text-sm shrink-0">{item.amount}</span>}
+              </div>
+              {hasMacros && (
+                <div className="text-xs text-[var(--text-subtle)]">
+                  {item.kcal} ккал · {item.protein} Б · {item.fat} Ж · {item.carbs} У
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
