@@ -1136,6 +1136,60 @@ def _merge_date_log_entries(local_arr, server_arr, prefer_local: bool, deleted_f
     return sorted(result, key=lambda e: e.get("date", ""), reverse=True)
 
 
+def _dedupe_statement_rows(rows: list) -> list:
+    """Зеркало dedupeStatementRows() из index (9).html: строки выписки без id
+    сравниваются по смысловому ключу, а не по полной форме объекта."""
+    seen = set()
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        key = json.dumps([r.get("date"), r.get("month"), r.get("amount"), r.get("account"),
+                          r.get("category"), r.get("note") or ""], ensure_ascii=False, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+def _merge_budget_slice(l_slice, s_slice, prefer_local: bool, deleted_ids: dict) -> dict:
+    """Срез бюджета одного пользователя (budgetByUser[uid]) — ПОЗАПИСНО, как
+    mergeBudgetSlice() в index (9).html. Раньше budgetByUser сливался как
+    обычный объект: срез из пришедшего снимка целиком заменял серверный.
+    Из-за этого устаревшая вкладка сайта (в т.ч. «прощальный» sendBeacon при
+    закрытии) возвращала операции ДДС, удалённые или изменённые из мобильного
+    приложения /pf/, и затирала только что добавленные там."""
+    ls = l_slice if isinstance(l_slice, dict) else {}
+    ss = s_slice if isinstance(s_slice, dict) else {}
+    out = {}
+    for sk in set(ls.keys()) | set(ss.keys()):
+        if sk not in ss:
+            out[sk] = ls[sk]
+            continue
+        if sk not in ls:
+            out[sk] = ss[sk]
+            continue
+        lv, sv = ls[sk], ss[sk]
+        if isinstance(lv, list) or isinstance(sv, list):
+            merged = _merge_id_arrays(lv, sv, prefer_local, deleted_ids.get(sk))
+            if sk == "budgetStatementRows":
+                merged = _dedupe_statement_rows(merged)
+            out[sk] = merged
+        elif _is_plain_object(lv) and _is_plain_object(sv):
+            # budgetCashflowSettings пишет приложение /pf/ со штампом updatedAt —
+            # новее побеждает целиком, иначе старая копия затирала выбор счёта.
+            l_ts = lv.get("updatedAt") if isinstance(lv.get("updatedAt"), (int, float)) else None
+            s_ts = sv.get("updatedAt") if isinstance(sv.get("updatedAt"), (int, float)) else None
+            if l_ts is not None or s_ts is not None:
+                out[sk] = sv if (s_ts is not None and (l_ts is None or s_ts > l_ts)) else lv
+            else:
+                out[sk] = {**sv, **lv} if prefer_local else {**lv, **sv}
+        else:
+            out[sk] = lv if prefer_local else sv
+    return out
+
+
 def merge_app_data(local: dict, server: dict, mode: str = "pull") -> dict:
     """Merge app-data dicts. mode='push' → incoming (local) wins; mode='pull' → local wins except bot logs."""
     if not server:
@@ -1166,6 +1220,11 @@ def merge_app_data(local: dict, server: dict, mode: str = "pull") -> dict:
                     l.get("columns") or [], s.get("columns") or [],
                     prefer_local, merged_deleted_ids.get("kanbanColumns"))
                 merged[key] = base
+            elif key == "budgetByUser" and _is_plain_object(l) and _is_plain_object(s):
+                merged[key] = {
+                    uid: _merge_budget_slice(l.get(uid), s.get(uid), prefer_local, merged_deleted_ids)
+                    for uid in set(l.keys()) | set(s.keys())
+                }
             elif key in DATE_LOG_KEYS and (isinstance(l, list) or isinstance(s, list)):
                 merged[key] = _merge_date_log_entries(l, s, prefer_local, merged_deleted_ids.get(key))
             elif isinstance(l, list) or isinstance(s, list):
@@ -4911,6 +4970,17 @@ ADJUSTMENT_ARTICLES = [
 ]
 
 
+def _pf_rec_active_in(r: dict, month: str) -> bool:
+    """Даёт ли постоянный платёж план в месяце. Архивный платёж с archivedFrom
+    ('YYYY-MM' — первый месяц без плана) учитывается в месяцах до него;
+    archived без archivedFrom — ни в каком. ДЕРЖАТЬ В СИНХРОНЕ с
+    recurringActiveIn() из index (9).html."""
+    if not r.get("archived"):
+        return True
+    frm = str(r.get("archivedFrom") or "")
+    return bool(frm) and month < frm
+
+
 def find_budget_user(app: dict, token: str):
     """(uid, user) пользователя бюджета с активной ссылкой на приложение.
     Отключённая ссылка (financeShareEnabled = false) — то же самое, что
@@ -5037,13 +5107,19 @@ def pf_articles(sl: dict) -> list:
     seen_rec = []
     rec_items_by_cat = {}
     for r in _pf_list(sl, "budgetRecurring"):
-        if not isinstance(r, dict) or r.get("archived"):
+        if not isinstance(r, dict):
+            continue
+        # Архивный платёж с историей (archivedFrom) держит статью категории,
+        # чтобы старые операции ДДС по ней не остались без статьи.
+        if r.get("archived") and not r.get("archivedFrom"):
             continue
         cid = str(r.get("category") or "")
         if not cid:
             continue
         if cid not in seen_rec:
             seen_rec.append(cid)
+        if r.get("archived"):
+            continue
         name = str(r.get("name") or "").strip()
         if name:
             rec_items_by_cat.setdefault(cid, []).append(name)
@@ -5134,7 +5210,7 @@ def pf_budget_rows(sl: dict, month: str) -> list:
     rec_by_id = {str(c.get("id")): c for c in rec_cats if isinstance(c, dict) and c.get("id")}
     rec_plan_by_cat = {}
     for r in _pf_list(sl, "budgetRecurring"):
-        if not isinstance(r, dict) or r.get("archived"):
+        if not isinstance(r, dict) or not _pf_rec_active_in(r, month):
             continue
         cid = str(r.get("category") or "")
         if not cid:
@@ -7444,7 +7520,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 category_id = str(payload.get("category_id") or "")[:64]
                 article = next((c for c in pf_articles(sl)
                                 if c["id"] == category_id and c["direction"] == direction), None)
-                if article is None:
+                # Статью могли удалить на сайте уже после записи операции —
+                # правка суммы/даты/комментария не должна из-за этого падать,
+                # пока статью и направление не трогают.
+                keeps_old = (category_id and category_id == str(ops[idx].get("categoryId") or "")
+                             and direction == ("in" if ops[idx].get("direction") == "in" else "out"))
+                if article is None and not keeps_old:
                     return 400, {"error": "unknown category"}
                 updated = dict(ops[idx])
                 updated.update({
@@ -7508,33 +7589,23 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             return
 
         def apply(app, uid, sl):
-            ops = _pf_list(sl, "budgetCashflowOps")
-            idx = next((i for i, o in enumerate(ops)
-                        if isinstance(o, dict) and str(o.get("id") or "") == op_id), None)
-            if idx is not None:
-                ops = list(ops)
-                del ops[idx]
-                sl["budgetCashflowOps"] = ops
+            # Ищем по всем трём хранилищам. Удаление обязательно оставляет
+            # tombstone в deletedIds — так же, как удаление на сайте. Без него
+            # открытая вкладка Jarvis со старой копией среза при следующей
+            # синхронизации возвращала операцию обратно в ДДС.
+            for key in ("budgetCashflowOps", "savingsTransactions", "debtTransactions"):
+                arr = _pf_list(sl, key)
+                kept = [o for o in arr
+                        if not (isinstance(o, dict) and str(o.get("id") or "") == op_id)]
+                if len(kept) == len(arr):
+                    continue
+                sl[key] = kept
+                deleted = dict(app.get("deletedIds") or {})
+                coll = dict(deleted.get(key) or {})
+                coll[op_id] = int(time.time() * 1000)
+                deleted[key] = coll
+                app["deletedIds"] = deleted
                 return None
-
-            sav = _pf_list(sl, "savingsTransactions")
-            idx = next((i for i, t in enumerate(sav)
-                        if isinstance(t, dict) and str(t.get("id") or "") == op_id), None)
-            if idx is not None:
-                sav = list(sav)
-                del sav[idx]
-                sl["savingsTransactions"] = sav
-                return None
-
-            debt = _pf_list(sl, "debtTransactions")
-            idx = next((i for i, t in enumerate(debt)
-                        if isinstance(t, dict) and str(t.get("id") or "") == op_id), None)
-            if idx is not None:
-                debt = list(debt)
-                del debt[idx]
-                sl["debtTransactions"] = debt
-                return None
-
             return 404, {"error": "operation not found"}
 
         code, body = pf_write(token, apply)

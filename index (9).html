@@ -1163,7 +1163,16 @@ const mergeBudgetSlice = (localSlice, serverSlice, preferLocal, mergedDeletedIds
       out[sk] = mergeIdArrays(lv, sv, preferLocal, mergedDeletedIds[sk]);
       if (sk === 'budgetStatementRows') out[sk] = dedupeStatementRows(out[sk]);
     } else if (isPlainObject(lv) && isPlainObject(sv)) {
-      out[sk] = preferLocal ? { ...sv, ...lv } : { ...lv, ...sv };
+      // budgetCashflowSettings пишет приложение /pf/ со штампом updatedAt —
+      // новее побеждает целиком (как и в merge_app_data на сервере), иначе
+      // старая локальная копия затирала выбранный в приложении счёт.
+      const lTs = typeof lv.updatedAt === 'number' ? lv.updatedAt : null;
+      const sTs = typeof sv.updatedAt === 'number' ? sv.updatedAt : null;
+      if (lTs != null || sTs != null) {
+        out[sk] = (sTs != null && (lTs == null || sTs > lTs)) ? sv : lv;
+      } else {
+        out[sk] = preferLocal ? { ...sv, ...lv } : { ...lv, ...sv };
+      }
     } else {
       out[sk] = preferLocal ? lv : sv;
     }
@@ -8552,7 +8561,7 @@ const ENG_CARD_S={
 };
 
 
-function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importedAt, importing, onDirtyChange, savingRef }){
+function WordBaseTab({ words, ai, onSaveWords, onToggleHard, onImportSheets, importedAt, importing, onDirtyChange, savingRef }){
   const PAD = 5;
   const uid = () => engNewWordId();
   const blank = () => ({ id: uid(), date: '', en: '', ru: '', hard: false, baseline: null, meta: null });
@@ -8596,6 +8605,58 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
     toastTimerRef.current = setTimeout(() => setToast(''), 3200);
   };
   useEffect(() => () => { if (toastTimerRef.current) clearTimeout(toastTimerRef.current); }, []);
+
+  const [translatingId, setTranslatingId] = useState(null);
+  const [trPopup, setTrPopup] = useState(null); // { rowId, en, primary, variants, explanation }
+
+  const translateRow = async (id) => {
+    const row = rows.find(r => r.id === id);
+    if (!row || !row.en.trim()) return;
+    if (!engAIConfigured(ai)) {
+      setMsgType('err');
+      setMsg('Configure AI (🤖) first — translation needs a provider key.');
+      return;
+    }
+    if (translatingId) return;
+    setTranslatingId(id);
+    setMsg('');
+    const word = row.en.trim();
+    const prompt = `You are an English→Russian dictionary for a language learner.
+Translate the English word or short phrase below into Russian.
+
+Word: "${word}"
+
+Return ONLY valid JSON (no markdown, no backticks):
+{
+  "primary": "лучший основной перевод для словарной карточки",
+  "variants": [
+    {"ru": "вариант", "pos": "часть речи на русском или en", "sense": "краткое значение/оттенок на русском"}
+  ],
+  "explanation": "2–5 предложений на русском: значение, употребление, нюансы, пример на английском с переводом"
+}
+
+Rules:
+- primary — один короткий перевод (как в колонке словаря), без скобок и транскрипции
+- variants — все основные смыслы (3–8), включая primary
+- explanation — понятно и по делу, на русском`;
+    try {
+      const raw = await engCallAI(ai, prompt);
+      const m = String(raw).match(/\{[\s\S]*\}/);
+      if (!m) throw new Error('AI returned invalid format');
+      const data = JSON.parse(m[0]);
+      const primary = String(data.primary || '').trim();
+      if (!primary) throw new Error('Empty translation');
+      const variants = Array.isArray(data.variants) ? data.variants : [];
+      const explanation = String(data.explanation || '').trim();
+      updateCell(id, 'ru', primary);
+      setTrPopup({ rowId: id, en: word, primary, variants, explanation });
+    } catch (e) {
+      setMsgType('err');
+      setMsg('✗ Translate: ' + (e.message || e));
+    } finally {
+      setTranslatingId(null);
+    }
+  };
 
   const isDirtyRow = (r) => {
     const has = !!(r.en.trim() || r.ru.trim() || r.date.trim());
@@ -8829,13 +8890,24 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
                   />
                 </td>
                 <td className="p-1.5">
-                  <input
-                    value={r.ru}
-                    disabled={saving}
-                    onChange={e => updateCell(r.id, 'ru', e.target.value)}
-                    placeholder="translation"
-                    className="w-full bg-transparent border border-transparent focus:border-[var(--border-strong)] rounded-lg px-2 py-1.5 outline-none"
-                  />
+                  <div className="flex items-center gap-1">
+                    <input
+                      value={r.ru}
+                      disabled={saving || translatingId === r.id}
+                      onChange={e => updateCell(r.id, 'ru', e.target.value)}
+                      placeholder="translation"
+                      className="w-full min-w-0 bg-transparent border border-transparent focus:border-[var(--border-strong)] rounded-lg px-2 py-1.5 outline-none"
+                    />
+                    {r.en.trim() ? (
+                      <button
+                        type="button"
+                        title="Перевести English → Russian"
+                        disabled={saving || !!translatingId}
+                        onClick={() => translateRow(r.id)}
+                        className="flex-shrink-0 text-[11px] font-semibold px-1.5 py-1 rounded-md border border-teal-300 text-teal-700 bg-teal-50 hover:bg-teal-100 disabled:opacity-40"
+                      >{translatingId === r.id ? '…' : 'RU'}</button>
+                    ) : null}
+                  </div>
                 </td>
                 <td className="p-1.5 text-center">
                   {r.en.trim() ? (
@@ -8855,8 +8927,48 @@ function WordBaseTab({ words, onSaveWords, onToggleHard, onImportSheets, importe
         </table>
       </div>
       <p className="text-xs text-[var(--text-subtle)]">
-        Newest on top, oldest at the bottom. Empty rows for new words appear at the top. Date fills in automatically (today).
+        Newest on top, oldest at the bottom. Empty rows for new words appear at the top. Date fills in automatically (today). Кнопка RU — автоперевод из English.
       </p>
+
+      {trPopup && (
+        <Modal title={`Перевод: ${trPopup.en}`} onClose={() => setTrPopup(null)} wide>
+          <div className="p-4 sm:p-6 space-y-4">
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-[var(--text-subtle)] mb-1">В карточку</div>
+              <div className="font-display text-2xl text-teal-800">{trPopup.primary}</div>
+            </div>
+            {trPopup.variants && trPopup.variants.length > 0 && (
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-[var(--text-subtle)] mb-2">Варианты</div>
+                <ul className="space-y-2">
+                  {trPopup.variants.map((v, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm border border-[var(--border)] rounded-xl px-3 py-2 bg-[var(--surface)]">
+                      <button
+                        type="button"
+                        className="font-medium text-teal-700 hover:underline flex-shrink-0"
+                        title="Подставить в колонку Russian"
+                        onClick={() => {
+                          if (trPopup.rowId && v.ru) updateCell(trPopup.rowId, 'ru', String(v.ru).trim());
+                        }}
+                      >{String(v.ru || '')}</button>
+                      <span className="text-[var(--text-muted)]">
+                        {[v.pos, v.sense].filter(Boolean).join(' — ')}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {trPopup.explanation && (
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-[var(--text-subtle)] mb-2">Объяснение</div>
+                <p className="text-sm leading-relaxed text-[var(--text)] whitespace-pre-wrap">{trPopup.explanation}</p>
+              </div>
+            )}
+            <button onClick={() => setTrPopup(null)} className="btn-primary w-full py-2.5">Закрыть</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -10051,6 +10163,7 @@ function EnglishView({ data, setData, embedded, onDirtyChange }){
           <div style={{ display: engTab === 'wordbase' ? undefined : 'none' }}>
             <WordBaseTab
               words={engWordsItems}
+              ai={ai}
               onSaveWords={saveWordBase}
               onToggleHard={toggleWordHard}
               onImportSheets={importFromSheets}
@@ -15506,6 +15619,17 @@ const addMonthsStr = (ym, n) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 };
 
+// Постоянный платёж в архиве: archived = true + archivedFrom = 'YYYY-MM' —
+// первый месяц без плана (следующий за месяцем архивации). В месяцах до него
+// платёж по-прежнему даёт план в «По месяцу», поэтому история не теряется.
+// Старые записи с archived = true без archivedFrom (удалённые до появления
+// архива) не учитываются ни в каком месяце — как и раньше.
+// ДЕРЖАТЬ В СИНХРОНЕ с _pf_rec_active_in() из jarvis.py.
+const recurringActiveIn = (r, month) =>
+  !!r && (!r.archived || (!!r.archivedFrom && month < r.archivedFrom));
+// Платёж, который хоть где-то даёт план: активный или архивный с историей.
+const recurringHasHistory = (r) => !!r && (!r.archived || !!r.archivedFrom);
+
 const lastDayOfMonthStr = (ym) => {
   if (!ym) return '';
   const [y, m] = ym.split('-').map(Number);
@@ -15601,9 +15725,19 @@ const getDebtPaid = (debt, transactions) =>
 const getDebtRemaining = (debt, transactions) =>
   Math.max(getDebtEffectiveAmount(debt, transactions) - getDebtPaid(debt, transactions), 0);
 
-const calcDebtMonthly = (debt, transactions, _asOfMonth) => {
+// Индивидуальный план долга: debt.customPlan = true и debt.monthlyPlan =
+// { 'YYYY-MM': сумма } — своя сумма на каждый месяц графика вместо равного
+// деления. Без месяца берётся текущий (списки и подсказки «план в месяц»).
+const debtCustomPlanVal = (debt, month) => {
+  const m = month || getCurrentMonthStr();
+  if (m < debt.startDate || m > debt.targetDate) return 0;
+  return Number((debt.monthlyPlan || {})[m]) || 0;
+};
+
+const calcDebtMonthly = (debt, transactions, asOfMonth) => {
   // Closed debts still keep their schedule in «По месяцу».
   if (!debt || !debt.startDate || !debt.targetDate) return 0;
+  if (debt.customPlan) return debtCustomPlanVal(debt, asOfMonth);
   const effective = getDebtEffectiveAmount(debt, transactions);
   return calcMonthly({ ...debt, amount: effective });
 };
@@ -15789,7 +15923,9 @@ const cashflowArticles = (data) => {
   });
   const recCats = getRecurringCats(data);
   const activeRecItems = (data.budgetRecurring || []).filter(r => r && !r.archived);
-  const usedRec = [...new Set(activeRecItems.map(r => r.category).filter(Boolean))];
+  // Категория остаётся статьёй, пока в ней есть хоть один платёж с историей —
+  // иначе старые операции ДДС по архивному платежу потеряли бы свою статью.
+  const usedRec = [...new Set((data.budgetRecurring || []).filter(recurringHasHistory).map(r => r.category).filter(Boolean))];
   usedRec.forEach(cid => {
     const c = recCats.find(x => x.id === cid) || {};
     out.push({
@@ -16419,7 +16555,8 @@ function BudgetMonthlyView({ data, setData }) {
   const expCats      = getExpenseCats(data);
   const recCats      = getRecurringCats(data);
   const activeExp    = (data.budgetExpenses  || []).filter(e => !e.archived);
-  const activeRec    = (data.budgetRecurring || []).filter(r => !r.archived);
+  // Постоянные: активные + архивные, у которых в этом году ещё был план.
+  const activeRec    = (data.budgetRecurring || []).filter(r => r && months.some(m => recurringActiveIn(r, m)));
   const savTx        = data.savingsTransactions || [];
   const debtTx       = data.debtTransactions || [];
   const planDebts    = (data.budgetDebts || []).filter(d => d.startDate && d.targetDate);
@@ -16455,6 +16592,7 @@ function BudgetMonthlyView({ data, setData }) {
     const mNum = parseInt(String(month).split('-')[1], 10);
     return activeRec
       .filter(r => r.category === catId)
+      .filter(r => recurringActiveIn(r, month))
       .filter(r => !(Array.isArray(r.skipMonths) && r.skipMonths.includes(mNum)))
       .reduce((s, r) => s + (r.amount || 0), 0);
   };
@@ -16462,7 +16600,7 @@ function BudgetMonthlyView({ data, setData }) {
   // Долги: фиксированный план = сумма ÷ месяцы графика (платежи не меняют).
   const getDebtVal = (debt, month) =>
     (debt.startDate <= month && debt.targetDate >= month)
-      ? calcDebtMonthly(debt, debtTx)
+      ? calcDebtMonthly(debt, debtTx, month)
       : 0;
 
   const getDebtFact = (debtId, month) =>
@@ -20285,9 +20423,14 @@ function BudgetRecurringView({ data, setData }) {
   const [filterCats,   setFilterCats]   = useState([]);
   const [sortCol,      setSortCol]      = useState('name');
   const [sortDir,      setSortDir]      = useState('asc');
+  const [showArchive,  setShowArchive]  = useState(false);
 
   const cats  = getRecurringCats(data);
   const items = (data.budgetRecurring || []).filter(r => !r.archived);
+  // В архиве показываем только платежи с историей (archivedFrom) — старые
+  // archived без неё никак не использовались и так и остаются скрытыми.
+  const archivedItems = (data.budgetRecurring || []).filter(r => r && r.archived && r.archivedFrom)
+    .sort((a, b) => String(b.archivedFrom).localeCompare(String(a.archivedFrom)));
 
   const save = (item) => {
     item = { ...item, updatedAt: Date.now() };
@@ -20300,8 +20443,28 @@ function BudgetRecurringView({ data, setData }) {
   };
 
   const remove = (id) => {
-    if (!confirm('Удалить платёж?')) return;
+    if (!confirm('Удалить платёж совсем?\n\nОн пропадёт и из прошлых месяцев в «По месяцу». Чтобы сохранить историю, используйте «В архив».')) return;
     setData(d => ({ ...d, budgetRecurring: (d.budgetRecurring || []).filter(r => r.id !== id), deletedIds: withDeletedId(d, 'budgetRecurring', id) }));
+  };
+
+  const patch = (id, fields) => setData(d => ({
+    ...d,
+    budgetRecurring: (d.budgetRecurring || []).map(r => r.id === id ? { ...r, ...fields, updatedAt: Date.now() } : r),
+  }));
+
+  // В архив: план остаётся по текущий месяц включительно, со следующего — нет.
+  const archive = (r) => {
+    const from = addMonthsStr(getCurrentMonthStr(), 1);
+    const [y, m] = getCurrentMonthStr().split('-');
+    if (!confirm(`Перенести «${r.name || 'платёж'}» в архив?\n\nПлан и факт по ${m}.${y} включительно сохранятся в «По месяцу», со следующего месяца плана не будет.`)) return;
+    patch(r.id, { archived: true, archivedFrom: from });
+  };
+
+  const unarchive = (r) => patch(r.id, { archived: false, archivedFrom: null });
+
+  const monthLabel = (ym) => {
+    const [y, m] = String(ym || '').split('-');
+    return y && m ? `${m}.${y}` : '—';
   };
 
   const newItem = () => setEditing({
@@ -20410,7 +20573,8 @@ function BudgetRecurringView({ data, setData }) {
                         <td className="px-2 py-3">
                           <div className="flex gap-1 justify-end">
                             <button onClick={() => setEditing(r)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit"  size={14} /></button>
-                            <button onClick={() => remove(r.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
+                            <button onClick={() => archive(r)} title="В архив — прошлые месяцы сохранятся" className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="archive" size={14} /></button>
+                            <button onClick={() => remove(r.id)} title="Удалить совсем — пропадёт и из прошлых месяцев" className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
                           </div>
                         </td>
                       </tr>
@@ -20425,6 +20589,42 @@ function BudgetRecurringView({ data, setData }) {
             </div>
           </div>
         </>
+      )}
+
+      {archivedItems.length > 0 && (
+        <div className="mt-6">
+          <button onClick={() => setShowArchive(v => !v)}
+            className="inline-flex items-center gap-2 text-sm text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">
+            <Icon name="archive" size={14} />Архив ({archivedItems.length}) {showArchive ? '▴' : '▾'}
+          </button>
+          {showArchive && (
+            <div className="mt-3 bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
+              <div className="overflow-x-auto">
+                <table className="text-sm w-max max-w-full">
+                  <tbody>
+                    {archivedItems.map(r => {
+                      const cat = cats.find(c => c.id === r.category) || { emoji: '📌', label: r.category };
+                      return (
+                        <tr key={r.id} className="border-b border-[var(--border)] last:border-0 text-[var(--text-muted)]">
+                          <td className="px-3 py-3 font-medium whitespace-nowrap">{r.name}</td>
+                          <td className="px-3 py-3 whitespace-nowrap">{cat.emoji} {cat.label}</td>
+                          <td className="px-3 py-3 text-right whitespace-nowrap">{formatRub(r.amount)} ₽</td>
+                          <td className="px-3 py-3 whitespace-nowrap text-xs text-[var(--text-subtle)]">план по {monthLabel(addMonthsStr(r.archivedFrom, -1))}</td>
+                          <td className="px-2 py-3">
+                            <div className="flex gap-1 justify-end">
+                              <button onClick={() => unarchive(r)} title="Вернуть из архива" className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="restore" size={14} /></button>
+                              <button onClick={() => remove(r.id)} title="Удалить совсем — пропадёт и из прошлых месяцев" className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={14} /></button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {editing && <BudgetRecurringModal item={editing} cats={cats} onSave={save} onClose={() => setEditing(null)} />}
@@ -21251,16 +21451,69 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
     }
   };
 
-  const effective = (Number(form.amount) || 0) + (increased || 0);
-  const remaining = Math.max(effective - (paid || 0), 0);
   const months = !noSchedule && form.startDate && form.targetDate ? monthsBetweenStr(form.startDate, form.targetDate) : 0;
+  const customOn = !noSchedule && !!form.customPlan;
+  const scheduleMonths = (!noSchedule && form.startDate && form.targetDate && form.startDate <= form.targetDate)
+    ? Array.from({ length: months }, (_, i) => addMonthsStr(form.startDate, i))
+    : [];
+  const planOf = (mo) => (form.monthlyPlan || {})[mo];
+  const customTotal = scheduleMonths.reduce((s, mo) => s + (Number(planOf(mo)) || 0), 0);
+  // Со своим планом сумма долга — это итого по месяцам (вместе с довнесениями):
+  // сама сумма в поле считается из плана, а не вводится.
+  const amountFromPlan = Math.max(customTotal - (increased || 0), 0);
+  const effective = customOn ? customTotal : (Number(form.amount) || 0) + (increased || 0);
+  const remaining = Math.max(effective - (paid || 0), 0);
   const monthsLeft = noSchedule ? 0 : monthsLeftFor({ ...form, amount: effective });
-  const monthly = (!noSchedule && form.targetDate && effective > 0)
+  const evenMonthly = (!noSchedule && form.targetDate && effective > 0)
     ? calcMonthly({ ...form, amount: effective })
     : 0;
+  const monthly = customOn ? debtCustomPlanVal(form, getCurrentMonthStr()) : evenMonthly;
+
+  const setMonthPlan = (mo, v) => setForm(f => ({ ...f, monthlyPlan: { ...(f.monthlyPlan || {}), [mo]: v } }));
+
+  // Делим сумму на n месяцев в целых рублях без потерь: остаток от деления
+  // уходит в последний месяц, итог плана ровно равен сумме.
+  const splitEven = (total, n) => {
+    if (!n) return [];
+    const base = Math.floor(total / n);
+    return Array.from({ length: n }, (_, i) => i === n - 1 ? Math.round(total - base * (n - 1)) : base);
+  };
+
+  // Включили свой план — пустой план заполняем равным делением суммы, чтобы
+  // было от чего отталкиваться. Выключили — сумма долга остаётся равной
+  // итогу плана, а не откатывается к старому значению в поле.
+  const toggleCustom = (v) => setForm(f => {
+    if (!v) return { ...f, customPlan: false, amount: amountFromPlan > 0 ? amountFromPlan : f.amount };
+    const plan = { ...(f.monthlyPlan || {}) };
+    const hasAny = scheduleMonths.some(mo => Number(plan[mo]) > 0);
+    if (!hasAny) {
+      const parts = splitEven(effective, scheduleMonths.length);
+      scheduleMonths.forEach((mo, i) => { plan[mo] = parts[i]; });
+    }
+    return { ...f, customPlan: true, monthlyPlan: plan };
+  });
+
+  // «Поровну»: итог плана (минус вписанное в прошлые месяцы) заново делится
+  // на текущий и будущие месяцы графика — сумма долга не меняется.
+  const fillEvenly = () => setForm(f => {
+    const cur = getCurrentMonthStr();
+    const future = scheduleMonths.filter(mo => mo >= cur);
+    const target = future.length ? future : scheduleMonths;
+    const fixed = scheduleMonths.filter(mo => !target.includes(mo))
+      .reduce((s, mo) => s + (Number((f.monthlyPlan || {})[mo]) || 0), 0);
+    const rest = Math.max(effective - fixed, 0);
+    const parts = splitEven(rest, target.length);
+    const plan = { ...(f.monthlyPlan || {}) };
+    target.forEach((mo, i) => { plan[mo] = parts[i]; });
+    return { ...f, monthlyPlan: plan };
+  });
 
   const submit = () => {
-    if (!form.amount || Number(form.amount) <= 0) return;
+    if (customOn && !(amountFromPlan > 0)) {
+      alert('Заполните план по месяцам — сумма долга считается из него');
+      return;
+    }
+    if (!customOn && (!form.amount || Number(form.amount) <= 0)) return;
     if (!form.debtor.trim()) return;
     if (!noSchedule && form.startDate && form.targetDate && form.startDate > form.targetDate) {
       alert('Дата начала выплат должна быть раньше или равна дате окончания');
@@ -21272,9 +21525,14 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
       const [y, m] = form.targetDate.split('-');
       returnDate = `${y}-${m}-${new Date(Number(y), Number(m), 0).getDate()}`;
     }
+    // В плане храним только месяцы графика и только числа.
+    const monthlyPlan = {};
+    scheduleMonths.forEach(mo => { const v = Number(planOf(mo)); if (v > 0) monthlyPlan[mo] = v; });
     onSave({
       ...form,
-      amount: Number(form.amount),
+      customPlan: customOn,
+      monthlyPlan: customOn ? monthlyPlan : (form.monthlyPlan || {}),
+      amount: customOn ? amountFromPlan : Number(form.amount),
       debtor: form.debtor.trim(),
       comment: (form.comment || '').trim(),
       startDate: noSchedule ? '' : form.startDate,
@@ -21292,9 +21550,15 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
         <div>
           <label>Сумма долга (₽)</label>
           <input type="number" inputMode="numeric" min="1" autoFocus
-            value={form.amount || ''}
+            value={customOn ? amountFromPlan : (form.amount || '')}
             onChange={e => set('amount', e.target.value)}
+            disabled={customOn}
             placeholder="5 000" />
+          {customOn && (
+            <div className="text-xs text-[var(--text-subtle)] mt-1">
+              Считается из плана по месяцам{increased > 0 ? ` (итого ${formatRub(customTotal)} ₽ минус довнесения ${formatRub(increased)} ₽)` : ''}
+            </div>
+          )}
         </div>
 
         <div>
@@ -21332,7 +21596,41 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
           </div>
         )}
 
-        {!noSchedule && monthly > 0 && (
+        {!noSchedule && scheduleMonths.length > 0 && (
+          <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium">Свой план по месяцам</div>
+                <div className="text-xs text-[var(--text-subtle)] mt-0.5">Сумма на каждый месяц вручную вместо равного деления — так и попадёт в «По месяцу», а сумма долга станет равна итогу плана</div>
+              </div>
+              <Toggle checked={customOn} onChange={toggleCustom} />
+            </div>
+            {customOn && (
+              <div className="mt-4 fade-in">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {scheduleMonths.map(mo => (
+                    <div key={mo}>
+                      <label className="!text-xs">{formatMonthShortBudget(mo)}</label>
+                      <input type="number" inputMode="numeric" min="0"
+                        value={planOf(mo) ?? ''}
+                        onChange={e => setMonthPlan(mo, e.target.value)}
+                        placeholder="0" />
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between gap-3 mt-3 text-sm">
+                  <span className="text-[var(--text-muted)]">
+                    Итого по плану: <b className="text-[var(--text)]">{formatRub(customTotal)} ₽</b>
+                    {paid > 0 && <span> · выплачено {formatRub(paid)} ₽</span>}
+                  </span>
+                  <button type="button" onClick={fillEvenly} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] underline whitespace-nowrap">Поровну</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!noSchedule && !customOn && monthly > 0 && (
           <div className="bg-[var(--bg)] border border-[var(--border)] rounded-2xl p-4 fade-in">
             <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-3">План выплат</div>
             <div className="flex items-baseline gap-2 mb-1">

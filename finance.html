@@ -1962,16 +1962,26 @@ body { padding-top: var(--safe-t); }
   function renderEditCategoryOptions(selectedId) {
     const dir = $('editDirection').value === 'in' ? 'in' : 'out';
     const opts = categories.filter(c => c.direction === dir);
-    // Статья операции могла исчезнуть из справочника — не даём выбору
-    // молча съехать на первую попавшуюся статью.
-    const items = (selectedId && !opts.some(c => c.id === selectedId) && categoryName(selectedId) !== 'Без статьи')
-      ? [{ id: selectedId, name: categoryName(selectedId) }, ...opts]
-      : opts;
+    // Статья операции могла исчезнуть из справочника (удалили на сайте) —
+    // не даём выбору молча съехать на первую попавшуюся статью: оставляем
+    // старую отдельной строкой, сервер примет её, пока её не меняют.
+    let items = opts;
+    if (selectedId && !opts.some(c => c.id === selectedId)) {
+      items = [{ id: selectedId, name: categoryName(selectedId) === 'Без статьи' ? 'Удалённая статья' : categoryName(selectedId) }, ...opts];
+    } else if (!selectedId) {
+      items = [{ id: '', name: '— выберите статью —' }, ...opts];
+    }
     $('editCategory').innerHTML = editOptionsHtml(items, selectedId);
   }
 
   function renderEditAccountOptions(selectedId) {
-    $('editAccount').innerHTML = editOptionsHtml(accounts, selectedId);
+    // Архивный счёт в списке счетов приложения не приходит — без отдельной
+    // строки выбор молча переключался на первый счёт, и правка суммы
+    // переносила операцию на другую карту.
+    const items = (selectedId && !accounts.some(a => a.id === selectedId))
+      ? [{ id: selectedId, name: 'Архивный счёт' }, ...accounts]
+      : accounts;
+    $('editAccount').innerHTML = editOptionsHtml(items, selectedId);
   }
 
   function onEditDirectionChange() {
@@ -2013,7 +2023,7 @@ body { padding-top: var(--safe-t); }
   async function saveEditOp() {
     if (!editingOp) return;
     const locked = !!editingOp.kind && editingOp.kind !== 'cashflow';
-    const amount = parseAmount(($('editAmount').value || '').trim().replace('.', ','));
+    const amount = parseAmount(($('editAmount').value || '').replace(/[\s\u00a0]/g, ''));
     if (!(amount > 0)) { toast('Введите сумму', 'error'); return; }
     if (!PF_DATE_RE_CLIENT.test($('editDate').value || '')) { toast('Введите дату', 'error'); return; }
     const categoryId = locked ? (editingOp.category_id || '') : $('editCategory').value;
