@@ -8719,7 +8719,7 @@ const ENG_CARD_S={
 
 
 function WordBaseTab({ words, ai, onSaveWords, onToggleHard, onImportSheets, importedAt, importing, onDirtyChange, savingRef }){
-  const PAD = 5;
+  const PAD = 1; // одна пустая строка сверху для нового слова
   const uid = () => engNewWordId();
   const blank = () => ({ id: uid(), date: '', en: '', ru: '', hard: false, baseline: null, meta: null });
   // Новее выше: по дате слова, иначе по createdAt. Пустые строки для ввода — сверху.
@@ -9084,7 +9084,7 @@ Rules:
         </table>
       </div>
       <p className="text-xs text-[var(--text-subtle)]">
-        Newest on top, oldest at the bottom. Empty rows for new words appear at the top. Date fills in automatically (today). Кнопка RU — автоперевод из English.
+        Newest on top, oldest at the bottom. Одна пустая строка сверху для нового слова. Date fills in automatically (today). Кнопка RU — автоперевод из English.
       </p>
 
       {trPopup && (
