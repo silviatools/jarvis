@@ -3914,9 +3914,115 @@ def eng_word_sort_date(w: dict, today: date) -> date | None:
     return eng_parse_date(created, today.year)
 
 
+
+def normalize_eng_word_reminder(raw) -> dict:
+    """Normalize engWordReminder; migrate legacy flat days/count/order/dateRange."""
+    def day_default(enabled=False):
+        return {
+            "enabled": bool(enabled),
+            "count": 5,
+            "order": "random",
+            "dateRange": "14",
+            "filter": "all",
+        }
+
+    by_day = {d: day_default(enabled=(1 <= d <= 5)) for d in range(7)}
+    by_day[1]["dateRange"] = "14"
+    by_day[2]["dateRange"] = "all"
+    by_day[3]["dateRange"] = "all"
+    by_day[3]["filter"] = "hard"
+
+    if not isinstance(raw, dict):
+        return {"enabled": False, "time": "09:00", "byDay": by_day, "updatedAt": 0}
+
+    raw_by = raw.get("byDay")
+    if isinstance(raw_by, dict):
+        for d in range(7):
+            src = raw_by.get(d)
+            if src is None:
+                src = raw_by.get(str(d))
+            if not isinstance(src, dict):
+                continue
+            try:
+                count = max(1, min(50, int(src.get("count") or 5)))
+            except Exception:
+                count = 5
+            order = src.get("order") or "random"
+            if order not in ("random", "newest", "oldest"):
+                order = "random"
+            date_range = str(src.get("dateRange") or "14")
+            if date_range not in ("7", "14", "30", "all"):
+                date_range = "14"
+            filt = src.get("filter") or "all"
+            if filt not in ("all", "hard", "not-hard"):
+                filt = "all"
+            by_day[d] = {
+                "enabled": bool(src.get("enabled")),
+                "count": count,
+                "order": order,
+                "dateRange": date_range,
+                "filter": filt,
+            }
+    elif isinstance(raw.get("days"), list):
+        days = []
+        for d in raw.get("days") or []:
+            try:
+                days.append(int(d))
+            except Exception:
+                pass
+        try:
+            count = max(1, min(50, int(raw.get("count") or 5)))
+        except Exception:
+            count = 5
+        order = raw.get("order") or "random"
+        if order not in ("random", "newest", "oldest"):
+            order = "random"
+        date_range = str(raw.get("dateRange") or "14")
+        if date_range not in ("7", "14", "30", "all"):
+            date_range = "14"
+        for d in range(7):
+            by_day[d] = {
+                "enabled": d in days,
+                "count": count,
+                "order": order,
+                "dateRange": date_range,
+                "filter": "all",
+            }
+
+    return {
+        "enabled": bool(raw.get("enabled")),
+        "time": str(raw.get("time") or "09:00").strip() or "09:00",
+        "byDay": by_day,
+        "updatedAt": raw.get("updatedAt") or 0,
+    }
+
+
+def resolve_eng_day_pick(eng_reminder, day_js: int) -> dict | None:
+    """Pick settings for a weekday, or None if master/day is off."""
+    rem = normalize_eng_word_reminder(eng_reminder)
+    if not rem.get("enabled"):
+        return None
+    day = (rem.get("byDay") or {}).get(int(day_js))
+    if not day or not day.get("enabled"):
+        return None
+    return {
+        "count": day.get("count", 5),
+        "order": day.get("order", "random"),
+        "dateRange": day.get("dateRange", "14"),
+        "filter": day.get("filter", "all"),
+        "time": rem.get("time", "09:00"),
+    }
+
+
 def select_eng_words_for_reminder(words: list, reminder: dict, today: date) -> list:
     """Filter/order/limit words the same way FlashcardsTab.startSession does."""
     pool = list(words)
+    filt = reminder.get("filter") or "all"
+    if filt == "hard":
+        pool = [w for w in pool if w.get("hard")]
+    elif filt == "not-hard":
+        pool = [w for w in pool if not w.get("hard")]
+
     date_range = str(reminder.get("dateRange") or "all")
     if date_range != "all":
         try:
@@ -3954,8 +4060,10 @@ def select_eng_words_for_reminder(words: list, reminder: dict, today: date) -> l
 def format_eng_words_message(words: list, reminder: dict, *, test: bool = False) -> str:
     order_labels = {"random": "random", "newest": "newest", "oldest": "oldest"}
     range_labels = {"7": "last 7 days", "14": "last 14 days", "30": "last 30 days", "all": "all time"}
+    filter_labels = {"all": "all words", "hard": "hard only", "not-hard": "not hard"}
     order = order_labels.get(reminder.get("order"), reminder.get("order") or "")
     rng = range_labels.get(str(reminder.get("dateRange")), str(reminder.get("dateRange") or ""))
+    filt = filter_labels.get(reminder.get("filter"), reminder.get("filter") or "all words")
     entries = []
     for w in words:
         en = html.escape(str(w.get("en") or w.get("word") or w.get("english") or "").strip())
@@ -3971,7 +4079,7 @@ def format_eng_words_message(words: list, reminder: dict, *, test: bool = False)
     title = "📚 <b>Words for today</b>" + (" <i>(test)</i>" if test else "")
     lines = [
         title,
-        f"<i>{len(entries)} words · {html.escape(str(order))} · {html.escape(str(rng))}</i>",
+        f"<i>{len(entries)} words · {html.escape(str(order))} · {html.escape(str(rng))} · {html.escape(str(filt))}</i>",
         "",
     ]
     for i, entry in enumerate(entries, 1):
@@ -4204,21 +4312,18 @@ def _tick():
     # ── English daily words: speak-practice vocabulary pick ────────────────
     try:
         eng_reminder = app_data_raw.get("engWordReminder") or {}
-        cfg_time = str(eng_reminder.get("time", "")).strip()
-        if eng_reminder.get("enabled") and cfg_time == now_str:
-            days_raw = eng_reminder.get("days", [1, 2, 3, 4, 5]) or []
-            days = []
-            for d in days_raw:
-                try: days.append(int(d))
-                except Exception: pass
-            if today_js not in days:
-                print(f"[{now_str} MSK] eng words: today ({today_js}) not in days {days}")
+        rem = normalize_eng_word_reminder(eng_reminder)
+        cfg_time = str(rem.get("time", "")).strip()
+        if rem.get("enabled") and cfg_time == now_str:
+            day_pick = resolve_eng_day_pick(rem, today_js)
+            if not day_pick:
+                print(f"[{now_str} MSK] eng words: day {today_js} is off")
             elif _already_fired("eng_words", "daily", today_iso, now_str):
                 print(f"[{now_str} MSK] eng words: already fired this minute")
             else:
-                result = send_eng_words_now(app_data_raw, eng_reminder, test=False)
+                result = send_eng_words_now(app_data_raw, day_pick, test=False)
                 if result.get("ok"):
-                    print(f"[{now_str} MSK] → eng words ({result.get('words')} of {result.get('pool')}) to {result.get('sent')} subscriber(s)")
+                    print(f"[{now_str} MSK] → eng words ({result.get('words')} of {result.get('pool')}) to {result.get('sent')} subscriber(s) [day={today_js} filter={day_pick.get('filter')}]")
                 else:
                     print(f"[{now_str} MSK] eng words: skip — {result.get('error')}")
     except Exception as e:
@@ -6670,19 +6775,25 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 app_data = load_app_data()
                 saved = app_data.get("engWordReminder") or {}
                 override = body.get("reminder") if isinstance(body.get("reminder"), dict) else {}
-                reminder = {
-                    "enabled": True,
-                    "time": override.get("time", saved.get("time", "09:00")),
-                    "days": override.get("days", saved.get("days", [1, 2, 3, 4, 5])),
-                    "count": override.get("count", saved.get("count", 5)),
-                    "order": override.get("order", saved.get("order", "random")),
-                    "dateRange": override.get("dateRange", saved.get("dateRange", "7")),
-                }
-                result = send_eng_words_now(app_data, reminder, test=True)
+                # Client may send full normalized reminder; merge over saved.
+                merged = {**saved, **override} if override else saved
+                if "byDay" in override and "byDay" in saved and isinstance(override.get("byDay"), dict):
+                    merged = {**saved, **override, "byDay": override["byDay"]}
+                rem = normalize_eng_word_reminder(merged)
+                rem["enabled"] = True  # test ignores master off
+                try:
+                    day_js = int(body.get("day") if body.get("day") is not None else today_msk().isoweekday() % 7)
+                except Exception:
+                    day_js = today_msk().isoweekday() % 7
+                day_pick = resolve_eng_day_pick(rem, day_js)
+                if not day_pick:
+                    self._json(400, {"error": "that day is turned off — enable it to test"})
+                    return
+                result = send_eng_words_now(app_data, day_pick, test=True)
                 if result.get("ok"):
-                    self._json(200, result)
+                    self._json(200, {**result, "day": day_js})
                 else:
-                    self._json(400, result)
+                    self._json(400, {**result, "day": day_js})
             except Exception as e:
                 self._json(500, {"error": str(e)})
         elif self.path == "/api/backup/send-now":

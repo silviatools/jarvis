@@ -724,9 +724,22 @@ const DEFAULT_DATA = () => ({
   // Словарь English (Word base) — источник правды в Jarvis. LWW по updatedAt.
   // Разовый импорт из Google Sheets ставит importedAt; дальше правки только здесь.
   engWords: { items: [], updatedAt: 0, importedAt: 0 },
-  // Ежедневная выборка слов в Telegram: дни/время/кол-во/порядок/период.
-  // LWW по updatedAt. Берёт слова из engWords; рассылка в jarvis.py _tick.
-  engWordReminder: { enabled: false, time: '09:00', days: [1, 2, 3, 4, 5], count: 5, order: 'random', dateRange: '7', updatedAt: 0 },
+  // Telegram word picks: global on/time + per-weekday filters (byDay).
+  // LWW by updatedAt. Words from engWords; send in jarvis.py _tick.
+  engWordReminder: {
+    enabled: false,
+    time: '09:00',
+    byDay: {
+      1: { enabled: true, count: 5, order: 'random', dateRange: '14', filter: 'all' },
+      2: { enabled: true, count: 5, order: 'random', dateRange: 'all', filter: 'all' },
+      3: { enabled: true, count: 5, order: 'random', dateRange: 'all', filter: 'hard' },
+      4: { enabled: true, count: 5, order: 'random', dateRange: '14', filter: 'all' },
+      5: { enabled: true, count: 5, order: 'random', dateRange: '14', filter: 'all' },
+      6: { enabled: false, count: 5, order: 'random', dateRange: 'all', filter: 'all' },
+      0: { enabled: false, count: 5, order: 'random', dateRange: 'all', filter: 'all' },
+    },
+    updatedAt: 0,
+  },
   settings: { ...DEFAULT_SETTINGS },
 });
 
@@ -8449,17 +8462,67 @@ async function engPrefetchSentences(ai,words,cache,onChunk){
   }
 }
 
+
+// Default + migrate legacy flat engWordReminder → per-weekday byDay.
+const ENG_WORD_DAY_DEFAULT = () => ({ enabled: false, count: 5, order: 'random', dateRange: '14', filter: 'all' });
+const ENG_WORD_BY_DAY_DEFAULT = () => {
+  const byDay = {};
+  for (let d = 0; d <= 6; d++) byDay[d] = { ...ENG_WORD_DAY_DEFAULT(), enabled: d >= 1 && d <= 5 };
+  byDay[1] = { ...byDay[1], dateRange: '14', filter: 'all' };
+  byDay[2] = { ...byDay[2], dateRange: 'all', filter: 'all' };
+  byDay[3] = { ...byDay[3], dateRange: 'all', filter: 'hard' };
+  return byDay;
+};
+const normalizeEngDayCfg = (src) => {
+  const s = src && typeof src === 'object' ? src : {};
+  return {
+    enabled: !!s.enabled,
+    count: Math.max(1, Math.min(50, parseInt(s.count, 10) || 5)),
+    order: ['random', 'newest', 'oldest'].includes(s.order) ? s.order : 'random',
+    dateRange: ['7', '14', '30', 'all'].includes(String(s.dateRange)) ? String(s.dateRange) : '14',
+    filter: ['all', 'hard', 'not-hard'].includes(s.filter) ? s.filter : 'all',
+  };
+};
+const normalizeEngWordReminder = (raw) => {
+  const time = (raw && raw.time) || '09:00';
+  const enabled = !!(raw && raw.enabled);
+  const updatedAt = (raw && raw.updatedAt) || 0;
+  const byDay = ENG_WORD_BY_DAY_DEFAULT();
+  if (raw && raw.byDay && typeof raw.byDay === 'object') {
+    for (let d = 0; d <= 6; d++) {
+      const src = raw.byDay[d] ?? raw.byDay[String(d)];
+      if (src) byDay[d] = normalizeEngDayCfg(src);
+    }
+  } else if (raw && Array.isArray(raw.days)) {
+    // Legacy: one filter for selected weekdays.
+    const days = raw.days.map(Number);
+    const flat = normalizeEngDayCfg(raw);
+    for (let d = 0; d <= 6; d++) byDay[d] = { ...flat, enabled: days.includes(d) };
+  }
+  return { enabled, time, byDay, updatedAt };
+};
+
 function EngCfgModal({cfg, reminder, onSave, onClose, hasToken, wordsCount}){
-  const defaultReminder = { enabled: false, time: '09:00', days: [1, 2, 3, 4, 5], count: 5, order: 'random', dateRange: '7' };
-  const [f,setF]=useState({...cfg});
-  const [r,setR]=useState({ ...defaultReminder, ...(reminder || {}) });
+  const [f, setF] = useState({ ...cfg });
+  const [r, setR] = useState(() => normalizeEngWordReminder(reminder));
   const [testing, setTesting] = useState(false);
   const [testMsg, setTestMsg] = useState('');
   const [testOk, setTestOk] = useState(null);
-  const toggleDay = (dayId) => {
-    const cur = r.days || [];
-    setR(x => ({ ...x, days: cur.includes(dayId) ? cur.filter(d => d !== dayId) : [...cur, dayId].sort() }));
+  const [testDay, setTestDay] = useState(() => {
+    const today = new Date().getDay();
+    return today;
+  });
+
+  const patchDay = (dayId, patch) => {
+    setR(x => ({
+      ...x,
+      byDay: {
+        ...x.byDay,
+        [dayId]: normalizeEngDayCfg({ ...(x.byDay?.[dayId] || ENG_WORD_DAY_DEFAULT()), ...patch }),
+      },
+    }));
   };
+
   const sendTest = async () => {
     if (testing) return;
     setTesting(true); setTestMsg(''); setTestOk(null);
@@ -8468,13 +8531,8 @@ function EngCfgModal({cfg, reminder, onSave, onClose, hasToken, wordsCount}){
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          reminder: {
-            time: r.time || '09:00',
-            days: Array.isArray(r.days) ? r.days : [1, 2, 3, 4, 5],
-            count: Math.max(1, Math.min(50, parseInt(r.count, 10) || 5)),
-            order: r.order || 'random',
-            dateRange: r.dateRange || '7',
-          },
+          reminder: normalizeEngWordReminder(r),
+          day: testDay,
         }),
       });
       const json = await res.json().catch(() => ({}));
@@ -8491,89 +8549,122 @@ function EngCfgModal({cfg, reminder, onSave, onClose, hasToken, wordsCount}){
     }
     setTesting(false);
   };
-  return(
-    <Modal onClose={onClose} title="Настройки">
+
+  const dayLabel = (id) => (WEEKDAYS.find(w => w.id === id) || {}).label || String(id);
+
+  return (
+    <Modal onClose={onClose} title="Settings">
       <div className="space-y-5">
         <div className="space-y-4">
           <div>
-            <div className="text-sm font-medium">Google Sheets — разовый импорт</div>
-            <p className="text-xs text-[var(--text-muted)] mt-1">Нужен только чтобы один раз перенести словарь в Word base. Дальше слова правятся только в Jarvis.</p>
+            <div className="text-sm font-medium">Google Sheets — one-time import</div>
+            <p className="text-xs text-[var(--text-muted)] mt-1">Only to move the vocabulary into Word base once. After that, edit words only in Jarvis.</p>
           </div>
-          <div><label>API Key (read)</label><input type="password" value={f.apiKey} onChange={e=>setF(x=>({...x,apiKey:e.target.value}))} placeholder="AIzaSy..."/></div>
-          <div><label>Spreadsheet ID</label><input value={f.sheetId} onChange={e=>setF(x=>({...x,sheetId:e.target.value}))}/><p className="text-xs text-[var(--text-subtle)] mt-1">ID found in the URL: spreadsheets/d/<b>ID</b>/edit</p></div>
-          <div><label>Sheet name</label><input value={f.sheetName} onChange={e=>setF(x=>({...x,sheetName:e.target.value}))}/></div>
+          <div><label>API Key (read)</label><input type="password" value={f.apiKey} onChange={e => setF(x => ({ ...x, apiKey: e.target.value }))} placeholder="AIzaSy..."/></div>
+          <div><label>Spreadsheet ID</label><input value={f.sheetId} onChange={e => setF(x => ({ ...x, sheetId: e.target.value }))}/><p className="text-xs text-[var(--text-subtle)] mt-1">ID found in the URL: spreadsheets/d/<b>ID</b>/edit</p></div>
+          <div><label>Sheet name</label><input value={f.sheetName} onChange={e => setF(x => ({ ...x, sheetName: e.target.value }))}/></div>
         </div>
 
         <div className="border-t border-[var(--border)] pt-4 space-y-4">
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-sm font-medium">Words in Telegram</div>
-              <div className="text-xs text-[var(--text-muted)] mt-0.5">Daily pick for speaking practice</div>
+              <div className="text-xs text-[var(--text-muted)] mt-0.5">Per weekday: which words to send. Off = no message that day.</div>
             </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                type="button"
-                onClick={sendTest}
-                disabled={testing || !hasToken || !(wordsCount > 0)}
-                title={!hasToken ? 'Set Telegram bot token first' : !(wordsCount > 0) ? 'Word base is empty' : 'Send a test message with the current filters'}
-                className="text-xs px-2.5 py-1 rounded-lg border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--text)] disabled:opacity-40 transition-all"
-              >{testing ? '…' : 'Test'}</button>
-              <button type="button" onClick={() => setR(x => ({ ...x, enabled: !x.enabled }))}
-                className={`relative w-11 h-6 rounded-full transition-colors ${r.enabled ? 'bg-green-500' : 'bg-[var(--border)]'}`}>
-                <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${r.enabled ? 'translate-x-5' : ''}`} />
-              </button>
-            </div>
+            <button type="button" onClick={() => setR(x => ({ ...x, enabled: !x.enabled }))}
+              className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${r.enabled ? 'bg-green-500' : 'bg-[var(--border)]'}`}>
+              <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${r.enabled ? 'translate-x-5' : ''}`} />
+            </button>
           </div>
-          {testMsg && (
-            <div className={`text-xs px-3 py-2 rounded-xl border ${testOk ? 'bg-green-50 text-green-700 border-green-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`}>
-              {testMsg}
-            </div>
-          )}
+
           {r.enabled && (
             <div className="space-y-3">
               <div>
-                <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Time</label>
+                <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Time (all days)</label>
                 <MskTimeInput value={r.time || '09:00'} onChange={t => setR(x => ({ ...x, time: t }))} hint
                   className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)] w-full" />
               </div>
-              <div>
-                <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Days</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {WEEKDAYS.map(w => {
-                    const on = (r.days || []).includes(w.id);
-                    return (
-                      <button key={w.id} type="button" onClick={() => toggleDay(w.id)}
-                        className={`w-10 h-10 rounded-xl text-sm font-medium transition-all ${on ? 'bg-[var(--text)] text-white' : 'bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]'}`}>
-                        {w.label}
-                      </button>
-                    );
-                  })}
+
+              <div className="space-y-2">
+                {WEEKDAYS.map(w => {
+                  const day = r.byDay?.[w.id] || ENG_WORD_DAY_DEFAULT();
+                  return (
+                    <div key={w.id} className={`rounded-xl border border-[var(--border)] p-3 space-y-2 ${day.enabled ? 'bg-[var(--surface)]' : 'bg-[var(--bg)] opacity-80'}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-sm font-medium w-8">{w.label}</div>
+                        <button type="button" onClick={() => patchDay(w.id, { enabled: !day.enabled })}
+                          className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${day.enabled ? 'bg-green-500' : 'bg-[var(--border)]'}`}>
+                          <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${day.enabled ? 'translate-x-5' : ''}`} />
+                        </button>
+                      </div>
+                      {day.enabled && (
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          <div>
+                            <label className="block text-[10px] uppercase tracking-wide text-[var(--text-subtle)] mb-1">Count</label>
+                            <input type="number" min="1" max="50" value={day.count}
+                              onChange={e => patchDay(w.id, { count: e.target.value })}
+                              className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-2 py-1.5 text-sm" />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] uppercase tracking-wide text-[var(--text-subtle)] mb-1">Order</label>
+                            <select value={day.order} onChange={e => patchDay(w.id, { order: e.target.value })}
+                              className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-2 py-1.5 text-sm">
+                              <option value="random">Random</option>
+                              <option value="newest">Newest</option>
+                              <option value="oldest">Oldest</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] uppercase tracking-wide text-[var(--text-subtle)] mb-1">Dates</label>
+                            <select value={day.dateRange} onChange={e => patchDay(w.id, { dateRange: e.target.value })}
+                              className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-2 py-1.5 text-sm">
+                              <option value="7">Last 7 days</option>
+                              <option value="14">Last 14 days</option>
+                              <option value="30">Last 30 days</option>
+                              <option value="all">All time</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] uppercase tracking-wide text-[var(--text-subtle)] mb-1">Pool</label>
+                            <select value={day.filter} onChange={e => patchDay(w.id, { filter: e.target.value })}
+                              className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-2 py-1.5 text-sm">
+                              <option value="all">All words</option>
+                              <option value="hard">Hard only</option>
+                              <option value="not-hard">Not hard</option>
+                            </select>
+                          </div>
+                        </div>
+                      )}
+                      {!day.enabled && (
+                        <div className="text-xs text-[var(--text-subtle)]">No send</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap pt-1">
+                <label className="text-xs text-[var(--text-muted)]">Test as</label>
+                <select value={testDay} onChange={e => setTestDay(Number(e.target.value))}
+                  className="bg-[var(--bg)] border border-[var(--border)] rounded-lg px-2 py-1 text-xs">
+                  {WEEKDAYS.map(w => <option key={w.id} value={w.id}>{w.label}</option>)}
+                </select>
+                <button
+                  type="button"
+                  onClick={sendTest}
+                  disabled={testing || !hasToken || !(wordsCount > 0) || !(r.byDay?.[testDay]?.enabled)}
+                  title={!hasToken ? 'Set Telegram bot token first' : !(wordsCount > 0) ? 'Word base is empty' : !(r.byDay?.[testDay]?.enabled) ? 'That day is off' : `Send a test using ${dayLabel(testDay)} filters`}
+                  className="text-xs px-2.5 py-1 rounded-lg border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)] hover:border-[var(--text)] disabled:opacity-40 transition-all"
+                >{testing ? '…' : 'Test'}</button>
+              </div>
+              {testMsg && (
+                <div className={`text-xs px-3 py-2 rounded-xl border ${testOk ? 'bg-green-50 text-green-700 border-green-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`}>
+                  {testMsg}
                 </div>
-              </div>
-              <div>
-                <label>Word count</label>
-                <input type="number" min="1" max="50" value={r.count ?? 5}
-                  onChange={e => setR(x => ({ ...x, count: Math.max(1, Math.min(50, parseInt(e.target.value, 10) || 1)) }))} />
-              </div>
-              <div>
-                <label>Order</label>
-                <select value={r.order || 'random'} onChange={e => setR(x => ({ ...x, order: e.target.value }))}>
-                  <option value="random">Random</option>
-                  <option value="newest">Newest</option>
-                  <option value="oldest">Oldest</option>
-                </select>
-              </div>
-              <div>
-                <label>Date range</label>
-                <select value={r.dateRange || '7'} onChange={e => setR(x => ({ ...x, dateRange: e.target.value }))}>
-                  <option value="7">Last 7 days</option>
-                  <option value="14">Last 14 days</option>
-                  <option value="30">Last 30 days</option>
-                  <option value="all">All time</option>
-                </select>
-              </div>
+              )}
             </div>
           )}
+
           <div className="text-xs text-[var(--text-muted)]">
             Word base: <span className="font-mono text-[var(--text)]">{wordsCount || 0}</span> words
             {(wordsCount || 0) === 0 ? ' — import once from Sheets or add words in Word base.' : '.'}
@@ -8585,11 +8676,15 @@ function EngCfgModal({cfg, reminder, onSave, onClose, hasToken, wordsCount}){
           )}
         </div>
 
-        <div className="flex gap-3 pt-2"><button onClick={onClose} className="btn-secondary flex-1">Cancel</button><button onClick={()=>onSave({ cfg: f, reminder: r })} className="btn-primary flex-1">Save</button></div>
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="btn-secondary flex-1">Cancel</button>
+          <button onClick={() => onSave({ cfg: f, reminder: normalizeEngWordReminder(r) })} className="btn-primary flex-1">Save</button>
+        </div>
       </div>
     </Modal>
   );
 }
+
 
 function EngAIModal({ai,onSave,onClose}){
   const [f,setF]=useState({...ai});
@@ -10140,7 +10235,7 @@ function EnglishView({ data, setData, embedded, onDirtyChange }){
   const cfg = data.engConfig || engLegacyCfg();
   const ai = data.engAI || engLegacyAI();
   const studyPlan = data.engStudyPlan || { text: '', updatedAt: 0 };
-  const wordReminder = data.engWordReminder || { enabled: false, time: '09:00', days: [1, 2, 3, 4, 5], count: 5, order: 'random', dateRange: '7', updatedAt: 0 };
+  const wordReminder = normalizeEngWordReminder(data.engWordReminder);
   const engWordsSnap = data.engWords || { items: [], updatedAt: 0, importedAt: 0 };
   const engWordsItems = Array.isArray(engWordsSnap.items) ? engWordsSnap.items : [];
   const engWordsCount = engWordsItems.length;
@@ -10188,15 +10283,7 @@ function EnglishView({ data, setData, embedded, onDirtyChange }){
   const saveStudyPlan = (p) => setData(d => ({ ...d, engStudyPlan: { text: p.text || '', updatedAt: p.updatedAt || Date.now() } }));
   const saveWordReminder = (rem) => setData(d => ({
     ...d,
-    engWordReminder: {
-      enabled: !!rem.enabled,
-      time: rem.time || '09:00',
-      days: Array.isArray(rem.days) ? rem.days : [1, 2, 3, 4, 5],
-      count: Math.max(1, Math.min(50, parseInt(rem.count, 10) || 5)),
-      order: ['random', 'newest', 'oldest'].includes(rem.order) ? rem.order : 'random',
-      dateRange: ['7', '14', '30', 'all'].includes(String(rem.dateRange)) ? String(rem.dateRange) : '7',
-      updatedAt: Date.now(),
-    },
+    engWordReminder: { ...normalizeEngWordReminder(rem), updatedAt: Date.now() },
   }));
   const saveMySentPrompt = (p) => setData(d => ({ ...d, engMySentPrompt: p }));
   const saveCipherPrompt = (p) => setData(d => ({ ...d, engCipherPrompt: p }));
