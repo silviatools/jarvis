@@ -17064,7 +17064,18 @@ function BudgetMonthlyView({ data, setData }) {
     incomeSources.flatMap(src => getIncomeFactOps(src.id, month).map(op => ({ ...op, itemLabel: src.label })));
 
   const [factDetails, setFactDetails] = useState(null); // { title, month, ops }
-  const openFactDetails = (title, month, ops) => setFactDetails({ title, month, ops });
+  // shown — сумма, показанная в ячейке. Если она больше суммы найденных операций,
+  // разницу (ручной факт / агрегат выписки без строк) показываем отдельной строкой.
+  const openFactDetails = (title, month, ops, shown) => {
+    const sum = ops.reduce((s, o) => s + (o.amount || 0), 0);
+    const rest = Math.round((Number(shown) || 0) - sum);
+    setFactDetails({
+      title, month,
+      ops: rest > 0
+        ? [...ops, { date: '', amount: rest, note: 'Без детализации (ручной факт / итог выписки)', source: 'Ручной ввод' }]
+        : ops,
+    });
+  };
 
   const onStatementFile = async (e) => {
     const file = e.target.files && e.target.files[0];
@@ -17261,7 +17272,7 @@ function BudgetMonthlyView({ data, setData }) {
                             {showFact && (
                               <td className={`px-1 py-2 text-center text-xs border-b border-[var(--border)] whitespace-nowrap ${ft > 0 ? 'text-emerald-700 font-semibold' : 'text-gray-300 text-[10px]'}`}>
                                 {ft > 0 ? (
-                                  <button onClick={() => openFactDetails('Приход', m, getIncomeTotalFactOps(m))}
+                                  <button onClick={() => openFactDetails('Приход', m, getIncomeTotalFactOps(m), ft)}
                                     className="hover:underline decoration-dotted underline-offset-2" title="Показать операции">
                                     {formatRub(ft)}
                                   </button>
@@ -17305,7 +17316,7 @@ function BudgetMonthlyView({ data, setData }) {
                               {showFact && (
                                 <td className={`px-1 py-1 text-center text-xs w-[54px] whitespace-nowrap ${fv > 0 ? 'text-emerald-700 font-medium' : 'text-gray-300 text-[10px]'}`}>
                                   {fv > 0 ? (
-                                    <button onClick={() => openFactDetails(src.label, m, getIncomeFactOps(src.id, m))}
+                                    <button onClick={() => openFactDetails(src.label, m, getIncomeFactOps(src.id, m), fv)}
                                       className="hover:underline decoration-dotted underline-offset-2" title="Показать операции">
                                       {formatRub(fv)}
                                     </button>
@@ -17353,7 +17364,7 @@ function BudgetMonthlyView({ data, setData }) {
                               {showFact && (
                                 <td className={`px-1 py-2 text-center text-xs border-b border-[var(--border)] whitespace-nowrap ${factCellCls(ft, t)}`}>
                                   {ft > 0 ? (
-                                    <button onClick={() => openFactDetails(cat.label, m, getCategoryFactOps(cat, m))}
+                                    <button onClick={() => openFactDetails(cat.label, m, getCategoryFactOps(cat, m), catFactTotal(cat, m))}
                                       className="hover:underline decoration-dotted underline-offset-2" title="Показать операции">
                                       {formatRub(ft)}
                                     </button>
@@ -17408,7 +17419,7 @@ function BudgetMonthlyView({ data, setData }) {
                                 {showFact && (
                                   <td className={`px-1 py-1 text-center text-xs w-[54px] whitespace-nowrap ${factCellCls(fv, v)}`}>
                                     {fv > 0 ? (
-                                      <button onClick={() => openFactDetails(item.label, m, getItemFactOps(item, m))}
+                                      <button onClick={() => openFactDetails(item.label, m, getItemFactOps(item, m), getItemFact(item, m))}
                                         className="hover:underline decoration-dotted underline-offset-2" title="Показать операции">
                                         {formatRub(fv)}
                                       </button>
@@ -17440,7 +17451,7 @@ function BudgetMonthlyView({ data, setData }) {
                         {showFact && (
                           <td className={`px-1 py-3 text-center text-xs font-bold whitespace-nowrap ${factCellCls(ft, t)}`}>
                             {ft > 0 ? (
-                              <button onClick={() => openFactDetails('Итого расходы', m, getGrandFactOps(m))}
+                              <button onClick={() => openFactDetails('Итого расходы', m, getGrandFactOps(m), grandFactTotal(m))}
                                 className="hover:underline decoration-dotted underline-offset-2" title="Показать операции">
                                 {formatRub(ft)}
                               </button>
