@@ -15937,9 +15937,17 @@ const savingsMonthsLeft = (exp, asOfMonth) => {
 // уменьшится ровно до недостающего остатка (а не продолжит показывать
 // исходный «ровный» взнос). Долгов это не касается — там calcMonthly
 // используется как есть, план/мес остаётся фиксированным ориентиром.
+// Свой план накоплений: exp.customPlan = true и exp.monthlyPlan =
+// { 'YYYY-MM': сколько отложить } — сумма на каждый месяц вручную. Без флага
+// (все старые записи) считается динамический план ниже, данные не меняются.
 const calcSavingsMonthly = (exp, balance, asOfMonth) => {
   if (!exp || !(exp.amount > 0) || !exp.startDate || !exp.targetDate) return 0;
   if (exp.startDate > exp.targetDate) return 0;
+  if (exp.customPlan) {
+    const m = asOfMonth || getCurrentMonthStr();
+    if (m < exp.startDate || m > exp.targetDate) return 0;
+    return Number((exp.monthlyPlan || {})[m]) || 0;
+  }
   const remaining = Math.max((exp.amount || 0) - (balance || 0), 0);
   if (remaining <= 0) return 0;
   const monthsLeft = savingsMonthsLeft(exp, asOfMonth);
@@ -16824,7 +16832,7 @@ function BudgetMonthlyView({ data, setData }) {
   const getExpCatVal = (catId, month) =>
     activeExp
       .filter(e => e.category === catId && e.startDate <= month && e.targetDate >= month)
-      .reduce((s, e) => s + calcSavingsMonthly(e, getExpBalance(e.id)), 0);
+      .reduce((s, e) => s + calcSavingsMonthly(e, getExpBalance(e.id), month), 0);
 
   const getExpCatFact = (catId, month) =>
     activeExp
@@ -20616,12 +20624,47 @@ function BudgetExpenseModal({ expense, cats, balance = 0, onSave, onClose }) {
   // Динамический план: остаток ÷ оставшиеся месяцы (см. calcSavingsMonthly)
   const monthly = calcSavingsMonthly(formExp, balance);
 
+  // ── Свой план по месяцам (по аналогии с долгами) ─────────────────────────
+  const customOn = !!form.customPlan;
+  const scheduleMonths = (form.startDate && form.targetDate && form.startDate <= form.targetDate)
+    ? Array.from({ length: monthsBetweenStr(form.startDate, form.targetDate) }, (_, i) => addMonthsStr(form.startDate, i))
+    : [];
+  const planOf = (mo) => (form.monthlyPlan || {})[mo];
+  const customTotal = scheduleMonths.reduce((s, mo) => s + (Number(planOf(mo)) || 0), 0);
+  const curMo = getCurrentMonthStr();
+  const futureMonths = scheduleMonths.filter(mo => mo >= curMo);
+  const futureTotal = futureMonths.reduce((s, mo) => s + (Number(planOf(mo)) || 0), 0);
+  const setMonthPlan = (mo, v) => setForm(f => ({ ...f, monthlyPlan: { ...(f.monthlyPlan || {}), [mo]: v } }));
+  // Остаток делится поровну на текущий и будущие месяцы; копейки — в последний.
+  const fillEvenly = () => setForm(f => {
+    if (!futureMonths.length) return f;
+    const base = Math.floor(remaining / futureMonths.length);
+    const plan = { ...(f.monthlyPlan || {}) };
+    futureMonths.forEach((mo, i) => { plan[mo] = i === futureMonths.length - 1 ? Math.round(remaining - base * (futureMonths.length - 1)) : base; });
+    return { ...f, monthlyPlan: plan };
+  });
+  // Выключили — monthlyPlan остаётся в записи, чтобы не потерять введённое.
+  const toggleCustom = (v) => {
+    if (!v) { set('customPlan', false); return; }
+    const hasAny = scheduleMonths.some(mo => Number(planOf(mo)) > 0);
+    setForm(f => ({ ...f, customPlan: true }));
+    if (!hasAny) setTimeout(fillEvenly, 0);
+  };
+
   const submit = () => {
     if (!form.name.trim()) return;
     if (!form.amount || Number(form.amount) <= 0) return;
     if (!form.startDate || !form.targetDate) return;
     if (form.startDate > form.targetDate) { alert('Дата начала должна быть раньше даты цели'); return; }
-    onSave({ ...form, amount: Number(form.amount) });
+    // В плане храним только месяцы графика и только положительные числа;
+    // при выключенном своём плане прежние значения не трогаем.
+    const monthlyPlan = {};
+    scheduleMonths.forEach(mo => { const v = Number(planOf(mo)); if (v > 0) monthlyPlan[mo] = v; });
+    onSave({
+      ...form,
+      amount: Number(form.amount),
+      ...(customOn ? { customPlan: true, monthlyPlan } : {}),
+    });
   };
 
   return (
@@ -20658,7 +20701,41 @@ function BudgetExpenseModal({ expense, cats, balance = 0, onSave, onClose }) {
           </div>
         </div>
 
-        {monthly > 0 && (
+        {scheduleMonths.length > 0 && (
+          <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium">Свой план по месяцам</div>
+                <div className="text-xs text-[var(--text-subtle)] mt-0.5">Сколько откладывать в каждый месяц вручную вместо равного деления — так и попадёт в «По месяцу»</div>
+              </div>
+              <Toggle checked={customOn} onChange={toggleCustom} />
+            </div>
+            {customOn && (
+              <div className="mt-4 fade-in">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {scheduleMonths.map(mo => (
+                    <div key={mo}>
+                      <label className="!text-xs">{formatMonthShortBudget(mo)}</label>
+                      <input type="number" inputMode="numeric" min="0"
+                        value={planOf(mo) ?? ''}
+                        onChange={e => setMonthPlan(mo, e.target.value)}
+                        placeholder="0" />
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between gap-3 mt-3 text-sm">
+                  <span className="text-[var(--text-muted)]">
+                    Осталось накопить: <b className="text-[var(--text)]">{formatRub(remaining)} ₽</b>
+                    {' · '}по плану (с текущего месяца): <b className={futureTotal === remaining ? 'text-emerald-600' : 'text-amber-600'}>{formatRub(futureTotal)} ₽</b>
+                  </span>
+                  <button type="button" onClick={fillEvenly} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] underline whitespace-nowrap">Поровну</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!customOn && monthly > 0 && (
           <div className="bg-[var(--bg)] border border-[var(--border)] rounded-2xl p-4 fade-in">
             <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-3">Ваш план накопления</div>
             <div className="flex items-baseline gap-2 mb-1">
