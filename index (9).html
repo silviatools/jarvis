@@ -17064,6 +17064,69 @@ function BudgetMonthlyView({ data, setData }) {
     incomeSources.flatMap(src => getIncomeFactOps(src.id, month).map(op => ({ ...op, itemLabel: src.label })));
 
   const [factDetails, setFactDetails] = useState(null); // { title, month, ops }
+
+  // ── Полная выгрузка раздела «Бюджет → По месяцу» (JSON) ──────────────────
+  // По каждой статье и каждому месяцу, где есть хоть какие-то данные: план,
+  // ручной факт/выписка, факт ДДС, итог в ячейке и найденные операции — чтобы
+  // было видно, откуда берутся задвоения. Плюс сырые данные раздела целиком.
+  const exportAllBudget = () => {
+    const monthSet = new Set();
+    const addKeys = (obj) => Object.keys(obj || {}).forEach(k => { const m = k.slice(k.lastIndexOf('_') + 1); if (/^\d{4}-\d{2}$/.test(m)) monthSet.add(m); });
+    addKeys(factVals); addKeys(incomeFactVals); addKeys(vals); addKeys(ddsFact.expense); addKeys(ddsFact.income);
+    months.forEach(m => monthSet.add(m));
+    const allMonths = [...monthSet].sort();
+    const r = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const opsOut = (ops) => ops.map(o => ({ date: o.date, amount: r(o.amount), note: o.note, source: o.source }));
+
+    const expenses = [];
+    allCats.forEach(cat => (cat.items || []).forEach(it => allMonths.forEach(m => {
+      const manual = it.getAutoFact ? 0 : (factVals[`${it.id}_${m}`] || 0);
+      const dds = it.getAutoFact ? 0 : (ddsFact.expense[`${it.id}_${m}`] || 0);
+      const total = getItemFact(it, m), plan = getItemVal(it, m);
+      if (!total && !plan) return;
+      const ops = getItemFactOps(it, m);
+      const opsSum = ops.reduce((s, o) => s + (o.amount || 0), 0);
+      expenses.push({
+        month: m, category: cat.label, item: it.label, itemId: it.id,
+        plan: r(plan), factShown: r(total),
+        factManualOrStatement: r(manual), factDds: r(dds),
+        opsFound: r(opsSum), withoutDetails: r(total - opsSum),
+        overlap: !!(manual && dds), ops: opsOut(ops),
+      });
+    })));
+
+    const income = [];
+    incomeSources.forEach(src => allMonths.forEach(m => {
+      const manual = incomeFactVals[`${src.id}_${m}`] || 0;
+      const dds = ddsFact.income[`${src.id}_${m}`] || 0;
+      const plan = getIncomeVal(src.id, m);
+      if (!manual && !dds && !plan) return;
+      const ops = getIncomeFactOps(src.id, m);
+      const opsSum = ops.reduce((s, o) => s + (o.amount || 0), 0);
+      income.push({
+        month: m, source: src.label, sourceId: src.id,
+        plan: r(plan), factShown: r(manual + dds),
+        factManualOrStatement: r(manual), factDds: r(dds),
+        opsFound: r(opsSum), withoutDetails: r(manual + dds - opsSum),
+        overlap: !!(manual && dds), ops: opsOut(ops),
+      });
+    }));
+
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      statementAccount: data.budgetStatementAccount || null,
+      statementMappings: data.budgetStatementMappings || {},
+      overlaps: factOverlaps,
+      expenses, income,
+      raw: data,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `budget-export-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
   // shown — сумма, показанная в ячейке. Если она больше суммы найденных операций,
   // разницу (ручной факт / агрегат выписки без строк) показываем отдельной строкой.
   const openFactDetails = (title, month, ops, shown) => {
@@ -17197,6 +17260,12 @@ function BudgetMonthlyView({ data, setData }) {
               : <><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></>}
           </svg>
           {showFact ? 'Скрыть факт' : 'Показать факт'}
+        </button>
+        <button onClick={exportAllBudget}
+          className="px-3 py-1.5 rounded-xl text-xs border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors inline-flex items-center gap-1.5"
+          title="Скачать полную выгрузку раздела «Бюджет» (все месяцы и статьи) в JSON">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Выгрузка
         </button>
         <input ref={fileInputRef} type="file" accept=".csv,text/csv,text/plain" className="hidden" onChange={onStatementFile} />
         {year !== curYear && (
