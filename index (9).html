@@ -17065,6 +17065,43 @@ function BudgetMonthlyView({ data, setData }) {
 
   const [factDetails, setFactDetails] = useState(null); // { title, month, ops }
 
+  // ── Автопочинка удвоенных итогов выписки ─────────────────────────────────
+  // Раньше синхронизация дублировала строки выписки, и итоги в
+  // budgetFactValues/budgetIncomeFactValues считались по удвоенным строкам; строки
+  // потом дедуплицировали, а итоги остались ×2. Если сохранённый итог РОВНО вдвое
+  // больше суммы строк выписки — пересчитываем его из строк. Всё остальное
+  // (ручной факт, неточные совпадения) не трогаем.
+  useEffect(() => {
+    const rows = data.budgetStatementRows || [];
+    const account = data.budgetStatementAccount;
+    const mappings = data.budgetStatementMappings || {};
+    if (!rows.length || !account) return;
+    const exp = {}, inc = {};
+    rows.forEach(r => {
+      if (!r || r.account !== account) return;
+      const t = mappings[r.category];
+      if (!t || t === 'skip') return;
+      if (t.startsWith('item:') && r.amount < 0) { const k = `${t.slice(5)}_${r.month}`; exp[k] = (exp[k] || 0) - r.amount; }
+      else if (t.startsWith('inc:') && r.amount > 0) { const k = `${t.slice(4)}_${r.month}`; inc[k] = (inc[k] || 0) + r.amount; }
+    });
+    const fix = (vals, sums) => {
+      let next = null;
+      Object.keys(sums).forEach(k => {
+        const cur = Number(vals[k]) || 0, want = Math.round(sums[k]);
+        if (want > 0 && Math.abs(cur - 2 * sums[k]) <= 1.5) { next = next || { ...vals }; next[k] = want; }
+      });
+      return next;
+    };
+    const nf = fix(data.budgetFactValues || {}, exp);
+    const ni = fix(data.budgetIncomeFactValues || {}, inc);
+    if (!nf && !ni) return;
+    setData(d => ({
+      ...d,
+      ...(nf ? { budgetFactValues: nf } : {}),
+      ...(ni ? { budgetIncomeFactValues: ni } : {}),
+    }));
+  }, [data.budgetStatementRows, data.budgetFactValues, data.budgetIncomeFactValues]);
+
   // ── Полная выгрузка раздела «Бюджет → По месяцу» (JSON) ──────────────────
   // По каждой статье и каждому месяцу, где есть хоть какие-то данные: план,
   // ручной факт/выписка, факт ДДС, итог в ячейке и найденные операции — чтобы
