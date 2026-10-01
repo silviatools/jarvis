@@ -17101,6 +17101,15 @@ function BudgetMonthlyView({ data, setData }) {
 
   // ── Scroll to current month on year change ────────────────────────────────
   const monthColWidth = showFact ? 116 : 62;
+  // Лёгкая синяя подсветка всего столбца текущего месяца (inset-тень ложится поверх любого фона ячейки)
+  const curColStyle = (() => {
+    const idx = months.indexOf(curMonth);
+    if (idx < 0) return '';
+    const k = showFact ? 2 : 1;
+    const first = 2 + idx * k;
+    const sel = Array.from({length: k}, (_, j) => `.budget-monthly-table tbody td:nth-child(${first + j})`).join(',');
+    return `${sel}{box-shadow:inset 0 0 0 9999px rgba(59,130,246,.08)}`;
+  })();
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -17202,7 +17211,8 @@ function BudgetMonthlyView({ data, setData }) {
       ) : (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
           <div className="overflow-x-auto" ref={scrollRef}>
-            <table className="text-sm border-collapse" style={{minWidth:`${180 + months.length * monthColWidth}px`}}>
+            {curColStyle && <style>{curColStyle}</style>}
+            <table className="budget-monthly-table text-sm border-collapse" style={{minWidth:`${180 + months.length * monthColWidth}px`}}>
               <thead>
                 <tr>
                   <th className="sticky left-0 z-20 bg-[var(--bg)] px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] border-b border-r border-[var(--border)]"
