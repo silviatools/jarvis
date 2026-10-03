@@ -278,26 +278,76 @@ svg { display: block; }
 
 /* ── Учёт: статьи-плитки с кольцом бюджета ── */
 .cats { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.cats-head { flex-shrink: 0; display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 10px 0 18px; }
-.cats-title { font-size: 11.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
-.cats-hint { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.ghost-btn { margin-left: auto; flex-shrink: 0; width: 36px; height: 36px; border-radius: 18px; display: grid; place-items: center; color: var(--muted); }
-.ghost-btn:active { background: var(--surface); }
-.ghost-btn .ico { width: 19px; height: 19px; }
+.cats-head { flex-shrink: 0; display: flex; align-items: center; gap: 8px; height: 52px; padding: 4px 12px 6px; }
+/* Поиск всегда на виду — без лишнего тапа по лупе. */
+.search-pill {
+  flex: 1; min-width: 0; height: 40px;
+  display: flex; align-items: center; gap: 6px;
+  padding: 0 4px 0 13px;
+  border-radius: 20px; background: var(--surface); box-shadow: var(--shadow-1);
+  color: var(--muted);
+  transition: box-shadow .2s;
+}
+.search-pill:focus-within { box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow-1); }
+.search-pill > .ico { width: 18px; height: 18px; }
 .cat-search {
-  flex: 1; min-width: 0; height: 34px;
-  border: 0; border-radius: 17px; outline: none;
-  background: var(--surface); box-shadow: var(--shadow-1);
-  padding: 0 14px; font-size: 16px;
+  flex: 1; min-width: 0; height: 100%;
+  border: 0; outline: none; background: transparent;
+  padding: 0 2px; font-size: 16px; color: var(--ink);
   -webkit-appearance: none; appearance: none;
 }
+.cat-search::placeholder { color: var(--muted); }
 .cat-search::-webkit-search-cancel-button { display: none; }
+.search-x { flex-shrink: 0; width: 34px; height: 34px; border-radius: 17px; display: grid; place-items: center; color: var(--muted); }
+.search-x .ico { width: 16px; height: 16px; }
+/* Статья выбрана раньше суммы: вместо поиска — кнопка записи. */
+.arm-bar { flex: 1; min-width: 0; display: flex; gap: 8px; height: 44px; }
+.arm-go {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 0 16px; border-radius: 22px;
+  background: var(--ink); color: var(--bg);
+  transition: background .2s, color .2s, transform .12s;
+}
+.arm-lines { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }
+.arm-lines b { font-size: 15px; font-weight: 600; }
+.arm-lines small { max-width: 100%; font-size: 12px; opacity: .72; }
+.arm-go:active { transform: scale(.98); }
+.arm-go.wait { background: var(--surface); color: var(--ink-2); box-shadow: var(--shadow-1); }
+.arm-lines b, .arm-lines small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.arm-emo { flex-shrink: 0; font-size: 17px; line-height: 1; }
+.arm-emo.mono { font-family: var(--font-display); font-size: 14px; }
+.arm-x { flex-shrink: 0; width: 44px; height: 44px; border-radius: 22px; background: var(--surface); box-shadow: var(--shadow-1); display: grid; place-items: center; color: var(--ink-2); }
+.arm-x .ico { width: 18px; height: 18px; }
+/* Пока ищем — табло компактнее, чтобы над клавиатурой влезло больше. */
+#scrLog.searching .display { padding-top: 2px; padding-bottom: 9px; }
+#scrLog.searching .expr, #scrLog.searching .chips { display: none; }
+#scrLog.searching .amount { font-size: 34px; height: 44px; line-height: 44px; }
+#scrLog.searching .amount .cur { font-size: 17px; }
+.res-label { grid-column: 1 / -1; padding: 8px 6px 4px; font-size: 11.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+.combo {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; min-width: 0; margin-bottom: 4px; padding: 8px 14px 8px 8px;
+  border-radius: 18px; background: var(--surface); box-shadow: var(--shadow-1);
+  text-align: left;
+  transition: transform .12s var(--ease);
+}
+.combo:active { transform: scale(.98); }
+.combo .op-emo { width: 38px; height: 38px; font-size: 19px; }
+.combo-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.combo-note { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.combo-note mark { background: none; color: var(--accent); font-weight: 600; }
+.combo-cat { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.combo-amt { flex-shrink: 0; font-size: 13px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .tiles {
   flex: 1; min-height: 0;
   overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
   display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: max-content;
   gap: 2px 4px;
-  padding: 2px 10px 14px;
+  /* --tiles-kb — сколько списка ушло под экранную клавиатуру при поиске:
+     столько же места снизу, чтобы до последних результатов можно было долистать. */
+  padding: 2px 10px calc(14px + var(--tiles-kb, 0px));
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 6px, #000 calc(100% - 18px), transparent);
   mask-image: linear-gradient(to bottom, transparent 0, #000 6px, #000 calc(100% - 18px), transparent);
 }
@@ -348,6 +398,8 @@ svg { display: block; }
 }
 .tile.guess .t-name { font-weight: 600; }
 .tile.pop .emo { animation: pop .45s var(--spring); }
+.tile.armed .emo { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ink); }
+.tile.armed .t-name { font-weight: 600; }
 @keyframes pop { 0% { transform: scale(1); } 40% { transform: scale(1.2); } 100% { transform: scale(1); } }
 
 /* ── Учёт: клавиатура-калькулятор (высокий «+», как на цифровом блоке) ── */
@@ -370,6 +422,9 @@ svg { display: block; }
 .key:active { transform: scale(.94); background: var(--surface-2); }
 .key.op { background: transparent; box-shadow: inset 0 0 0 1.5px var(--line-2); color: var(--ink-2); font-weight: 400; font-size: 28px; }
 .key.op:active { background: var(--surface); }
+/* «Стереть» — красным, чтобы не сливалась с цифрами и знаками. */
+.key.k-back { background: var(--danger-soft); box-shadow: none; color: var(--danger); }
+.key.k-back:active { background: color-mix(in srgb, var(--danger) 24%, var(--surface)); }
 .key.k-plus { grid-column: 4; grid-row: 3 / span 2; }
 .key.k-zeros { font-size: 19px; }
 .key.k-comma { font-size: 30px; line-height: 1; padding-bottom: 8px; }
@@ -668,6 +723,7 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
 .btn.soft { background: var(--surface-2); color: var(--ink); }
 .btn.danger { height: 46px; color: var(--danger); }
 .btn.danger-fill { background: var(--danger); color: var(--on-danger); }
+.btn.danger-soft { background: var(--danger-soft); color: var(--danger); }
 .btn .ico { width: 19px; height: 19px; }
 .btn-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
 .btn-row.single { grid-template-columns: minmax(0, 1fr); }
@@ -801,11 +857,20 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
 
       <div class="cats">
         <div class="cats-head">
-          <span class="cats-title" id="catsTitle">Статьи</span>
-          <input type="search" class="cat-search" id="catSearch" placeholder="Найти статью" autocomplete="off" enterkeyhint="search" aria-label="Поиск статьи" hidden>
-          <button type="button" class="ghost-btn" id="searchBtn" aria-label="Поиск статьи">
-            <svg class="ico" id="searchIco" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
-          </button>
+          <div class="search-pill" id="searchPill">
+            <svg class="ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+            <input type="search" class="cat-search" id="catSearch" placeholder="Статья или заметка" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="search" aria-label="Поиск статьи или заметки">
+            <button type="button" class="search-x" id="searchClear" aria-label="Очистить поиск" hidden>
+              <svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+          </div>
+          <div class="arm-bar" id="armBar" hidden>
+            <button type="button" class="arm-go" id="armGo"><span class="arm-emo" id="armEmo"></span><span class="arm-lines"><b id="armMain">Записать</b><small id="armSub"></small></span><label class="hx" for="hx" aria-hidden="true"></label></button>
+            <button type="button" class="arm-x" id="armCancel" aria-label="Отменить выбор статьи">
+              <svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              <label class="hx" for="hx" aria-hidden="true"></label>
+            </button>
+          </div>
         </div>
         <div class="tiles" id="tiles"></div>
       </div>
@@ -814,7 +879,7 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
         <button type="button" class="key" data-k="1">1<label class="hx" for="hx" aria-hidden="true"></label></button>
         <button type="button" class="key" data-k="2">2<label class="hx" for="hx" aria-hidden="true"></label></button>
         <button type="button" class="key" data-k="3">3<label class="hx" for="hx" aria-hidden="true"></label></button>
-        <button type="button" class="key op" data-k="back" aria-label="Стереть (удерживать — очистить)">
+        <button type="button" class="key k-back" data-k="back" aria-label="Стереть (удерживать — очистить)">
           <svg class="ico" viewBox="0 0 24 24"><path d="M9 5h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-6-7z"/><path d="M12.5 9.5l5 5M17.5 9.5l-5 5"/></svg>
           <label class="hx" for="hx" aria-hidden="true"></label>
         </button>
@@ -944,6 +1009,10 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
     <div class="sheet-body">
       <div class="notes" id="profNotes"></div>
       <div class="set-row">
+        <div class="t"><b>Заметка после записи</b><span>Сразу спрашивать назначение платежа</span></div>
+        <input type="checkbox" switch class="switch" id="askNoteToggle" aria-label="Спрашивать заметку после записи">
+      </div>
+      <div class="set-row">
         <div class="t"><b>Вибрация при нажатиях</b><span>Лёгкий отклик клавиш и кнопок</span></div>
         <input type="checkbox" switch class="switch" id="hapticsToggle" aria-label="Вибрация при нажатиях">
       </div>
@@ -978,6 +1047,11 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
       <div class="sugs" id="noteSugs"></div>
       <button type="button" class="btn primary" id="noteSave">Готово<label class="hx" for="hx" aria-hidden="true"></label></button>
       <button type="button" class="btn danger" id="noteClear">Убрать заметку</button>
+      <!-- Сразу после записи: можно пропустить заметку или отменить саму запись. -->
+      <div class="btn-row" id="notePromptActions" hidden>
+        <button type="button" class="btn soft" id="noteSkip">Без заметки<label class="hx" for="hx" aria-hidden="true"></label></button>
+        <button type="button" class="btn danger-soft" id="noteUndo">Отменить запись<label class="hx" for="hx" aria-hidden="true"></label></button>
+      </div>
     </div>
   </div>
 </div>
@@ -1075,6 +1149,7 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
   const LS_NOTES = 'pf_notes_visit:' + TOKEN;
   const LS_FEED_ACC = 'pf_feed_account:' + TOKEN;
   const LS_HAPTICS = 'pf_haptics';
+  const LS_ASK_NOTE = 'pf_ask_note';
 
   // Напоминание с «выводами месяца»: первый заход за день — показываем
   // всегда, дальше в тот же день бросаем монетку 50/50 на каждом заходе.
@@ -1113,8 +1188,6 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
     down: '<svg class="ico" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg>',
     up: '<svg class="ico" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg>',
     chev: '<svg class="ico an-chev" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg>',
-    search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/>',
-    close: '<path d="M6 6l12 12M18 6L6 18"/>',
   };
   const HX = '<label class="hx" for="hx" aria-hidden="true"></label>';
 
@@ -1454,9 +1527,11 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
       kind: op.kind || 'cashflow',
     });
   }
-  function sortHistory() { history.sort((a, b) => (a._d < b._d ? 1 : a._d > b._d ? -1 : 0)); }
+  // historyVer растёт при любой правке истории — по нему живут кэши поиска.
+  let historyVer = 0;
+  function sortHistory() { history.sort((a, b) => (a._d < b._d ? 1 : a._d > b._d ? -1 : 0)); historyVer++; }
   function addToHistory(op) { history.unshift(op); sortHistory(); }
-  function removeFromHistory(id) { history = history.filter(o => o.id !== id); }
+  function removeFromHistory(id) { history = history.filter(o => o.id !== id); historyVer++; }
 
   async function loadHistory() {
     const from = addDays(todayISO(), -HISTORY_DAYS + 1);
@@ -1465,6 +1540,7 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
     historyFrom = from;
     historyReady = true;
     historyError = false;
+    historyVer++;
   }
   async function loadOlderHistory() {
     const to = addDays(historyFrom, -1);
@@ -1472,6 +1548,7 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
     const ops = await api('/operations?' + new URLSearchParams({ date_from: from, date_to: to, limit: '3000' }));
     const known = new Set(history.map(o => o.id));
     history = history.concat((ops || []).map(normOp).filter(o => !known.has(o.id)));
+    historyVer++;
     historyFrom = from;
   }
 
@@ -1693,6 +1770,7 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
     shownText = expr ? text : '';
     const n = text.length;
     amt.style.setProperty('--amt', (n <= 5 ? 58 : Math.max(30, 58 - (n - 5) * 4.6)).toFixed(1) + 'px');
+    renderArm();
   }
 
   function shakeDisplay() {
@@ -1711,29 +1789,86 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
 
   // ── Учёт: плитки статей ─────────────────────────────────────────────────
 
-  let searchOn = false, searchQ = '';
+  let searchQ = '', searchFocus = false;
+  // Статья, выбранная раньше суммы (тап по плитке без суммы или по частой
+  // записи): { cat, note }. Записывается кнопкой «Записать» над плитками.
+  let armed = null;
+  let askNote = true;
+  try { askNote = localStorage.getItem(LS_ASK_NOTE) !== '0'; } catch (_) {}
+  function searchActive() { return searchFocus || !!searchQ; }
 
   // Заметки прошлых операций по статье — чтобы «апт» находило «Покупки»,
   // если там были «Аптечки». Пересчитываем, только когда история поменялась.
   let purposeHay = new Map(), purposeHayLen = -1;
   function catPurposes(id) {
-    if (purposeHayLen !== history.length) {
+    if (purposeHayLen !== historyVer) {
       purposeHay = new Map();
       history.forEach(o => {
         if (!o.purpose) return;
         purposeHay.set(o.category_id, (purposeHay.get(o.category_id) || '') + ' ' + norm(o.purpose));
       });
-      purposeHayLen = history.length;
+      purposeHayLen = historyVer;
     }
     return purposeHay.get(id) || '';
   }
   function visibleCats() {
-    const q = searchOn ? norm(searchQ) : '';
+    const q = norm(searchQ);
     const list = tileOrder.map(id => catById.get(id)).filter(Boolean);
     if (!q) return list;
     const byName = list.filter(c => c._hay.includes(q));
     const byNote = list.filter(c => !byName.includes(c) && catPurposes(c.id).includes(q));
     return byName.concat(byNote);
+  }
+  // Частые сочетания «статья + заметка» из истории: тап по такой строке
+  // записывает сразу и статью, и заметку. Свежие весят больше редких старых.
+  let comboCache = [], comboVer = -1;
+  function allCombos() {
+    if (comboVer === historyVer) return comboCache;
+    const map = new Map(), today = todayISO();
+    history.forEach(o => {   // история — новые сверху: первая встреча самая свежая
+      if (o.kind !== 'cashflow' || !o.purpose || ADJ_IDS.has(o.category_id)) return;
+      const c = catById.get(o.category_id);
+      if (!c) return;
+      const key = o.category_id + '|' + norm(o.purpose);
+      const e = map.get(key);
+      if (e) { e.n++; return; }
+      map.set(key, {
+        catId: o.category_id, note: o.purpose, n: 1, lastC: o._c,
+        recent: Math.exp(-Math.max(0, diffDays(o._d, today)) / 21),
+        nn: norm(o.purpose), cn: norm(c.name),
+      });
+    });
+    comboCache = Array.from(map.values());
+    comboCache.forEach(e => { e.score = e.n + 3 * e.recent; });
+    comboCache.sort((a, b) => b.score - a.score);
+    comboVer = historyVer;
+    return comboCache;
+  }
+  function findCombos(q, limit) {
+    const list = allCombos();
+    if (!q) return list.slice(0, limit).map(e => ({ e, hit: -1 }));
+    const out = [];
+    list.forEach(e => {
+      const i = e.nn.indexOf(q);
+      if (i < 0 && !e.cn.includes(q)) return;
+      // Выше — совпадение с началом слова заметки, потом внутри заметки, потом по статье.
+      const rank = i === 0 || (i > 0 && /[\s,.«"(-]/.test(e.nn[i - 1])) ? 0 : i >= 0 ? 1 : 2;
+      out.push({ e, hit: i, rank });
+    });
+    out.sort((a, b) => a.rank - b.rank || b.e.score - a.e.score);
+    return out.slice(0, limit);
+  }
+  function comboHTML(r, q) {
+    const e = r.e, c = catById.get(e.catId);
+    let note = esc(e.note);
+    if (q && r.hit >= 0) {
+      note = esc(e.note.slice(0, r.hit)) + '<mark>' + esc(e.note.slice(r.hit, r.hit + q.length)) + '</mark>' + esc(e.note.slice(r.hit + q.length));
+    }
+    return `<button type="button" class="combo" data-cat="${escAttr(e.catId)}" data-note="${escAttr(e.note)}" data-last="${e.lastC}" style="--gc:${catColor(c)}">
+      ${iconSpan('op-emo', catIcon(c))}
+      <span class="combo-body"><span class="combo-note">${note}</span><span class="combo-cat">${esc(c.name)}</span></span>
+      <span class="combo-amt">${esc(money(e.lastC, { round: true }))}</span>${HX}
+    </button>`;
   }
   function tileHTML(c) {
     const icon = catIcon(c);
@@ -1754,10 +1889,19 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
       box.innerHTML = '<div class="tiles-empty">Статей пока нет — добавьте их в разделе «Бюджет» на сайте</div>';
       return;
     }
+    const q = norm(searchQ);
     const list = visibleCats();
-    box.innerHTML = list.length
-      ? list.map(tileHTML).join('')
-      : '<div class="tiles-empty">Ничего не нашлось — попробуйте другое слово</div>';
+    // Пока ищем — сверху частые записи «статья + заметка» (без запроса — самые
+    // частые, с запросом — найденные и по заметке, и по статье).
+    const combos = searchActive() && historyReady ? findCombos(q, 4) : [];
+    let html = '';
+    if (combos.length) {
+      html += `<div class="res-label">${q ? 'Из прошлых записей' : 'Частые записи'}</div>` + combos.map(r => comboHTML(r, q)).join('');
+      if (list.length) html += '<div class="res-label">Статьи</div>';
+    }
+    html += list.length ? list.map(tileHTML).join('')
+      : combos.length ? '' : '<div class="tiles-empty">Ничего не нашлось — попробуйте другое слово</div>';
+    box.innerHTML = html;
     updateTiles();
   }
   // Кольцо вокруг статьи — сколько бюджета месяца уже потрачено. Пока
@@ -1767,7 +1911,7 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
     const st = evalExpr(expr);
     const amt = st.cents > 0 ? st.cents : 0;
     const b = budgetCache.get(ymOf(entryISO()));
-    const guess = amt > 0 && !(searchOn && searchQ) ? predictCategory(amt) : null;
+    const guess = amt > 0 && !searchQ ? predictCategory(amt) : null;
     // Сумма похожа на доход (зарплата и т.п.) — расходные плитки не
     // заливаем красным «перерасходом»: это почти наверняка не трата.
     const incomeLike = !!guess && (catById.get(guess) || {}).direction === 'in';
@@ -1790,6 +1934,7 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
       t.classList.toggle('over', over);
       t.classList.toggle('preview', has && add > 0);
       t.classList.toggle('guess', guess === c.id);
+      t.classList.toggle('armed', !!armed && armed.cat.id === c.id);
       t.querySelector('.badge').textContent = over ? '!' : guess === c.id ? '✦' : '';
       t.querySelector('.t-sub').textContent = ADJ_IDS.has(c.id) ? (isIn ? 'доход' : 'расход')
         : isIn ? 'доход' : has ? moneyTile(plan - fact - add) : '';
@@ -1818,24 +1963,67 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
     return best && bestS >= 0.5 && bestS / total >= 0.55 ? best : null;
   }
 
-  function setSearch(on) {
-    searchOn = on;
+  function setSearchUI() {
+    $('scrLog').classList.toggle('searching', searchFocus);
+    $('searchClear').hidden = !searchQ;
+  }
+  // blur — убрать и клавиатуру. Без него фокус уйдёт сам: например, в поле
+  // заметки, которое откроется следом, — так клавиатура не мигает.
+  function clearSearch(blur) {
     searchQ = '';
-    const inp = $('catSearch');
-    inp.value = '';
-    inp.hidden = !on;
-    $('catsTitle').hidden = on;
-    $('searchIco').innerHTML = on ? ICONS.close : ICONS.search;
-    $('searchBtn').setAttribute('aria-label', on ? 'Закрыть поиск' : 'Поиск статьи');
-    if (on) inp.focus(); else inp.blur();
+    $('catSearch').value = '';
+    if (blur) $('catSearch').blur();
+    setSearchUI();
     renderTiles();
+  }
+
+  // ── Учёт: статья раньше суммы ───────────────────────────────────────────
+
+  function centsToExpr(c) {
+    const r = Math.floor(c / 100), k = c % 100;
+    return k ? r + ',' + pad2(k) : String(r);
+  }
+  function arm(c, note) {
+    armed = { cat: c, note: note || '' };
+    if (searchActive()) clearSearch(true);   // статья найдена — дальше нужна клавиатура суммы
+    renderArm();
+    updateTiles();
+  }
+  function disarm() {
+    armed = null;
+    renderArm();
+    updateTiles();
+  }
+  function renderArm() {
+    $('searchPill').hidden = !!armed;
+    $('armBar').hidden = !armed;
+    if (!armed) return;
+    const cents = evalExpr(expr).cents;
+    const icon = catIcon(armed.cat);
+    $('armEmo').textContent = icon.text;
+    $('armEmo').classList.toggle('mono', icon.mono);
+    $('armMain').textContent = cents > 0
+      ? 'Записать ' + (armed.cat.direction === 'in' ? '+' : '') + money(cents)
+      : 'Введите сумму';
+    $('armSub').textContent = armed.cat.name + (armed.note ? ' · ' + armed.note : '');
+    $('armGo').classList.toggle('wait', !(cents > 0));
+  }
+  function tileOf(catId) {
+    return Array.from($('tiles').querySelectorAll('.tile')).find(t => t.dataset.id === catId) || null;
+  }
+  // Плитку видно в списке — сумма «полетит» в неё; иначе без анимации.
+  function visibleTile(catId) {
+    const t = tileOf(catId);
+    if (!t) return null;
+    const r = t.getBoundingClientRect(), box = $('tiles').getBoundingClientRect();
+    return r.bottom > box.top && r.top < box.bottom ? t : null;
   }
 
   // ── Учёт: запись в один тап ─────────────────────────────────────────────
 
   function flyToTile(tile) {
     if (REDUCED || !tile || !document.body.animate) return;
-    const src = $('amount'), target = tile.querySelector('.emo') || tile;
+    const src = $('amount'), target = tile.querySelector('.emo, .op-emo') || tile;
     const r1 = src.getBoundingClientRect(), r2 = target.getBoundingClientRect();
     const g = document.createElement('div');
     g.className = 'fly';
@@ -1855,29 +2043,54 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
     };
   }
 
+  // Можно ли записывать: итог выражения > 0 и выбран счёт. Пустая сумма —
+  // не ошибка: тогда статья (с заметкой) запоминается до ввода суммы.
+  function readyToCommit(st) {
+    if (st.hasOp && !(st.cents > 0)) {
+      shakeDisplay();
+      buzz(BUZZ.err);
+      island.show({ kind: 'err', icon: '!', duration: 2600, title: 'Итог должен быть больше нуля', sub: 'Поправьте выражение и нажмите статью снова' });
+      return false;
+    }
+    if (st.cents > 0 && !accountId) {
+      notify('Выберите счёт', 'С него спишется трата', 'err');
+      openAccountSheet();
+      return false;
+    }
+    return true;
+  }
   function onTileTap(tile) {
     const c = catById.get(tile.dataset.id);
     if (!c) return;
     const st = evalExpr(expr);
-    if (!(st.cents > 0)) {
-      shakeDisplay();
-      buzz(BUZZ.err);
-      island.show({
-        kind: 'err', icon: '!', duration: 2600,
-        title: st.hasOp ? 'Итог должен быть больше нуля' : 'Сначала введите сумму',
-        sub: 'Потом нажмите статью — запишется сразу',
-      });
-      return;
-    }
-    if (!accountId) {
-      notify('Выберите счёт', 'С него спишется трата', 'err');
-      openAccountSheet();
-      return;
-    }
-    commitEntry(c, st.cents, tile);
+    if (!readyToCommit(st)) return;
+    if (!(st.cents > 0)) { arm(c, armed && armed.cat.id === c.id ? armed.note : ''); return; }
+    commitEntry(c, st.cents, tile, { note: armed && armed.cat.id === c.id ? armed.note : '' });
+  }
+  function onComboTap(el) {
+    const c = catById.get(el.dataset.cat);
+    if (!c) return;
+    const note = el.dataset.note || '';
+    const st = evalExpr(expr);
+    if (!readyToCommit(st)) return;
+    if (st.cents > 0) { commitEntry(c, st.cents, el, { note }); return; }
+    // Суммы ещё нет — выбираем статью с заметкой и подставляем прошлую сумму:
+    // для одинаковых покупок останется нажать «Записать».
+    const last = +el.dataset.last || 0;
+    if (last > 0) { expr = centsToExpr(last); renderDisplay(); }
+    arm(c, note);
+  }
+  function commitArmed() {
+    if (!armed) return;
+    const st = evalExpr(expr);
+    if (!(st.cents > 0)) { shakeDisplay(); buzz(BUZZ.err); return; }
+    if (!readyToCommit(st)) return;
+    commitEntry(armed.cat, st.cents, visibleTile(armed.cat.id), { note: armed.note });
   }
 
-  async function commitEntry(c, cents, tile) {
+  async function commitEntry(c, cents, tile, opts) {
+    opts = opts || {};
+    const note = String(opts.note || entryNote || '').trim();
     const date = entryISO();
     const payload = {
       date,
@@ -1888,10 +2101,10 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
       category_id: c.id,
       currency: (settings && settings.default_currency) || 'руб.',
       payment_status: 'paid',
-      purpose: entryNote,
-      comment: entryNote,
+      purpose: note,
+      comment: note,
     };
-    const p = { payload, cat: c, before: { expr, note: entryNote }, id: null, undo: false, undone: false };
+    const p = { payload, cat: c, before: { expr, note: entryNote, armed }, id: null, undo: false, undone: false };
     // Сразу: анимация, сброс ввода, баланс и кольцо — сеть догонит.
     const row = c.direction === 'out' && budgetCache.get(ymOf(date));
     const wasOver = row && row.items.get(c.id) ? (() => { const r = row.items.get(c.id); return r.plan > 0 && r.fact + cents > r.plan; })() : false;
@@ -1899,13 +2112,17 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
     buzz(wasOver ? BUZZ.warn : BUZZ.ok);
     expr = '';
     entryNote = '';
+    armed = null;
     renderDisplay();
     renderChips();
     applyLocalOp(payload, 1);
     updateTiles();
     renderAccount();
-    if (searchOn) setSearch(false);
-    showSavedIsland(p, wasOver);
+    p.over = wasOver;
+    // Заметки нет — сразу спрашиваем её (запись уже сделана, заметку допишем).
+    const prompt = askNote && !note;
+    if (searchActive()) clearSearch(!prompt);
+    if (prompt) openNoteSheet(p, true); else showSavedIsland(p);
     p.promise = apiPost('/operations', payload);
     try {
       const res = await p.promise;
@@ -1915,23 +2132,22 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
       refreshAfterChange([date]);
     } catch (e) {
       applyLocalOp(payload, -1);
+      if (noteFor === p) { notePrompt = false; closeSheet('sheetNote'); }
+      if (!expr) { expr = p.before.expr; entryNote = p.before.note; armed = p.before.armed; renderDisplay(); renderChips(); }
       updateTiles();
       renderAccount();
-      if (!expr) { expr = p.before.expr; entryNote = p.before.note; renderDisplay(); renderChips(); updateTiles(); }
       island.show({ kind: 'err', icon: '!', title: 'Не сохранилось', sub: (e && e.message) || 'Проверьте связь и попробуйте ещё раз', duration: 4200 });
       buzz(BUZZ.err);
     }
   }
 
-  function showSavedIsland(p, over) {
+  function showSavedIsland(p) {
     const c = p.cat, pl = p.payload;
     const isIn = pl.direction === 'in';
-    let sub = c.name;
+    let sub = c.name + (pl.purpose ? ' · ' + pl.purpose : '');
     if (pl.date !== todayISO()) sub += ' · ' + (relDay(pl.date) || dayShort(pl.date)).toLowerCase();
-    if (over) {
-      const r = budgetCache.get(ymOf(pl.date)).items.get(c.id);
-      sub = c.name + ' · сверх плана ' + money(r.fact - r.plan, { round: true });
-    }
+    const r = p.over && budgetCache.get(ymOf(pl.date)) && budgetCache.get(ymOf(pl.date)).items.get(c.id);
+    if (r) sub = c.name + ' · сверх плана ' + money(r.fact - r.plan, { round: true });
     const icon = catIcon(c);
     island.show({
       iconHTML: esc(icon.text),
@@ -1960,7 +2176,7 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
       applyLocalOp(p.payload, -1);
       removeFromHistory(p.id);
       // Ошиблись статьёй — сумма возвращается в поле, тапните нужную.
-      if (!expr) { expr = p.before.expr; entryNote = p.before.note; }
+      if (!expr) { expr = p.before.expr; entryNote = p.before.note; armed = p.before.armed || null; }
       renderDisplay();
       renderChips();
       updateTiles();
@@ -1996,27 +2212,41 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
 
   // Частые назначения — из истории: для статьи (если известна) или все.
   function topPurposes(catId, n) {
-    const cnt = new Map();
-    history.forEach(o => {
+    const cnt = new Map(), today = todayISO();
+    history.forEach(o => {   // новые сверху: первая встреча — самая свежая
       if (!o.purpose || (catId && o.category_id !== catId)) return;
       const k = norm(o.purpose);
       const e = cnt.get(k);
-      if (e) e.n++; else cnt.set(k, { text: o.purpose, n: 1 });
+      if (e) e.n++;
+      else cnt.set(k, { text: o.purpose, n: 1, recent: Math.exp(-Math.max(0, diffDays(o._d, today)) / 21) });
     });
-    return Array.from(cnt.values()).sort((a, b) => b.n - a.n).slice(0, n).map(e => e.text);
+    const score = (e) => e.n + 3 * e.recent;
+    return Array.from(cnt.values()).sort((a, b) => score(b) - score(a)).slice(0, n).map(e => e.text);
   }
 
-  let noteFor = null;   // null — заметка к следующей записи; иначе — к записанной операции
-  function openNoteSheet(saved) {
+  let noteFor = null;      // null — заметка к следующей записи; иначе — к записанной операции
+  let notePrompt = false;  // лист открылся сам сразу после записи
+  function openNoteSheet(saved, prompt) {
     noteFor = saved || null;
+    notePrompt = !!(saved && prompt);
     const catId = saved ? saved.payload.category_id : null;
-    $('noteTitle').textContent = saved ? 'Заметка к операции' : 'Заметка';
-    $('noteSub').textContent = saved
-      ? money(toC(saved.payload.amount)) + ' · ' + saved.cat.name
-      : 'Добавится к следующей записи';
+    $('noteTitle').textContent = saved && !notePrompt ? 'Заметка к операции' : 'Заметка';
+    $('noteSub').textContent = notePrompt
+      ? (saved.payload.direction === 'in' ? '+' : '') + money(toC(saved.payload.amount)) + ' · ' + saved.cat.name + ' — записано'
+      : saved ? money(toC(saved.payload.amount)) + ' · ' + saved.cat.name
+        : 'Добавится к следующей записи';
     const val = saved ? (saved.payload.purpose || '') : entryNote;
     $('noteInput').value = val;
-    $('noteClear').hidden = !val;
+    $('noteClear').hidden = notePrompt || !val;
+    $('notePromptActions').hidden = !notePrompt;
+    if (notePrompt) island.hide();   // прошлое уведомление не наслаивается на лист
+    // Закрыли без «Готово» (смахнули, тап мимо, «Без заметки») — запись
+    // остаётся без заметки, показываем обычное уведомление с «Отменить».
+    $('sheetNote')._onClose = () => {
+      const skipped = notePrompt && noteFor === saved && !saved.undo;
+      notePrompt = false;
+      if (skipped) showSavedIsland(saved);
+    };
     let sugs = topPurposes(catId, 8);
     if (sugs.length < 3 && catId) sugs = sugs.concat(topPurposes(null, 8).filter(s => !sugs.includes(s))).slice(0, 8);
     $('noteSugs').innerHTML = sugs.map(s => `<button type="button" class="sug" data-s="${escAttr(s)}">${esc(s)}</button>`).join('');
@@ -2027,8 +2257,11 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
   async function applyNote(text) {
     text = String(text || '').trim().slice(0, 200);
     const saved = noteFor;
+    const prompt = notePrompt;
+    notePrompt = false;   // закрытие ниже — не «пропуск заметки»
     closeSheet('sheetNote');
     if (!saved) { entryNote = text; renderChips(); return; }
+    if (prompt && !text) { showSavedIsland(saved); return; }
     try {
       if (!saved.id) await saved.promise;
       if (saved.undo) return;
@@ -2036,10 +2269,11 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
       await apiPut(opPath(saved.id), payload);
       saved.payload = payload;
       const h = history.find(o => o.id === saved.id);
-      if (h) h.purpose = text;
+      if (h) { h.purpose = text; historyVer++; }
       if (activeTab === 'feed') renderFeed();
       rangeCache.clear();
-      notify(text ? 'Заметка сохранена' : 'Заметка убрана', text || '');
+      if (prompt) showSavedIsland(saved);
+      else notify(text ? 'Заметка сохранена' : 'Заметка убрана', text || '');
     } catch (e) {
       notify('Заметка не сохранилась', e.message, 'err');
     }
@@ -2064,6 +2298,7 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
       ? notes.items.map((it, i) => `<div class="note"><span class="n">${i + 1}</span><span>${esc(it.text)}</span></div>`).join('')
       : '<div class="muted-line">На этот месяц выводов нет — их задают во вкладке «ДДС» на сайте</div>';
     $('hapticsToggle').checked = hapticsOn;
+    $('askNoteToggle').checked = askNote;
     openSheet('sheetProfile');
   }
   function maybeShowNotes() {
@@ -2824,7 +3059,7 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
     $('tabbar').querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
     $('tabInd').style.transform = `translateX(${TABS.indexOf(tab) * 100}%)`;
     closeOpenRow();
-    if (searchOn && tab !== 'log') setSearch(false);
+    if (tab !== 'log' && searchActive()) clearSearch(true);
     if (tab === 'feed') renderFeed();
     if (tab === 'budget') showBudget();
     if (tab === 'analytics') loadAnalytics();
@@ -2955,12 +3190,41 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
   });
 
   $('tiles').addEventListener('click', (e) => {
+    const cb = e.target.closest('.combo');
+    if (cb) { onComboTap(cb); return; }
     const t = e.target.closest('.tile');
     if (t) onTileTap(t);
   });
-  $('searchBtn').addEventListener('click', () => setSearch(!searchOn));
-  $('catSearch').addEventListener('input', () => { searchQ = $('catSearch').value || ''; renderTiles(); });
-  $('catSearch').addEventListener('keydown', (e) => { if (e.key === 'Escape') setSearch(false); });
+  // На компьютере нажатие мышью сняло бы фокус с поиска раньше клика, и
+  // список перерисовался бы прямо под курсором. На iPhone кнопки фокус не берут.
+  $('tiles').addEventListener('mousedown', (e) => { if (searchFocus && e.target.closest('.combo, .tile')) e.preventDefault(); });
+  const catSearch = $('catSearch');
+  catSearch.addEventListener('focus', () => { searchFocus = true; setSearchUI(); renderTiles(); });
+  catSearch.addEventListener('blur', () => {
+    searchFocus = false;
+    setSearchUI();
+    // Без запроса — убрать блок частых записей (с паузой: тап по результату
+    // успевает сработать раньше перерисовки).
+    setTimeout(() => { if (!searchFocus && !searchQ) renderTiles(); }, 150);
+  });
+  catSearch.addEventListener('input', () => {
+    searchQ = catSearch.value || '';
+    setSearchUI();
+    renderTiles();
+    $('tiles').scrollTop = 0;
+  });
+  catSearch.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { clearSearch(true); return; }
+    // «Найти» на клавиатуре — первый результат: частая запись или статья.
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const first = $('tiles').querySelector('.combo, .tile');
+      if (first) first.click();
+    }
+  });
+  $('searchClear').addEventListener('click', () => { clearSearch(false); catSearch.focus(); });
+  $('armGo').addEventListener('click', commitArmed);
+  $('armCancel').addEventListener('click', disarm);
 
   $('whoBtn').addEventListener('click', () => openProfile(false));
   $('accBtn').addEventListener('click', openAccountSheet);
@@ -2974,7 +3238,14 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
     applyHaptics();
     buzz(BUZZ.tap);
   });
-  if (!('switch' in HTMLInputElement.prototype)) $('hapticsToggle').classList.add('custom');
+  $('askNoteToggle').addEventListener('change', () => {
+    askNote = $('askNoteToggle').checked;
+    try { localStorage.setItem(LS_ASK_NOTE, askNote ? '1' : '0'); } catch (_) {}
+  });
+  if (!('switch' in HTMLInputElement.prototype)) {
+    $('hapticsToggle').classList.add('custom');
+    $('askNoteToggle').classList.add('custom');
+  }
 
   $('dateChip').addEventListener('click', openDateSheet);
   $('dateOpts').addEventListener('click', (e) => {
@@ -2995,6 +3266,13 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
   $('noteClear').addEventListener('click', () => applyNote(''));
   $('noteInput').addEventListener('input', () => { $('noteClear').hidden = !$('noteInput').value && !(noteFor ? noteFor.payload.purpose : entryNote); });
   $('noteInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); applyNote($('noteInput').value); } });
+  $('noteSkip').addEventListener('click', () => closeSheet('sheetNote'));
+  $('noteUndo').addEventListener('click', () => {
+    const p = noteFor;
+    notePrompt = false;
+    closeSheet('sheetNote');
+    if (p) requestUndo(p);
+  });
   $('noteSugs').addEventListener('click', (e) => {
     const b = e.target.closest('[data-s]');
     if (b) applyNote(b.dataset.s);
@@ -3197,6 +3475,9 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
       const hidden = open ? Math.max(0, full - vv.height - vv.offsetTop) : 0;
       const root = document.documentElement.style;
       root.setProperty('--kb', Math.round(hidden) + 'px');
+      const underKb = open && document.activeElement === $('catSearch')
+        ? Math.max(0, $('tiles').getBoundingClientRect().bottom - (vv.offsetTop + vv.height)) : 0;
+      root.setProperty('--tiles-kb', Math.round(underKb) + 'px');
       root.setProperty('--vvh', Math.round(vv.height) + 'px');
     };
     vv.addEventListener('resize', syncKeyboard);
@@ -3216,6 +3497,7 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
     const ae = document.activeElement;
     if (ae && ae.id !== 'hx' && (ae.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(ae.tagName))) return;
     if (activeTab !== 'log' || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'Enter' && armed) { e.preventDefault(); commitArmed(); return; }
     let k = '';
     if (e.key >= '0' && e.key <= '9') k = e.key;
     else if (e.key === ',' || e.key === '.') k = ',';
