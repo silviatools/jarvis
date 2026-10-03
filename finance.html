@@ -637,7 +637,8 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
   width: min(480px, 100%);
   max-height: min(88vh, calc(var(--vvh) - 12px));
   overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
-  padding: 6px 18px calc(18px + var(--safe-b));
+  /* Над клавиатурой отступ под «полоску Домой» не нужен — её закрывает клавиатура. */
+  padding: 6px 18px calc(18px + max(0px, var(--safe-b) - var(--kb)));
   border-radius: 28px 28px 0 0;
   background: var(--surface);
   box-shadow: var(--shadow-2);
@@ -740,6 +741,16 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
 .is-btn .ico { width: 18px; height: 18px; }
 .is-bar { position: absolute; left: 26px; right: 26px; bottom: 0; height: 2px; border-radius: 1px; background: rgba(255, 255, 255, .26); transform-origin: left center; }
 
+/* iOS 26: у приложения «на экран Домой» (viewport-fit=cover + прозрачная
+   строка состояния) 100%, 100vh, 100dvh и 100svh короче экрана ровно на
+   высоту строки состояния — под нижней панелью оставалась пустая полоса.
+   Полную высоту отдаёт только 100lvh. --app-h — страховка из скрипта, если
+   и он окажется коротким. Листы тянем так же, иначе их низ висел над той же
+   полосой. */
+@media (display-mode: standalone) {
+  html, body { height: var(--app-h, 100lvh); }
+  .sheet-wrap { bottom: auto; height: var(--app-h, 100lvh); }
+}
 @media (min-width: 520px) {
   .app { margin-top: 16px; height: calc(100% - 32px); max-width: 430px; border-radius: 32px; overflow: hidden; border: 1px solid var(--line); box-shadow: var(--shadow-2); }
 }
@@ -3144,21 +3155,54 @@ select.input { padding-right: 38px; background-image: url("data:image/svg+xml,%3
     }
   });
 
+  // Страховка к 100lvh (см. стили): если в установленном приложении и он
+  // короче экрана ровно на строку состояния — растягиваем до высоты экрана.
+  // Пересчитываем при повороте: в альбомной строки состояния нет.
+  function fixStandaloneHeight() {
+    const root = document.documentElement.style;
+    root.removeProperty('--app-h');
+    if (!window.matchMedia || !matchMedia('(display-mode: standalone)').matches) return;
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:0;padding-top:env(safe-area-inset-top, 0px);visibility:hidden;pointer-events:none';
+    document.body.appendChild(probe);
+    const safeTop = probe.offsetHeight;
+    probe.remove();
+    const h = document.body.clientHeight;
+    if (safeTop > 0 && screen.height > screen.width && Math.abs(screen.height - h - safeTop) <= 2) {
+      root.setProperty('--app-h', screen.height + 'px');
+    }
+  }
+  fixStandaloneHeight();
+  window.addEventListener('orientationchange', () => setTimeout(fixStandaloneHeight, 300));
+
   // Экранная клавиатура на iOS не сдвигает position:fixed — она просто
   // накрывает нижнюю часть экрана. Листы прижаты к низу, поэтому пока
   // клавиатура открыта, кнопки «Сохранить»/«Удалить» оказывались под ней.
   // Отдаём её высоту в CSS: лист поднимается над клавиатурой и ужимается
-  // до видимой части экрана.
+  // до видимой части экрана. Считаем от высоты самого приложения, а не от
+  // innerHeight (в iOS 26 он короче экрана на строку состояния), и только
+  // пока фокус в поле ввода — иначе эта разница сошла бы за клавиатуру.
   const vv = window.visualViewport;
   if (vv) {
+    let vvFull = 0;
+    const typing = () => {
+      const ae = document.activeElement;
+      return !!ae && ae.id !== 'hx' && (ae.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(ae.tagName));
+    };
     const syncKeyboard = () => {
-      const hidden = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      const t = typing();
+      vvFull = t ? Math.max(vvFull, vv.height) : vv.height;
+      const open = t && vv.height < vvFull - 80;
+      const full = document.body.clientHeight || window.innerHeight;
+      const hidden = open ? Math.max(0, full - vv.height - vv.offsetTop) : 0;
       const root = document.documentElement.style;
       root.setProperty('--kb', Math.round(hidden) + 'px');
       root.setProperty('--vvh', Math.round(vv.height) + 'px');
     };
     vv.addEventListener('resize', syncKeyboard);
     vv.addEventListener('scroll', syncKeyboard);
+    document.addEventListener('focusin', syncKeyboard);
+    document.addEventListener('focusout', () => setTimeout(syncKeyboard, 0));
     syncKeyboard();
   }
 
