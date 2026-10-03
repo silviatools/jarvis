@@ -5077,6 +5077,59 @@ ADJUSTMENT_ARTICLES = [
      "group_name": "Корректировки", "emoji": "🛠️"},
 ]
 
+# Авто-строка «Спортпит и БАДы» вкладки «По месяцу»: план считается из вкладки
+# «Спортпит» (цена × количество позиций, назначенных на месяц), а факт — как
+# у обычной статьи: ручной/из выписки + операции ДДС. Своих платежей у вкладки
+# нет, поэтому запись через ДДС ничего не задваивает. ДЕРЖАТЬ В СИНХРОНЕ с
+# SUPPLEMENTS_ARTICLE_ID и cashflowArticles() из index (9).html.
+SUPPLEMENTS_ARTICLE_ID = "__supp_total"
+SUPPLEMENTS_LABEL = "Спортпит и БАДы"
+
+
+def _pf_num(value) -> float:
+    """Число из поля, которое сайт мог сохранить и строкой ('1290', '').
+    nan/inf — ноль: иначе ответ API перестал бы быть валидным JSON."""
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        num = float(value if isinstance(value, (int, float)) else str(value).replace(" ", "").replace(",", "."))
+    except (ValueError, OverflowError):
+        return 0.0
+    return num if num - num == 0 else 0.0
+
+
+def _pf_supp_active(sl: dict) -> list:
+    return [s for s in _pf_list(sl, "budgetSupplements")
+            if isinstance(s, dict) and not s.get("archived")]
+
+
+def _pf_supp_in_use(sl: dict) -> bool:
+    """Статья «Спортпит и БАДы» есть, пока вкладкой пользуются (есть активные
+    позиции) или по ней уже записаны операции — чтобы они не остались без
+    статьи. ДЕРЖАТЬ В СИНХРОНЕ с supplementsArticleInUse() из index (9).html."""
+    if _pf_supp_active(sl):
+        return True
+    return any(isinstance(op, dict) and op.get("categoryId") == SUPPLEMENTS_ARTICLE_ID
+               for op in _pf_list(sl, "budgetCashflowOps"))
+
+
+def _pf_supp_plan(sl: dict, month: str) -> float:
+    """План «Спортпит и БАДы» на месяц — как getAutoVal() авто-категории
+    в BudgetMonthlyView (index (9).html)."""
+    by_id = {str(s.get("id")): s for s in _pf_supp_active(sl) if s.get("id")}
+    assign = sl.get("budgetSupplementAssignments")
+    entries = assign.get(month) if isinstance(assign, dict) else None
+    total = 0.0
+    for e in (entries if isinstance(entries, list) else []):
+        if isinstance(e, str):
+            e = {"id": e, "qty": 1}
+        if not isinstance(e, dict):
+            continue
+        item = by_id.get(str(e.get("id") or ""))
+        if item is not None:
+            total += _pf_num(item.get("cost")) * (_pf_num(e.get("qty")) or 1)
+    return total
+
 
 def _pf_rec_active_in(r: dict, month: str) -> bool:
     """Даёт ли постоянный платёж план в месяце. Архивный платёж с archivedFrom
@@ -5175,6 +5228,7 @@ def pf_articles(sl: dict) -> list:
       • источники дохода            → direction=in,  id = <srcId>
       • статьи ручных категорий     → direction=out, id = <itemId>
       • категории «Постоянные»      → direction=out, id = __rec_<catId>
+      • «Спортпит и БАДы»           → direction=out, id = __supp_total
     Накопления и Долги сюда не попадают: их факт считается из платежей на
     своих вкладках, запись через ДДС удвоила бы суммы.
     ДЕРЖАТЬ В СИНХРОНЕ с cashflowArticles() из index (9).html."""
@@ -5242,6 +5296,17 @@ def pf_articles(sl: dict) -> list:
             "items": rec_items_by_cat.get(cid, []),
         })
 
+    if _pf_supp_in_use(sl):
+        arts.append({
+            "id": SUPPLEMENTS_ARTICLE_ID,
+            "name": SUPPLEMENTS_LABEL,
+            "direction": "out",
+            "group_name": SUPPLEMENTS_LABEL,
+            "emoji": "💊",
+            # Названия позиций вкладки — чтобы статья находилась и по «протеин».
+            "items": [n for n in (str(s.get("name") or "").strip() for s in _pf_supp_active(sl)) if n],
+        })
+
     arts.extend({**a, "items": []} for a in ADJUSTMENT_ARTICLES)
 
     counts = {}
@@ -5275,8 +5340,9 @@ def pf_dds_fact_by_category(sl: dict, month: str) -> dict:
 
 
 def pf_budget_rows(sl: dict, month: str) -> list:
-    """План / факт / остаток по статьям месяца — ручные категории и
-    «Постоянные», вкладка «Бюджет» приложения. Те же id и та же формула
+    """План / факт / остаток по статьям месяца — ручные категории,
+    «Постоянные» и «Спортпит и БАДы» (если по нему есть план или факт),
+    вкладка «Бюджет» приложения. Те же id и та же формула
     факта (ручной факт/факт из выписки + факт из ДДС), что и pf_articles()
     и «По месяцу» на сайте. Накопления и Долги сюда не входят — у них не
     «план минус потрачено», а другая механика (цель/остаток долга)."""
@@ -5343,6 +5409,20 @@ def pf_budget_rows(sl: dict, month: str) -> list:
             "plan": round(plan, 2),
             "fact": round(fact, 2),
             "remaining": round(plan - fact, 2),
+        })
+
+    supp_plan = _pf_supp_plan(sl, month)
+    supp_fact = (float(fact_vals.get(f"{SUPPLEMENTS_ARTICLE_ID}_{month}") or 0)
+                 + dds_fact.get(SUPPLEMENTS_ARTICLE_ID, 0.0))
+    if supp_plan or supp_fact:
+        rows.append({
+            "id": SUPPLEMENTS_ARTICLE_ID,
+            "name": SUPPLEMENTS_LABEL,
+            "emoji": "💊",
+            "group_name": SUPPLEMENTS_LABEL,
+            "plan": round(supp_plan, 2),
+            "fact": round(supp_fact, 2),
+            "remaining": round(supp_plan - supp_fact, 2),
         })
 
     return rows

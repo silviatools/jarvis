@@ -16149,12 +16149,25 @@ const ADJUSTMENT_EXPENSE_ID = '__adj_out';
 const ADJUSTMENT_INCOME_ID  = '__adj_in';
 const ADJUSTMENT_GROUP      = 'Корректировки';
 
+// Авто-строка «Спортпит и БАДы» (вкладка «Спортпит»): план — из назначенных
+// на месяц позиций, факт — как у обычной статьи (ручной/выписка + ДДС). Своих
+// платежей у вкладки нет, поэтому запись через ДДС ничего не задваивает.
+// Статья есть, пока вкладкой пользуются (есть активные позиции) или по ней
+// уже записаны операции — чтобы они не остались без статьи.
+// ДЕРЖАТЬ В СИНХРОНЕ с SUPPLEMENTS_ARTICLE_ID / _pf_supp_in_use() из jarvis.py.
+const SUPPLEMENTS_ARTICLE_ID = '__supp_total';
+const SUPPLEMENTS_LABEL      = 'Спортпит и БАДы';
+const supplementsArticleInUse = (data) =>
+  (data.budgetSupplements || []).some(s => s && !s.archived) ||
+  (data.budgetCashflowOps || []).some(o => o && o.categoryId === SUPPLEMENTS_ARTICLE_ID);
+
 // ── ДДС: счета, операции и факт по статьям ──────────────────────────────────
 // Статьи, по которым можно записывать операции ДДС — ровно те строки вкладки
 // «По месяцу», факт по которым ведётся вручную: источники дохода, статьи
 // ручных категорий и категории «Постоянные». Накопления и Долги сюда не
 // входят: их факт считается из платежей на своих вкладках, и запись через
-// ДДС удвоила бы суммы. Плюс две технические статьи корректировки (см. выше).
+// ДДС удвоила бы суммы. Плюс «Спортпит и БАДы» и две технические статьи
+// корректировки (см. выше).
 // ДЕРЖАТЬ В СИНХРОНЕ с pf_articles() из jarvis.py — по этому же списку
 // мобильное приложение /pf/<token> показывает статьи на телефоне.
 const cashflowArticles = (data) => {
@@ -16188,6 +16201,14 @@ const cashflowArticles = (data) => {
       items: activeRecItems.filter(r => r.category === cid).map(r => String(r.name || '').trim()).filter(Boolean),
     });
   });
+  if (supplementsArticleInUse(data)) {
+    out.push({
+      id: SUPPLEMENTS_ARTICLE_ID, label: SUPPLEMENTS_LABEL, direction: 'out',
+      group: SUPPLEMENTS_LABEL, emoji: '💊',
+      // Названия позиций вкладки — чтобы статья находилась и по «протеин».
+      items: (data.budgetSupplements || []).filter(s => s && !s.archived).map(s => String(s.name || '').trim()).filter(Boolean),
+    });
+  }
   out.push({ id: ADJUSTMENT_EXPENSE_ID, label: 'Корректировка расход', direction: 'out', group: ADJUSTMENT_GROUP, emoji: '🛠️' });
   out.push({ id: ADJUSTMENT_INCOME_ID,  label: 'Корректировка доход',  direction: 'in',  group: ADJUSTMENT_GROUP, emoji: '🛠️' });
   return out;
@@ -16899,7 +16920,11 @@ function BudgetMonthlyView({ data, setData }) {
       const monthsWithSupp = months.filter(m => {
         return normalize(suppAssign[m]).some(e => suppItems.find(s => s.id === e.id && !s.archived));
       });
-      if (monthsWithSupp.length === 0) return null;
+      // Без назначенных позиций строка всё равно нужна, если по ней есть
+      // факт — например, покупки записаны через ДДС/приложение.
+      const hasFact = months.some(m =>
+        (factVals[`${SUPPLEMENTS_ARTICLE_ID}_${m}`] || 0) + (ddsFact.expense[`${SUPPLEMENTS_ARTICLE_ID}_${m}`] || 0));
+      if (monthsWithSupp.length === 0 && !hasFact) return null;
       return {
         id: '__supplements', emoji: '💊', label: 'Спортпит и БАДы', isAuto: true, autoColor: 'orange',
         items: [{
@@ -17840,7 +17865,7 @@ function BudgetCashflowView({ data, setData, userId }) {
 
   const accounts = data.budgetCashflowAccounts || [];
   const ops      = cashflowOpsOf(data);
-  const articles = useMemo(() => cashflowArticles(data), [data.budgetIncomeSources, data.budgetPlanCategories, data.budgetRecurring, data.budgetRecurringCategories]);
+  const articles = useMemo(() => cashflowArticles(data), [data.budgetIncomeSources, data.budgetPlanCategories, data.budgetRecurring, data.budgetRecurringCategories, data.budgetSupplements, data.budgetCashflowOps]);
   const artById  = useMemo(() => Object.fromEntries(articles.map(a => [a.id, a])), [articles]);
   const accById  = useMemo(() => Object.fromEntries(accounts.map(a => [a.id, a])), [accounts]);
 
