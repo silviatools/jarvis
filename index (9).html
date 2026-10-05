@@ -21301,23 +21301,205 @@ function DebtsListView({ data, setData }) {
   const totalRemaining = active.reduce((s, d) => s + getDebtRemaining(d, transactions), 0);
   const totalMonthly = active.reduce((s, d) => s + calcDebtMonthly(d, transactions), 0);
 
+  // ── Что платить в этом месяце ────────────────────────────────────────────
+  // Для каждого активного долга: сколько надо за месяц (план; в последний
+  // месяц графика и у просроченных — весь остаток), сколько уже внесено в этом
+  // месяце и сколько ещё осталось доплатить.
+  const monthPaymentsOf = (id) => transactions
+    .filter(t => t.debtId === id && t.type !== 'increase' && (t.date || '').slice(0, 7) === curMonth)
+    .sort((x, y) => (x.date || '').localeCompare(y.date || ''));
+  const rows = active.map(d => {
+    const remaining = getDebtRemaining(d, transactions);
+    const effective = getDebtEffectiveAmount(d, transactions);
+    const paid = getDebtPaid(d, transactions);
+    const pct = effective > 0 ? Math.min(100, Math.round((paid / effective) * 100)) : 0;
+    const hasSchedule = !!(d.startDate && d.targetDate);
+    const monthPays = monthPaymentsOf(d.id);
+    const paidThis = monthPays.reduce((s, t) => s + (t.amount || 0), 0);
+    const overdue = hasSchedule && d.targetDate < curMonth && remaining > 0;
+    let group = 'free', need = 0;
+    if (hasSchedule) {
+      if (d.startDate > curMonth) group = 'later';
+      else {
+        group = 'now';
+        const plan = calcDebtMonthly(d, transactions, curMonth);
+        const left = remaining + paidThis;            // сколько оставалось на начало месяца
+        need = d.targetDate <= curMonth ? left : Math.min(plan, left);
+      }
+    }
+    const due = Math.max(need - paidThis, 0);
+    let status = 'none';
+    if (group === 'now') {
+      if (remaining <= 0) status = 'done';
+      else if (need > 0 && paidThis >= need) status = 'paid';
+      else if (overdue) status = 'overdue';
+      else if (paidThis > 0) status = 'partial';
+      else if (need > 0) status = 'due';
+    }
+    return { d, remaining, effective, paid, pct, hasSchedule, monthPays, paidThis, overdue, group, need, due, status };
+  });
+  const STATUS_ORDER = { overdue: 0, due: 1, partial: 2, none: 3, paid: 4, done: 5 };
+  const nowRows = rows.filter(r => r.group === 'now').sort((x, y) => STATUS_ORDER[x.status] - STATUS_ORDER[y.status]);
+  const laterRows = rows.filter(r => r.group === 'later').sort((x, y) => x.d.startDate.localeCompare(y.d.startDate));
+  const freeRows = rows.filter(r => r.group === 'free');
+  const monthNeed = nowRows.reduce((s, r) => s + r.need, 0);
+  const monthPaid = nowRows.reduce((s, r) => s + Math.min(r.paidThis, r.need || r.paidThis), 0);
+  const monthDue = nowRows.reduce((s, r) => s + r.due, 0);
+  const monthPct = monthNeed > 0 ? Math.min(100, Math.round((monthPaid / monthNeed) * 100)) : 0;
+
+  const removeTx = (id) => {
+    if (!confirm('Отменить этот платёж?')) return;
+    setData(d => ({
+      ...d,
+      debtTransactions: (d.debtTransactions || []).filter(t => t.id !== id),
+      deletedIds: withDeletedId(d, 'debtTransactions', id),
+    }));
+  };
+
   const fmtDate = (s) => {
     if (!s) return '—';
     const [y, m, dd] = s.split('-');
     return `${dd}.${m}.${y}`;
   };
+  const fmtShort = (s) => (s ? s.split('-').reverse().slice(0, 2).join('.') : '');
+
+  const STATUS_UI = {
+    overdue: { label: 'Просрочен',  cls: 'bg-red-50 text-red-600 border-red-200',       bar: 'bg-red-500' },
+    due:     { label: 'К оплате',   cls: 'bg-rose-50 text-rose-600 border-rose-200',    bar: 'bg-rose-500' },
+    partial: { label: 'Частично',   cls: 'bg-amber-50 text-amber-700 border-amber-200', bar: 'bg-amber-500' },
+    paid:    { label: 'Оплачено ✓', cls: 'bg-green-50 text-green-700 border-green-200', bar: 'bg-green-500' },
+    done:    { label: 'Погашен ✓',  cls: 'bg-green-50 text-green-700 border-green-200', bar: 'bg-green-500' },
+    none:    { label: 'Платить не нужно', cls: 'bg-[var(--bg)] text-[var(--text-muted)] border-[var(--border)]', bar: 'bg-[var(--border)]' },
+  };
+
+  const renderDebtCard = (r) => {
+    const { d, remaining, effective, pct, hasSchedule, monthPays, paidThis, need, due, status, group } = r;
+    const ui = STATUS_UI[status];
+    const mLeft = hasSchedule ? monthsLeftFor(d) : 0;
+    const dim = status === 'paid' || status === 'done';
+    return (
+      <div key={d.id} className={`bg-[var(--surface)] border rounded-2xl p-4 transition-colors ${
+        status === 'overdue' ? 'border-red-300' : status === 'due' ? 'border-rose-200' : 'border-[var(--border)]'} ${dim ? 'opacity-75' : ''}`}>
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="min-w-0">
+            <div className="font-medium text-base">{d.debtor || '—'}</div>
+            {d.comment && <div className="text-xs text-[var(--text-subtle)] mt-0.5 line-clamp-2">{d.comment}</div>}
+          </div>
+          <div className="text-right">
+            {group === 'now' && (
+              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${ui.cls}`}>{ui.label}</span>
+            )}
+            {group === 'later' && (
+              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border bg-[var(--bg)] text-[var(--text-muted)] border-[var(--border)]">
+                с {formatMonthShortBudget(d.startDate)}
+              </span>
+            )}
+            {group === 'free' && (
+              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border bg-[var(--bg)] text-[var(--text-muted)] border-[var(--border)]">без графика</span>
+            )}
+          </div>
+        </div>
+
+        {group === 'now' && need > 0 && (
+          <div className="mt-3 flex items-end justify-between gap-3 flex-wrap">
+            <div>
+              <div className="text-xs text-[var(--text-subtle)]">В этом месяце</div>
+              <div className="font-display text-2xl leading-tight">
+                {status === 'paid' ? formatRub(paidThis) : formatRub(due)} <span className="text-sm">₽</span>
+                <span className="text-xs text-[var(--text-subtle)] font-sans ml-1.5">
+                  {status === 'paid' ? 'внесено' : status === 'partial' ? `осталось из ${formatRub(need)}` : 'к оплате'}
+                </span>
+              </div>
+            </div>
+            {due > 0 && (
+              <button onClick={() => addTx(d.id, 'payment', due, today, '')}
+                title={`Отметить платёж ${formatRub(due)} ₽ на ${today}`}
+                className="px-4 py-2 rounded-xl bg-rose-600 text-white text-sm font-medium hover:opacity-90 transition-opacity">
+                Оплатить {formatRub(due)} ₽
+              </button>
+            )}
+          </div>
+        )}
+
+        {monthPays.length > 0 && (
+          <div className="mt-3 space-y-1">
+            {monthPays.map(t => (
+              <div key={t.id} className="flex items-center justify-between gap-2 text-xs bg-green-50 text-green-700 rounded-lg px-2.5 py-1.5">
+                <span>✓ {fmtShort(t.date)} · {formatRub(t.amount)} ₽{t.comment ? ` · ${t.comment}` : ''}</span>
+                <button onClick={() => removeTx(t.id)} title="Отменить платёж" className="text-green-700/60 hover:text-red-500">✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-3 flex items-center gap-2">
+          <div className="flex-1 bg-[var(--bg)] rounded-full h-1.5 overflow-hidden">
+            <div className={`h-full rounded-full ${pct >= 100 ? 'bg-green-500' : pct >= 50 ? 'bg-blue-500' : 'bg-rose-500'}`} style={{ width: Math.max(0, pct) + '%' }} />
+          </div>
+          <span className="text-xs text-[var(--text-muted)] whitespace-nowrap">
+            осталось <b className="text-[var(--text)]">{formatRub(remaining)} ₽</b> из {formatRub(effective)} ₽ · {pct}%
+          </span>
+        </div>
+
+        <div className="mt-2 flex items-center justify-between gap-2 flex-wrap">
+          <div className="text-xs text-[var(--text-subtle)] flex gap-x-3 gap-y-0.5 flex-wrap">
+            {hasSchedule
+              ? <span>до {formatMonthShortBudget(d.targetDate)}{r.overdue ? ' · просрочен' : mLeft > 0 ? ` · ещё ${mLeft} мес` : ''}</span>
+              : d.returnDate && <span>до {fmtDate(d.returnDate)}</span>}
+            {d.source && <span>{d.source}</span>}
+            {d.notify && d.notifyDate && <span>🔔 {fmtDate(d.notifyDate)} {d.notifyTime || ''}</span>}
+          </div>
+          <div className="flex gap-0.5 justify-end">
+            {(group !== 'now' || due <= 0) && remaining > 0 && (
+              <button onClick={() => setPayModal(d)} title="Внести платёж" className="px-2 py-1 rounded-lg hover:bg-green-50 text-green-600 text-xs font-medium">+ платёж</button>
+            )}
+            <button onClick={() => setPayModal(d)} title="Внести другую сумму или пополнить долг"
+              className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] text-xs font-medium px-1.5">₽</button>
+            <button onClick={() => setCashflowModal(d)} title="Отметить платёж и записать в личный учёт трат"
+              className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-500 hover:text-blue-700"><Icon name="creditCard" size={14} /></button>
+            <button onClick={() => toggleClosed(d.id)} title="Отметить закрытым"
+              className="p-1.5 rounded-lg hover:bg-black/5 text-green-500 hover:text-green-700"><Icon name="check" size={14} /></button>
+            <button onClick={() => setEditing(d)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать"><Icon name="edit" size={14} /></button>
+            <button onClick={() => remove(d.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500" title="Удалить"><Icon name="trash" size={14} /></button>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div>
       {active.length > 0 && (
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 mb-6 flex items-center justify-between flex-wrap gap-3">
-          <div>
-            <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-1">Осталось вернуть</div>
-            <div className="font-display text-3xl">{formatRub(totalRemaining)} <span className="text-base">₽</span></div>
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 mb-6">
+          <div className="flex items-start justify-between flex-wrap gap-4">
+            <div>
+              <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-1 capitalize">Платежи в {formatMonthFull(curMonth)}</div>
+              {monthNeed > 0 ? (
+                monthDue > 0 ? (
+                  <div className="font-display text-3xl">{formatRub(monthDue)} <span className="text-base">₽ ещё оплатить</span></div>
+                ) : (
+                  <div className="font-display text-3xl text-green-600">Всё оплачено ✓</div>
+                )
+              ) : (
+                <div className="font-display text-2xl text-[var(--text-muted)]">В этом месяце платить не нужно</div>
+              )}
+              {monthNeed > 0 && (
+                <div className="text-sm text-[var(--text-muted)] mt-1">
+                  Оплачено {formatRub(monthPaid)} из {formatRub(monthNeed)} ₽
+                </div>
+              )}
+            </div>
+            <div className="text-right text-sm text-[var(--text-muted)]">
+              <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-1">Всего осталось вернуть</div>
+              <div className="font-display text-xl text-[var(--text)]">{formatRub(totalRemaining)} ₽</div>
+              <div className="text-xs mt-0.5">{active.length} {pluralRu(active.length, ['активный долг', 'активных долга', 'активных долгов'])}</div>
+            </div>
           </div>
-          <div className="text-right text-sm text-[var(--text-muted)]">
-            <div>{formatRub(totalMonthly)} ₽/мес по плану</div>
-          </div>
+          {monthNeed > 0 && (
+            <div className="mt-4 bg-[var(--bg)] rounded-full h-2 overflow-hidden">
+              <div className={`h-full rounded-full transition-all ${monthPct >= 100 ? 'bg-green-500' : 'bg-rose-500'}`} style={{ width: monthPct + '%' }} />
+            </div>
+          )}
         </div>
       )}
 
@@ -21331,103 +21513,22 @@ function DebtsListView({ data, setData }) {
         <EmptyState title="Нет долгов" text="Добавьте долг с периодичностью выплат — план появится в «По месяцу», а платежи уменьшат остаток" />
       ) : (
         <>
-          {active.length > 0 && (
-            <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
-              <div className="overflow-x-auto md:overflow-x-visible">
-                <table className="text-sm w-max max-w-full md:max-w-none">
-                  <thead>
-                    <tr className="bg-[var(--bg)] border-b border-[var(--border)]">
-                      {['Кому', 'Осталось', 'Сумма', '/ мес', 'Начало', 'До', 'Откуда', 'Напоминание'].map(h => (
-                        <th key={h} className={`px-3 py-3 text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] whitespace-nowrap ${['Осталось','Сумма','/ мес'].includes(h) ? 'text-right' : 'text-left'}`}>{h}</th>
-                      ))}
-                      <th className="px-3 py-3 w-28" />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {active.map((d, i) => {
-                      const remaining = getDebtRemaining(d, transactions);
-                      const paid = getDebtPaid(d, transactions);
-                      const effective = getDebtEffectiveAmount(d, transactions);
-                      const monthly = calcDebtMonthly(d, transactions);
-                      const pct = effective > 0 ? Math.min(100, Math.round((paid / effective) * 100)) : 0;
-                      const hasSchedule = !!(d.startDate && d.targetDate);
-                      const isOver = hasSchedule && d.targetDate < curMonth && remaining > 0;
-                      const mLeft = hasSchedule ? monthsLeftFor(d) : 0;
-                      return (
-                        <tr key={d.id} className={`border-b border-[var(--border)] last:border-0 hover:bg-black/[0.02] transition-colors ${i % 2 === 1 ? 'bg-[var(--bg)]/50' : ''}`}>
-                          <td className="px-3 py-3">
-                            <div className="font-medium whitespace-nowrap">{d.debtor || '—'}</div>
-                            {d.comment && <div className="text-xs text-[var(--text-subtle)] truncate max-w-[180px]">{d.comment}</div>}
-                          </td>
-                          <td className="px-3 py-3 text-right whitespace-nowrap">
-                            <div className="flex items-center justify-end gap-2">
-                              <div className="w-14 bg-[var(--bg)] rounded-full h-1.5 overflow-hidden">
-                                <div className={`h-full rounded-full ${pct >= 100 ? 'bg-green-500' : pct >= 50 ? 'bg-blue-500' : 'bg-rose-500'}`}
-                                  style={{ width: Math.max(0, pct) + '%' }} />
-                              </div>
-                              <span className={`font-medium ${remaining > 0 ? 'text-[var(--text)]' : 'text-green-600'}`}>
-                                {formatRub(remaining)} ₽
-                              </span>
-                              <span className="text-[10px] text-[var(--text-subtle)]">{pct}%</span>
-                            </div>
-                          </td>
-                          <td className="px-3 py-3 text-right whitespace-nowrap font-medium">{formatRub(effective)} ₽</td>
-                          <td className="px-3 py-3 text-right whitespace-nowrap font-semibold">
-                            {hasSchedule ? `${formatRub(monthly)} ₽` : <span className="text-[var(--text-subtle)] font-normal">—</span>}
-                          </td>
-                          <td className="px-3 py-3 whitespace-nowrap text-[var(--text-muted)]">
-                            {hasSchedule ? formatMonthShortBudget(d.startDate) : '—'}
-                          </td>
-                          <td className={`px-3 py-3 whitespace-nowrap ${isOver ? 'text-red-500 font-medium' : 'text-[var(--text-muted)]'}`}>
-                            {hasSchedule ? formatMonthShortBudget(d.targetDate) : (d.returnDate ? fmtDate(d.returnDate) : '—')}
-                            {isOver
-                              ? <span className="block text-[10px] text-red-400">просрочен</span>
-                              : mLeft > 0 && <span className="block text-[10px] text-[var(--text-subtle)]">ещё {mLeft} мес</span>}
-                          </td>
-                          <td className="px-3 py-3 whitespace-nowrap text-[var(--text-muted)]">{d.source || '—'}</td>
-                          <td className="px-3 py-3 whitespace-nowrap text-[var(--text-muted)] text-xs">
-                            {d.notify && d.notifyDate ? `🔔 ${fmtDate(d.notifyDate)} ${d.notifyTime || ''}` : '—'}
-                          </td>
-                          <td className="px-2 py-3">
-                            <div className="flex gap-0.5 justify-end">
-                              <button
-                                onClick={() => {
-                                  if (monthly > 0) addTx(d.id, 'payment', monthly, today, '');
-                                  else setPayModal(d);
-                                }}
-                                title={monthly > 0
-                                  ? `Отметить платёж ${formatRub(monthly)} ₽ (план/мес) на ${today}`
-                                  : 'Внести платёж'}
-                                className="p-1.5 rounded-lg hover:bg-green-50 text-green-500 hover:text-green-700 font-bold text-base leading-none">+</button>
-                              <button onClick={() => setPayModal(d)}
-                                title="Внести платёж или пополнить долг"
-                                className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] text-xs font-medium px-1.5">₽</button>
-                              <button onClick={() => setCashflowModal(d)}
-                                title="Отметить платёж и записать в личный учёт трат"
-                                className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-500 hover:text-blue-700">
-                                <Icon name="creditCard" size={14} />
-                              </button>
-                              <button onClick={() => toggleClosed(d.id)} title="Отметить закрытым"
-                                className="p-1.5 rounded-lg hover:bg-black/5 text-green-500 hover:text-green-700">
-                                <Icon name="check" size={14} />
-                              </button>
-                              <button onClick={() => setEditing(d)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать"><Icon name="edit" size={14} /></button>
-                              <button onClick={() => remove(d.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500" title="Удалить"><Icon name="trash" size={14} /></button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] flex justify-between items-center flex-wrap gap-2">
-                <span className="text-xs text-[var(--text-subtle)] uppercase tracking-wide">{active.length} активных</span>
-                <div className="text-right flex gap-4 items-baseline">
-                  <span className="text-xs text-[var(--text-subtle)]">Осталось: <b className="text-[var(--text)]">{formatRub(totalRemaining)} ₽</b></span>
-                  <span className="text-xs text-[var(--text-subtle)]">{formatRub(totalMonthly)} ₽/мес</span>
-                </div>
-              </div>
+          {nowRows.length > 0 && (
+            <div className="mb-6">
+              <div className="text-xs font-semibold uppercase tracking-widest text-[var(--text-subtle)] mb-2 capitalize">В этом месяце · {formatMonthFull(curMonth)}</div>
+              <div className="space-y-3">{nowRows.map(renderDebtCard)}</div>
+            </div>
+          )}
+          {laterRows.length > 0 && (
+            <div className="mb-6">
+              <div className="text-xs font-semibold uppercase tracking-widest text-[var(--text-subtle)] mb-2">Дальше по графику</div>
+              <div className="space-y-3">{laterRows.map(renderDebtCard)}</div>
+            </div>
+          )}
+          {freeRows.length > 0 && (
+            <div className="mb-6">
+              <div className="text-xs font-semibold uppercase tracking-widest text-[var(--text-subtle)] mb-2">Без графика</div>
+              <div className="space-y-3">{freeRows.map(renderDebtCard)}</div>
             </div>
           )}
 
