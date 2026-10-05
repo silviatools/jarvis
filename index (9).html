@@ -21960,97 +21960,69 @@ function DebtsListView({ data, setData }) {
     none:    { label: 'Платить не нужно', cls: 'bg-[var(--bg)] text-[var(--text-muted)] border-[var(--border)]', bar: 'bg-[var(--border)]' },
   };
 
+  // Компактная строка долга: имя + мелкая подпись слева, сумма/статус и кнопка
+  // оплаты справа, остальные действия — в меню «⋯».
   const renderDebtCard = (r) => {
     const { d, remaining, effective, pct, hasSchedule, monthPays, paidThis, need, due, status, group } = r;
     const ui = STATUS_UI[status];
     const mLeft = hasSchedule ? monthsLeftFor(d) : 0;
     const dim = status === 'paid' || status === 'done';
+    const sub = [
+      `осталось ${formatRub(remaining)} из ${formatRub(effective)} ₽ · ${pct}%`,
+      hasSchedule ? `до ${formatMonthShortBudget(d.targetDate)}${r.overdue ? ' (просрочен)' : mLeft > 0 ? ` · ещё ${mLeft} мес` : ''}` : (d.returnDate ? `до ${fmtDate(d.returnDate)}` : ''),
+      d.source || '',
+      d.notify && d.notifyDate ? `🔔 ${fmtDate(d.notifyDate)}` : '',
+    ].filter(Boolean).join(' · ');
+    const menuBtn = 'w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 whitespace-nowrap';
+    const closeMenu = (e) => { const det = e.currentTarget.closest('details'); if (det) det.removeAttribute('open'); };
     return (
-      <div key={d.id} className={`bg-[var(--surface)] border rounded-2xl p-4 transition-colors ${
-        status === 'overdue' ? 'border-red-300' : status === 'due' ? 'border-rose-200' : 'border-[var(--border)]'} ${dim ? 'opacity-75' : ''}`}>
-        <div className="flex items-start justify-between gap-3 flex-wrap">
-          <div className="min-w-0">
-            <div className="font-medium text-base">{d.debtor || '—'}</div>
-            {d.comment && <div className="text-xs text-[var(--text-subtle)] mt-0.5 line-clamp-2">{d.comment}</div>}
+      <div key={d.id} className={`px-3 py-2.5 ${dim ? 'opacity-60' : ''}`}>
+        <div className="flex items-center gap-3">
+          <span className={`w-1.5 self-stretch rounded-full shrink-0 ${group === 'now' ? ui.bar : 'bg-[var(--border)]'}`} />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium truncate">{d.debtor || '—'}</div>
+            <div className="text-[11px] text-[var(--text-subtle)] truncate" title={sub}>{sub}</div>
           </div>
-          <div className="text-right">
+          <div className="text-right shrink-0">
+            {group === 'now' && need > 0 && (
+              <div className={`text-sm font-semibold ${status === 'paid' ? 'text-green-600' : status === 'overdue' ? 'text-red-600' : ''}`}>
+                {status === 'paid' ? `✓ ${formatRub(paidThis)} ₽` : `${formatRub(due)} ₽`}
+              </div>
+            )}
             {group === 'now' && (
-              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${ui.cls}`}>{ui.label}</span>
-            )}
-            {group === 'later' && (
-              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border bg-[var(--bg)] text-[var(--text-muted)] border-[var(--border)]">
-                с {formatMonthShortBudget(d.startDate)}
-              </span>
-            )}
-            {group === 'free' && (
-              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border bg-[var(--bg)] text-[var(--text-muted)] border-[var(--border)]">без графика</span>
-            )}
-          </div>
-        </div>
-
-        {group === 'now' && need > 0 && (
-          <div className="mt-3 flex items-end justify-between gap-3 flex-wrap">
-            <div>
-              <div className="text-xs text-[var(--text-subtle)]">В этом месяце</div>
-              <div className="font-display text-2xl leading-tight">
-                {status === 'paid' ? formatRub(paidThis) : formatRub(due)} <span className="text-sm">₽</span>
-                <span className="text-xs text-[var(--text-subtle)] font-sans ml-1.5">
-                  {status === 'paid' ? 'внесено' : status === 'partial' ? `осталось из ${formatRub(need)}` : 'к оплате'}
-                </span>
+              <div className={`text-[11px] ${status === 'overdue' ? 'text-red-500' : status === 'partial' ? 'text-amber-600' : status === 'paid' || status === 'done' ? 'text-green-600' : 'text-[var(--text-subtle)]'}`}>
+                {status === 'partial' ? `из ${formatRub(need)} ₽` : (status === 'due' ? 'к оплате' : ui.label)}
               </div>
+            )}
+            {group === 'later' && <div className="text-xs text-[var(--text-muted)]">с {formatMonthShortBudget(d.startDate)}</div>}
+            {group === 'free' && <div className="text-xs text-[var(--text-muted)]">без графика</div>}
+          </div>
+          {group === 'now' && due > 0 && (
+            <button onClick={() => addTx(d.id, 'payment', due, today, '')}
+              title={`Отметить платёж ${formatRub(due)} ₽ на ${today}`}
+              className="px-2.5 py-1 rounded-lg bg-rose-600 text-white text-xs font-medium hover:opacity-90 shrink-0">Оплатить</button>
+          )}
+          <details className="relative shrink-0">
+            <summary className="list-none cursor-pointer p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] select-none leading-none">⋯</summary>
+            <div className="absolute right-0 top-full mt-1 z-20 bg-[var(--surface)] border border-[var(--border)] rounded-xl shadow-lg py-1 min-w-[190px]">
+              <button className={menuBtn} onClick={(e) => { closeMenu(e); setPayModal(d); }}>₽ Другая сумма / пополнить</button>
+              <button className={menuBtn} onClick={(e) => { closeMenu(e); setCashflowModal(d); }}>Платёж + запись в ДДС</button>
+              <button className={menuBtn} onClick={(e) => { closeMenu(e); setEditing(d); }}>Редактировать</button>
+              <button className={menuBtn} onClick={(e) => { closeMenu(e); toggleClosed(d.id); }}>Отметить закрытым</button>
+              <button className={`${menuBtn} text-red-500`} onClick={(e) => { closeMenu(e); remove(d.id); }}>Удалить</button>
             </div>
-            {due > 0 && (
-              <button onClick={() => addTx(d.id, 'payment', due, today, '')}
-                title={`Отметить платёж ${formatRub(due)} ₽ на ${today}`}
-                className="px-4 py-2 rounded-xl bg-rose-600 text-white text-sm font-medium hover:opacity-90 transition-opacity">
-                Оплатить {formatRub(due)} ₽
-              </button>
-            )}
-          </div>
-        )}
-
+          </details>
+        </div>
         {monthPays.length > 0 && (
-          <div className="mt-3 space-y-1">
+          <div className="mt-1 ml-[18px] flex flex-wrap gap-1.5">
             {monthPays.map(t => (
-              <div key={t.id} className="flex items-center justify-between gap-2 text-xs bg-green-50 text-green-700 rounded-lg px-2.5 py-1.5">
-                <span>✓ {fmtShort(t.date)} · {formatRub(t.amount)} ₽{t.comment ? ` · ${t.comment}` : ''}</span>
+              <span key={t.id} className="inline-flex items-center gap-1 text-[11px] bg-green-50 text-green-700 rounded-md px-1.5 py-0.5">
+                ✓ {fmtShort(t.date)} · {formatRub(t.amount)} ₽{t.comment ? ` · ${t.comment}` : ''}
                 <button onClick={() => removeTx(t.id)} title="Отменить платёж" className="text-green-700/60 hover:text-red-500">✕</button>
-              </div>
+              </span>
             ))}
           </div>
         )}
-
-        <div className="mt-3 flex items-center gap-2">
-          <div className="flex-1 bg-[var(--bg)] rounded-full h-1.5 overflow-hidden">
-            <div className={`h-full rounded-full ${pct >= 100 ? 'bg-green-500' : pct >= 50 ? 'bg-blue-500' : 'bg-rose-500'}`} style={{ width: Math.max(0, pct) + '%' }} />
-          </div>
-          <span className="text-xs text-[var(--text-muted)] whitespace-nowrap">
-            осталось <b className="text-[var(--text)]">{formatRub(remaining)} ₽</b> из {formatRub(effective)} ₽ · {pct}%
-          </span>
-        </div>
-
-        <div className="mt-2 flex items-center justify-between gap-2 flex-wrap">
-          <div className="text-xs text-[var(--text-subtle)] flex gap-x-3 gap-y-0.5 flex-wrap">
-            {hasSchedule
-              ? <span>до {formatMonthShortBudget(d.targetDate)}{r.overdue ? ' · просрочен' : mLeft > 0 ? ` · ещё ${mLeft} мес` : ''}</span>
-              : d.returnDate && <span>до {fmtDate(d.returnDate)}</span>}
-            {d.source && <span>{d.source}</span>}
-            {d.notify && d.notifyDate && <span>🔔 {fmtDate(d.notifyDate)} {d.notifyTime || ''}</span>}
-          </div>
-          <div className="flex gap-0.5 justify-end">
-            {(group !== 'now' || due <= 0) && remaining > 0 && (
-              <button onClick={() => setPayModal(d)} title="Внести платёж" className="px-2 py-1 rounded-lg hover:bg-green-50 text-green-600 text-xs font-medium">+ платёж</button>
-            )}
-            <button onClick={() => setPayModal(d)} title="Внести другую сумму или пополнить долг"
-              className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] text-xs font-medium px-1.5">₽</button>
-            <button onClick={() => setCashflowModal(d)} title="Отметить платёж и записать в личный учёт трат"
-              className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-500 hover:text-blue-700"><Icon name="creditCard" size={14} /></button>
-            <button onClick={() => toggleClosed(d.id)} title="Отметить закрытым"
-              className="p-1.5 rounded-lg hover:bg-black/5 text-green-500 hover:text-green-700"><Icon name="check" size={14} /></button>
-            <button onClick={() => setEditing(d)} className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Редактировать"><Icon name="edit" size={14} /></button>
-            <button onClick={() => remove(d.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500" title="Удалить"><Icon name="trash" size={14} /></button>
-          </div>
-        </div>
       </div>
     );
   };
@@ -22104,19 +22076,19 @@ function DebtsListView({ data, setData }) {
           {nowRows.length > 0 && (
             <div className="mb-6">
               <div className="text-xs font-semibold uppercase tracking-widest text-[var(--text-subtle)] mb-2 capitalize">В этом месяце · {formatMonthFull(curMonth)}</div>
-              <div className="space-y-3">{nowRows.map(renderDebtCard)}</div>
+              <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl divide-y divide-[var(--border)]">{nowRows.map(renderDebtCard)}</div>
             </div>
           )}
           {laterRows.length > 0 && (
             <div className="mb-6">
               <div className="text-xs font-semibold uppercase tracking-widest text-[var(--text-subtle)] mb-2">Дальше по графику</div>
-              <div className="space-y-3">{laterRows.map(renderDebtCard)}</div>
+              <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl divide-y divide-[var(--border)]">{laterRows.map(renderDebtCard)}</div>
             </div>
           )}
           {freeRows.length > 0 && (
             <div className="mb-6">
               <div className="text-xs font-semibold uppercase tracking-widest text-[var(--text-subtle)] mb-2">Без графика</div>
-              <div className="space-y-3">{freeRows.map(renderDebtCard)}</div>
+              <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl divide-y divide-[var(--border)]">{freeRows.map(renderDebtCard)}</div>
             </div>
           )}
 
