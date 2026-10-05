@@ -4793,6 +4793,24 @@ function TelegramSettings() {
   const [password, setPassword] = React.useState('');
   const [step, setStep] = React.useState('');
   const [info, setInfo] = React.useState(null);
+  const [qr, setQr] = React.useState('');
+
+  // Пока показан QR — раз в 2 секунды спрашиваем сервер, отсканировали ли.
+  React.useEffect(() => {
+    if (step !== 'qr') return undefined;
+    let dead = false;
+    const t = setInterval(async () => {
+      try {
+        const j = await (await fetch('/api/tg/auth/qr/poll', { method: 'POST', body: '{}' })).json();
+        if (dead) return;
+        if (j.error) { setErr(j.error); setStep(''); setQr(''); return; }
+        if (j.svg) setQr(j.svg);
+        if (j.step === 'password') { setStep('password'); setQr(''); }
+        else if (j.step === '') { setStep(''); setQr(''); load(); }
+      } catch (e) { /* следующая попытка */ }
+    }, 2000);
+    return () => { dead = true; clearInterval(t); };
+  }, [step]);
 
   const load = React.useCallback(() => {
     fetch('/api/tg/status')
@@ -4817,6 +4835,7 @@ function TelegramSettings() {
       else {
         if (next !== undefined) setStep(j.step !== undefined ? j.step : next);
         if (j.delivery) setInfo({ delivery: j.delivery, next: j.next });
+        if (j.svg) setQr(j.svg);
         setCode(''); setPassword('');
         load();
       }
@@ -4881,10 +4900,32 @@ function TelegramSettings() {
                   <div className="text-xs text-[var(--text-subtle)] mb-1">Номер телефона</div>
                   <input className={input} value={phone} placeholder="+79991234567" onChange={e => setPhone(e.target.value)} />
                 </label>
-                <button onClick={() => call('auth/start', { apiId, apiHash, phone }, 'code')}
-                  disabled={busy || !apiId || !apiHash || !phone} className="btn-primary text-sm px-4 py-2">
-                  {busy ? 'Отправляю…' : 'Получить код'}
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => call('auth/start', { apiId, apiHash, phone }, 'code')}
+                    disabled={busy || !apiId || !apiHash || !phone} className="btn-primary text-sm px-4 py-2">
+                    {busy ? 'Отправляю…' : 'Получить код'}
+                  </button>
+                  <button onClick={() => call('auth/qr', { apiId, apiHash }, 'qr')}
+                    disabled={busy || !apiId || !apiHash} className="btn-secondary text-sm px-4 py-2">
+                    Войти по QR-коду
+                  </button>
+                </div>
+                <p className="text-[11px] text-[var(--text-subtle)]">
+                  Если код не приходит — войдите по QR: телефон номером не нужен.
+                </p>
+              </>
+            )}
+            {step === 'qr' && (
+              <>
+                <p className="text-sm text-[var(--text-muted)]">
+                  На телефоне: Telegram → Настройки → Устройства → Подключить устройство — и наведите камеру на код.
+                </p>
+                {qr
+                  ? <img alt="QR" className="w-48 h-48 bg-white p-2 rounded-lg border border-[var(--border)]"
+                      src={'data:image/svg+xml;utf8,' + encodeURIComponent(qr)} />
+                  : <div className="text-sm text-[var(--text-subtle)]">Готовлю код…</div>}
+                <p className="text-[11px] text-[var(--text-subtle)]">Код обновляется каждые 30 секунд. Вход завершится сам.</p>
+                <button onClick={() => { setStep(''); setQr(''); }} className="btn-secondary text-sm px-4 py-2">Назад</button>
               </>
             )}
             {step === 'code' && (

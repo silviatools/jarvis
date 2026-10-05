@@ -196,6 +196,83 @@ def _code_info(sent) -> dict:
     return {"ok": True, "step": "code", "delivery": kind, "next": nxt, "length": length}
 
 
+def _qr_svg(url: str) -> str:
+    import io
+    import segno
+    buf = io.BytesIO()
+    segno.make(url, error="m").save(buf, kind="svg", scale=6, border=2, xmldecl=False, nl=False, dark="#111")
+    return buf.getvalue().decode("utf-8")
+
+
+def auth_qr_start(api_id, api_hash) -> dict:
+    """Вход по QR: пользователь сканирует код в Telegram на телефоне
+    (Настройки → Устройства → Подключить устройство). Код по SMS/в чат не нужен."""
+    api_id = str(api_id or "").strip()
+    api_hash = (api_hash or "").strip()
+    if not api_id.isdigit() or not api_hash:
+        raise TgError("Укажите api_id (число) и api_hash с my.telegram.org.")
+
+    async def _go():
+        client = TelegramClient(StringSession(), int(api_id), api_hash)
+        await client.connect()
+        qr = await client.qr_login()
+        return client, qr
+
+    client, qr = _run(_go(), 30)
+    old = _pending.get("client")
+    if old is not None:
+        try:
+            _run(old.disconnect(), 10)
+        except Exception:
+            pass
+    _pending.clear()
+    _pending.update({"api_id": api_id, "api_hash": api_hash, "client": client, "qr": qr,
+                     "qr_state": "wait", "at": time.time()})
+
+    async def _waiter(my_qr):
+        # _pending — один общий словарь: работаем, пока в нём наш QR (новый вход его заменит).
+        def mine():
+            return _pending.get("qr") is my_qr and _pending.get("qr_state") == "wait"
+
+        def set_state(st, err=None):
+            if _pending.get("qr") is my_qr:
+                _pending["qr_state"] = st
+                if err:
+                    _pending["qr_error"] = err
+
+        while mine():
+            try:
+                await my_qr.wait(30)
+                set_state("ok")
+            except (asyncio.TimeoutError, TimeoutError):
+                try:
+                    await my_qr.recreate()
+                except Exception as e:
+                    set_state("error", str(e))
+            except errors.SessionPasswordNeededError:
+                if _pending.get("qr") is my_qr:
+                    _pending["need_password"] = True
+                set_state("password")
+            except Exception as e:
+                set_state("error", str(e))
+
+    asyncio.run_coroutine_threadsafe(_waiter(qr), _ensure_loop())
+    return auth_qr_poll()
+
+
+def auth_qr_poll() -> dict:
+    st = _pending.get("qr_state")
+    if not _pending.get("client") or not st:
+        raise TgError("Сначала запросите QR-код.")
+    if st == "ok":
+        return _finish_login()
+    if st == "password":
+        return {"ok": True, "step": "password"}
+    if st == "error":
+        raise TgError(_pending.get("qr_error") or "Не удалось войти по QR.")
+    return {"ok": True, "step": "qr", "svg": _qr_svg(_pending["qr"].url)}
+
+
 def auth_resend() -> dict:
     """Повторная отправка кода следующим способом (SMS/звонок)."""
     if not _pending.get("client") or not _pending.get("hash"):
