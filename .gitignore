@@ -3,3 +3,4 @@ jarvis_subscribers.json
 __pycache__/
 *.pyc
 .env
+jarvis_tg_user.json
