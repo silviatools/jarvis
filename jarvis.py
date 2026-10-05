@@ -2591,7 +2591,7 @@ _rea_session = {"s": None, "at": 0.0}
 _rea_last = {"url": "", "status": 0, "text": ""}
 
 
-def _rea_get(path: str, params: dict, referer: str):
+def _rea_get(path: str, params: dict, referer: str, record: bool = True):
     """GET к rasp.rea.ru в общей сессии: куки с главной страницы получаем один
     раз (сайт может требовать их для XHR-запросов), прокси — из REA_PROXY."""
     if requests is None:
@@ -2617,7 +2617,8 @@ def _rea_get(path: str, params: dict, referer: str):
         raise StudyError(f"Не достучался до rasp.rea.ru: {e}. Если сайт режет зарубежные IP — "
                          "задайте REA_PROXY (российский прокси) в переменных окружения.")
     r.encoding = r.encoding if r.encoding and r.encoding.lower() != "iso-8859-1" else "utf-8"
-    _rea_last.update({"url": r.url, "status": r.status_code, "text": r.text[:200000]})
+    if record:
+        _rea_last.update({"url": r.url, "status": r.status_code, "text": r.text[:200000]})
     return r
 
 
@@ -2718,7 +2719,7 @@ def rea_fetch_subgroup_rooms(group: str, day_iso: str, pair: str) -> str:
     try:
         r = _rea_get("/Schedule/GetDetails",
                      {"selection": group, "date": d.strftime("%d.%m.%Y"), "timeSlot": pair},
-                     f"{REA_BASE_URL}/?q={quote(group, safe='')}")
+                     f"{REA_BASE_URL}/?q={quote(group, safe='')}", record=False)
         if r.status_code != 200:
             return ""
     except StudyError:
@@ -2731,7 +2732,7 @@ def rea_fetch_subgroup_rooms(group: str, day_iso: str, pair: str) -> str:
         if m:
             name = block.attrs.get("data-subgroup") or ""
             room = re.sub(r"\s+", " ", m.group(1)).strip()
-            rooms.append(f"{name}: {room}" if name else room)
+            rooms.append(f"Подгр. {name}: {room}" if name else room)
     return " / ".join(rooms)
 
 
