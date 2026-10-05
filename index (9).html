@@ -21973,8 +21973,6 @@ function DebtsListView({ data, setData }) {
       d.source || '',
       d.notify && d.notifyDate ? `🔔 ${fmtDate(d.notifyDate)}` : '',
     ].filter(Boolean).join(' · ');
-    const menuBtn = 'w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 whitespace-nowrap';
-    const closeMenu = (e) => { const det = e.currentTarget.closest('details'); if (det) det.removeAttribute('open'); };
     return (
       <div key={d.id} className={`px-3 py-2.5 ${dim ? 'opacity-60' : ''}`}>
         <div className="flex items-center gap-3">
@@ -21997,21 +21995,33 @@ function DebtsListView({ data, setData }) {
             {group === 'later' && <div className="text-xs text-[var(--text-muted)]">с {formatMonthShortBudget(d.startDate)}</div>}
             {group === 'free' && <div className="text-xs text-[var(--text-muted)]">без графика</div>}
           </div>
-          {group === 'now' && due > 0 && (
-            <button onClick={() => addTx(d.id, 'payment', due, today, '')}
-              title={`Отметить платёж ${formatRub(due)} ₽ на ${today}`}
-              className="px-2.5 py-1 rounded-lg bg-rose-600 text-white text-xs font-medium hover:opacity-90 shrink-0">Оплатить</button>
+        </div>
+        <div className="mt-2 ml-[18px] flex items-center gap-2 flex-wrap">
+          {remaining > 0 && (
+            <>
+              <button
+                onClick={() => (due > 0 ? addTx(d.id, 'payment', due, today, '') : setPayModal(d))}
+                title={due > 0 ? `Отметить платёж ${formatRub(due)} ₽ на ${today}` : 'Внести платёж'}
+                className="px-3.5 py-1.5 rounded-lg bg-rose-600 text-white text-sm font-medium hover:opacity-90">
+                Отметить{due > 0 ? ` ${formatRub(due)} ₽` : ''}
+              </button>
+              <button onClick={() => setCashflowModal(d)}
+                title="Отметить платёж и записать в личный учёт трат (ДДС)"
+                className="px-3.5 py-1.5 rounded-lg bg-[var(--text)] text-white text-sm font-medium hover:opacity-85">
+                Отметить + ДДС
+              </button>
+            </>
           )}
-          <details className="relative shrink-0">
-            <summary className="list-none cursor-pointer p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] select-none leading-none">⋯</summary>
-            <div className="absolute right-0 top-full mt-1 z-20 bg-[var(--surface)] border border-[var(--border)] rounded-xl shadow-lg py-1 min-w-[190px]">
-              <button className={menuBtn} onClick={(e) => { closeMenu(e); setPayModal(d); }}>₽ Другая сумма / пополнить</button>
-              <button className={menuBtn} onClick={(e) => { closeMenu(e); setCashflowModal(d); }}>Платёж + запись в ДДС</button>
-              <button className={menuBtn} onClick={(e) => { closeMenu(e); setEditing(d); }}>Редактировать</button>
-              <button className={menuBtn} onClick={(e) => { closeMenu(e); toggleClosed(d.id); }}>Отметить закрытым</button>
-              <button className={`${menuBtn} text-red-500`} onClick={(e) => { closeMenu(e); remove(d.id); }}>Удалить</button>
-            </div>
-          </details>
+          <div className="flex gap-0.5 ml-auto">
+            <button onClick={() => setPayModal(d)} title="Другая сумма или пополнить долг"
+              className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] text-xs font-medium leading-none">₽</button>
+            <button onClick={() => setEditing(d)} title="Редактировать"
+              className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={13} /></button>
+            <button onClick={() => toggleClosed(d.id)} title="Отметить закрытым"
+              className="p-1.5 rounded-lg hover:bg-black/5 text-green-500 hover:text-green-700"><Icon name="check" size={13} /></button>
+            <button onClick={() => remove(d.id)} title="Удалить"
+              className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={13} /></button>
+          </div>
         </div>
         {monthPays.length > 0 && (
           <div className="mt-1 ml-[18px] flex flex-wrap gap-1.5">
