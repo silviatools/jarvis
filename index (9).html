@@ -451,6 +451,7 @@ const NOTIFICATION_CATEGORIES = [
   { id: 'tasks',     label: 'Задачи' },
   { id: 'backup',    label: 'Бэкапы' },
   { id: 'english',   label: 'English' },
+  { id: 'study',     label: 'Учеба' },
 ];
 
 // ── MSK time helpers ─────────────────────────────────────────────────────
@@ -4302,10 +4303,19 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
         >
           Ассистент
         </button>
+        <button
+          onClick={() => setSettingsTab('study')}
+          className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+            settingsTab === 'study' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+          }`}
+        >
+          Учеба
+        </button>
       </div>
 
       {settingsTab === 'general' && <GeneralSettings data={data} setData={setData} />}
       {settingsTab === 'voice' && <VoiceAssistantSettings data={data} setData={setData} />}
+      {settingsTab === 'study' && <StudySettings data={data} setData={setData} />}
     </div>
   );
 }
@@ -4750,6 +4760,244 @@ function AppleConnectionCard() {
               Подключение: в переменные окружения сервера (Railway → Variables) добавьте <span className="font-mono">ICLOUD_APPLE_ID</span> и <span className="font-mono">ICLOUD_APP_PASSWORD</span> — пароль приложения создаётся на account.apple.com. Для Напоминаний, если iCloud их не отдаёт, ещё <span className="font-mono">APPLE_BRIDGE_TOKEN</span> и Быстрая команда на телефоне.
             </p>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============== УЧЕБА: расписание rasp.rea.ru → Apple Календарь ==============
+// Настройки — data.studySchedule (LWW по updatedAt, синхронизируются как
+// обычные данные). Саму работу делает сервер (jarvis.py, study_sync): по
+// выбранным дням в выбранное время он грузит расписание группы, сверяет его
+// с календарём iCloud и шлёт в Telegram (категория «Учеба») что поменялось.
+const STUDY_DEFAULTS = { enabled: false, group: '', calendar: 'Учеба', days: [1, 3, 5], time: '08:00', weeks: 2, notify: true };
+const STUDY_WEEKDAYS = [[1, 'Пн'], [2, 'Вт'], [3, 'Ср'], [4, 'Чт'], [5, 'Пт'], [6, 'Сб'], [7, 'Вс']];
+
+function StudySettings({ data, setData }) {
+  const cfg = { ...STUDY_DEFAULTS, ...(data.studySchedule || {}) };
+  const [status, setStatus] = React.useState({ loading: true });
+  const [busy, setBusy] = React.useState('');
+  const [result, setResult] = React.useState(null);
+  const [groupDraft, setGroupDraft] = React.useState(cfg.group);
+  const [calDraft, setCalDraft] = React.useState(cfg.calendar);
+
+  const update = (patch) => setData(d => ({
+    ...d,
+    studySchedule: { ...STUDY_DEFAULTS, ...(d.studySchedule || {}), ...patch, updatedAt: Date.now() },
+  }));
+
+  const load = React.useCallback(() => {
+    fetch('/api/study/status')
+      .then(r => r.json())
+      .then(s => setStatus({ ...s, loading: false }))
+      .catch(e => setStatus({ loading: false, error: 'Сервер не ответил: ' + e.message }));
+  }, []);
+  React.useEffect(load, [load]);
+
+  // Сервер читает настройки из синхронизированных данных — перед ручным
+  // запуском даём им долететь (автосинк пишет с небольшой задержкой).
+  const run = async (preview) => {
+    setBusy(preview ? 'preview' : 'sync');
+    setResult(null);
+    try {
+      await new Promise(r => setTimeout(r, 1500));
+      const res = await fetch('/api/study/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preview }),
+      });
+      setResult(await res.json());
+    } catch (e) {
+      setResult({ ok: false, error: 'Сервер не ответил: ' + e.message });
+    }
+    setBusy('');
+    load();
+  };
+
+  const toggleDay = (d) => {
+    const set = new Set(cfg.days || []);
+    set.has(d) ? set.delete(d) : set.add(d);
+    update({ days: [...set].sort() });
+  };
+
+  const fmtAgo = (ms) => {
+    if (!ms) return 'ещё ни разу';
+    const d = new Date(ms);
+    return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  };
+  const dayLabel = (iso) => {
+    const d = new Date(iso + 'T12:00:00');
+    return d.toLocaleDateString('ru-RU', { weekday: 'short', day: '2-digit', month: '2-digit' });
+  };
+  const lessons = (result && result.preview ? result.lessons : status.upcoming) || [];
+  const byDay = lessons.reduce((acc, l) => { (acc[l.date] = acc[l.date] || []).push(l); return acc; }, {});
+  const card = 'bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5';
+  const input = 'w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm';
+
+  return (
+    <div className="space-y-3">
+      <div className={card}>
+        <div className="flex items-start justify-between gap-4 mb-1">
+          <div className="flex-1 min-w-0">
+            <h3 className="font-display text-lg mb-1">Расписание → Apple Календарь</h3>
+            <p className="text-sm text-[var(--text-muted)]">
+              Джарвис забирает пары с rasp.rea.ru и сам ведёт календарь: добавляет новые, обновляет изменённые, удаляет отменённые. Трогает только свои события и только с сегодняшнего дня.
+            </p>
+          </div>
+          <button
+            onClick={() => update({ enabled: !cfg.enabled })}
+            className={`relative w-12 h-7 rounded-full transition-colors flex-shrink-0 ${cfg.enabled ? 'bg-[var(--text)]' : 'bg-[var(--border)]'}`}
+            aria-label="Автосинхронизация"
+          >
+            <span className={`absolute top-1 w-5 h-5 rounded-full bg-white transition-all ${cfg.enabled ? 'left-6' : 'left-1'}`} />
+          </button>
+        </div>
+
+        <div className="grid sm:grid-cols-2 gap-3 mt-4">
+          <label className="block">
+            <div className="text-xs text-[var(--text-subtle)] mb-1">Группа</div>
+            <input
+              className={input}
+              value={groupDraft}
+              placeholder="15.14д-мц01/25м"
+              onChange={e => setGroupDraft(e.target.value)}
+              onBlur={() => groupDraft.trim() !== cfg.group && update({ group: groupDraft.trim() })}
+            />
+          </label>
+          <label className="block">
+            <div className="text-xs text-[var(--text-subtle)] mb-1">Календарь iCloud</div>
+            <input
+              className={input}
+              value={calDraft}
+              placeholder="Учеба"
+              onChange={e => setCalDraft(e.target.value)}
+              onBlur={() => (calDraft.trim() || 'Учеба') !== cfg.calendar && update({ calendar: calDraft.trim() || 'Учеба' })}
+            />
+            <div className="text-[11px] text-[var(--text-subtle)] mt-1">Если такого календаря нет — Джарвис создаст его.</div>
+          </label>
+        </div>
+
+        <div className="mt-4">
+          <div className="text-xs text-[var(--text-subtle)] mb-1.5">Проверять расписание по дням</div>
+          <div className="flex flex-wrap gap-1.5">
+            {STUDY_WEEKDAYS.map(([d, label]) => (
+              <button
+                key={d}
+                onClick={() => toggleDay(d)}
+                className={`w-10 h-9 rounded-lg text-sm font-medium border transition-all ${
+                  (cfg.days || []).includes(d)
+                    ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                    : 'border-[var(--border)] text-[var(--text-muted)]'
+                }`}
+              >{label}</button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 mt-4">
+          <label className="block">
+            <div className="text-xs text-[var(--text-subtle)] mb-1">Во сколько</div>
+            <MskTimeInput value={cfg.time} onChange={v => update({ time: v })} className={input} />
+          </label>
+          <label className="block">
+            <div className="text-xs text-[var(--text-subtle)] mb-1">Сколько недель</div>
+            <select className={input} value={cfg.weeks} onChange={e => update({ weeks: Number(e.target.value) })}>
+              <option value={1}>Только текущая</option>
+              <option value={2}>Текущая + следующая</option>
+              <option value={3}>3 недели</option>
+              <option value={4}>4 недели</option>
+            </select>
+          </label>
+        </div>
+
+        <label className="flex items-center gap-2 mt-4 text-sm cursor-pointer">
+          <input type="checkbox" checked={!!cfg.notify} onChange={e => update({ notify: e.target.checked })} />
+          Присылать изменения в Telegram
+        </label>
+        {cfg.notify && (
+          <p className="text-[11px] text-[var(--text-subtle)] mt-1">
+            Получатели — те, у кого в Маршрутизации уведомлений включена категория «Учеба».
+          </p>
+        )}
+
+        <div className="flex flex-wrap gap-2 mt-5">
+          <button onClick={() => run(false)} disabled={!!busy || !cfg.group} className="btn-primary text-sm px-4 py-2">
+            {busy === 'sync' ? 'Синхронизирую…' : 'Синхронизировать сейчас'}
+          </button>
+          <button onClick={() => run(true)} disabled={!!busy || !cfg.group} className="btn-secondary text-sm px-4 py-2">
+            {busy === 'preview' ? 'Загружаю…' : 'Только посмотреть'}
+          </button>
+        </div>
+
+        {result && (
+          <div className={`mt-3 text-sm ${result.ok ? 'text-green-600' : 'text-amber-600'}`}>
+            {result.error
+              ? result.error
+              : result.preview
+                ? `Сайт отдал ${(result.lessons || []).length} пар — в календарь ничего не записано.`
+                : `Готово: +${result.added}, изменено ${result.updated}, удалено ${result.removed}.`}
+            {(result.errors || []).map((e, i) => <div key={i} className="text-xs">{e}</div>)}
+          </div>
+        )}
+      </div>
+
+      <div className={card}>
+        <div className="flex items-center justify-between gap-3 mb-2">
+          <h3 className="font-display text-base">Состояние</h3>
+          <button onClick={load} className="btn-secondary text-sm px-3 py-1.5">Обновить</button>
+        </div>
+        {status.loading ? (
+          <p className="text-sm text-[var(--text-subtle)]">Спрашиваю сервер…</p>
+        ) : (
+          <div className="text-sm space-y-1">
+            {!status.appleConfigured && (
+              <div className="text-amber-600">Apple-аккаунт не подключён — см. Настройки → Ассистент → Apple Календарь.</div>
+            )}
+            <div><span className="text-[var(--text-muted)]">Последняя синхронизация: </span>{fmtAgo(status.syncedAt)}</div>
+            {status.lastResult && status.lastResult.total != null && (
+              <div className="text-[var(--text-muted)]">
+                Пар впереди: {status.lastResult.total}. Последний раз: +{status.lastResult.added}, изменено {status.lastResult.updated}, удалено {status.lastResult.removed}.
+              </div>
+            )}
+            {status.lastError && <div className="text-amber-600">{status.lastError}</div>}
+            {status.error && <div className="text-amber-600">{status.error}</div>}
+            {(status.log || []).some(e => (e.changes || []).length) && (
+              <details className="pt-2">
+                <summary className="cursor-pointer text-[var(--text-muted)]">История изменений</summary>
+                <div className="mt-2 space-y-2">
+                  {(status.log || []).filter(e => (e.changes || []).length).map((e, i) => (
+                    <div key={i}>
+                      <div className="text-xs text-[var(--text-subtle)]">{fmtAgo(e.at)}</div>
+                      {e.changes.map((c, j) => <div key={j} className="text-xs">{c}</div>)}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
+        )}
+      </div>
+
+      {Object.keys(byDay).length > 0 && (
+        <div className={card}>
+          <h3 className="font-display text-base mb-3">{result && result.preview ? 'С сайта сейчас' : 'Ближайшие пары'}</h3>
+          <div className="space-y-3">
+            {Object.entries(byDay).map(([day, items]) => (
+              <div key={day}>
+                <div className="text-xs uppercase tracking-widest text-[var(--text-subtle)] mb-1">{dayLabel(day)}</div>
+                {items.map((l, i) => (
+                  <div key={i} className="flex gap-3 text-sm py-1 border-b border-[var(--border)] last:border-0">
+                    <div className="font-mono text-xs text-[var(--text-muted)] w-24 flex-shrink-0 pt-0.5">{l.start}–{l.end}</div>
+                    <div className="min-w-0">
+                      <div>{l.subject}</div>
+                      <div className="text-xs text-[var(--text-subtle)]">{[l.kind, l.room].filter(Boolean).join(' · ')}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -11405,6 +11653,17 @@ const VOICE_AGENT_TOOLS = [
     },
   },
   ...APPLE_AGENT_TOOLS,
+  {
+    name: 'study_schedule',
+    description: 'Расписание пар пользователя в университете (РЭУ, rasp.rea.ru) за период. Подтверждения не требует. Используй на вопросы «какие пары завтра», «во сколько учёба в среду», «где у меня пара». Даты вычисляй сам от СЕГОДНЯ.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Начало периода YYYY-MM-DD. По умолчанию сегодня.' },
+        to: { type: 'string', description: 'Конец периода включительно YYYY-MM-DD. По умолчанию +7 дней.' },
+      },
+    },
+  },
 ];
 
 
@@ -11451,6 +11710,8 @@ ${writeList}
 7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без спроса. ЛЮБАЯ ЗАПИСЬ — добавить, изменить, удалить — только после явного согласия пользователя: сначала коротко скажи, что именно запишешь (название, дату и время), и спроси подтверждение, а после согласия повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места. «В календарь» / «создай событие» → calendar_create_event; если ещё и напомнить о событии — alarmMinutesBefore. «Напомни …» → только reminders_create (настоящее Apple Напоминание), никогда не подменяй его событием календаря. Если queued:true — скажи, что попадёт в Напоминания после синхронизации Быстрой команды, НЕ говори «создал». Если error — честно скажи, что не удалось, и почему.
 
 8. get_weather(city?, date?, date_from?, date_to?) — погода для города. Раздел «Погода» тоже НЕ данные приложения (внешний сервис), а живой запрос — используй этот инструмент, а не navigate/get_data. Город можно не указывать — тогда берётся сохранённый в настройках (Погода → город). Без date — текущая погода и 3 дня вперёд. Для конкретного дня или диапазона («в субботу», «на следующей неделе») передай date или date_from/date_to в формате YYYY-MM-DD — вычисли даты сам от СЕГОДНЯ (прогноз доступен на 16 дней вперёд).
+
+9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй.
 
 ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
@@ -11545,6 +11806,17 @@ async function executeVoiceTool(name, input, nav, data) {
   input = input || {};
   const noop = (output) => ({ output, data });
   if (APPLE_TOOL_NAMES.has(name)) return noop(await executeAppleTool(name, input));
+  if (name === 'study_schedule') {
+    try {
+      const q = new URLSearchParams();
+      if (input.from) q.set('from', input.from);
+      if (input.to) q.set('to', input.to);
+      const res = await fetch('/api/study/lessons?' + q.toString());
+      return noop(await res.json());
+    } catch (e) {
+      return noop({ error: 'Сервер не ответил по расписанию: ' + e.message });
+    }
+  }
   if (name === 'get_weather') {
     return noop(await fetchAssistantWeather(input.city, (data || {}).settings, {
       date: input.date, date_from: input.date_from, date_to: input.date_to,
