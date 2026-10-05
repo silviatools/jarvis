@@ -76,6 +76,15 @@ except ImportError:
     print("NOTE: 'requests' not installed — Telegram disabled. Run: pip3 install requests\n")
 
 DIR      = Path(__file__).parent
+try:
+    import tg_user
+    from tg_user import TG_TOOLS, TG_TOOL_NAMES, execute_tg_tool
+except Exception as _e:  # без telethon остальной сервер должен жить
+    tg_user = None
+    TG_TOOLS, TG_TOOL_NAMES = [], set()
+    def execute_tg_tool(name, inp):
+        return {"error": "Личный Telegram недоступен на сервере."}
+    print(f"NOTE: tg_user disabled: {_e}")
 HTML_FILE = DIR / "index (9).html"
 
 # Persistent data lives in DATA_DIR (Railway Volume) if set, else next to the script
@@ -834,7 +843,7 @@ def build_backup_zip() -> bytes:
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
         #    skips data JSONs — when DATA_DIR == DIR they belong under data/ only)
         for p in sorted(DIR.iterdir()):
-            if p.is_file() and p.name not in data_names and p.suffix != ".tmp":
+            if p.is_file() and p.name not in data_names and p.name != "jarvis_tg_user.json" and p.suffix != ".tmp":
                 add_file(p, f"code/{p.name}")
 
         # 2. Core data files
@@ -7317,6 +7326,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._serve_track(self.path[len("/api/music/"):].split("?", 1)[0])
         elif route.startswith("/api/apple/"):
             self._apple_get(route)
+        elif route == "/api/tg/status":
+            self._json(200, tg_user.status() if tg_user else {"library": False})
         elif route == "/api/study/status":
             self._json(200, study_status())
         elif route == "/api/study/debug":
@@ -7480,6 +7491,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {"id": filename, "name": name, "size": len(body)})
         elif route.startswith("/api/apple/"):
             self._apple_post(route)
+        elif route.startswith("/api/tg/"):
+            self._tg_post(route)
         elif route == "/api/study/sync":
             length = self._content_length() or 0
             try:
@@ -8835,6 +8848,44 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {"error": str(e)})
         except Exception as e:
             self._json(500, {"error": str(e)})
+
+    def _tg_post(self, route: str):
+        """Вход в личный Telegram и вызов его инструментов браузерным ассистентом."""
+        length = self._content_length() or 0
+        if length > 256 * 1024:
+            self._json(413, {"error": "body too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except Exception as e:
+            self._json(400, {"error": str(e)})
+            return
+        if not isinstance(payload, dict):
+            payload = {}
+        if tg_user is None:
+            self._json(200, {"ok": False, "error": "Личный Telegram недоступен на сервере (нет telethon)."})
+            return
+        try:
+            if route == "/api/tg/auth/start":
+                self._json(200, tg_user.auth_start(payload.get("apiId"), payload.get("apiHash"), payload.get("phone")))
+            elif route == "/api/tg/auth/code":
+                self._json(200, tg_user.auth_code(payload.get("code")))
+            elif route == "/api/tg/auth/password":
+                self._json(200, tg_user.auth_password(payload.get("password")))
+            elif route == "/api/tg/logout":
+                self._json(200, tg_user.logout())
+            elif route == "/api/tg/tool":
+                name = payload.get("name")
+                if name not in TG_TOOL_NAMES:
+                    self._json(400, {"error": "unknown tool"})
+                else:
+                    self._json(200, execute_tg_tool(name, payload.get("input") or {}))
+            else:
+                self._json(404, {"error": "not found"})
+        except tg_user.TgError as e:
+            self._json(200, {"ok": False, "error": str(e)})
+        except Exception as e:
+            self._json(500, {"ok": False, "error": str(e)})
 
     def _apple_post(self, route: str):
         query = self._apple_query()
