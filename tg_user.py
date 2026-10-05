@@ -22,6 +22,7 @@ try:
     from telethon import TelegramClient, errors, utils
     from telethon.sessions import StringSession
     from telethon.tl.types import User, Chat, Channel
+    from telethon.tl.functions.auth import ResendCodeRequest
 except ImportError:  # Telethon не установлен — вкладка покажет понятную ошибку
     TelegramClient = None
 
@@ -170,9 +171,10 @@ def auth_start(api_id, api_hash, phone) -> dict:
         client = TelegramClient(StringSession(), int(api_id), api_hash)
         await client.connect()
         sent = await client.send_code_request(phone)
-        return client, sent.phone_code_hash
+        return client, sent
 
-    client, code_hash = _run(_go(), 30)
+    client, sent = _run(_go(), 30)
+    code_hash = sent.phone_code_hash
     old = _pending.get("client")
     if old is not None:
         try:
@@ -182,7 +184,29 @@ def auth_start(api_id, api_hash, phone) -> dict:
     _pending.clear()
     _pending.update({"api_id": api_id, "api_hash": api_hash, "phone": phone,
                      "hash": code_hash, "client": client, "at": time.time()})
-    return {"ok": True, "step": "code"}
+    return _code_info(sent)
+
+
+def _code_info(sent) -> dict:
+    """Куда Telegram отправил код: app — в приложение (чат «Telegram»), sms, call…"""
+    kind = sent.type.__class__.__name__.replace("SentCodeType", "").lower() if sent.type else "?"
+    nxt = sent.next_type.__class__.__name__.replace("CodeType", "").lower() if getattr(sent, "next_type", None) else ""
+    length = getattr(sent.type, "length", None)
+    print(f"[tg-user] код отправлен: тип={kind}, следующий={nxt or '—'}, длина={length}, таймаут={getattr(sent, 'timeout', None)}")
+    return {"ok": True, "step": "code", "delivery": kind, "next": nxt, "length": length}
+
+
+def auth_resend() -> dict:
+    """Повторная отправка кода следующим способом (SMS/звонок)."""
+    if not _pending.get("client") or not _pending.get("hash"):
+        raise TgError("Сначала запросите код.")
+
+    async def _go():
+        return await _pending["client"](ResendCodeRequest(_pending["phone"], _pending["hash"]))
+
+    sent = _run(_go(), 30)
+    _pending["hash"] = sent.phone_code_hash
+    return _code_info(sent)
 
 
 def _finish_login() -> dict:

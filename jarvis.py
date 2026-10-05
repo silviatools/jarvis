@@ -8868,6 +8868,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         try:
             if route == "/api/tg/auth/start":
                 self._json(200, tg_user.auth_start(payload.get("apiId"), payload.get("apiHash"), payload.get("phone")))
+            elif route == "/api/tg/auth/resend":
+                self._json(200, tg_user.auth_resend())
             elif route == "/api/tg/auth/code":
                 self._json(200, tg_user.auth_code(payload.get("code")))
             elif route == "/api/tg/auth/password":

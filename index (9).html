@@ -4792,6 +4792,7 @@ function TelegramSettings() {
   const [code, setCode] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [step, setStep] = React.useState('');
+  const [info, setInfo] = React.useState(null);
 
   const load = React.useCallback(() => {
     fetch('/api/tg/status')
@@ -4815,6 +4816,7 @@ function TelegramSettings() {
       if (j.ok === false || j.error) setErr(j.error || 'Ошибка');
       else {
         if (next !== undefined) setStep(j.step !== undefined ? j.step : next);
+        if (j.delivery) setInfo({ delivery: j.delivery, next: j.next });
         setCode(''); setPassword('');
         load();
       }
@@ -4888,10 +4890,24 @@ function TelegramSettings() {
             {step === 'code' && (
               <>
                 <label className="block">
-                  <div className="text-xs text-[var(--text-subtle)] mb-1">Код из Telegram (придёт в приложение)</div>
+                  <div className="text-xs text-[var(--text-subtle)] mb-1">Код из Telegram</div>
                   <input className={input} value={code} inputMode="numeric" autoFocus placeholder="12345"
                     onChange={e => setCode(e.target.value)} />
                 </label>
+                {info && (
+                  <p className="text-[11px] text-[var(--text-subtle)]">
+                    {info.delivery === 'app' && 'Telegram отправил код в приложение: откройте чат «Telegram» (синяя галочка) на телефоне или в десктопе.'}
+                    {info.delivery === 'sms' && 'Telegram отправил код по SMS на этот номер.'}
+                    {info.delivery === 'call' && 'Telegram позвонит и продиктует код.'}
+                    {!['app', 'sms', 'call'].includes(info.delivery) && 'Способ доставки: ' + info.delivery}
+                  </p>
+                )}
+                {info && info.next && (
+                  <button onClick={() => call('auth/resend', {}, 'code')} disabled={busy}
+                    className="btn-secondary text-sm px-4 py-2">
+                    Не пришёл — отправить {info.next === 'sms' ? 'по SMS' : info.next === 'call' ? 'звонком' : info.next}
+                  </button>
+                )}
                 <div className="flex gap-2">
                   <button onClick={() => call('auth/code', { code }, 'code')} disabled={busy || !code}
                     className="btn-primary text-sm px-4 py-2">{busy ? 'Проверяю…' : 'Войти'}</button>
