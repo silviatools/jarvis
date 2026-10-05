@@ -293,7 +293,7 @@ def _finish_login() -> dict:
         return await client.get_me(), client.session.save()
 
     me, session = _run(_me(), 20)
-    _save_cfg({"api_id": _pending["api_id"], "api_hash": _pending["api_hash"], "session": session})
+    _save_cfg({"api_id": _pending["api_id"], "api_hash": _pending["api_hash"], "session": session, "user_id": me.id})
     global _client
     _client = client
     _pending.clear()
@@ -526,6 +526,29 @@ def send_message(peer, text, reply_to=None) -> dict:
         return {"ok": True, "chat": utils.get_display_name(ent), "id": m.id, "date": _fmt_date(m.date)}
 
     return _run(_go(), 30)
+
+
+def is_owner_chat(chat_id) -> bool:
+    """Личный чат с ботом принадлежит владельцу подключённого аккаунта
+    (в личке chat_id бота == id пользователя). Остальным доступ закрыт."""
+    cfg = _load_cfg()
+    if TelegramClient is None or not cfg.get("session"):
+        return False
+    uid = cfg.get("user_id")
+    if not uid:
+        try:
+            async def _me():
+                return (await (await _get_client()).get_me()).id
+            uid = _run(_me(), 20)
+            cfg_file = {k: v for k, v in _load_cfg().items() if k in ("api_id", "api_hash", "session")}
+            cfg_file["user_id"] = uid
+            _save_cfg(cfg_file)
+        except Exception:
+            return False
+    try:
+        return int(chat_id) == int(uid)
+    except (TypeError, ValueError):
+        return False
 
 
 # ── Инструменты ассистентов ──────────────────────────────────────────────
