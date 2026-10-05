@@ -2583,30 +2583,65 @@ def _mini_parse(markup: str) -> _MiniNode:
     return root
 
 
-def rea_fetch_week(group: str, week_num: int = -1) -> str:
+_REA_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/129.0 Safari/537.36")
+_rea_session = {"s": None, "at": 0.0}
+# Последний сырой ответ сайта — для диагностики (/api/study/debug), когда
+# разбор ничего не нашёл: видно, что сайт реально прислал.
+_rea_last = {"url": "", "status": 0, "text": ""}
+
+
+def _rea_get(path: str, params: dict, referer: str):
+    """GET к rasp.rea.ru в общей сессии: куки с главной страницы получаем один
+    раз (сайт может требовать их для XHR-запросов), прокси — из REA_PROXY."""
     if requests is None:
         raise StudyError("На сервере не установлена библиотека requests.")
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/129.0 Safari/537.36",
-        "X-Requested-With": "XMLHttpRequest",
-        "Accept": "text/html, */*; q=0.01",
-        "Accept-Language": "ru-RU,ru;q=0.9",
-        "Referer": f"{REA_BASE_URL}/?q={quote(group, safe='')}",
-    }
     proxy = (os.environ.get("REA_PROXY") or "").strip()
+    proxies = {"http": proxy, "https": proxy} if proxy else None
     try:
-        r = requests.get(f"{REA_BASE_URL}/Schedule/ScheduleCard",
-                         params={"selection": group, "weekNum": week_num, "catfilter": 0},
-                         headers=headers, timeout=REA_HTTP_TIMEOUT,
-                         proxies={"http": proxy, "https": proxy} if proxy else None)
+        if _rea_session["s"] is None or time.time() - _rea_session["at"] > 1800:
+            sess = requests.Session()
+            sess.headers.update({"User-Agent": _REA_UA, "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.5"})
+            try:
+                sess.get(referer, timeout=REA_HTTP_TIMEOUT, proxies=proxies,
+                         headers={"Accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
+            except Exception:
+                pass
+            _rea_session.update({"s": sess, "at": time.time()})
+        r = _rea_session["s"].get(
+            f"{REA_BASE_URL}{path}", params=params, timeout=REA_HTTP_TIMEOUT, proxies=proxies,
+            headers={"X-Requested-With": "XMLHttpRequest", "Accept": "text/html, */*; q=0.01",
+                     "Referer": referer})
     except Exception as e:
+        _rea_session["s"] = None
         raise StudyError(f"Не достучался до rasp.rea.ru: {e}. Если сайт режет зарубежные IP — "
                          "задайте REA_PROXY (российский прокси) в переменных окружения.")
+    r.encoding = r.encoding if r.encoding and r.encoding.lower() != "iso-8859-1" else "utf-8"
+    _rea_last.update({"url": r.url, "status": r.status_code, "text": r.text[:200000]})
+    return r
+
+
+def rea_fetch_week(group: str, week_num: int = -1) -> str:
+    r = _rea_get("/Schedule/ScheduleCard",
+                 {"selection": group, "weekNum": week_num, "catfilter": 0},
+                 f"{REA_BASE_URL}/?q={quote(group, safe='')}")
     if r.status_code != 200:
         raise StudyError(f"rasp.rea.ru ответил {r.status_code}.")
-    r.encoding = r.encoding or "utf-8"
     return r.text
+
+
+def _rea_diag(text: str) -> str:
+    """Короткое описание ответа, в котором не нашлось расписания."""
+    raw = text or ""
+    title = re.search(r"(?is)<title>(.*?)</title>", raw)
+    plain = re.sub(r"\s+", " ", re.sub(r"(?is)<(script|style)\b.*?</\1>|<[^>]+>", " ", raw)).strip()
+    bits = [f"{len(raw)} символов"]
+    if title:
+        bits.append(f"title «{title.group(1).strip()[:80]}»")
+    bits.append(f"таблиц: {raw.count('<table')}, slot: {raw.count('slot')}")
+    if plain:
+        bits.append(f"текст: «{plain[:160]}»")
+    return "; ".join(bits)
 
 
 def rea_parse_week(markup: str) -> dict:
@@ -2625,6 +2660,8 @@ def rea_parse_week(markup: str) -> dict:
             dm = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", " ".join(head.text_lines()))
             if dm:
                 break
+        if not dm:
+            dm = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", " ".join(table.text_lines()[:3]))
         if not dm:
             continue
         day = f"{dm.group(3)}-{dm.group(2)}-{dm.group(1)}"
@@ -2675,20 +2712,16 @@ def _rea_task_fields(task: "_MiniNode") -> dict:
 def rea_fetch_subgroup_rooms(group: str, day_iso: str, pair: str) -> str:
     """У пар с подгруппами аудитории лежат во всплывающем окне —
     /Schedule/GetDetails?selection=…&date=dd.mm.yyyy&timeSlot=N."""
-    if not pair or requests is None:
+    if not pair:
         return ""
     d = date.fromisoformat(day_iso)
-    proxy = (os.environ.get("REA_PROXY") or "").strip()
     try:
-        r = requests.get(f"{REA_BASE_URL}/Schedule/GetDetails",
-                         params={"selection": group, "date": d.strftime("%d.%m.%Y"), "timeSlot": pair},
-                         headers={"X-Requested-With": "XMLHttpRequest", "Accept": "text/html, */*; q=0.01",
-                                  "User-Agent": "Mozilla/5.0", "Referer": f"{REA_BASE_URL}/"},
-                         timeout=REA_HTTP_TIMEOUT,
-                         proxies={"http": proxy, "https": proxy} if proxy else None)
+        r = _rea_get("/Schedule/GetDetails",
+                     {"selection": group, "date": d.strftime("%d.%m.%Y"), "timeSlot": pair},
+                     f"{REA_BASE_URL}/?q={quote(group, safe='')}")
         if r.status_code != 200:
             return ""
-    except Exception:
+    except StudyError:
         return ""
     root = _mini_parse(r.text)
     rooms = []
@@ -2706,9 +2739,19 @@ def rea_fetch_weeks(group: str, weeks: int = 2) -> dict:
     """Текущая неделя и weeks-1 следующих. {'weeks': [{weekNum, days, lessons, ok}], 'lessons': [...]}"""
     if not group:
         raise StudyError("Не указана учебная группа (Настройки → Учеба).")
-    first = rea_parse_week(rea_fetch_week(group, -1))
-    if not first["days"]:
-        raise StudyError(f"rasp.rea.ru не показал расписание для группы «{group}» — проверьте название группы.")
+    # Сайт ищет группу по точному написанию; пробуем как ввели и в нижнем
+    # регистре (так группы записаны в самом расписании: 15.14д-мц01/25м).
+    first, tried = None, []
+    for variant in dict.fromkeys([group, group.lower()]):
+        markup = rea_fetch_week(variant, -1)
+        parsed = rea_parse_week(markup)
+        tried.append(_rea_diag(markup))
+        if parsed["days"]:
+            first, group = parsed, variant
+            break
+    if first is None:
+        raise StudyError(f"rasp.rea.ru не показал расписание для группы «{group}». "
+                         f"Ответ сайта: {tried[-1]}. Подробнее — кнопка «Диагностика».")
     out = [{**first, "ok": True}]
     base = first["weekNum"]
     for i in range(1, weeks):
@@ -7275,6 +7318,15 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._apple_get(route)
         elif route == "/api/study/status":
             self._json(200, study_status())
+        elif route == "/api/study/debug":
+            # Сырой ответ сайта по последнему запросу — понять, что пришло вместо расписания.
+            body = (f"URL: {_rea_last['url']}\nHTTP: {_rea_last['status']}\n"
+                    f"Разбор: {_rea_diag(_rea_last['text'])}\n\n{_rea_last['text']}").encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif route == "/api/study/lessons":
             q = self._apple_query()
             self._json(200, study_lessons(q.get("from"), q.get("to")))

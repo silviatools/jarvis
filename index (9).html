@@ -4928,6 +4928,9 @@ function StudySettings({ data, setData }) {
           <button onClick={() => run(true)} disabled={!!busy || !cfg.group} className="btn-secondary text-sm px-4 py-2">
             {busy === 'preview' ? 'Загружаю…' : 'Только посмотреть'}
           </button>
+          <a href="/api/study/debug" target="_blank" rel="noopener" className="btn-secondary text-sm px-4 py-2">
+            Диагностика
+          </a>
         </div>
 
         {result && (
