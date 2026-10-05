@@ -22005,8 +22005,12 @@ function DebtsListView({ data, setData }) {
                 className="px-3.5 py-1.5 rounded-lg bg-rose-600 text-white text-sm font-medium hover:opacity-90">
                 Отметить{due > 0 ? ` ${formatRub(due)} ₽` : ''}
               </button>
-              <button onClick={() => setCashflowModal(d)}
-                title="Отметить платёж и записать в личный учёт трат (ДДС)"
+              <button onClick={() => (due > 0 && defaultAccountId
+                  ? addTx(d.id, 'payment', due, today, d.debtor || '', defaultAccountId, 'out')
+                  : setCashflowModal(d))}
+                title={due > 0 && defaultAccountId
+                  ? `Отметить платёж ${formatRub(due)} ₽ и сразу записать трату ${formatRub(due)} ₽ на счёт сегодня (${today})`
+                  : 'Отметить платёж и записать в личный учёт трат (ДДС)'}
                 className="px-3.5 py-1.5 rounded-lg bg-[var(--text)] text-white text-sm font-medium hover:opacity-85">
                 Отметить + ДДС
               </button>
