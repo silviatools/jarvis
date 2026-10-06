@@ -16,7 +16,7 @@
 <title>Jarvis</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Inter:wght@300;400;500;600;700&family=Oswald:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -275,6 +275,430 @@
     .gym-current { animation: none; box-shadow: 0 0 0 2px rgba(13, 148, 136, 0.45); }
   }
 
+  /* ============== GYM · Фокус: экран тренировки и итог ============== */
+.gx-root {
+  --outer: #050706;
+  --bg: #0B0E0C; --bg2: #111612; --surface: #161C17; --surface2: #1E2620;
+  --line: rgba(236, 246, 232, .08); --line2: rgba(236, 246, 232, .16);
+  --text: #F0F5EB; --muted: #9BA69D; --subtle: #6C776F;
+  --lime: #C8F23D; --lime-ink: #0B0E0C; --lime-text: #CDF54A; --lime-soft: rgba(200, 242, 61, .13); --lime-glow: rgba(200, 242, 61, .5);
+  --ice: #7CC9FF; --ice-ink: #06141F;
+  --gold: #FFC83D; --gold-soft: rgba(255, 200, 61, .16);
+  --coral: #FF6B57; --coral-soft: rgba(255, 107, 87, .14);
+  --chalk: rgba(244, 247, 239, .95);
+  --sheet: #151B16; --scrim: rgba(0, 0, 0, .58);
+  --shadow: 0 30px 80px rgba(0, 0, 0, .6);
+  --d: 'Oswald', 'Arial Narrow', 'Roboto Condensed', Impact, sans-serif;
+  --b: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* имена токенов приложения: старые встроенные компоненты (плеер, плейлисты) подхватят тему */
+  --border: var(--line); --border-strong: var(--line2); --text-muted: var(--muted); --text-subtle: var(--subtle);
+  color-scheme: dark;
+}
+.gx-root[data-theme="light"] {
+  --outer: #D5D9CA;
+  --bg: #F1F3EA; --bg2: #E8EBDF; --surface: #FFFFFF; --surface2: #EFF2E7;
+  --line: rgba(16, 24, 16, .09); --line2: rgba(16, 24, 16, .18);
+  --text: #111611; --muted: #566058; --subtle: #8A948C;
+  --lime: #C6F032; --lime-ink: #0F1A00; --lime-text: #3E6400; --lime-soft: rgba(100, 150, 0, .13); --lime-glow: rgba(120, 170, 0, .4);
+  --ice: #1479C2; --ice-ink: #FFFFFF;
+  --gold: #C98500; --gold-soft: rgba(201, 133, 0, .15);
+  --coral: #DC3F2A; --coral-soft: rgba(220, 63, 42, .12);
+  --chalk: rgba(120, 132, 108, .8);
+  --sheet: #FFFFFF; --scrim: rgba(10, 18, 10, .38);
+  --shadow: 0 30px 80px rgba(30, 40, 20, .28);
+  color-scheme: light;
+}
+
+.gx-root, .gx-root * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+.gx-root {
+  position: fixed; inset: 0; z-index: 70;
+  display: flex; justify-content: center; align-items: center;
+  background: var(--outer); color: var(--text);
+  font: 400 14px/1.35 var(--b); -webkit-font-smoothing: antialiased; -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
+}
+/* :where() — нулевая специфичность, чтобы сброс не перебивал классы кнопок и заголовков */
+:where(.gx-root) button { font: inherit; color: inherit; border: 0; background: none; padding: 0; margin: 0; cursor: pointer; touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+:where(.gx-root) button:disabled { cursor: default; }
+:where(.gx-root) :focus-visible { outline: 2px solid var(--lime-text); outline-offset: 2px; border-radius: 8px; }
+:where(.gx-root) h1 { margin: 0; font-size: inherit; font-weight: inherit; }
+:where(.gx-root) small { font-size: .5em; font-weight: 500; opacity: .6; margin-left: .2em; letter-spacing: .04em; }
+:where(.gx-root) svg { display: inline-block; vertical-align: middle; flex: none; }
+
+.gx-col { position: relative; width: 100%; max-width: 430px; height: 100%; max-height: 940px; background: var(--bg); overflow: hidden; isolation: isolate; }
+@media (min-width: 520px) {
+  .gx-root { padding: 16px; }
+  .gx-col { border-radius: 38px; border: 1px solid var(--line2); box-shadow: var(--shadow); }
+}
+.gx-screen { position: absolute; inset: 0; display: flex; flex-direction: column; animation: gx-scrIn .34s cubic-bezier(.2, .8, .25, 1); }
+
+.gx-eyebrow { font: 600 12px/1 var(--d); letter-spacing: .2em; text-transform: uppercase; color: var(--lime-text); }
+
+
+.gx-top { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px; flex: none; }
+.gx-ib {
+  width: 40px; height: 40px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line);
+  display: grid; place-items: center; color: var(--text); flex: none; transition: transform .12s, background .2s;
+}
+.gx-ib:active { transform: scale(.9); }
+.gx-ib.gx-hot { background: var(--lime); color: var(--lime-ink); border-color: var(--lime); animation: gx-hot 1.1s ease-out infinite; }
+.gx-timer {
+  flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 8px;
+  font: 500 21px/1 var(--d); letter-spacing: .06em; font-variant-numeric: tabular-nums;
+}
+.gx-rdot { width: 8px; height: 8px; border-radius: 50%; background: var(--coral); animation: gx-blink 1.4s ease-in-out infinite; }
+.gx-fin {
+  height: 40px; padding: 0 14px; border-radius: 14px; background: var(--surface2); border: 1px solid var(--line2);
+  font: 600 14px/1 var(--d); letter-spacing: .12em; text-transform: uppercase; flex: none;
+}
+.gx-fin:active { transform: scale(.94); }
+
+
+.gx-seg { display: flex; gap: 4px; padding: 2px 16px 10px; flex: none; }
+.gx-seg i { position: relative; display: block; height: 5px; border-radius: 3px; background: var(--line2); overflow: hidden; flex: var(--n) 1 0; }
+.gx-seg i b { position: absolute; inset: 0; border-radius: 3px; background: var(--lime); transform-origin: left center; transform: scaleX(var(--p)); transition: transform .55s cubic-bezier(.2, .9, .25, 1); }
+.gx-seg i.gx-cur { box-shadow: 0 0 0 1px var(--line2); }
+.gx-seg i.gx-cur::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .4), transparent); transform: translateX(-100%); animation: gx-sheen 2.6s ease-in-out infinite; }
+
+
+.gx-vstrip { margin: 0 14px 6px; height: 34px; border-radius: 12px; background: var(--lime-soft); color: var(--lime-text); display: flex; align-items: center; gap: 10px; padding: 0 12px; font-weight: 600; font-size: 13px; flex: none; animation: gx-fadeIn .2s; }
+.gx-wave { display: inline-flex; align-items: center; gap: 3px; height: 18px; }
+.gx-wave i { width: 3px; height: 100%; border-radius: 2px; background: currentColor; transform-origin: center; animation: gx-wave .8s ease-in-out infinite; }
+.gx-wave i:nth-child(2) { animation-delay: .1s; } .gx-wave i:nth-child(3) { animation-delay: .2s; } .gx-wave i:nth-child(4) { animation-delay: .3s; } .gx-wave i:nth-child(5) { animation-delay: .4s; }
+
+
+.gx-rpill { position: relative; margin: 0 14px 6px; height: 38px; border-radius: 13px; background: var(--surface2); border: 1px solid var(--line2); display: flex; align-items: center; gap: 8px; padding: 0 12px; flex: none; overflow: hidden; text-align: left; animation: gx-fadeIn .25s; }
+.gx-rpill > span:not(.gx-rp-bar):not(.gx-rp-go) { font-weight: 500; color: var(--muted); }
+.gx-rpill b { font: 600 17px/1 var(--d); letter-spacing: .06em; color: var(--text); margin-left: 4px; font-variant-numeric: tabular-nums; }
+.gx-rp-go { margin-left: auto; font: 600 12px/1 var(--d); letter-spacing: .12em; text-transform: uppercase; color: var(--lime-text); padding: 8px 0 8px 10px; }
+.gx-rp-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--line); }
+.gx-rp-bar i { display: block; height: 100%; background: var(--lime); transform-origin: left; transition: transform .25s linear; }
+
+
+.gx-exh { display: flex; flex-direction: column; padding: 0 16px; flex: none; }
+.gx-exh-top { display: flex; align-items: center; justify-content: space-between; min-height: 34px; }
+.gx-ib.gx-sm { width: 34px; height: 34px; border-radius: 12px; }
+.gx-exname { margin: 3px 0 9px; font: 600 clamp(24px, 4vh, 31px)/1.07 var(--d); letter-spacing: .01em; text-wrap: balance; }
+.gx-lasts { display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; font-size: 12px; color: var(--muted); white-space: nowrap; padding-bottom: 2px; }
+.gx-lasts::-webkit-scrollbar { display: none; }
+.gx-lasts .gx-lb { color: var(--subtle); margin-right: 2px; }
+.gx-lasts .gx-ch { padding: 4px 8px; border-radius: 9px; background: var(--surface); font-variant-numeric: tabular-nums; font-weight: 500; transition: background .2s, color .2s; }
+.gx-lasts .gx-ch.gx-on { background: var(--surface2); color: var(--text); box-shadow: inset 0 0 0 1px var(--line2); }
+
+
+.gx-rail { position: relative; display: flex; gap: 6px; padding: 12px 16px 6px; overflow-x: auto; scrollbar-width: none; flex: none; }
+.gx-rail::-webkit-scrollbar { display: none; }
+.gx-pill { flex: 0 0 auto; width: 54px; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.gx-pill .gx-dot { width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; font: 600 17px/1 var(--d); color: var(--muted); border: 2px solid var(--line2); transition: background .25s, border-color .25s; }
+.gx-pill.gx-warm .gx-dot { border-style: dashed; border-color: color-mix(in srgb, var(--ice) 65%, transparent); color: var(--ice); }
+.gx-pill.gx-cur .gx-dot { border: 2px solid var(--lime); color: var(--lime-text); animation: gx-ring 1.9s ease-out infinite; }
+.gx-pill.gx-done .gx-dot { background: var(--lime); border: 2px solid var(--lime); color: var(--lime-ink); animation: gx-pop .42s cubic-bezier(.2, 1.6, .4, 1); }
+.gx-pill.gx-done.gx-warm .gx-dot { background: var(--ice); border-color: var(--ice); color: var(--ice-ink); }
+.gx-pill.gx-pr .gx-dot { background: var(--gold); border-color: var(--gold); color: #241800; box-shadow: 0 0 18px var(--gold-soft); }
+.gx-pill .gx-cap { font: 500 11.5px/1 var(--d); letter-spacing: .03em; color: var(--subtle); font-variant-numeric: tabular-nums; white-space: nowrap; min-height: 12px; }
+.gx-pill.gx-done .gx-cap { color: var(--muted); }
+.gx-pill.gx-cur .gx-cap { color: var(--lime-text); }
+.gx-pill.gx-add .gx-dot { border-style: dashed; color: var(--subtle); }
+.gx-pill:not(:disabled):active .gx-dot { transform: scale(.92); }
+
+
+.gx-cardwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; padding: 6px 14px 8px; overflow-y: auto; scrollbar-width: none; }
+.gx-cardwrap::-webkit-scrollbar { display: none; }
+.gx-card { flex: 1 1 auto; max-height: 580px; display: flex; flex-direction: column; position: relative; background: var(--surface); border: 1px solid var(--line2); border-radius: 26px; padding: 14px 12px; overflow: hidden; transition: border-color .3s, box-shadow .3s; animation: gx-cardIn .35s cubic-bezier(.2, .9, .25, 1); }
+.gx-card.gx-pr { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold), 0 0 44px var(--gold-soft); }
+.gx-card.gx-pr::before { content: ""; position: absolute; inset: 0; background: linear-gradient(105deg, transparent 35%, var(--gold-soft) 50%, transparent 65%); transform: translateX(-100%); animation: gx-sheen 2.4s ease-in-out infinite; pointer-events: none; }
+.gx-card-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 0 4px 10px; }
+.gx-tag { font: 600 16px/1 var(--d); letter-spacing: .14em; text-transform: uppercase; color: var(--lime-text); }
+.gx-tag.gx-warm { color: var(--ice); }
+.gx-plan { font-size: 12.5px; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.gx-prtag { display: inline-flex; align-items: center; gap: 5px; font: 600 12px/1 var(--d); letter-spacing: .16em; text-transform: uppercase; color: var(--gold); animation: gx-blink 1.3s ease-in-out infinite; }
+.gx-steppers { flex: 1 1 auto; display: grid; grid-template-columns: 1.3fr 1fr; gap: 8px; }
+.gx-steppers.gx-one { grid-template-columns: 1fr; }
+.gx-stp { container-type: inline-size; display: flex; flex-direction: column; background: var(--bg2); border-radius: 20px; padding: 12px 8px 8px; text-align: center; }
+.gx-stp-l { font: 600 11px/1 var(--d); letter-spacing: .2em; text-transform: uppercase; color: var(--subtle); }
+.gx-stp-v { --vfs: clamp(56px, 11vh, 94px); position: relative; margin: auto; padding: 10px 0; box-sizing: content-box; font-family: var(--d); font-weight: 600; line-height: 1; font-size: clamp(54px, 10vh, 80px); font-size: min(var(--vfs), calc((100cqw - 20px) / var(--k, 1.5))); height: 1em; display: flex; justify-content: center; touch-action: none; cursor: ns-resize; color: var(--text); }
+.gx-stp-v::after { content: ""; position: absolute; left: 24%; right: 24%; bottom: 2px; border-bottom: 1.5px dashed var(--line2); }
+.gx-stp-b { display: flex; gap: 8px; }
+.gx-sb { flex: 1; height: 52px; border-radius: 15px; background: var(--surface2); display: grid; place-items: center; color: var(--text); transition: transform .1s, background .2s; touch-action: none; }
+.gx-sb:active { transform: scale(.92); }
+.gx-sb.gx-plus { background: var(--lime-soft); color: var(--lime-text); }
+
+.gx-odo { display: inline-flex; height: 1em; line-height: 1; overflow: hidden; }
+.gx-odo-c { display: block; width: .56em; height: 1em; overflow: hidden; text-align: center; }
+.gx-odo-s { display: block; transition: transform .34s cubic-bezier(.2, .9, .25, 1); }
+.gx-odo-s > span { display: block; height: 1em; line-height: 1em; }
+.gx-odo-p { display: block; width: .3em; height: 1em; line-height: 1em; text-align: center; }
+
+.gx-viz { margin-top: 12px; }
+.gx-bar-wrap { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.gx-bar { width: 100%; height: auto; max-height: 66px; overflow: visible; transform-origin: 20% 50%; }
+.gx-bar.gx-wob0 { animation: gx-wob0 .6s ease-out; }
+.gx-bar.gx-wob1 { animation: gx-wob1 .6s ease-out; }
+.gx-plate { transform-box: fill-box; transform-origin: center; animation: gx-plateIn .42s cubic-bezier(.2, 1.3, .4, 1) both; }
+.gx-bar-txt { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.gx-bar-txt b { color: var(--text); font-weight: 600; }
+.gx-viz-simple { display: flex; align-items: center; justify-content: center; gap: 10px; height: 56px; color: var(--muted); font-size: 13px; }
+.gx-viz-simple b { color: var(--text); font-weight: 600; }
+.gx-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; min-height: 28px; justify-content: center; }
+.gx-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border-radius: 14px; font: 600 12.5px/1 var(--b); background: var(--surface2); color: var(--muted); }
+.gx-chip.gx-up { background: var(--lime-soft); color: var(--lime-text); }
+.gx-chip.gx-down { background: var(--coral-soft); color: var(--coral); }
+.gx-chip.gx-sug { background: transparent; border: 1px solid var(--lime-text); color: var(--lime-text); }
+.gx-chip.gx-sug:active { background: var(--lime-soft); }
+
+.gx-donec { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 30px 16px; text-align: center; }
+.gx-dc-i { width: 74px; height: 74px; border-radius: 50%; background: var(--lime); color: var(--lime-ink); display: grid; place-items: center; animation: gx-pop .5s cubic-bezier(.2, 1.6, .4, 1); }
+.gx-dc-t { font: 600 26px/1 var(--d); letter-spacing: .06em; text-transform: uppercase; margin-top: 8px; }
+.gx-dc-s { color: var(--muted); margin-bottom: 8px; }
+
+
+.gx-dock { flex: none; display: grid; grid-template-columns: .85fr 1.25fr; gap: 10px; padding: 8px 14px calc(14px + env(safe-area-inset-bottom, 0px)); }
+.gx-dock.gx-one { grid-template-columns: 1fr; }
+.gx-same { height: 66px; border-radius: 21px; background: var(--surface2); border: 1px solid var(--line2); padding: 0 14px; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 4px; text-align: left; transition: transform .1s; }
+.gx-same:active:not(:disabled) { transform: scale(.96); }
+.gx-same .gx-t { display: flex; align-items: center; gap: 6px; font: 600 12px/1 var(--d); letter-spacing: .18em; color: var(--muted); }
+.gx-same .gx-v { font: 600 25px/1 var(--d); letter-spacing: .02em; font-variant-numeric: tabular-nums; }
+.gx-log { height: 66px; border-radius: 21px; background: var(--lime); color: var(--lime-ink); display: flex; align-items: center; justify-content: center; gap: 10px; font: 700 21px/1 var(--d); letter-spacing: .12em; text-transform: uppercase; box-shadow: 0 8px 30px -8px var(--lime-glow); transition: transform .1s, filter .2s, background .3s; }
+.gx-log:active { transform: scale(.96); filter: brightness(.94); }
+.gx-log.gx-gold { background: linear-gradient(135deg, #FFD65A, #FFB020); color: #2A1B00; box-shadow: 0 8px 34px -6px rgba(255, 190, 40, .65); }
+.gx-log.gx-wide { grid-column: 1 / -1; }
+
+
+.gx-rest { position: absolute; inset: 0; z-index: 40; display: flex; flex-direction: column; padding: 8px 18px calc(16px + env(safe-area-inset-bottom, 0px)); touch-action: none; background: radial-gradient(120% 55% at 50% 0%, var(--lime-soft), transparent 70%), var(--bg); animation: gx-slideUp .4s cubic-bezier(.2, .9, .25, 1); transition: transform .28s cubic-bezier(.2, .9, .25, 1); }
+.gx-rest.gx-low { background: radial-gradient(120% 55% at 50% 0%, var(--coral-soft), transparent 70%), var(--bg); }
+.gx-rest-head { flex: none; }
+.gx-rest-grab { width: 44px; height: 5px; border-radius: 3px; background: var(--line2); margin: 2px auto 10px; }
+.gx-rest-row { display: flex; align-items: center; justify-content: space-between; }
+.gx-mini-btn { display: inline-flex; align-items: center; gap: 4px; height: 34px; padding: 0 12px 0 8px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); font-size: 13px; font-weight: 600; color: var(--muted); }
+.gx-ring-wrap { position: relative; flex: 1 1 0; min-height: 120px; display: flex; align-items: center; justify-content: center; margin: 4px 0; }
+.gx-ring { height: 100%; max-height: 310px; width: auto; aspect-ratio: 1; max-width: 100%; }
+.gx-ring-bg { fill: none; stroke: var(--surface2); stroke-width: 10; }
+.gx-ring-fg { fill: none; stroke: var(--lime); stroke-width: 10; stroke-linecap: round; transition: stroke-dashoffset 1s linear, stroke .3s; }
+.gx-rest.gx-low .gx-ring-fg { stroke: var(--coral); }
+.gx-ring-c { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
+.gx-ring-t { font: 600 clamp(50px, 9.5vh, 76px)/1 var(--d); letter-spacing: .02em; font-variant-numeric: tabular-nums; }
+.gx-ring-s { font: 500 12px/1 var(--d); letter-spacing: .2em; text-transform: uppercase; color: var(--subtle); margin-top: 8px; }
+.gx-ring-n { font: 700 clamp(96px, 18vh, 150px)/1 var(--d); color: var(--coral); animation: gx-cnt .95s ease-out; }
+.gx-rest-btns { display: grid; grid-template-columns: 70px 1fr 70px; gap: 8px; flex: none; }
+.gx-rb { height: 50px; border-radius: 16px; background: var(--surface2); border: 1px solid var(--line2); font: 600 18px/1 var(--d); letter-spacing: .08em; }
+.gx-rb:active { transform: scale(.95); }
+.gx-rb.gx-skip { background: transparent; border-color: var(--lime-text); color: var(--lime-text); letter-spacing: .14em; text-transform: uppercase; font-size: 16px; }
+.gx-rcard { margin-top: 12px; display: flex; align-items: center; gap: 10px; padding: 12px 12px 12px 14px; border-radius: 18px; background: var(--surface); border: 1px solid var(--line); flex: none; }
+.gx-rc-l { flex: 1; min-width: 0; }
+.gx-rc-t { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--lime-text); font-size: 14px; }
+.gx-rc-s { margin-top: 3px; color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.gx-bd { display: inline-block; padding: 2px 8px; border-radius: 8px; font-size: 11.5px; font-weight: 600; background: var(--lime-soft); color: var(--lime-text); }
+.gx-bd.gx-under { background: var(--coral-soft); color: var(--coral); }
+.gx-bd.gx-over { background: color-mix(in srgb, var(--ice) 18%, transparent); color: var(--ice); }
+.gx-bd.gx-pr { background: var(--gold-soft); color: var(--gold); }
+.gx-undo { display: inline-flex; align-items: center; gap: 5px; height: 36px; padding: 0 12px; border-radius: 12px; color: var(--coral); background: var(--coral-soft); font-size: 13px; font-weight: 600; flex: none; }
+.gx-ncard { margin-top: 8px; padding: 14px; border-radius: 18px; background: var(--surface2); border: 1px solid var(--line2); flex: none; }
+.gx-ncard.gx-newex { border-color: var(--lime-text); background: linear-gradient(180deg, var(--lime-soft), transparent 80%), var(--surface2); }
+.gx-nc-name { font: 600 24px/1.1 var(--d); margin: 8px 0 2px; text-wrap: balance; }
+.gx-nc-row { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.gx-nc-l { flex: 1; min-width: 0; }
+.gx-nc-set { font: 600 13px/1 var(--d); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.gx-nc-plan { font: 600 22px/1.15 var(--d); margin-top: 5px; letter-spacing: .02em; }
+.gx-nc-rir { margin-top: 4px; font-size: 12.5px; color: var(--muted); }
+.gx-nc-eq { display: inline-flex; align-items: center; gap: 6px; margin-top: 7px; color: var(--muted); font-size: 12.5px; }
+.gx-nc-r { width: 46%; flex: none; }
+.gx-nc-pl { font-size: 11.5px; color: var(--muted); text-align: center; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.gx-bar-wrap.gx-mini .gx-bar { max-height: 44px; }
+.gx-music { margin-top: 10px; height: 52px; border-radius: 16px; display: flex; align-items: center; gap: 10px; padding: 0 8px 0 14px; background: var(--surface); border: 1px solid var(--line); flex: none; text-align: left; color: var(--muted); }
+.gx-mu-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.gx-mu-t b { color: var(--text); font-size: 13.5px; font-weight: 600; }
+.gx-mu-t i { font-style: normal; font-size: 11.5px; color: var(--subtle); }
+.gx-mu-b { width: 38px; height: 38px; border-radius: 12px; background: var(--surface2); display: grid; place-items: center; color: var(--text); }
+
+
+.gx-fx { position: absolute; inset: 0; z-index: 70; pointer-events: none; overflow: hidden; }
+.gx-burst { position: absolute; width: 0; height: 0; }
+.gx-chalk { position: absolute; left: 0; top: 0; margin: -10px 0 0 -10px; border-radius: 50%; background: radial-gradient(circle, var(--chalk) 0%, var(--chalk) 30%, transparent 72%); filter: blur(1px); animation: gx-chalk var(--d) cubic-bezier(.15, .7, .3, 1) forwards; }
+.gx-cloud { position: absolute; left: 0; top: 0; width: 130px; height: 130px; border-radius: 50%; background: radial-gradient(circle, var(--chalk), transparent 65%); animation: gx-cloud .85s ease-out forwards; opacity: .7; }
+.gx-confetti { position: absolute; inset: 0; }
+.gx-confetti i { position: absolute; top: -20px; border-radius: 2px; animation: gx-confetti 2s cubic-bezier(.3, .2, .6, 1) forwards; }
+.gx-flash { position: absolute; inset: 0; display: grid; place-items: center; }
+.gx-flash-bg { position: absolute; inset: 0; opacity: 0; animation: gx-flashBg 1.2s ease-out forwards; }
+.gx-flash.gx-pr .gx-flash-bg { background: radial-gradient(70% 50% at 50% 45%, rgba(255, 200, 61, .5), transparent 75%); animation-duration: 1.7s; }
+.gx-flash.gx-go .gx-flash-bg { background: radial-gradient(70% 50% at 50% 50%, var(--lime-glow), transparent 75%); animation-duration: .85s; }
+.gx-flash.gx-done .gx-flash-bg { background: radial-gradient(70% 50% at 50% 50%, var(--lime-glow), transparent 75%); animation-duration: 1.5s; }
+.gx-flash-t { position: relative; text-align: center; animation: gx-flashT 1.2s cubic-bezier(.2, .9, .25, 1) forwards; padding: 0 20px; }
+.gx-flash.gx-pr .gx-flash-t { animation-duration: 1.7s; }
+.gx-flash.gx-go .gx-flash-t { animation-duration: .85s; }
+.gx-flash.gx-done .gx-flash-t { animation-duration: 1.5s; }
+.gx-flash-i { color: var(--gold); display: grid; place-items: center; margin-bottom: 6px; filter: drop-shadow(0 0 18px rgba(255, 200, 61, .7)); }
+.gx-flash-a { font: 700 clamp(54px, 15vw, 76px)/1 var(--d); letter-spacing: .06em; text-transform: uppercase; white-space: pre-line; text-shadow: 0 6px 40px rgba(0, 0, 0, .5); }
+.gx-flash.gx-pr .gx-flash-a { color: var(--gold); }
+.gx-flash.gx-go .gx-flash-a, .gx-flash.gx-done .gx-flash-a { color: var(--lime-text); }
+.gx-flash-b { margin-top: 8px; font-weight: 600; font-size: 15px; color: var(--text); }
+.gx-toast { position: absolute; left: 50%; top: calc(14px + env(safe-area-inset-top, 0px)); transform: translateX(-50%); z-index: 80; background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 14px; font-weight: 600; font-size: 13.5px; white-space: nowrap; max-width: 90%; box-shadow: var(--shadow); animation: gx-toast 1.9s ease-out forwards; }
+
+
+.gx-sheet-wrap { position: absolute; inset: 0; z-index: 60; display: flex; align-items: flex-end; }
+.gx-scrim { position: absolute; inset: 0; background: var(--scrim); animation: gx-fadeIn .2s; }
+.gx-sheet { position: relative; width: 100%; max-height: 92%; overflow-y: auto; background: var(--sheet); border-radius: 28px 28px 0 0; border-top: 1px solid var(--line2); padding: 8px 18px calc(18px + env(safe-area-inset-bottom, 0px)); animation: gx-slideUp .32s cubic-bezier(.2, .9, .25, 1); box-shadow: var(--shadow); scrollbar-width: none; }
+.gx-grab { width: 42px; height: 5px; border-radius: 3px; background: var(--line2); margin: 4px auto 14px; }
+.gx-sh-t { font: 600 22px/1.1 var(--d); letter-spacing: .06em; text-transform: uppercase; margin: 0 0 12px; }
+.gx-sheet .gx-eyebrow { margin-bottom: 8px; }
+.gx-fin-p { color: var(--muted); margin: 0 0 16px; line-height: 1.45; }
+.gx-np-ok { width: 100%; height: 58px; margin-top: 12px; border-radius: 19px; background: var(--lime); color: var(--lime-ink); font: 700 19px/1 var(--d); letter-spacing: .14em; text-transform: uppercase; }
+.gx-np-ok:active { transform: scale(.97); }
+.gx-ghost-wide { width: 100%; height: 50px; margin-top: 8px; border-radius: 16px; background: var(--surface2); border: 1px solid var(--line2); font: 600 15px/1 var(--b); }
+.gx-danger { width: 100%; height: 48px; margin-top: 8px; display: flex; align-items: center; justify-content: center; gap: 8px; border-radius: 16px; color: var(--coral); background: var(--coral-soft); font: 600 15px/1 var(--b); }
+
+.gx-np-h { font: 600 12px/1 var(--d); letter-spacing: .22em; text-transform: uppercase; color: var(--subtle); text-align: center; }
+.gx-np-v { display: flex; align-items: center; justify-content: center; height: 86px; font: 600 72px/1 var(--d); letter-spacing: .01em; font-variant-numeric: tabular-nums; }
+.gx-caret { display: inline-block; width: 3px; height: .78em; background: var(--lime-text); margin-left: 5px; animation: gx-blink 1s steps(1) infinite; }
+.gx-np-q { display: flex; gap: 8px; margin: 2px 0 12px; }
+.gx-np-q button { flex: 1; height: 42px; border-radius: 13px; background: var(--surface2); font: 600 17px/1 var(--d); letter-spacing: .04em; }
+.gx-np-q button:active { background: var(--lime-soft); color: var(--lime-text); }
+.gx-np-k { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.gx-np-k button { height: 56px; border-radius: 17px; background: var(--surface2); font: 500 28px/1 var(--d); display: grid; place-items: center; }
+.gx-np-k button.gx-alt { background: transparent; border: 1px solid var(--line2); color: var(--muted); }
+.gx-np-k button:active:not(:disabled) { background: var(--lime-soft); }
+.gx-np-k button:disabled { opacity: .3; }
+
+.gx-mrow { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.gx-mi { width: 36px; height: 36px; border-radius: 12px; background: var(--surface2); display: grid; place-items: center; flex: none; color: var(--muted); }
+.gx-mt { flex: 1; min-width: 0; }
+.gx-mt b { display: block; font-weight: 600; font-size: 15px; }
+.gx-mt span { display: block; font-size: 12px; color: var(--subtle); margin-top: 2px; line-height: 1.3; }
+.gx-sw { width: 52px; height: 32px; border-radius: 16px; background: var(--surface2); border: 1px solid var(--line2); position: relative; flex: none; transition: background .2s, border-color .2s; }
+.gx-sw i { position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: var(--muted); transition: transform .24s cubic-bezier(.2, .9, .3, 1.2), background .2s; }
+.gx-sw.gx-on { background: var(--lime-soft); border-color: var(--lime-text); }
+.gx-sw.gx-on i { transform: translateX(20px); background: var(--lime-text); }
+.gx-segc { display: flex; background: var(--surface2); border-radius: 12px; padding: 3px; gap: 2px; flex: none; }
+.gx-segc button { padding: 8px 12px; border-radius: 9px; font: 600 13px/1 var(--b); color: var(--muted); }
+.gx-segc button.gx-on { background: var(--lime); color: var(--lime-ink); }
+.gx-demo-h { margin: 14px 0 4px; font: 600 11px/1 var(--d); letter-spacing: .2em; text-transform: uppercase; color: var(--subtle); }
+
+.gx-exlist { display: flex; flex-direction: column; gap: 6px; }
+.gx-exrow { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 16px; background: var(--surface2); border: 1px solid transparent; text-align: left; }
+.gx-exrow.gx-cur { border-color: var(--lime-text); }
+.gx-mring { position: relative; width: 40px; height: 40px; flex: none; display: grid; place-items: center; }
+.gx-mring svg { position: absolute; inset: 0; }
+.gx-mr-bg { fill: none; stroke: var(--line2); stroke-width: 3; }
+.gx-mr-fg { fill: none; stroke: var(--lime); stroke-width: 3; stroke-linecap: round; }
+.gx-mring b { position: relative; font: 600 12px/1 var(--d); color: var(--muted); letter-spacing: .02em; display: grid; place-items: center; }
+.gx-ex-t { flex: 1; min-width: 0; }
+.gx-ex-t b { display: block; font-weight: 600; font-size: 14.5px; }
+.gx-ex-t i { display: block; font-style: normal; font-size: 12px; color: var(--muted); margin-top: 2px; }
+.gx-now { font: 600 11px/1 var(--d); letter-spacing: .14em; text-transform: uppercase; color: var(--lime-text); }
+
+
+
+
+.gx-sum { overflow: hidden; }
+.gx-sum-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px 0; scrollbar-width: none; }
+.gx-sum-scroll::-webkit-scrollbar { display: none; }
+.gx-sum-top { display: flex; align-items: center; justify-content: space-between; }
+.gx-sum-title { font: 700 clamp(38px, 6vh, 48px)/1 var(--d); text-transform: uppercase; margin: 12px 0 6px; letter-spacing: .01em; }
+.gx-sum-sub { color: var(--muted); font-size: 13.5px; }
+.gx-ton { margin-top: 16px; padding: 18px 16px; border-radius: 24px; background: radial-gradient(120% 90% at 0% 0%, var(--lime-soft), transparent 70%), var(--surface); border: 1px solid var(--line2); }
+.gx-ton-l { font: 600 12px/1 var(--d); letter-spacing: .22em; text-transform: uppercase; color: var(--subtle); }
+.gx-ton-v { font: 700 clamp(64px, 11vh, 92px)/1 var(--d); color: var(--lime-text); margin-top: 8px; font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.gx-ton-v small { font-size: .32em; margin-left: .3em; color: var(--muted); opacity: 1; }
+.gx-ton-f { margin-top: 8px; font-weight: 600; font-size: 15px; }
+.gx-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+.gx-stats > div { padding: 12px 8px; border-radius: 18px; background: var(--surface); border: 1px solid var(--line); text-align: center; }
+.gx-stats b { display: block; font: 600 30px/1 var(--d); letter-spacing: .02em; }
+.gx-stats b small { opacity: .5; }
+.gx-stats span { display: block; margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+.gx-recs { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.gx-rec { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 18px; background: linear-gradient(90deg, var(--gold-soft), transparent), var(--surface); border: 1px solid var(--gold); animation: gx-recIn .5s cubic-bezier(.2, .9, .25, 1) both; }
+.gx-rec:nth-child(2) { animation-delay: .12s; } .gx-rec:nth-child(3) { animation-delay: .24s; }
+.gx-rec-i { color: var(--gold); flex: none; filter: drop-shadow(0 0 10px rgba(255, 200, 61, .5)); }
+.gx-rec b { display: block; font-weight: 600; font-size: 14.5px; }
+.gx-rec span:not(.gx-rec-i) { display: block; font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.gx-week { margin-top: 8px; padding: 14px; border-radius: 18px; background: var(--surface); border: 1px solid var(--line); }
+.gx-week-t { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--lime-text); }
+.gx-week-d { display: flex; justify-content: space-between; margin-top: 12px; }
+.gx-wd { display: flex; flex-direction: column; align-items: center; gap: 6px; font: 500 12px/1 var(--d); letter-spacing: .08em; color: var(--subtle); text-transform: uppercase; }
+.gx-wd i { width: 32px; height: 32px; border-radius: 50%; border: 1.5px dashed var(--line2); display: grid; place-items: center; color: var(--lime-ink); }
+.gx-wd.gx-on i { background: var(--lime); border: 1.5px solid var(--lime); }
+.gx-wd.gx-now i { background: var(--lime); border: 1.5px solid var(--lime); animation: gx-ring 1.9s ease-out infinite; }
+.gx-wd.gx-now { color: var(--lime-text); }
+.gx-byex { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.gx-bx { padding: 12px 14px; border-radius: 18px; background: var(--surface); border: 1px solid var(--line); }
+.gx-bx-n { font-weight: 600; font-size: 14.5px; }
+.gx-bx-c { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.gx-sc { padding: 5px 9px; border-radius: 9px; font: 500 14px/1 var(--d); letter-spacing: .03em; background: var(--lime-soft); color: var(--lime-text); font-variant-numeric: tabular-nums; }
+.gx-sc.gx-under { background: var(--coral-soft); color: var(--coral); }
+.gx-sc.gx-over { background: color-mix(in srgb, var(--ice) 18%, transparent); color: var(--ice); }
+.gx-sc.gx-w { background: var(--surface2); color: var(--muted); }
+.gx-sum-pad { height: 10px; }
+
+
+@keyframes gx-scrIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes gx-cardIn { from { opacity: 0; transform: translateY(14px) scale(.98); } to { opacity: 1; transform: none; } }
+@keyframes gx-fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes gx-slideUp { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes gx-blink { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+@keyframes gx-hot { 0% { box-shadow: 0 0 0 0 var(--lime-glow); } 100% { box-shadow: 0 0 0 14px transparent; } }
+@keyframes gx-ring { 0% { box-shadow: 0 0 0 0 var(--lime-glow); } 70% { box-shadow: 0 0 0 10px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+@keyframes gx-pop { 0% { transform: scale(.6); } 60% { transform: scale(1.18); } 100% { transform: scale(1); } }
+@keyframes gx-sheen { to { transform: translateX(100%); } }
+@keyframes gx-shake { 0%, 100% { transform: none; } 15% { transform: translate(-3px, 2px); } 35% { transform: translate(3px, -2px); } 55% { transform: translate(-2px, 1px); } 75% { transform: translate(2px, -1px); } }
+@keyframes gx-shake2 { 0%, 100% { transform: none; } 15% { transform: translate(-3px, 2px); } 35% { transform: translate(3px, -2px); } 55% { transform: translate(-2px, 1px); } 75% { transform: translate(2px, -1px); } }
+.gx-sh0 { animation: gx-shake .3s ease-out; }
+.gx-sh1 { animation: gx-shake2 .3s ease-out; }
+@keyframes gx-wob0 { 0% { transform: rotate(0); } 25% { transform: rotate(-1.2deg); } 55% { transform: rotate(.8deg); } 100% { transform: none; } }
+@keyframes gx-wob1 { 0% { transform: rotate(0); } 25% { transform: rotate(-1.2deg); } 55% { transform: rotate(.8deg); } 100% { transform: none; } }
+@keyframes gx-plateIn { from { transform: translateX(-34px) scaleY(.5); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes gx-chalk { 0% { opacity: .95; transform: translate(0, 0) scale(.4); } 100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(var(--s)); } }
+@keyframes gx-cloud { 0% { opacity: .55; transform: translate(-50%, -50%) scale(.3); } 100% { opacity: 0; transform: translate(-50%, -75%) scale(2.6); } }
+@keyframes gx-confetti { 0% { transform: translate(0, 0) rotate(0); opacity: 1; } 100% { transform: translate(var(--sway), 110vh) rotate(var(--rot)); opacity: .9; } }
+@keyframes gx-flashBg { 0% { opacity: 0; } 15% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes gx-flashT { 0% { opacity: 0; transform: scale(.55); } 18% { opacity: 1; transform: scale(1.08); } 30% { transform: scale(1); } 80% { opacity: 1; } 100% { opacity: 0; transform: scale(1.06); } }
+@keyframes gx-wave { 0%, 100% { transform: scaleY(.25); } 50% { transform: scaleY(1); } }
+@keyframes gx-cnt { 0% { transform: scale(1.7); opacity: 0; } 25% { transform: scale(1); opacity: 1; } 100% { transform: scale(.9); opacity: .85; } }
+@keyframes gx-recIn { from { opacity: 0; transform: translateY(14px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes gx-toast { 0% { opacity: 0; transform: translate(-50%, -10px); } 10%, 85% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .gx-root *, .gx-root *::before, .gx-root *::after { animation-duration: .001s !important; animation-iteration-count: 1 !important; transition-duration: .001s !important; }
+}
+@media (max-height: 700px) {
+  .gx-music { display: none; }
+  .gx-ncard { padding: 10px 12px; }
+  .gx-rcard { margin-top: 8px; padding: 9px 10px 9px 12px; }
+  .gx-stp-v { padding: 4px 0; }
+  .gx-sb { height: 40px; }
+  .gx-viz { margin-top: 8px; }
+  .gx-bar { max-height: 52px; }
+  .gx-same, .gx-log { height: 58px; }
+  .gx-card { padding: 10px; }
+}
+
+/* ---------- добавки для настоящего приложения ---------- */
+.gx-ai { margin: 0 14px 8px; padding: 10px 12px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line2); display: flex; gap: 10px; align-items: flex-start; flex: none; max-height: 26%; overflow-y: auto; animation: gx-fadeIn .2s; }
+.gx-ai-i { color: var(--lime-text); margin-top: 2px; }
+.gx-ai-b { flex: 1; min-width: 0; }
+.gx-ai-q { font-size: 12px; color: var(--subtle); }
+.gx-ai-a { margin-top: 3px; font-size: 14px; white-space: pre-wrap; }
+.gx-vstrip.gx-warn { background: var(--gold-soft); color: var(--gold); }
+.gx-vstrip.gx-quiet { background: var(--surface); color: var(--muted); font-weight: 500; }
+.gx-vstrip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gx-pill.gx-skip .gx-dot { border-style: dotted; opacity: .55; }
+.gx-pill.gx-skip .gx-cap { color: var(--subtle); }
+.gx-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center; color: var(--muted); }
+.gx-empty b { font: 600 24px/1.1 var(--d); letter-spacing: .06em; text-transform: uppercase; color: var(--text); }
+.gx-music-btn { margin-top: 10px; height: 52px; width: 100%; border-radius: 16px; display: flex; align-items: center; justify-content: center; gap: 10px; background: var(--surface); border: 1px solid var(--line); color: var(--muted); font-weight: 600; flex: none; }
+.gx-mu-ctl { display: flex; gap: 4px; }
+.gx-mu-ctl button { width: 38px; height: 38px; border-radius: 12px; background: var(--surface2); display: grid; place-items: center; color: var(--text); }
+.gx-mu-ctl button.gx-main { background: var(--lime); color: var(--lime-ink); }
+.gx-music { cursor: default; }
+.gx-menu-row { width: 100%; text-align: left; }
+.gx-note { font-size: 12px; color: var(--subtle); line-height: 1.4; margin: 8px 0 0; }
+.gx-pick { margin-top: 10px; }
+.gx-pick > div { margin-bottom: 0 !important; }
+.gx-sum-stat-s { display: block; margin-top: 2px; font-size: 11px; color: var(--subtle); }
+.gx-rpill .gx-rp-go { cursor: pointer; }
+.gx-segc-btn { padding: 9px 14px; border-radius: 12px; background: var(--surface2); font: 600 13px/1 var(--b); color: var(--text); flex: none; }
+.gx-block { position: absolute; inset: 0; z-index: 75; }
+.gx-ib.gx-armed { color: var(--lime-text); border-color: var(--lime-text); }
+.gx-excomment { margin-top: -2px; margin-bottom: 4px; }
+
   /* Voice button pulse animation */
   @keyframes pulse-ring {
     0% { transform: scale(1); opacity: 0.6; }
@@ -376,6 +800,10 @@ const DEFAULT_SETTINGS = {
   gymHandsFree: false,   // голосовой ввод подходов на тренировке
   voiceWakeMode: false,  // постоянная прослушка «Джарвис, ...» (пока вкладка открыта)
   gymMicRest: true,      // слушать микрофон и на отдыхе (ради «пропустить отдых»)
+  gymTheme: 'dark',      // экран тренировки: 'dark' | 'light'
+  gymStep: 0.5,          // шаг веса на тренировке, кг: 0.5 | 1 | 2.5
+  gymSfx: true,          // лязг железа и фанфары на тренировке
+  gymHaptics: true,      // вибрация / «тики» на тренировке
   notifyRouting: {},
   backupReminder: { enabled: false, frequency: 'weekly', time: '03:00', dayOfWeek: 0, dayOfMonth: 1 },
   lastBackupSentAt: '',
@@ -29498,6 +29926,8 @@ const gymSound = (() => {
     return cues[count];
   };
   return {
+    // Общий контекст Web Audio: эффекты экрана тренировки играют через него же.
+    audio: audioCtx,
     // Вызывать только из обработчика жеста: без него iOS не отдаёт аудиовыход.
     // background=false — просто прогреваем Web Audio, чужую музыку не трогаем.
     start(background) {
@@ -30251,6 +30681,7 @@ function GymView({ data, setData }) {
           session={done}
           exercises={exercisesOf(done.dayId)}
           sessions={sessions}
+          settings={data.settings}
           onClose={() => { setSummaryId(''); setScreen('day'); }}
         />
       );
@@ -30277,6 +30708,7 @@ function GymView({ data, setData }) {
         onToggleBackgroundAudio={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymBackgroundAudio: on } }))}
         onToggleHandsFree={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymHandsFree: on } }))}
         onToggleMicRest={(on) => setData(d => ({ ...d, settings: { ...(d.settings || {}), gymMicRest: on } }))}
+        onSetPref={(key, value) => setData(d => ({ ...d, settings: { ...(d.settings || {}), [key]: value } }))}
         onSave={saveSession}
         onDelete={deleteSession}
         onExit={() => { setSessionId(''); setScreen('day'); }}
@@ -31293,14 +31725,713 @@ const gymPrevBest = (sessions, name, beforeMs) => {
   return { weight, orm, reps, seen };
 };
 
+// ── GYM · режим «Фокус» ────────────────────────────────────────────────────
+// Экран тренировки и итог: одно упражнение и один подход на экране, крупные
+// числа, запись одним нажатием. По умолчанию тёмный, settings.gymTheme =
+// 'light' — светлый. Вся логика тренировки (голос, отдых, рекорды, пропуски)
+// живёт в GymSessionView; здесь — мелкие самодостаточные части интерфейса.
+// Стили — блок «GYM · Фокус» в <style> (все классы с префиксом gx-), рисуется
+// в портале на <body>: у родителей есть transform от .fade-in, и без портала
+// position: fixed считался бы от них, а не от экрана.
+
+const GX = { sfx: true, haptic: true };
+
+const gxClamp = (v, a, b) => Math.min(b, Math.max(a, v));
+// Шаг веса 0.5 даёт четверти килограмма на сторону, поэтому округляем до сотых.
+const gxR2 = (n) => Math.round(n * 100) / 100;
+const gxFmt = (v) => String(gxR2(v));
+const gxRand = (a, b) => a + Math.random() * (b - a);
+const gxReduced = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+const GX_BAR_KG = 20;
+// «8-10» → «8–10»: диапазоны в плане набираем с тире.
+const gxDash = (t) => String(t || '').replace(/(\d)-(\d)/g, '$1–$2');
+
+// ── Блины на грифе ─────────────────────────────────────────────────────────
+const GX_PLATES = [25, 20, 15, 10, 5, 2.5, 1.25, 0.5, 0.25];
+const GX_PLATE_SPEC = {
+  25: { h: 64, w: 15, c: '#E5372B' }, 20: { h: 64, w: 13, c: '#2F6FEB' }, 15: { h: 58, w: 11, c: '#F2C230' },
+  10: { h: 48, w: 9, c: '#2FA84F' }, 5: { h: 38, w: 7, c: '#E8ECEF' }, 2.5: { h: 30, w: 6, c: '#3A4046' },
+  1.25: { h: 26, w: 5, c: '#9AA3AB' }, 0.5: { h: 22, w: 4, c: '#C7CDD3' }, 0.25: { h: 18, w: 3, c: '#8E979F' },
+};
+const GX_CONF = ['#E5372B', '#2F6FEB', '#F2C230', '#2FA84F', '#E8ECEF', '#FFC83D'];
+
+const gxPlatesFor = (weight, bar = GX_BAR_KG) => {
+  let side = gxR2((weight - bar) / 2);
+  const out = [];
+  if (side <= 0) return out;
+  for (const p of GX_PLATES) {
+    while (side + 1e-6 >= p && out.length < 14) { out.push(p); side = gxR2(side - p); }
+  }
+  return out;
+};
+const gxPlatesText = (plates) => {
+  const g = [];
+  plates.forEach((p) => { const l = g[g.length - 1]; if (l && l.p === p) l.n++; else g.push({ p, n: 1 }); });
+  return g.map((x) => (x.n > 1 ? `${x.n}×${x.p}` : `${x.p}`)).join(' + ');
+};
+
+// ── Звук и тактильная отдача ───────────────────────────────────────────────
+// Эффекты (лязг, мел, фанфары) — тот же Web Audio, что и сигналы отдыха:
+// контекст берём у gymSound, чтобы он был один на страницу и разблокировался
+// тем же жестом.
+const gxSfx = (() => {
+  const run = (fn) => {
+    if (!GX.sfx) return;
+    try {
+      const c = gymSound.audio();
+      if (c) fn(c, c.currentTime + 0.005);
+    } catch (_) {}
+  };
+  const env = (g, t, a, d, v) => {
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(v, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + a + d);
+  };
+  const tone = (c, f, t, d, type, v, f2) => {
+    const o = c.createOscillator();
+    const g = c.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(f, t);
+    if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + d);
+    env(g, t, 0.003, d, v);
+    o.connect(g); g.connect(c.destination);
+    o.start(t); o.stop(t + d + 0.05);
+  };
+  const noise = (c, t, d, v, ft, ff, q) => {
+    const len = Math.max(1, Math.floor(c.sampleRate * d));
+    const buf = c.createBuffer(1, len, c.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const s = c.createBufferSource();
+    s.buffer = buf;
+    const f = c.createBiquadFilter();
+    f.type = ft; f.frequency.value = ff; f.Q.value = q || 0.7;
+    const g = c.createGain();
+    env(g, t, 0.004, d, v);
+    s.connect(f); f.connect(g); g.connect(c.destination);
+    s.start(t);
+  };
+  return {
+    tick() { run((c, t) => tone(c, 2400, t, 0.022, 'square', 0.025)); },
+    // Подход записан: лязг блина о гриф и мел.
+    clank() {
+      run((c, t) => {
+        tone(c, 1180, t, 0.38, 'triangle', 0.15);
+        tone(c, 1770, t, 0.3, 'sine', 0.08);
+        tone(c, 2650, t, 0.2, 'sine', 0.045);
+        tone(c, 95, t, 0.18, 'sine', 0.32, 46);
+        noise(c, t, 0.07, 0.1, 'highpass', 3500);
+        noise(c, t + 0.07, 0.24, 0.08, 'bandpass', 1900, 0.8);
+      });
+    },
+    undo() { run((c, t) => tone(c, 520, t, 0.14, 'sine', 0.12, 300)); },
+    go() { run((c, t) => { tone(c, 1320, t, 0.26, 'triangle', 0.2); tone(c, 1980, t + 0.02, 0.22, 'sine', 0.07); }); },
+    fanfare() {
+      run((c, t) => {
+        [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => {
+          tone(c, f, t + i * 0.09, 0.36, 'triangle', 0.14);
+          tone(c, f * 2, t + i * 0.09, 0.26, 'sine', 0.04);
+        });
+        tone(c, 1046.5, t + 0.42, 0.7, 'triangle', 0.12);
+        tone(c, 1568, t + 0.42, 0.6, 'sine', 0.045);
+      });
+    },
+  };
+})();
+
+// Вибрация: на Android — navigator.vibrate, на iPhone браузер её не даёт, но
+// переключатель <input switch> (iOS 17.4+) даёт лёгкий «тик» — им и пользуемся.
+const gxHaptic = (() => {
+  let label = null;
+  const ios = () => {
+    try {
+      if (!label) {
+        label = document.createElement('label');
+        label.setAttribute('aria-hidden', 'true');
+        label.style.cssText = 'position:fixed;left:-99px;top:-99px;opacity:0;pointer-events:none';
+        const i = document.createElement('input');
+        i.type = 'checkbox';
+        i.setAttribute('switch', '');
+        label.appendChild(i);
+        document.body.appendChild(label);
+      }
+      label.click();
+    } catch (_) {}
+  };
+  const vib = (p) => { try { if (navigator.vibrate) { navigator.vibrate(p); return true; } } catch (_) {} return false; };
+  return {
+    light() { if (GX.haptic && !vib(8)) ios(); },
+    medium() { if (GX.haptic && !vib(18)) ios(); },
+    heavy() { if (GX.haptic && !vib([26, 28, 36])) { ios(); setTimeout(ios, 70); } },
+    success() { if (GX.haptic && !vib([22, 40, 22, 40, 80])) { ios(); setTimeout(ios, 90); setTimeout(ios, 190); } },
+  };
+})();
+const gxTick = () => { gxHaptic.light(); gxSfx.tick(); };
+
+// ── Иконки ─────────────────────────────────────────────────────────────────
+const GX_ICONS = {
+  chevD: <path d="M6 9l6 6 6-6" />,
+  chevL: <path d="M15 6l-6 6 6 6" />,
+  more: <g><circle cx="5" cy="12" r="1.9" /><circle cx="12" cy="12" r="1.9" /><circle cx="19" cy="12" r="1.9" /></g>,
+  check: <path d="M5 12.5l4.5 4.5L19 7.5" />,
+  plus: <path d="M12 5v14M5 12h14" />,
+  minus: <path d="M5 12h14" />,
+  x: <path d="M6 6l12 12M18 6L6 18" />,
+  undo: <g><path d="M4 5v5h5" /><path d="M5.5 14a7.5 7.5 0 1 0 1.3-7.4L4 10" /></g>,
+  star: <path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z" />,
+  mic: <g><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></g>,
+  list: <path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01" />,
+  play: <path d="M8 5v14l11-7z" />,
+  pause: <path d="M8 5v14M16 5v14" />,
+  next: <g><path d="M6 6l9 6-9 6V6z" /><path d="M19 6v12" /></g>,
+  prev: <g><path d="M18 6l-9 6 9 6V6z" /><path d="M5 6v12" /></g>,
+  skip: <g><path d="M5 6l7 6-7 6V6z" /><path d="M13 6l7 6-7 6V6z" /></g>,
+  trash: <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />,
+  moon: <path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" />,
+  sun: <g><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></g>,
+  vib: <g><rect x="8" y="3" width="8" height="18" rx="2" /><path d="M4 8v8M20 8v8" /></g>,
+  vol: <g><path d="M4 9v6h4l5 4V5L8 9H4z" /><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11" /></g>,
+  chat: <g><path d="M4 5h16v11H9l-5 4V5z" /></g>,
+  flame: <path d="M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2 1-3.2 2-4.2 0 2 1 3 2 3 0-3-1-5 1-8.8z" />,
+  dumb: <path d="M3 9v6M6.5 6.5v11M17.5 6.5v11M21 9v6M6.5 12h11" />,
+  cable: <g><path d="M6 3v18M6 6h5l5 6-5 6H6" /><circle cx="18.5" cy="12" r="1.5" /></g>,
+  body: <g><circle cx="12" cy="5" r="2.2" /><path d="M12 8v6M7 10h10M9 21l3-7 3 7" /></g>,
+  bar: <path d="M2 12h20M5 7v10M8 5v14M16 5v14M19 7v10" />,
+  bksp: <path d="M21 5H9l-6 7 6 7h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1zM12 9l6 6M18 9l-6 6" />,
+  timer: <g><circle cx="12" cy="13" r="8" /><path d="M12 9v4l3 2M9 2h6" /></g>,
+  music: <g><path d="M9 18V5l11-2v13" /><circle cx="6.5" cy="18" r="2.5" /><circle cx="17.5" cy="16" r="2.5" /></g>,
+};
+const GX_FILLED = { star: 1, more: 1, play: 1 };
+function GxIc({ n, s = 22, sw = 2 }) {
+  const f = GX_FILLED[n];
+  return (
+    <svg width={s} height={s} viewBox="0 0 24 24" fill={f ? 'currentColor' : 'none'} stroke={f ? 'none' : 'currentColor'}
+      strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{GX_ICONS[n]}</svg>
+  );
+}
+const GX_EQUIP_IC = { 'Штанга': 'bar', 'Гантели': 'dumb', 'Тренажёр': 'cable', 'Кроссовер': 'cable', 'Своё тело': 'body' };
+
+// ── Крупное число-«табло»: цифры прокручиваются, как на счётчике ──────────
+function GxOdo({ text }) {
+  const chars = String(text).split('');
+  const n = chars.length;
+  return (
+    <span className="gx-odo" aria-label={text}>
+      {chars.map((c, i) => {
+        const key = n - i;
+        if (c >= '0' && c <= '9') {
+          return (
+            <span className="gx-odo-c" key={key} aria-hidden="true">
+              <span className="gx-odo-s" style={{ transform: `translateY(${-(+c)}em)` }}>
+                {'0123456789'.split('').map((x) => <span key={x}>{x}</span>)}
+              </span>
+            </span>
+          );
+        }
+        return <span className="gx-odo-p" key={key} aria-hidden="true">{c}</span>;
+      })}
+    </span>
+  );
+}
+
+// Вес / повторы: − и + (зажать — быстрее), число тянется пальцем вверх-вниз,
+// тап по числу — своя цифровая клавиатура (системная на iPhone закрывала бы
+// пол-экрана).
+function GxStepper({ label, value, step, min = 0, max = 999, kind, onChange, onPad }) {
+  const vref = useRef(value);
+  vref.current = value;
+  const hold = useRef(null);
+  const scrub = useRef(null);
+
+  const set = (next) => {
+    next = gxClamp(gxR2(next), min, max);
+    if (next !== vref.current) { vref.current = next; onChange(next); gxTick(); }
+  };
+  const stop = () => {
+    if (hold.current) { clearTimeout(hold.current.t); clearInterval(hold.current.i); hold.current = null; }
+  };
+  const start = (dir) => (e) => {
+    e.preventDefault();
+    stop();
+    set(vref.current + dir * step);
+    const h = { t: null, i: null };
+    hold.current = h;
+    let n = 0;
+    h.t = setTimeout(() => {
+      h.i = setInterval(() => { n++; set(vref.current + dir * step * (n > 14 ? 4 : n > 6 ? 2 : 1)); }, 85);
+    }, 380);
+  };
+  useEffect(() => stop, []);
+  const key = (dir) => (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); set(vref.current + dir * step); } };
+
+  const down = (e) => {
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+    scrub.current = { y: e.clientY, base: vref.current, moved: false };
+  };
+  const move = (e) => {
+    const s = scrub.current;
+    if (!s) return;
+    const dy = s.y - e.clientY;
+    if (Math.abs(dy) > 7) s.moved = true;
+    if (!s.moved) return;
+    set(s.base + Math.trunc(dy / (kind === 'kg' ? 11 : 24)) * step);
+  };
+  const up = () => {
+    const s = scrub.current;
+    scrub.current = null;
+    if (s && !s.moved && onPad) onPad();
+  };
+
+  return (
+    <div className="gx-stp">
+      <div className="gx-stp-l">{label}</div>
+      <div className="gx-stp-v" style={{ '--k': kind === 'kg' ? (value >= 100 ? 2.54 : 1.98) : 1.12 }} role="button" tabIndex={0}
+        aria-label={`${label}: ${gxFmt(value)}`}
+        onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { scrub.current = null; }}
+        onKeyDown={(e) => { if (e.key === 'Enter' && onPad) onPad(); }}>
+        <GxOdo text={gxFmt(value)} />
+      </div>
+      <div className="gx-stp-b">
+        <button className="gx-sb" aria-label="Меньше" onPointerDown={start(-1)} onPointerUp={stop} onPointerLeave={stop} onPointerCancel={stop} onKeyDown={key(-1)}><GxIc n="minus" s={22} sw={2.6} /></button>
+        <button className="gx-sb gx-plus" aria-label="Больше" onPointerDown={start(1)} onPointerUp={stop} onPointerLeave={stop} onPointerCancel={stop} onKeyDown={key(1)}><GxIc n="plus" s={22} sw={2.6} /></button>
+      </div>
+    </div>
+  );
+}
+
+// Гриф с блинами по стандартной раскраске: видно, что вешать, считать не надо.
+function GxBarbell({ weight, bar = GX_BAR_KG, mini }) {
+  const plates = useMemo(() => gxPlatesFor(weight, bar), [weight, bar]);
+  const [wob, setWob] = useState(0);
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) { first.current = false; return; }
+    setWob((w) => w + 1);
+  }, [weight]);
+  let x = 124;
+  const els = plates.map((p, i) => {
+    const sp = GX_PLATE_SPEC[p];
+    const el = (
+      <g className="gx-plate" key={i + '-' + p} style={{ animationDelay: Math.min(i, 6) * 28 + 'ms' }}>
+        <rect x={x} y={36 - sp.h / 2} width={sp.w} height={sp.h} rx="3" fill={sp.c} stroke="rgba(0,0,0,.28)" strokeWidth=".8" />
+        <rect x={x + 1.6} y={36 - sp.h / 2 + sp.h * 0.12} width={Math.max(1.4, sp.w - 5)} height={sp.h * 0.76} rx="2" fill="#fff" opacity=".17" />
+      </g>
+    );
+    x += sp.w + 1.5;
+    return el;
+  });
+  const knurl = [];
+  for (let i = 0; i < 20; i++) knurl.push(<line key={i} x1={12 + i * 4.2} x2={12 + i * 4.2} y1="33" y2="39" stroke="rgba(0,0,0,.28)" strokeWidth="1" />);
+  return (
+    <div className={'gx-bar-wrap' + (mini ? ' gx-mini' : '')}>
+      <svg viewBox="0 0 340 72" className={'gx-bar gx-wob' + (wob % 2)} aria-hidden="true">
+        <defs>
+          <linearGradient id="gx-steel" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#E3E8EC" /><stop offset=".5" stopColor="#8D969E" /><stop offset="1" stopColor="#C3C9CF" />
+          </linearGradient>
+        </defs>
+        <rect x="0" y="33" width="112" height="6" rx="3" fill="url(#gx-steel)" />
+        {knurl}
+        <rect x="104" y="31" width="236" height="10" rx="2" fill="url(#gx-steel)" />
+        <rect x="112" y="27" width="6" height="18" rx="1.5" fill="#7B858E" />
+        {els}
+        <rect x={x + 1} y="28" width="7" height="16" rx="2" fill="#AEB6BD" stroke="rgba(0,0,0,.3)" strokeWidth=".8" />
+      </svg>
+      {!mini && (
+        <div className="gx-bar-txt">
+          {plates.length ? <span><b>{gxPlatesText(plates)}</b> на сторону · гриф {bar}</span> : <span>пустой гриф · {bar} кг</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GxLoadViz({ ex, row, weight }) {
+  const eq = ex.equipment || '';
+  if (row && row.unit === 'body') return <div className="gx-viz gx-viz-simple"><GxIc n="body" s={26} /><span>работа со <b>своим весом</b></span></div>;
+  if (eq === 'Штанга') return <div className="gx-viz"><GxBarbell weight={weight} /></div>;
+  if (eq === 'Гантели') return <div className="gx-viz gx-viz-simple"><GxIc n="dumb" s={26} /><span>по <b>{gxFmt(weight)}</b> кг в каждой руке</span></div>;
+  if (eq === 'Тренажёр' || eq === 'Кроссовер') return <div className="gx-viz gx-viz-simple"><GxIc n="cable" s={26} /><span>{eq === 'Кроссовер' ? 'блок' : 'нагрузка'} · <b>{gxFmt(weight)}</b> кг</span></div>;
+  if (eq === 'Своё тело') return <div className="gx-viz gx-viz-simple"><GxIc n="body" s={26} /><span>работа со <b>своим весом</b></span></div>;
+  return <div className="gx-viz gx-viz-simple" />;
+}
+
+// ── Листы, переключатели ───────────────────────────────────────────────────
+function GxSheet({ onClose, children }) {
+  return (
+    <div className="gx-sheet-wrap">
+      <div className="gx-scrim" onClick={() => onClose && onClose()} />
+      <div className="gx-sheet" role="dialog">
+        <div className="gx-grab" />
+        {children}
+      </div>
+    </div>
+  );
+}
+function GxSwitch({ on, onChange, label }) {
+  return (
+    <button className={'gx-sw' + (on ? ' gx-on' : '')} role="switch" aria-checked={on} aria-label={label} onClick={() => onChange(!on)}><i /></button>
+  );
+}
+function GxSeg({ value, options, onChange }) {
+  return (
+    <div className="gx-segc">
+      {options.map((o) => (
+        <button key={String(o.v)} className={o.v === value ? 'gx-on' : ''} onClick={() => onChange(o.v)}>{o.t}</button>
+      ))}
+    </div>
+  );
+}
+
+// Цифровая клавиатура: первое нажатие заменяет число, как на iOS; сверху —
+// быстрые поправки (−5 / +2.5 для веса, 6 / 8 / 10 / 12 для повторов).
+function GxNumPad({ field, value, onNext, onDone, onClose }) {
+  const isW = field === 'w';
+  const [buf, setBuf] = useState(gxFmt(value));
+  const [fresh, setFresh] = useState(true);
+  const num = () => { const n = parseFloat(buf); return isNaN(n) ? 0 : n; };
+  const press = (k) => {
+    gxTick();
+    if (k === 'bs') { setFresh(false); setBuf((b) => (b.length > 1 ? b.slice(0, -1) : '0')); return; }
+    if (k === '.') { if (!isW) return; setBuf((b) => (fresh ? '0.' : b.includes('.') ? b : b + '.')); setFresh(false); return; }
+    setBuf((b) => {
+      const base = fresh || b === '0' ? '' : b;
+      if (base.includes('.') && base.split('.')[1].length >= 2) return b;
+      const nb = base + k;
+      return nb.length > 5 ? b : nb;
+    });
+    setFresh(false);
+  };
+  const add = (d) => { gxTick(); setBuf(gxFmt(gxClamp(gxR2(num() + d), 0, 999))); setFresh(true); };
+  const put = (v) => { gxTick(); setBuf(String(v)); setFresh(true); };
+  const commit = () => {
+    const n = gxClamp(num(), isW ? 0 : 1, isW ? 999 : 99);
+    return isW ? gxR2(n) : Math.round(n);
+  };
+  const quick = isW ? [-5, -2.5, 2.5, 5] : [6, 8, 10, 12, 15];
+  return (
+    <GxSheet onClose={() => onClose(commit())}>
+      <div className="gx-np-h">{isW ? 'Вес, кг' : 'Повторения'}</div>
+      <div className="gx-np-v"><span>{buf}</span><i className="gx-caret" /></div>
+      <div className="gx-np-q">
+        {isW
+          ? quick.map((q) => <button key={q} onClick={() => add(q)}>{q > 0 ? '+' : '−'}{Math.abs(q)}</button>)
+          : quick.map((q) => <button key={q} onClick={() => put(q)}>{q}</button>)}
+      </div>
+      <div className="gx-np-k">
+        {['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'bs'].map((k) => (
+          <button key={k} className={k === 'bs' || k === '.' ? 'gx-alt' : ''} disabled={k === '.' && !isW} onClick={() => press(k)}>
+            {k === 'bs' ? <GxIc n="bksp" s={26} /> : k}
+          </button>
+        ))}
+      </div>
+      <button className="gx-np-ok" onClick={() => (isW && onNext ? onNext(commit()) : onDone(commit()))}>
+        {isW && onNext ? 'Далее · повторы' : 'Готово'}
+      </button>
+    </GxSheet>
+  );
+}
+
+// ── Экранные эффекты ───────────────────────────────────────────────────────
+function GxBurst({ b }) {
+  const ps = useMemo(() => Array.from({ length: 18 }, () => ({ dx: gxRand(-120, 120), dy: gxRand(-190, -30), s: gxRand(0.6, 1.6), d: gxRand(520, 950), z: gxRand(9, 22) })), []);
+  return (
+    <div className="gx-burst" style={{ left: b.x, top: b.y }}>
+      <i className="gx-cloud" />
+      {ps.map((p, i) => <i key={i} className="gx-chalk" style={{ '--dx': p.dx + 'px', '--dy': p.dy + 'px', '--s': p.s, '--d': p.d + 'ms', width: p.z, height: p.z }} />)}
+    </div>
+  );
+}
+function GxConfetti() {
+  const ps = useMemo(() => Array.from({ length: 38 }, (_, i) => ({
+    x: gxRand(0, 100), delay: gxRand(0, 380), dur: gxRand(1400, 2400), rot: gxRand(-600, 600), sway: gxRand(-50, 50),
+    c: GX_CONF[i % GX_CONF.length], w: gxRand(8, 15), h: gxRand(5, 9),
+  })), []);
+  return (
+    <div className="gx-confetti">
+      {ps.map((p, i) => <i key={i} style={{ left: p.x + '%', background: p.c, width: p.w, height: p.h, '--sway': p.sway + 'px', '--rot': p.rot + 'deg', animationDelay: p.delay + 'ms', animationDuration: p.dur + 'ms' }} />)}
+    </div>
+  );
+}
+function GxFlash({ f }) {
+  return (
+    <div className={'gx-flash gx-' + f.type}>
+      <div className="gx-flash-bg" />
+      <div className="gx-flash-t">
+        {f.type === 'pr' && <div className="gx-flash-i"><GxIc n="star" s={54} /></div>}
+        <div className="gx-flash-a">{f.text}</div>
+        {f.sub && <div className="gx-flash-b">{f.sub}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ── Прогрессия и история ───────────────────────────────────────────────────
+// Подходы этого упражнения в прошлой тренировке (по названию — упражнение
+// могло переехать в другой день или программу).
+const gxLastSessionSets = (sessions, name, excludeId, beforeMs) => {
+  const key = gymKey(name);
+  let best = null;
+  (sessions || []).forEach((s) => {
+    if (s.id === excludeId) return;
+    if (beforeMs && (s.startedAt || 0) >= beforeMs) return;
+    const mine = (s.sets || []).filter((x) => gymKey(x.exerciseName) === key);
+    if (!mine.length) return;
+    const stamp = `${s.date || ''}:${String(s.startedAt || 0).padStart(15, '0')}`;
+    if (!best || stamp > best.stamp) best = { stamp, sets: mine };
+  });
+  if (!best) return [];
+  return best.sets.slice().sort((a, b) => (a.setIndex || 0) - (b.setIndex || 0) || (a.at || 0) - (b.at || 0));
+};
+
+// Подход прошлой тренировки «на этом же месте»: n-й рабочий — к n-му рабочему,
+// n-я разминка — к n-й разминке; сверх истории берём последний.
+const gxHistSet = (lastSets, rows, i) => {
+  const row = rows[i];
+  if (!row) return null;
+  const warm = row.kind === 'warmup';
+  const same = lastSets.filter((s) => (s.kind === 'warmup') === warm);
+  if (!same.length) return null;
+  const n = rows.slice(0, i + 1).filter((r) => (r.kind === 'warmup') === warm).length - 1;
+  return same[Math.min(n, same.length - 1)];
+};
+
+// «Пора прибавить»: в прошлый раз все рабочие подходы дошли до верха
+// диапазона повторов — предлагаем вес чуть выше.
+const gxSuggest = (ex, row, lastSets) => {
+  if (!row || row.kind === 'warmup' || (row.unit || 'kg') !== 'kg') return 0;
+  const work = lastSets.filter((s) => gymIsWorking(s) && gymNum(s.weight) > 0);
+  const top = gymRange(row.reps).max;
+  if (work.length < 2 || !top) return 0;
+  if (!work.every((s) => gymInt(s.reps, 0) >= top)) return 0;
+  const w0 = Math.max(...work.map((s) => gymNum(s.weight)));
+  return gxR2(w0 + (ex.equipment === 'Гантели' ? 2 : 2.5));
+};
+
+// Рекорд: выше лучшего веса / расчётного 1ПМ из истории И выше того, что уже
+// записано сегодня, — иначе второй такой же подход снова считался бы рекордом.
+const gxIsRecord = (prev, sessionSets, kind, weight, reps) => {
+  if (kind === 'warmup' || !prev.seen) return false;
+  let bw = prev.weight;
+  let bo = prev.orm;
+  let br = prev.reps;
+  sessionSets.forEach((s) => {
+    if (!gymIsWorking(s)) return;
+    bw = Math.max(bw, gymNum(s.weight));
+    bo = Math.max(bo, gymEpley(s.weight, s.reps));
+    br = Math.max(br, gymInt(s.reps, 0));
+  });
+  return bw > 0 ? (weight > bw || gymEpley(weight, reps) > bo) : (!weight && reps > br);
+};
+
+// Дополнительный подход сверх плана — копия последнего рабочего: тот же вес,
+// повторы и отдых.
+const gxExtraRow = (base, i) => {
+  const lastW = [...base].reverse().find((r) => r.kind !== 'warmup') || base[base.length - 1] || {};
+  const nWork = base.filter((r) => r.kind !== 'warmup').length + (i - base.length) + 1;
+  return { ...lastW, kind: 'working', groupId: undefined, label: `Рабочий ${nWork}`, note: '' };
+};
+
+// Что показать вместо тоннажа цифрами: во что это по весу.
+const GX_UNITS = [
+  [12000, 'автобус', 'автобуса', 'автобусов', '🚌'],
+  [5000, 'слон', 'слона', 'слонов', '🐘'],
+  [1500, 'бегемот', 'бегемота', 'бегемотов', '🦛'],
+  [250, 'пианино', 'пианино', 'пианино', '🎹'],
+  [50, 'мешок цемента', 'мешка цемента', 'мешков цемента', '🧱'],
+];
+const gxFunTonnage = (t) => {
+  const u = GX_UNITS.find((x) => t >= x[0]) || GX_UNITS[GX_UNITS.length - 1];
+  const c = t / u[0];
+  if (c < 1) return '';
+  if (c >= 10 || Math.abs(c - Math.round(c)) < 0.05) {
+    const n = Math.round(c);
+    return `≈ ${n} ${gymPlural(n, u[1], u[2], u[3])} ${u[4]}`;
+  }
+  return `≈ ${(Math.round(c * 10) / 10).toString().replace('.', ',')} ${u[2]} ${u[4]}`;
+};
+
+function useGxCountUp(target, ms = 1200, delay = 300) {
+  const [v, setV] = useState(0);
+  useEffect(() => {
+    if (gxReduced()) { setV(target); return undefined; }
+    let raf = 0;
+    let t0 = 0;
+    const to = setTimeout(() => {
+      const step = (t) => {
+        if (!t0) t0 = t;
+        const p = Math.min(1, (t - t0) / ms);
+        setV(target * (1 - Math.pow(1 - p, 3)));
+        if (p < 1) raf = requestAnimationFrame(step);
+      };
+      raf = requestAnimationFrame(step);
+    }, delay);
+    return () => { clearTimeout(to); cancelAnimationFrame(raf); };
+  }, [target]);
+  return v;
+}
+
+// Экран на весь телефон: свой фон, тема, запрет прокрутки страницы под ним.
+function GxRoot({ theme, children }) {
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+  return ReactDOM.createPortal(
+    <div className="gx-root" data-theme={theme}>
+      <div className="gx-col">{children}</div>
+    </div>,
+    document.body
+  );
+}
+
+// Музыка на экране отдыха: пока ничего не включено — кнопка запуска, дальше
+// мини-плеер. Тот же jarvisMusic, что и в разделе «Музыка».
+function GxMusic({ playlists, onPlaylist }) {
+  const m = useMusic();
+  if (!m.tracks.length && !m.track) return null;
+  if (!m.started) {
+    return (
+      <button className="gx-music-btn" onClick={() => {
+        // Плейлистов нет — включаем сразу, без лишнего шага
+        if (!playlists.length) { jarvisMusic.playRandom(null, ''); return; }
+        onPlaylist();
+      }}>
+        <GxIc n="music" s={18} /> {m.queueName ? `Включить музыку · ${m.queueName}` : 'Включить музыку'}
+      </button>
+    );
+  }
+  return (
+    <div className="gx-music">
+      <GxIc n="music" s={18} />
+      <span className="gx-mu-t">
+        <b>{m.track ? m.track.name : 'Ничего не играет'}</b>
+        <i>{[m.queueName, m.ducked ? 'тише' : ''].filter(Boolean).join(' · ') || (m.error || 'готов')}</i>
+      </span>
+      <span className="gx-mu-ctl">
+        <button onClick={() => jarvisMusic.prev()} aria-label="Предыдущий"><GxIc n="prev" s={17} /></button>
+        <button className="gx-main" onClick={() => jarvisMusic.toggle()} aria-label={m.playing ? 'Пауза' : 'Играть'}><GxIc n={m.playing ? 'pause' : 'play'} s={18} sw={2.6} /></button>
+        <button onClick={() => jarvisMusic.next()} aria-label="Следующий"><GxIc n="next" s={17} /></button>
+        <button onClick={onPlaylist} aria-label="Сменить плейлист"><GxIc n="list" s={17} /></button>
+      </span>
+    </div>
+  );
+}
+
+// Отдых на весь экран: кольцо-таймер, что только что записано и что дальше
+// (и какие блины вешать). Свайпом вниз сворачивается в плашку над упражнением.
+function GxRest({ left, total, rec, recLabel, recName, badge, recPr, next, nextBase, newEx, playlists, onPlaylist, onSkip, onShift, onUndo, onCollapse }) {
+  const low = left > 0 && left <= 3;
+  // Кольцо шагает раз в секунду (так тикает таймер), поэтому целимся на секунду
+  // вперёд и тянем линейно — получается плавное движение, а не рывки.
+  const frac = total ? gxClamp((left - 1) / total, 0, 1) : 0;
+  const R = 104;
+  const C = 2 * Math.PI * R;
+  const [dy, setDy] = useState(0);
+  const drag = useRef(null);
+
+  let nextTitle = '';
+  let nextPlan = '';
+  let nextWeight = 0;
+  let nextBar = false;
+  if (next) {
+    const t = gymRowTarget(next.row, nextBase);
+    nextWeight = (t.empty || t.body) ? 0 : gymRound1(gymRangeMid(t));
+    nextBar = next.ex.equipment === 'Штанга' && nextWeight > 0 && (next.row.unit || 'kg') !== 'body';
+    nextTitle = next.row.label;
+    nextPlan = gxDash(gymRowPlanText({ ...next.row, restSec: 0, rir: '' }, nextBase));
+  }
+  const plates = nextBar ? gxPlatesFor(nextWeight) : [];
+
+  return (
+    <div className={'gx-rest' + (low ? ' gx-low' : '')} style={{ transform: dy ? `translateY(${dy}px)` : undefined, transition: dy ? 'none' : undefined }}
+      onPointerDown={(e) => {
+        if (e.target.closest('button')) return;
+        drag.current = { y: e.clientY };
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+      }}
+      onPointerMove={(e) => { if (drag.current) setDy(Math.max(0, e.clientY - drag.current.y)); }}
+      onPointerUp={() => { if (!drag.current) return; drag.current = null; if (dy > 110) onCollapse(); else setDy(0); }}
+      onPointerCancel={() => { drag.current = null; setDy(0); }}>
+      <div className="gx-rest-head">
+        <div className="gx-rest-grab" />
+        <div className="gx-rest-row">
+          <span className="gx-eyebrow">Отдых</span>
+          <button className="gx-mini-btn" onClick={onCollapse}><GxIc n="chevD" s={18} /> Свернуть</button>
+        </div>
+      </div>
+
+      <div className="gx-ring-wrap">
+        <svg className="gx-ring" viewBox="0 0 240 240" aria-hidden="true">
+          <circle cx="120" cy="120" r={R} className="gx-ring-bg" />
+          <circle cx="120" cy="120" r={R} className="gx-ring-fg" strokeDasharray={C} strokeDashoffset={C * (1 - frac)} transform="rotate(-90 120 120)" />
+        </svg>
+        <div className="gx-ring-c">
+          {low
+            ? <div className="gx-ring-n" key={left}>{left}</div>
+            : <React.Fragment><div className="gx-ring-t">{gymFmtRest(left)}</div><div className="gx-ring-s">до подхода</div></React.Fragment>}
+        </div>
+      </div>
+
+      <div className="gx-rest-btns">
+        <button className="gx-rb" onClick={() => onShift(-15)}>−15</button>
+        <button className="gx-rb gx-skip" onClick={onSkip}>Пропустить</button>
+        <button className="gx-rb" onClick={() => onShift(15)}>+15</button>
+      </div>
+
+      {rec && (
+        <div className="gx-rcard">
+          <div className="gx-rc-l">
+            <div className="gx-rc-t"><GxIc n="check" s={16} sw={3.2} /> <span>{recName}</span></div>
+            <div className="gx-rc-s">
+              {[recLabel, gymNum(rec.weight) ? `${gxFmt(gymNum(rec.weight))} × ${gymInt(rec.reps, 0)}` : `${gymInt(rec.reps, 0)} повт.`].filter(Boolean).join(' · ')}
+              {badge && <span className={'gx-bd gx-' + badge.tone}>{badge.text}</span>}
+              {recPr && <span className="gx-bd gx-pr">рекорд</span>}
+            </div>
+          </div>
+          <button className="gx-undo" onClick={onUndo}><GxIc n="undo" s={16} /> Отменить</button>
+        </div>
+      )}
+
+      {next ? (
+        <div className={'gx-ncard' + (newEx ? ' gx-newex' : '')}>
+          <div className="gx-eyebrow">{newEx ? 'Следующее упражнение' : 'Дальше'}</div>
+          {newEx && <div className="gx-nc-name">{next.ex.name || 'Без названия'}</div>}
+          <div className="gx-nc-row">
+            <div className="gx-nc-l">
+              <div className="gx-nc-set">{nextTitle}</div>
+              <div className="gx-nc-plan">{nextPlan || 'вес и повторы — по самочувствию'}</div>
+              {next.row.rir ? <div className="gx-nc-rir">RIR {next.row.rir}</div> : null}
+              {newEx && next.ex.equipment && <div className="gx-nc-eq">{GX_EQUIP_IC[next.ex.equipment] && <GxIc n={GX_EQUIP_IC[next.ex.equipment]} s={15} />} {next.ex.equipment}</div>}
+            </div>
+            {nextBar ? (
+              <div className="gx-nc-r">
+                <GxBarbell weight={nextWeight} mini />
+                <div className="gx-nc-pl">{plates.length ? gxPlatesText(plates) + ' на сторону' : 'пустой гриф'}</div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : (
+        <div className="gx-ncard"><div className="gx-eyebrow">Все подходы записаны</div><div className="gx-nc-plan">Можно завершать тренировку</div></div>
+      )}
+
+      <GxMusic playlists={playlists} onPlaylist={onPlaylist} />
+    </div>
+  );
+}
+
 // Итог сразу после тренировки: что сделано, как это легло в план и не побит
 // ли рекорд. Считается из самой сессии, поэтому открывается и позже, из истории.
-function GymSessionSummary({ session, exercises, sessions, onClose }) {
+function GymSessionSummary({ session, exercises, sessions, settings, onClose }) {
+  const theme = (settings || {}).gymTheme === 'light' ? 'light' : 'dark';
   const sets = session.sets || [];
   const working = sets.filter(gymIsWorking);
-  const warmups = sets.length - working.length;
-  const tonnage = working.reduce((a, s) => a + gymSetTonnage(s), 0);
+  const tonnage = Math.round(working.reduce((a, s) => a + gymSetTonnage(s), 0));
   const totalReps = working.reduce((a, s) => a + gymInt(s.reps, 0), 0);
+  const shownTonnage = useGxCountUp(tonnage);
+  const fun = gxFunTonnage(tonnage);
 
   const exById = {};
   (exercises || []).forEach(e => { exById[e.id] = e; });
@@ -31349,98 +32480,114 @@ function GymSessionSummary({ session, exercises, sessions, onClose }) {
     const bestOrm = mine.reduce((a, s) => Math.max(a, gymEpley(s.weight, s.reps)), 0);
     const bestReps = mine.reduce((a, s) => Math.max(a, gymInt(s.reps, 0)), 0);
     if (prev.weight > 0) {
-      if (bestWeight > prev.weight) records.push(`${g.name}: ${gymRound1(bestWeight)} кг (было ${gymRound1(prev.weight)})`);
-      else if (bestOrm > prev.orm) records.push(`${g.name}: 1ПМ ${gymRound1(bestOrm)} кг (было ${gymRound1(prev.orm)})`);
+      if (bestWeight > prev.weight) records.push({ id: g.name, name: g.name, line: `${gymRound1(bestWeight)} кг · было ${gymRound1(prev.weight)} кг` });
+      else if (bestOrm > prev.orm) records.push({ id: g.name, name: g.name, line: `1ПМ ${gymRound1(bestOrm)} кг · было ${gymRound1(prev.orm)} кг` });
     } else if (!bestWeight && bestReps > prev.reps) {
-      records.push(`${g.name}: ${bestReps} повт. своим весом (было ${prev.reps})`);
+      records.push({ id: g.name, name: g.name, line: `${bestReps} повт. своим весом · было ${prev.reps}` });
     }
   });
 
+  // Неделя: какие дни с тренировкой и которая это по счёту.
+  const weekStart = gymWeekStart(session.date);
+  const weekSessions = (sessions || []).filter(s => s.finishedAt && gymWeekStart(s.date) === weekStart && s.id !== session.id);
+  weekSessions.push(session);
+  const dayOf = (s) => { const d = gymParseDate(s.date); return d ? (d.getDay() + 6) % 7 : 0; };
+  const trained = new Set(weekSessions.map(dayOf));
+  const todayIdx = dayOf(session);
+  const weekN = weekSessions.filter(s => (s.startedAt || 0) <= (session.startedAt || 0)).length || 1;
+  const thisWeek = weekStart === gymWeekStart(dateToLocalStr(new Date()));
+  const dayNames = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+
+  const pd = gymParseDate(session.date);
+  const dstr = pd ? pd.toLocaleDateString('ru-RU', { weekday: 'short', day: 'numeric', month: 'long' }) : '';
+  const dateText = dstr.charAt(0).toUpperCase() + dstr.slice(1);
+
+  const [conf] = useState(() => records.length > 0 && !gxReduced());
+  useEffect(() => {
+    if (records.length) { gxSfx.fanfare(); gxHaptic.success(); }
+  }, []);
+
   return (
-    <div className="fade-in pb-10">
-      <div className="mb-5 flex items-center justify-between gap-3">
-        <button onClick={onClose} className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)]">
-          <Icon name="chevronLeft" size={16} /> Готово
-        </button>
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest">Итог тренировки</div>
-      </div>
-
-      <div className="rounded-2xl p-5 text-white mb-4" style={{ background: 'linear-gradient(135deg, #1f2937 0%, #0f766e 100%)' }}>
-        <div className="text-[13px] opacity-80">{gymFmtDate(session.date)}</div>
-        <div className="font-display text-2xl mt-0.5">{session.dayTitle || 'Тренировка'}</div>
-        <div className="text-[13px] opacity-80 mt-3">
-          {session.durationSec ? gymFmtDuration(session.durationSec) : 'без учёта времени'}
-          {planChecked > 0 && ` · в плане ${inPlan} из ${planChecked}`}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-2 mb-4">
-        <GymStat label="Рабочих подходов" value={working.length} sub={warmups ? `+ ${warmups} разминочных` : ''} />
-        <GymStat label="Повторов" value={totalReps} />
-        <GymStat label="Тоннаж" value={`${Math.round(tonnage)} кг`} sub={tonnage ? '' : 'подходы со своим весом'} />
-        <GymStat label="Упражнений" value={groups.length} />
-      </div>
-
-      {records.length > 0 && (
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 mb-4">
-          <div className="text-[14px] font-medium mb-2 flex items-center gap-2">
-            <span style={{ color: '#eab308' }}><Icon name="starFilled" size={16} /></span> Личные рекорды
+    <GxRoot theme={theme}>
+      <div className="gx-screen gx-sum">
+        {conf && <div className="gx-fx"><GxConfetti /></div>}
+        <div className="gx-sum-scroll">
+          <div className="gx-sum-top">
+            <span className="gx-eyebrow">Итог тренировки</span>
+            <button className="gx-ib" onClick={onClose} aria-label="Закрыть"><GxIc n="x" /></button>
           </div>
-          <div className="space-y-1">
-            {records.map((r, i) => <div key={i} className="text-[13px] text-[var(--text-muted)]">{r}</div>)}
+          <h1 className="gx-sum-title">{session.dayTitle || 'Тренировка'}</h1>
+          <div className="gx-sum-sub">
+            {[dateText, session.durationSec ? gymFmtDuration(session.durationSec) : ''].filter(Boolean).join(' · ')}
           </div>
-        </div>
-      )}
 
-      <div className="space-y-2">
-        {groups.map((g, i) => {
-          const ex = exById[g.exId];
-          const base = ex ? baseOf(ex) : 0;
-          return (
-            <div key={i} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3">
-              <div className="text-[15px] font-medium">{g.name}</div>
-              <div className="mt-1.5 space-y-1">
-                {g.list.map((s, j) => {
-                  const row = ex ? gymPlanRows(ex)[s.setIndex || 0] : null;
-                  const badge = row ? gymFactBadge(row, base, s.weight, s.reps) : null;
-                  const warm = !gymIsWorking(s);
-                  return (
-                    <div key={j} className="flex items-center gap-2 text-[13px]">
-                      <span className="w-[86px] flex-shrink-0" style={{ color: gymKindColor(warm ? 'warmup' : 'working') }}>
-                        {row && row.label ? row.label : (warm ? 'Разминка' : 'Рабочий')}
-                      </span>
-                      <span className="flex-1 min-w-0">
-                        {gymNum(s.weight) ? `${gymRound1(gymNum(s.weight))} кг × ${gymInt(s.reps, 0)}` : `${gymInt(s.reps, 0)} повт. своим весом`}
-                      </span>
-                      {badge && (
-                        <span
-                          className="text-[11px] px-2 py-0.5 rounded-full flex-shrink-0"
-                          style={badge.tone === 'ok'
-                            ? { background: '#ccfbf1', color: '#0f766e' }
-                            : badge.tone === 'under'
-                              ? { background: '#fee2e2', color: '#b91c1c' }
-                              : { background: '#dbeafe', color: '#1d4ed8' }}
-                        >
-                          {badge.text}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+          <div className="gx-ton">
+            <div className="gx-ton-l">Тоннаж</div>
+            <div className="gx-ton-v">{Math.round(shownTonnage).toLocaleString('ru-RU')}<small>кг</small></div>
+            {fun ? <div className="gx-ton-f">{fun}</div> : (tonnage ? null : <div className="gx-ton-f">подходы со своим весом</div>)}
+          </div>
+
+          <div className="gx-stats">
+            <div><b>{working.length}</b><span>рабочих подходов{sets.length > working.length ? ` + ${sets.length - working.length} разм.` : ''}</span></div>
+            <div><b>{totalReps}</b><span>повторений</span></div>
+            <div><b>{inPlan}<small>/{planChecked}</small></b><span>в плане</span></div>
+          </div>
+
+          {records.length > 0 && (
+            <div className="gx-recs">
+              {records.map(r => (
+                <div className="gx-rec" key={r.id}>
+                  <span className="gx-rec-i"><GxIc n="star" s={20} /></span>
+                  <div><b>{r.name}</b><span>Новый рекорд · {r.line}</span></div>
+                </div>
+              ))}
             </div>
-          );
-        })}
-      </div>
+          )}
 
-      <button onClick={onClose} className="w-full mt-6 py-3.5 rounded-xl text-white font-medium" style={{ background: GYM_ACCENT }}>
-        Готово
-      </button>
-    </div>
+          <div className="gx-week">
+            <div className="gx-week-t"><GxIc n="flame" s={18} /> {weekN}-я тренировка {thisWeek ? 'на этой неделе' : 'той недели'}</div>
+            <div className="gx-week-d">
+              {dayNames.map((n, i) => (
+                <span key={n} className={'gx-wd' + (trained.has(i) ? ' gx-on' : '') + (i === todayIdx ? ' gx-now' : '')}>
+                  <i>{i === todayIdx ? <GxIc n="flame" s={15} /> : trained.has(i) ? <GxIc n="check" s={14} sw={3.4} /> : null}</i>{n}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="gx-byex">
+            {groups.map((g, i) => {
+              const ex = exById[g.exId];
+              const base = ex ? baseOf(ex) : 0;
+              return (
+                <div className="gx-bx" key={i}>
+                  <div className="gx-bx-n">{g.name}</div>
+                  <div className="gx-bx-c">
+                    {g.list.map((s, j) => {
+                      const row = ex ? gymPlanRows(ex)[s.setIndex || 0] : null;
+                      const tone = row && gymIsWorking(s) ? gymFactBadge(row, base, s.weight, s.reps).tone : '';
+                      return (
+                        <span key={j} className={'gx-sc' + (!gymIsWorking(s) ? ' gx-w' : tone ? ' gx-' + tone : '')}>
+                          {gymNum(s.weight) ? `${gymRound1(gymNum(s.weight))}×${gymInt(s.reps, 0)}` : `×${gymInt(s.reps, 0)}`}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="gx-sum-pad" />
+        </div>
+        <div className="gx-dock gx-one">
+          <button className="gx-log gx-wide" onClick={onClose}>Готово</button>
+        </div>
+      </div>
+    </GxRoot>
   );
 }
 
-function GymSessionView({ session, day, exercises, sessions, settings, playlists = [], data, setData, onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onToggleMicRest, onSave, onDelete, onExit, onFinished }) {
+function GymSessionView({ session, day, exercises, sessions, settings, playlists = [], data, setData, onToggleVoice, onToggleBackgroundAudio, onToggleHandsFree, onToggleMicRest, onSetPref, onSave, onDelete, onExit, onFinished }) {
   const voiceOn = (settings || {}).gymVoice !== false;
   // Режим «звук с погашенным экраном» забирает аудиовыход у чужого плеера,
   // поэтому включается только вручную.
@@ -31449,8 +32596,13 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
   // Микрофон на отдыхе можно выключить: пока он слушает, iOS держит
   // аудиосессию в режиме записи, и на Bluetooth-наушниках это слышно по звуку.
   const micRest = (settings || {}).gymMicRest !== false;
+  // Режим «Фокус»: тема, шаг веса, звуки и вибрация — настройки самого экрана.
+  const theme = (settings || {}).gymTheme === 'light' ? 'light' : 'dark';
+  const sfxOn = (settings || {}).gymSfx !== false;
+  const hapticOn = (settings || {}).gymHaptics !== false;
+  const stepKg = [0.5, 1, 2.5].includes(gymNum((settings || {}).gymStep)) ? gymNum(settings.gymStep) : 0.5;
+  useEffect(() => { GX.sfx = sfxOn; GX.haptic = hapticOn; }, [sfxOn, hapticOn]);
   const music = useMusic();
-  const [pickMusic, setPickMusic] = useState(false);
   // Разговор с ассистентом: вопрос, ответ и признак «думает».
   const [ai, setAi] = useState({ q: '', a: '', busy: false });
   // История разговора с ассистентом — живёт только до конца подтверждения.
@@ -31469,14 +32621,31 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
   // Последняя распознанная фраза: показываем как есть — так видно, что именно
   // услышал телефон, когда запись получилась неожиданной.
   const [heard, setHeard] = useState('');
+  const [heardAt, setHeardAt] = useState(0);
+  const hear = (text) => { setHeard(text); setHeardAt(Date.now()); };
   // Упражнение, которое озвучили последним: по нему решаем, называть ли имя.
   const announcedEx = useRef(exercises[0] ? exercises[0].id : '');
   const voiceHandler = useRef(() => {});
   const say = (text) => gymSay(text, voiceOn);
-  const [openId, setOpenId] = useState(exercises[0] ? exercises[0].id : '');
-  // Упражнение, к которому только что перешли: подсвечиваем карточку и
-  // подводим к нему экран.
-  const [justOpened, setJustOpened] = useState('');
+  // К начатой тренировке возвращаемся на упражнение, где остались подходы.
+  const [openId, setOpenId] = useState(() => {
+    const doneKeys = new Set((session.sets || []).map(x => `${x.exerciseId}:${x.setIndex || 0}`));
+    const skippedKeys = session.skipped || [];
+    const open = exercises.find(e => gymPlanRows(e).some((_, i) => !doneKeys.has(`${e.id}:${i}`) && !skippedKeys.includes(`${e.id}:${i}`)));
+    return (open || exercises[0] || {}).id || '';
+  });
+  // Режим «Фокус»: листы (клавиатура, меню, список, правка, завершение,
+  // плейлисты), отдых на весь экран и экранные эффекты.
+  const [sheet, setSheet] = useState(null);
+  const [restOpen, setRestOpen] = useState(true);
+  const [restHold, setRestHold] = useState(false);
+  const [bursts, setBursts] = useState([]);
+  const [confetti, setConfetti] = useState(0);
+  const [flash, setFlash] = useState(null);
+  const [shake, setShake] = useState(0);
+  const [toast, setToast] = useState(null);
+  const [finishing, setFinishing] = useState(false);
+  const lastLogAt = useRef(0);
   const [drafts, setDrafts] = useState({});
   // Сколько строк показываем сверх плана (добавленные вручную подходы).
   const [extra, setExtra] = useState({});
@@ -31603,19 +32772,6 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     if (handsFree) setArmed(true);
   }, [handsFree]);
 
-  // Экран доводим до первого подхода нового упражнения — по центру, чтобы
-  // сразу видеть и план, и поля ввода. Ждём конца раскрытия: пока карточка
-  // растёт, целиться некуда, координаты ещё уедут.
-  useEffect(() => {
-    if (!justOpened) return;
-    const scrollTimer = setTimeout(() => {
-      const el = document.querySelector(`[data-gym-first-row="${justOpened}"]`);
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 360);
-    const clearTimer = setTimeout(() => setJustOpened(''), 1500);
-    return () => { clearTimeout(scrollTimer); clearTimeout(clearTimer); };
-  }, [justOpened]);
-
   // Уход в фон и возврат. В фоне iOS всё равно усыпляет и микрофон, и речь,
   // поэтому микрофон отпускаем сами, а по возвращении поднимаем заново —
   // иначе распознавание остаётся выключенным до перезагрузки страницы.
@@ -31688,7 +32844,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
 
   const setDraft = (ex, i, patch) => setDrafts(d => ({ ...d, [`${ex.id}:${i}`]: { ...draftRow(ex, i), ...patch } }));
 
-  const logSet = (ex, i, override) => {
+  const logSet = (ex, i, override, origin) => {
     const row = override || draftRow(ex, i);
     const reps = gymInt(row.reps, 0);
     if (!reps) {
@@ -31700,7 +32856,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     setRewriting(false);
     // Передумали и всё-таки сделали пропущенный подход — снимаем пометку.
     const stillSkipped = skipped.filter(k => k !== skipKey(ex.id, i));
-    const plan = gymPlanRows(ex)[i] || {};
+    const plan = planRowsOf(ex)[i] || {};
     const rec = {
       id: (loggedAt(ex.id, i) || {}).id || crypto.randomUUID(),
       exerciseId: ex.id,
@@ -31734,8 +32890,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
       const from = exercises.findIndex(e => e.id === ex.id);
       const ordered = [...exercises.slice(from + 1), ...exercises.slice(0, Math.max(0, from))];
       nextEx = ordered.find(e => remaining(e).length > 0) || null;
-      setOpenId(nextEx ? nextEx.id : '');
-      setJustOpened(nextEx ? nextEx.id : '');
+      if (nextEx) setOpenId(nextEx.id);
     }
 
     // Записан последний запланированный подход — отдыхать больше не перед чем,
@@ -31756,14 +32911,12 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
       } : {}),
     });
 
+    // Рекорд — выше истории и выше всего, что уже записано сегодня: второй
+    // такой же подход рекордом не считается ни на экране, ни голосом. Со своим
+    // весом расти можно только повторениями — их и считаем.
+    const isRecord = !exists && gxIsRecord(prevBestOf(ex), logged.filter(x => x.exerciseId === ex.id), rec.kind, rec.weight, rec.reps);
+    fxLogged(origin, isRecord, workoutDone, ex.name);
     if (!exists) {
-      const prevBest = gymPrevBest(sessions, ex.name, session.startedAt || Date.now());
-      const isRecord = gymIsWorking(rec) && prevBest.seen && (
-        prevBest.weight > 0
-          ? (rec.weight > prevBest.weight || gymEpley(rec.weight, rec.reps) > prevBest.orm)
-          // Со своим весом расти можно только повторениями — их и считаем.
-          : (!rec.weight && rec.reps > prevBest.reps)
-      );
       const parts = [];
       if (override && override.confirm) parts.push(override.confirm);
       if (isRecord) parts.push('Личный рекорд!');
@@ -31802,11 +32955,18 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
         announceNext({ exId: ex.id, index: i }, parts.join('. '));
       }
     }
-    if (rest) setRestUntil(restUntilMs);
-    else setRestUntil(0);
-    // Уходим с экрана тренировки сами: она закончена и уже сохранена, дальше
-    // показываем итог.
-    if (workoutDone) onFinished(session.id);
+    if (rest) {
+      setRestUntil(restUntilMs);
+      setRestOpen(true);
+      // Сначала «успех» на самом экране (галочка, мел, тряска), потом отдых.
+      setRestHold(true);
+      setTimeout(() => setRestHold(false), 420);
+    } else setRestUntil(0);
+    // Тренировка закончена и уже сохранена — после короткого салюта идём к итогу.
+    if (workoutDone) {
+      setFinishing(true);
+      setTimeout(() => onFinished(session.id), 1500);
+    }
   };
 
   // Голосовой отсчёт отдыха. Завязан на тот же тик, что и таймер на экране,
@@ -31839,6 +32999,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
       setRest(0);
       gymSound.cue(2, voiceOn, bgAudio);
       announceNext();
+      fxGo();
     }
   }, [now, restUntil]);
 
@@ -31852,7 +33013,17 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
   };
 
   const planCache = {};
-  const planRowsOf = (ex) => (planCache[ex.id] = planCache[ex.id] || gymPlanRows(ex));
+  // План упражнения + подходы, добавленные вручную («+ Ещё подход»): они
+  // копируют последний рабочий — тот же вес, повторы и отдых.
+  const planRowsOf = (ex) => {
+    if (!planCache[ex.id]) {
+      const base = gymPlanRows(ex);
+      const fromLog = Math.max(0, ...logged.filter(s => s.exerciseId === ex.id).map(s => (s.setIndex || 0) + 1));
+      const n = Math.max(base.length, fromLog, extra[ex.id] || 0);
+      planCache[ex.id] = Array.from({ length: n }, (_, i) => base[i] || gxExtraRow(base, i));
+    }
+    return planCache[ex.id];
+  };
 
   // gymPctBase и gymPrevBest обходят всю историю подходов, а вызываются на
   // каждую строку и на каждый тик секундного таймера — без кэша это заметная
@@ -31955,7 +33126,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
       onFinished(session.id);
       return;
     }
-    if (after.ex.id !== openId) { setOpenId(after.ex.id); setJustOpened(after.ex.id); }
+    if (after.ex.id !== openId) setOpenId(after.ex.id);
     announcedEx.current = after.ex.id;
     say(`Подход пропущен. Дальше: ${gymSaySet(
       after.row,
@@ -32015,6 +33186,23 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
   };
 
   const lastLogged = () => [...logged].sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null;
+  // Отмена последнего подхода — голосом и кнопкой на отдыхе. Одним сохранением:
+  // два подряд ушли бы от одного и того же снимка тренировки, и второе вернуло
+  // бы удалённый подход обратно. Возвращаем и упражнение, и цифры подхода.
+  const undoLast = () => {
+    const last = lastLogged();
+    if (!last) return;
+    onSave({
+      ...session,
+      sets: logged.filter(x => x.id !== last.id),
+      restUntil: 0,
+      restTotal: 0,
+    });
+    setRestUntil(0);
+    setOpenId(last.exerciseId);
+    setDrafts(d => ({ ...d, [`${last.exerciseId}:${last.setIndex || 0}`]: { weight: String(last.weight ?? ''), reps: String(last.reps ?? '') } }));
+    say('Отменил последний подход');
+  };
   // Прошлый подход для «также»: по этому же упражнению, а если по нему ещё
   // ничего не записано — последний записанный вообще.
   const lastLoggedOf = (exId) => {
@@ -32054,49 +33242,21 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     return -1;
   };
 
-  // Что говорить — зависит от подхода: там, где веса нет, просить «25 на 12»
-  // бессмысленно.
-  const voiceHint = (() => {
-    const ex = exercises.find(e => e.id === openId);
-    const i = ex ? currentIndex(ex) : -1;
-    const row = (ex && i >= 0) ? planRowsOf(ex)[i] : null;
-    const t = row ? gymRowTarget(row, pctBaseOf(ex)) : null;
-    const noWeight = !t || t.body || t.empty || (!t.min && !t.max);
-    return noWeight
-      ? 'Скажите «15» — вес не нужен. Ещё: «также», «повтори», «пропустить подход», «отмена»'
-      : 'Скажите «25 на 12». Ещё: «также» — как в прошлом подходе, «повтори», «перезапись», «пропустить подход»';
-  })();
-
-  const rowCount = (ex) => {
-    const fromLog = Math.max(0, ...loggedFor(ex.id).map(s => (s.setIndex || 0) + 1));
-    return Math.max(planRowsOf(ex).length, fromLog, extra[ex.id] || 0);
-  };
-
-  const planRows = exercises.flatMap(ex => gymPlanRows(ex).map(r => ({ ...r, exId: ex.id })));
-  const plannedWorking = planRows.filter(r => r.kind !== 'warmup').length;
-  const plannedWarmup = planRows.length - plannedWorking;
   const doneWorking = logged.filter(gymIsWorking).length;
-  const doneWarmup = logged.length - doneWorking;
   const tonnage = logged.filter(gymIsWorking).reduce((a, s) => a + gymSetTonnage(s), 0);
-  // Сколько записанных подходов уложилось в плановые диапазоны веса и повторов.
-  const inPlan = logged.filter(s => {
-    const ex = exercises.find(e => e.id === s.exerciseId);
-    if (!ex) return false;
-    const row = gymPlanRows(ex)[s.setIndex || 0];
-    if (!row) return false;
-    return gymFactBadge(row, pctBaseOf(ex), s.weight, s.reps).tone === 'ok';
-  }).length;
   const elapsed = Math.max(0, Math.floor((now - (session.startedAt || now)) / 1000));
   const restLeft = restUntil > now ? Math.ceil((restUntil - now) / 1000) : 0;
 
+  // «Завершить» спрашивает лист (confirm() в этом экране не к месту), само
+  // завершение — finish.
+  const requestFinish = () => setSheet({ type: 'finish' });
   const finish = () => {
+    setSheet(null);
     if (logged.length === 0) {
-      if (!confirm('Ни одного подхода не записано. Завершить и удалить тренировку?')) return;
       onDelete(session.id);
       onExit();
       return;
     }
-    if (!confirm('Завершить тренировку?')) return;
     const finishedAt = Date.now();
     onSave({
       ...session,
@@ -32123,7 +33283,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     // это всегда вопрос, даже если дальше во фразе есть числа.
     const wake = variants.map(v => gymWakeQuestion(v)).find(Boolean);
     if (wake) {
-      setHeard('Джарвис, ' + wake);
+      hear('Джарвис, ' + wake);
       if (!resting) { say('Отвечу на отдыхе'); return; }
       if (!ai.busy) askAssistant(wake);
       return;
@@ -32143,16 +33303,16 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     // в командах («пропустить отдых») те же слова звучат законно.
     const logLike = parsed && (parsed.cmd === 'log' || parsed.cmd === 'sameLast'
       || (parsed.cmd === 'rewrite' && parsed.reps !== undefined));
-    if (logLike && variants.some(v => gymIsEcho(v))) { setHeard(''); return; }
+    if (logLike && variants.some(v => gymIsEcho(v))) { hear(''); return; }
 
     // Во время отдыха слушаем только команды: числа в это время — либо чужой
     // разговор, либо хвост собственной озвучки, записывать их нельзя. Исключение
     // — начатая перезапись: там числа как раз и ждём.
     if (resting && !rewriting && parsed && (parsed.cmd === 'log' || parsed.cmd === 'sameLast')) parsed = null;
     if (resting && parsed && parsed.cmd === 'skipRest' && !parsed.explicit) parsed = null;
-    if (resting && !parsed) { setHeard(''); return; }
+    if (resting && !parsed) { hear(''); return; }
 
-    setHeard(heardText || variants[0] || '');
+    hear(heardText || variants[0] || '');
     if (!parsed) {
       // Молчим на случайных обрывках разговора, но если во фразе явно были
       // числа — говорим, что не поняли: иначе непонятно, ждать записи или нет.
@@ -32177,24 +33337,10 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     // Числа во время перезаписи — это исправление, а не новый подход.
     if (rewriting && parsed.cmd === 'log') { rewriteLast(parsed.weight, parsed.reps); return; }
 
-    if (parsed.cmd === 'undo') {
-      const last = [...logged].sort((a, b) => (b.at || 0) - (a.at || 0))[0];
-      if (!last) return;
-      // Одним сохранением: два подряд ушли бы от одного и того же снимка
-      // тренировки, и второе вернуло бы удалённый подход обратно.
-      onSave({
-        ...session,
-        sets: logged.filter(x => x.id !== last.id),
-        restUntil: 0,
-        restTotal: 0,
-      });
-      setRestUntil(0);
-      say('Отменил последний подход');
-      return;
-    }
+    if (parsed.cmd === 'undo') { undoLast(); return; }
     if (parsed.cmd === 'skipSet') { skipCurrentSet(); return; }
     if (parsed.cmd === 'skipRest') { setRest(0); announceNext(); return; }
-    if (parsed.cmd === 'finish') { finish(); return; }
+    if (parsed.cmd === 'finish') { requestFinish(); return; }
 
     const ex = exercises.find(e => e.id === openId);
     if (!ex) return;
@@ -32214,7 +33360,7 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     }
     // «Также» — цифры прошлого сделанного подхода: сначала смотрим этот же
     // снаряд, и только если по нему ещё ничего нет — последний подход вообще.
-    const prev = parsed.cmd === 'sameLast' ? lastLoggedOf(ex.id) : null;
+    const prev = parsed.cmd === 'sameLast' ? (sameFor(ex, i) || lastLoggedOf(ex.id)) : null;
     const weight = prev ? gymNum(prev.weight)
       : (parsed.weight !== undefined ? parsed.weight : gymNum(draft.weight));
     const reps = prev ? gymInt(prev.reps, 0)
@@ -32232,367 +33378,504 @@ function GymSessionView({ session, day, exercises, sessions, settings, playlists
     });
   };
 
-  return (
-    <div className="fade-in pb-28">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <button onClick={exitKeepOpen} className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)]">
-          <Icon name="chevronLeft" size={16} /> Выйти
-        </button>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => {
-              const next = !voiceOn;
-              onToggleVoice(next);
-              // Включение — это жест: заодно разблокируем синтез на iOS.
-              if (next) { gymSound.start(bgAudio); gymPrimeVoice(true, 'Озвучка включена'); }
-              else { window.speechSynthesis?.cancel(); gymSound.stop(); }
-            }}
-            title={voiceOn ? 'Выключить озвучку' : 'Включить озвучку'}
-            className="w-9 h-9 rounded-xl flex items-center justify-center"
-            style={voiceOn ? { background: GYM_ACCENT, color: '#fff' } : { color: 'var(--text-subtle)', border: '1px solid var(--border)' }}
-          >
-            <Icon name={voiceOn ? 'volume' : 'volumeOff'} size={17} />
-          </button>
-          <button onClick={finish} className="px-4 py-2 rounded-xl text-white text-sm font-medium" style={{ background: GYM_ACCENT }}>
-            Завершить
-          </button>
-        </div>
-      </div>
+  // ── Режим «Фокус»: всё, что нужно разметке ────────────────────────────────
 
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 mb-4">
-        <div className="text-[13px]" style={{ color: GYM_ACCENT }}>Идёт тренировка</div>
-        <div className="text-[17px] font-medium">{day.title || session.dayTitle || 'Тренировка'}</div>
-        <div className="flex flex-wrap gap-x-5 gap-y-1 text-[13px] text-[var(--text-muted)] mt-2">
-          <span>Время: {gymFmtRest(elapsed)}</span>
-          <span>Рабочих: {doneWorking} / {plannedWorking}</span>
-          {plannedWarmup > 0 && <span>Разминка: {doneWarmup} / {plannedWarmup}</span>}
-          <span>Тоннаж: {Math.round(tonnage)} кг</span>
-          {logged.length > 0 && <span>В плане: {inPlan} / {logged.length}</span>}
-        </div>
-      </div>
+  const railRef = useRef(null);
 
-      {(ai.busy || ai.a) && (
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 mb-4">
-          <div className="flex items-start gap-2">
-            <span className="mt-0.5" style={{ color: GYM_ACCENT }}><Icon name="mic" size={15} /></span>
-            <div className="flex-1 min-w-0">
-              <div className="text-[12px] text-[var(--text-subtle)]">Джарвис, {ai.q}</div>
-              <div className="text-[14px] mt-1 whitespace-pre-wrap">
-                {ai.busy ? 'Думаю…' : ai.a}
-              </div>
+  // Экранные эффекты. Вызываются из logSet и таймера отдыха.
+  const gxId = () => Math.random().toString(36).slice(2, 8);
+  const toastMsg = (text) => {
+    const id = gxId();
+    setToast({ id, text });
+    setTimeout(() => setToast(t => (t && t.id === id ? null : t)), 1900);
+  };
+  const showFlash = (type, text, sub, ms = 1200) => {
+    const id = gxId();
+    setFlash({ id, type, text, sub });
+    setTimeout(() => setFlash(f => (f && f.id === id ? null : f)), ms);
+  };
+  const launchConfetti = () => {
+    if (gxReduced()) return;
+    setConfetti(Date.now());
+    setTimeout(() => setConfetti(0), 3000);
+  };
+  const fxLogged = (origin, isRecord, workoutDone, exName) => {
+    if (origin && origin.x !== undefined && !gxReduced()) {
+      const id = gxId();
+      setBursts(b => [...b, { id, x: origin.x, y: origin.y }]);
+      setTimeout(() => setBursts(b => b.filter(i => i.id !== id)), 1100);
+    }
+    setShake(s => s + 1);
+    gxSfx.clank();
+    gxHaptic.heavy();
+    if (workoutDone) {
+      launchConfetti();
+      showFlash('done', 'Тренировка\nзакончена', isRecord ? 'и новый рекорд' : null, 1500);
+      setTimeout(() => gxSfx.fanfare(), 250);
+    } else if (isRecord) {
+      launchConfetti();
+      showFlash('pr', 'Рекорд!', exName, 1700);
+      setTimeout(() => { gxSfx.fanfare(); gxHaptic.success(); }, 220);
+    }
+  };
+  const fxGo = () => {
+    showFlash('go', 'Поехали!', null, 850);
+    gxHaptic.heavy();
+    if (!voiceOn) gxSfx.go();   // при включённой озвучке «пи-пи» уже прозвучало
+  };
+
+  // История упражнения — подходы прошлой тренировки. Кэш на один рендер.
+  const histCache = {};
+  const lastSetsOf = (e) => (histCache[e.id] = histCache[e.id] || gxLastSessionSets(sessions, e.name, session.id, session.startedAt));
+
+  // «Также»: подход этого же типа в этом упражнении, а если его ещё нет — тот,
+  // что был на этом месте в прошлый раз.
+  const sameFor = (e, i) => {
+    const rows = planRowsOf(e);
+    const row = rows[i];
+    if (!row) return null;
+    const warm = row.kind === 'warmup';
+    const mine = logged.filter(s => s.exerciseId === e.id && (s.kind === 'warmup') === warm)
+      .sort((a, b) => (a.at || 0) - (b.at || 0));
+    const l = mine[mine.length - 1];
+    if (l) return { weight: gymNum(l.weight), reps: gymInt(l.reps, 0) };
+    const h = gxHistSet(lastSetsOf(e), rows, i);
+    return h ? { weight: gymNum(h.weight), reps: gymInt(h.reps, 0) } : null;
+  };
+
+  const undoFromUi = () => {
+    gxSfx.undo();
+    gxHaptic.light();
+    toastMsg('Подход отменён');
+    undoLast();
+  };
+
+  // Какие записанные подходы — рекорды: выше истории и выше всего, что уже
+  // записано сегодня по этому упражнению.
+  const prIds = new Set();
+  exercises.forEach(e => {
+    const prev = prevBestOf(e);
+    if (!prev.seen) return;
+    const before = [];
+    loggedFor(e.id).slice().sort((a, b) => (a.at || 0) - (b.at || 0)).forEach(s => {
+      if (gxIsRecord(prev, before, s.kind, gymNum(s.weight), gymInt(s.reps, 0))) prIds.add(s.id);
+      before.push(s);
+    });
+  });
+
+  const fEx = exercises.find(e => e.id === openId) || exercises[0] || null;
+  const fRows = fEx ? planRowsOf(fEx) : [];
+  const fIdx = fEx ? currentIndex(fEx) : -1;
+  const fRow = fIdx >= 0 ? fRows[fIdx] : null;
+  const fDraft = fRow ? draftRow(fEx, fIdx) : null;
+  const fW = fDraft ? gymNum(fDraft.weight) : 0;
+  const fR = fDraft ? gymInt(fDraft.reps, 0) : 0;
+  const fNoWeight = !!(fRow && fRow.unit === 'body');
+  const fLast = fEx ? lastSetsOf(fEx) : [];
+  const fHist = fRow ? gxHistSet(fLast, fRows, fIdx) : null;
+  const fSame = fRow ? sameFor(fEx, fIdx) : null;
+  const fPr = fRow ? gxIsRecord(prevBestOf(fEx), loggedFor(fEx.id), fRow.kind, fW, fR) : false;
+  const fSuggest = fRow ? gxSuggest(fEx, fRow, fLast) : 0;
+  const dW = fHist && !fNoWeight ? gxR2(fW - gymNum(fHist.weight)) : 0;
+  const dR = fHist ? fR - gymInt(fHist.reps, 0) : 0;
+  const deltaUp = (dW > 0 || dR > 0) && dW >= 0 && dR >= 0;
+  const deltaDown = (dW < 0 || dR < 0) && dW <= 0 && dR <= 0;
+  const fPlanLine = fRow ? gxDash(gymRowPlanText({ ...fRow, restSec: 0 }, pctBaseOf(fEx))) : '';
+
+  // «Прошлый раз»: рабочие подходы прошлой тренировки; одинаковые схлопываем.
+  const lastWork = fLast.filter(gymIsWorking);
+  const fmtLast = (s) => (gymNum(s.weight) ? `${gxFmt(gymNum(s.weight))}×${gymInt(s.reps, 0)}` : `${gymInt(s.reps, 0)}`);
+  const sameAll = lastWork.length > 1 && lastWork.every(s => gymNum(s.weight) === gymNum(lastWork[0].weight) && gymInt(s.reps, 0) === gymInt(lastWork[0].reps, 0));
+  const curWorkN = fRow && fRow.kind !== 'warmup' ? fRows.slice(0, fIdx + 1).filter(r => r.kind !== 'warmup').length - 1 : -1;
+  const lastChips = sameAll
+    ? [{ t: `${lastWork.length} × ${fmtLast(lastWork[0])}`, on: curWorkN >= 0 }]
+    : lastWork.map((s, i) => ({ t: fmtLast(s), on: curWorkN === i }));
+
+  const planTotal = exercises.reduce((a, e) => a + planRowsOf(e).length, 0);
+  const restTotal = Math.max(restSpoken.current.total || session.restTotal || 0, restLeft);
+  const showRest = restLeft > 0 && restOpen && !restHold;
+  const showRestPill = restLeft > 0 && !restOpen;
+  const lastRec = restLeft > 0 ? lastLogged() : null;
+  const lastRecEx = lastRec ? exercises.find(e => e.id === lastRec.exerciseId) : null;
+  const lastRecRow = lastRecEx ? planRowsOf(lastRecEx)[lastRec.setIndex || 0] : null;
+  const restNext = restLeft > 0 ? nextTarget() : null;
+  const restNewEx = !!(restNext && lastRec && restNext.ex.id !== lastRec.exerciseId);
+
+  const switchHandsFree = (on) => {
+    onToggleHandsFree(on);
+    if (on) {
+      // Разрешение на микрофон спрашиваем здесь: это жест, позже
+      // старт распознавания молча провалится.
+      gymListener.prime();
+      setArmed(false);
+      gymPrimeVoice(voiceOn, 'Свободные руки включатся со следующего подхода');
+    } else {
+      gymListener.stop();
+      setArmed(false);
+    }
+  };
+  const switchVoice = (next) => {
+    onToggleVoice(next);
+    // Включение — это жест: заодно разблокируем синтез на iOS.
+    if (next) { gymSound.start(bgAudio); gymPrimeVoice(true, 'Озвучка включена'); }
+    else { window.speechSynthesis?.cancel(); gymSound.stop(); }
+  };
+
+  const setField = (field, v) => setDraft(fEx, fIdx, field === 'w' ? { weight: String(v) } : { reps: String(v) });
+  const originOf = (e) => {
+    const rect = e.currentTarget.closest('.gx-col').getBoundingClientRect();
+    const b = e.currentTarget.getBoundingClientRect();
+    return { x: b.left + b.width / 2 - rect.left, y: b.top - rect.top + 8 };
+  };
+  const logFromButton = (e) => {
+    if (!fRow || Date.now() - lastLogAt.current < 700) return;
+    lastLogAt.current = Date.now();
+    logSet(fEx, fIdx, undefined, originOf(e));
+  };
+  const logSame = (e) => {
+    if (!fRow || !fSame || Date.now() - lastLogAt.current < 700) return;
+    lastLogAt.current = Date.now();
+    logSet(fEx, fIdx, { weight: fSame.weight, reps: fSame.reps }, originOf(e));
+  };
+  const goNextExercise = () => {
+    const t = nextTarget();
+    if (!t) { requestFinish(); return; }
+    setOpenId(t.ex.id);
+    gxTick();
+  };
+
+  // Строка состояния микрофона: что слушаем и что услышали.
+  let strip = null;
+  if (handsFree) {
+    const heardFresh = heard && now - heardAt < 5000;
+    if (micBlocked && !listening) strip = { cls: ' gx-warn', icon: 'mic', text: 'Микрофон остановился — коснитесь экрана' };
+    else if (rewriting) strip = { cls: ' gx-warn', icon: 'undo', text: 'Перезапись: скажите вес и повторы заново' };
+    else if (heardFresh) strip = { cls: '', icon: 'check', text: `Услышано: «${heard}»` };
+    else if (!armed) strip = { cls: ' gx-quiet', icon: 'mic', text: 'Включится со следующего подхода' };
+    else if (resting) strip = { cls: ' gx-quiet', icon: 'mic', text: micRest ? 'Отдых · «пропустить отдых», «повтори», «Джарвис, …»' : 'Отдых · микрофон выключен, пропуск — кнопкой' };
+    else strip = { cls: listening ? '' : ' gx-quiet', wave: listening, icon: 'mic', text: fNoWeight ? 'Слушаю · скажите число повторов' : 'Слушаю · скажите «25 на 12» или «также»' };
+  }
+
+  // Открытое упражнение всегда существует: голос пишет подходы именно в него.
+  useEffect(() => {
+    if (exercises.length && !exercises.some(e => e.id === openId)) setOpenId(exercises[0].id);
+  }, [openId, exercises.length]);
+  useEffect(() => {
+    const box = railRef.current;
+    const el = box && box.querySelector('[data-cur="1"]');
+    if (box && el) box.scrollTo({ left: Math.max(0, el.offsetLeft - 90), behavior: 'smooth' });
+  }, [fIdx, fEx ? fEx.id : '']);
+
+  const finishWord = (n) => `${n} ${gymPlural(n, 'подход', 'подхода', 'подходов')}`;
+
+  // ── Разметка ──
+  const body = (
+    <React.Fragment>
+      <div className={'gx-screen gx-wk' + (shake ? (shake % 2 ? ' gx-sh1' : ' gx-sh0') : '')} key="wk">
+        <div className="gx-top">
+          <button className="gx-ib" onClick={exitKeepOpen} aria-label="Выйти, тренировка останется открытой"><GxIc n="chevD" /></button>
+          <div className="gx-timer"><i className="gx-rdot" />{gymFmtRest(elapsed)}</div>
+          <button className={'gx-ib' + (handsFree && listening ? ' gx-hot' : handsFree ? ' gx-armed' : '')} aria-pressed={handsFree} aria-label="Свободные руки"
+            onClick={() => { if (!gymListener.supported()) { toastMsg('Браузер не поддерживает распознавание речи'); return; } gxTick(); switchHandsFree(!handsFree); }}>
+            <GxIc n="mic" />
+          </button>
+          <button className="gx-ib" onClick={() => setSheet({ type: 'menu' })} aria-label="Настройки"><GxIc n="more" /></button>
+          <button className="gx-fin" onClick={requestFinish}>Финиш</button>
+        </div>
+
+        {fEx ? (
+          <React.Fragment>
+            <div className="gx-seg" aria-hidden="true">
+              {exercises.map(e => {
+                const n = Math.max(1, planRowsOf(e).length);
+                const dn = new Set(loggedFor(e.id).map(s => s.setIndex || 0)).size;
+                return <i key={e.id} className={e.id === fEx.id ? 'gx-cur' : ''} style={{ '--n': n, '--p': Math.min(1, dn / n) }}><b /></i>;
+              })}
             </div>
-            {!ai.busy && (
-              <button onClick={() => setAi({ q: '', a: '', busy: false })} className="text-[var(--text-subtle)] flex-shrink-0">
-                <Icon name="x" size={14} />
+
+            {(ai.busy || ai.a) && (
+              <div className="gx-ai">
+                <span className="gx-ai-i"><GxIc n="chat" s={18} /></span>
+                <div className="gx-ai-b">
+                  <div className="gx-ai-q">Джарвис, {ai.q}</div>
+                  <div className="gx-ai-a">{ai.busy ? 'Думаю…' : ai.a}</div>
+                </div>
+                {!ai.busy && <button className="gx-ai-x" onClick={() => setAi({ q: '', a: '', busy: false })} aria-label="Закрыть ответ"><GxIc n="x" s={16} /></button>}
+              </div>
+            )}
+
+            {strip && (
+              <div className={'gx-vstrip' + strip.cls}>
+                {strip.wave
+                  ? <span className="gx-wave"><i /><i /><i /><i /><i /></span>
+                  : <GxIc n={strip.icon} s={16} sw={2.6} />}
+                <span>{strip.text}</span>
+              </div>
+            )}
+
+            {showRestPill && (
+              <button className="gx-rpill" onClick={() => setRestOpen(true)}>
+                <GxIc n="timer" s={18} /><span>Отдых <b>{gymFmtRest(restLeft)}</b></span>
+                <span className="gx-rp-bar"><i style={{ transform: `scaleX(${restTotal ? gxClamp((restLeft - 1) / restTotal, 0, 1) : 0})` }} /></span>
+                <span className="gx-rp-go" onClick={(e) => { e.stopPropagation(); setRest(0); announceNext(); gxTick(); }}>Пропустить</span>
               </button>
             )}
+
+            <div className="gx-exh">
+              <div className="gx-exh-top">
+                <span className="gx-eyebrow">{exercises.indexOf(fEx) + 1}/{exercises.length} · {fEx.targetMuscle || (fEx.muscles || [])[0] || fEx.equipment || 'Упражнение'}</span>
+                <button className="gx-ib gx-sm" onClick={() => setSheet({ type: 'list' })} aria-label="Список упражнений"><GxIc n="list" s={18} /></button>
+              </div>
+              <div className="gx-exname">{fEx.name || 'Без названия'}</div>
+              {lastChips.length > 0 && (
+                <div className="gx-lasts">
+                  <span className="gx-lb">Прошлый раз</span>
+                  {lastChips.map((c, i) => <span key={i} className={'gx-ch' + (c.on ? ' gx-on' : '')}>{c.t}</span>)}
+                </div>
+              )}
+              {fEx.comment && <div className="gx-note gx-excomment">{fEx.comment}</div>}
+            </div>
+
+            <div className="gx-rail" ref={railRef}>
+              {fRows.map((r, i) => {
+                const done = loggedAt(fEx.id, i);
+                const cur = i === fIdx;
+                const skip = !done && isSkipped(fEx.id, i);
+                const t = gymRowTarget(r, pctBaseOf(fEx));
+                const planCap = (t.empty || t.body || !(t.min || t.max)) ? '' : gxFmt(gymRangeMid(t));
+                const cap = done
+                  ? (gymNum(done.weight) ? `${gxFmt(gymNum(done.weight))}×${gymInt(done.reps, 0)}` : `×${gymInt(done.reps, 0)}`)
+                  : skip ? 'пропущен' : cur ? 'сейчас' : planCap;
+                const n = fRows.slice(0, i + 1).filter(x => (x.kind === 'warmup') === (r.kind === 'warmup')).length;
+                return (
+                  <button key={i} data-cur={cur ? 1 : 0} disabled={!done && !skip}
+                    aria-label={`${r.label}${done ? ': записано, изменить' : skip ? ': пропущен, вернуть' : ''}`}
+                    onClick={() => {
+                      if (done) { gxHaptic.light(); setSheet({ type: 'edit', id: done.id }); }
+                      else if (skip) onSave({ ...session, skipped: skipped.filter(k => k !== skipKey(fEx.id, i)) });
+                    }}
+                    className={`gx-pill${r.kind === 'warmup' ? ' gx-warm' : ''}${done ? ' gx-done' : ''}${cur ? ' gx-cur' : ''}${done && prIds.has(done.id) ? ' gx-pr' : ''}${skip ? ' gx-skip' : ''}`}>
+                    <span className="gx-dot">{done ? (prIds.has(done.id) ? <GxIc n="star" s={20} /> : <GxIc n="check" s={20} sw={3.2} />) : n}</span>
+                    <span className="gx-cap">{cap}</span>
+                  </button>
+                );
+              })}
+              <button className="gx-pill gx-add" onClick={() => { addExtraSet(fEx); gxTick(); }} aria-label="Добавить подход">
+                <span className="gx-dot"><GxIc n="plus" s={18} sw={2.6} /></span>
+                <span className="gx-cap">ещё</span>
+              </button>
+            </div>
+
+            <div className="gx-cardwrap">
+              {fRow && fDraft ? (
+                <div className={'gx-card' + (fPr ? ' gx-pr' : '')} key={fEx.id}>
+                  <div className="gx-card-h">
+                    <span className={'gx-tag' + (fRow.kind === 'warmup' ? ' gx-warm' : '')}>{fRow.label}</span>
+                    {fPr
+                      ? <span className="gx-prtag"><GxIc n="star" s={14} /> Будет рекорд</span>
+                      : <span className="gx-plan">{fPlanLine}</span>}
+                  </div>
+                  <div className={'gx-steppers' + (fNoWeight ? ' gx-one' : '')}>
+                    {!fNoWeight && <GxStepper label="Вес, кг" kind="kg" value={fW} step={stepKg} onChange={(v) => setField('w', v)} onPad={() => setSheet({ type: 'pad', field: 'w' })} />}
+                    <GxStepper label="Повторы" kind="reps" value={fR} step={1} min={1} max={99} onChange={(v) => setField('r', v)} onPad={() => setSheet({ type: 'pad', field: 'r' })} />
+                  </div>
+                  <GxLoadViz ex={fEx} row={fRow} weight={fW} />
+                  <div className="gx-chips">
+                    {fHist && fRow.kind === 'working' && (dW || dR) ? (
+                      <span className={'gx-chip' + (deltaUp ? ' gx-up' : deltaDown ? ' gx-down' : '')}>
+                        {deltaUp ? '▲' : deltaDown ? '▼' : '◆'}{' '}
+                        {[dW ? `${dW > 0 ? '+' : '−'}${gxFmt(Math.abs(dW))} кг` : '', dR ? `${dR > 0 ? '+' : '−'}${Math.abs(dR)} повт.` : ''].filter(Boolean).join(' · ')} к прошлому
+                      </span>
+                    ) : (fHist && fRow.kind === 'working' ? <span className="gx-chip">= как в прошлый раз</span> : null)}
+                    {fSuggest > 0 && fW < fSuggest - 1e-6 && (
+                      <button className="gx-chip gx-sug" onClick={() => { setField('w', fSuggest); gxHaptic.medium(); gxSfx.tick(); }}>
+                        Пора прибавить → {gxFmt(fSuggest)} кг
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="gx-card gx-donec">
+                  <div className="gx-dc-i"><GxIc n="check" s={38} sw={3} /></div>
+                  <div className="gx-dc-t">{fRows.length ? 'Упражнение готово' : 'Подходов в плане нет'}</div>
+                  <div className="gx-dc-s">{fRows.length ? finishWord(new Set(loggedFor(fEx.id).map(s => s.setIndex || 0)).size) + ' записано' : 'Добавьте подход вручную'}</div>
+                  <button className="gx-ghost-wide" onClick={() => { addExtraSet(fEx); gxTick(); }}>+ Ещё подход</button>
+                </div>
+              )}
+            </div>
+
+            <div className="gx-dock">
+              {fRow && fDraft ? (
+                <React.Fragment>
+                  <button className="gx-same" onClick={logSame} disabled={!fSame} aria-label="Записать так же, как в прошлом подходе">
+                    <span className="gx-t"><GxIc n="undo" s={14} sw={2.4} /> ТАКЖЕ</span>
+                    <span className="gx-v">{fSame ? (fNoWeight || !fSame.weight ? `×${fSame.reps}` : `${gxFmt(fSame.weight)}×${fSame.reps}`) : '—'}</span>
+                  </button>
+                  <button className={'gx-log' + (fPr ? ' gx-gold' : '')} onClick={logFromButton}>
+                    <GxIc n={fPr ? 'star' : 'check'} s={24} sw={3} /> {fPr ? 'Рекорд' : 'Записать'}
+                  </button>
+                </React.Fragment>
+              ) : (
+                <button className="gx-log gx-wide" onClick={goNextExercise}>{nextTarget() ? 'Следующее упражнение' : 'Завершить'}</button>
+              )}
+            </div>
+          </React.Fragment>
+        ) : (
+          <div className="gx-empty">
+            <b>В этом дне нет упражнений</b>
+            <span>Добавьте упражнения в день, чтобы начать тренировку.</span>
+            <button className="gx-ghost-wide" onClick={exitKeepOpen}>Назад</button>
           </div>
-        </div>
+        )}
+      </div>
+
+      {showRest && (
+        <GxRest left={restLeft} total={restTotal} rec={lastRec} recLabel={lastRecRow ? lastRecRow.label : (lastRec ? (gymIsWorking(lastRec) ? 'Рабочий' : 'Разминка') : '')} recName={lastRecEx ? lastRecEx.name : (lastRec ? lastRec.exerciseName : '')}
+          badge={lastRec && lastRecRow ? gymFactBadge(lastRecRow, pctBaseOf(lastRecEx), lastRec.weight, lastRec.reps) : null}
+          recPr={!!(lastRec && prIds.has(lastRec.id))}
+          next={restNext} nextBase={restNext ? pctBaseOf(restNext.ex) : 0} newEx={restNewEx}
+          playlists={playlists} onPlaylist={() => setSheet({ type: 'music' })}
+          onSkip={() => { setRest(0); announceNext(); gxTick(); }}
+          onShift={(sec) => {
+            // Не короче секунды до конца и не длиннее, чем было, плюс запас
+            const until = Math.max(Date.now() + 1000, restUntil + sec * 1000);
+            setRest(until, Math.max(5, (restSpoken.current.total || 0) + Math.round((until - restUntil) / 1000)));
+            gxTick();
+          }}
+          onUndo={undoFromUi} onCollapse={() => { setRestOpen(false); gxHaptic.light(); }} />
       )}
 
-      {/* Музыка из Джарвиса: пока она играет, аудиосессия наша — сигналы и речь
-          идут поверх неё, а экран можно гасить, поэтому отдельный тумблер
-          «звук с погашенным экраном» в это время не нужен. */}
-      {/* Пока трек не выбран — кнопка запуска. Дальше на её месте живёт плеер:
-          пауза и переключение не должны требовать ухода с экрана тренировки. */}
-      {music.tracks.length > 0 && (
-        <React.Fragment>
-          {pickMusic && (
+      <div className="gx-fx" aria-hidden="true">
+        {bursts.map(b => <GxBurst key={b.id} b={b} />)}
+        {confetti ? <GxConfetti key={confetti} /> : null}
+        {flash && <GxFlash key={flash.id} f={flash} />}
+      </div>
+      {finishing && <div className="gx-block" />}
+
+      {sheet && sheet.type === 'pad' && fRow && fDraft && (
+        <GxNumPad key={sheet.field} field={sheet.field} value={sheet.field === 'w' ? fW : fR}
+          onNext={sheet.field === 'w' && !fNoWeight ? (v) => { setField('w', v); setSheet({ type: 'pad', field: 'r' }); } : null}
+          onDone={(v) => { setField(sheet.field, v); setSheet(null); }}
+          onClose={(v) => { setField(sheet.field, v); setSheet(null); }} />
+      )}
+
+      {sheet && sheet.type === 'menu' && (
+        <GxSheet onClose={() => setSheet(null)}>
+          <div className="gx-sh-t">Настройки</div>
+          <div className="gx-mrow"><span className="gx-mi"><GxIc n="chat" s={19} /></span><span className="gx-mt"><b>Озвучка</b><span>Голос называет подходы и отдых</span></span><GxSwitch on={voiceOn} onChange={switchVoice} label="Озвучка" /></div>
+          <div className="gx-mrow"><span className="gx-mi"><GxIc n="vol" s={19} /></span><span className="gx-mt"><b>Звуки</b><span>Лязг железа, фанфары за рекорд</span></span><GxSwitch on={sfxOn} onChange={(on) => { onSetPref('gymSfx', on); if (on) { GX.sfx = true; gxSfx.clank(); } }} label="Звуки" /></div>
+          <div className="gx-mrow"><span className="gx-mi"><GxIc n="vib" s={19} /></span><span className="gx-mt"><b>Вибрация</b><span>Отклик на нажатия и рекорды (на iPhone — лёгкие «тики»)</span></span><GxSwitch on={hapticOn} onChange={(on) => { onSetPref('gymHaptics', on); if (on) { GX.haptic = true; gxHaptic.medium(); } }} label="Вибрация" /></div>
+          <div className="gx-mrow"><span className="gx-mi"><GxIc n="mic" s={19} /></span><span className="gx-mt"><b>Свободные руки</b><span>{gymListener.supported() ? 'Скажите «25 на 12» — подход запишется сам' : 'Браузер не поддерживает распознавание речи'}</span></span><GxSwitch on={handsFree} onChange={switchHandsFree} label="Свободные руки" /></div>
+          {handsFree && <div className="gx-mrow"><span className="gx-mi"><GxIc n="timer" s={19} /></span><span className="gx-mt"><b>Микрофон на отдыхе</b><span>Слушать команды, пока отдыхаете. Выключите, если Bluetooth-наушники хрипят</span></span><GxSwitch on={micRest} onChange={onToggleMicRest} label="Микрофон на отдыхе" /></div>}
+          {voiceOn && !music.started && <div className="gx-mrow"><span className="gx-mi"><GxIc n="vol" s={19} /></span><span className="gx-mt"><b>Звук с погашенным экраном</b><span>{bgAudio ? 'Сигналы слышны при заблокированном экране, но музыка в других приложениях остановится' : 'Сигналы звучат поверх музыки, но только пока экран включён'}</span></span><GxSwitch on={bgAudio} onChange={(on) => { onToggleBackgroundAudio(on); if (on) gymSound.start(true); else gymSound.stop(); }} label="Звук с погашенным экраном" /></div>}
+          <div className="gx-mrow"><span className="gx-mi"><GxIc n={theme === 'dark' ? 'moon' : 'sun'} s={19} /></span><span className="gx-mt"><b>Тема</b></span><GxSeg value={theme} onChange={(v) => onSetPref('gymTheme', v)} options={[{ v: 'dark', t: 'Тёмная' }, { v: 'light', t: 'Светлая' }]} /></div>
+          <div className="gx-mrow"><span className="gx-mi"><GxIc n="dumb" s={19} /></span><span className="gx-mt"><b>Шаг веса</b><span>кг за одно нажатие «+» и «−»</span></span><GxSeg value={stepKg} onChange={(v) => onSetPref('gymStep', v)} options={[{ v: 0.5, t: '0.5' }, { v: 1, t: '1' }, { v: 2.5, t: '2.5' }]} /></div>
+          {music.tracks.length > 0 && <div className="gx-mrow"><span className="gx-mi"><GxIc n="music" s={19} /></span><span className="gx-mt"><b>Музыка</b><span>{music.started ? (music.queueName || 'Играет') : 'Не включена'}</span></span><button className="gx-segc-btn" onClick={() => setSheet({ type: 'music' })}>{music.started ? 'Сменить' : 'Включить'}</button></div>}
+          {fRow && <button className="gx-ghost-wide" onClick={() => { setSheet(null); skipCurrentSet(); }}><GxIc n="skip" s={16} /> Пропустить текущий подход</button>}
+          <button className="gx-danger" onClick={requestFinish}>Завершить тренировку</button>
+        </GxSheet>
+      )}
+
+      {sheet && sheet.type === 'music' && (
+        <GxSheet onClose={() => setSheet(null)}>
+          <div className="gx-sh-t">Музыка</div>
+          <div className="gx-pick">
             <MusicPlaylistPicker
               playlists={playlists}
               tracks={music.tracks}
               title={music.track ? 'Сменить плейлист' : 'С чего начать'}
-              onClose={() => setPickMusic(false)}
+              onClose={() => setSheet(null)}
               onPick={(pl) => {
-                setPickMusic(false);
+                setSheet(null);
                 // Жест пользователя — самое время занять аудиовыход
                 jarvisMusic.playRandom(pl.id ? pl.trackIds : null, pl.name);
               }}
             />
-          )}
-          {music.started ? (
-            <MusicBar compact onPlaylist={() => setPickMusic(true)} />
-          ) : (!pickMusic && (
-            <button
-              onClick={() => {
-                // Плейлистов нет — включаем сразу, без лишнего шага
-                if (playlists.length === 0) { jarvisMusic.playRandom(null, ''); return; }
-                setPickMusic(true);
-              }}
-              className="w-full mb-4 py-2.5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[14px] flex items-center justify-center gap-2"
-            >
-              <Icon name="music" size={16} />
-              {music.queueName ? `Включить музыку · ${music.queueName}` : 'Включить музыку'}
-            </button>
-          ))}
-        </React.Fragment>
+          </div>
+        </GxSheet>
       )}
 
-      {voiceOn && !music.started && (
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 mb-4 flex items-center gap-3">
-          <div className="flex-1 min-w-0">
-            <div className="text-[14px]">Звук с погашенным экраном</div>
-            <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">
-              {bgAudio
-                ? 'Сигналы слышны при заблокированном экране, но музыка в других приложениях остановится'
-                : 'Музыка играет как обычно, сигналы звучат поверх неё — но только пока экран включён'}
-            </div>
+      {sheet && sheet.type === 'list' && (
+        <GxSheet onClose={() => setSheet(null)}>
+          <div className="gx-sh-t">Упражнения</div>
+          <div className="gx-exlist">
+            {exercises.map((e, i) => {
+              const total = planRowsOf(e).length;
+              const dn = new Set(loggedFor(e.id).map(s => s.setIndex || 0)).size;
+              const p = total ? Math.min(1, dn / total) : 0;
+              const C = 2 * Math.PI * 15;
+              return (
+                <button key={e.id} className={'gx-exrow' + (e.id === fEx.id ? ' gx-cur' : '')} onClick={() => { setOpenId(e.id); setSheet(null); gxTick(); }}>
+                  <span className="gx-mring">
+                    <svg viewBox="0 0 36 36" width="40" height="40" aria-hidden="true">
+                      <circle cx="18" cy="18" r="15" className="gx-mr-bg" />
+                      <circle cx="18" cy="18" r="15" className="gx-mr-fg" strokeDasharray={C} strokeDashoffset={C * (1 - p)} transform="rotate(-90 18 18)" />
+                    </svg>
+                    <b>{p >= 1 ? <GxIc n="check" s={16} sw={3.2} /> : `${dn}/${total}`}</b>
+                  </span>
+                  <span className="gx-ex-t"><b>{e.name || 'Без названия'}</b><i>{gymSchemeText(e, pctBaseOf(e))}</i></span>
+                  {e.id === fEx.id && <span className="gx-now">сейчас</span>}
+                </button>
+              );
+            })}
           </div>
-          <Toggle
-            checked={bgAudio}
-            onChange={(on) => {
-              onToggleBackgroundAudio(on);
-              // Переключение — жест: тут же занимаем или освобождаем выход.
-              if (on) gymSound.start(true);
-              else gymSound.stop();
+          <button className="gx-ghost-wide" onClick={requestFinish}>Завершить тренировку</button>
+        </GxSheet>
+      )}
+
+      {sheet && sheet.type === 'edit' && (() => {
+        const rec = logged.find(s => s.id === sheet.id);
+        if (!rec) return null;
+        return (
+          <GxEditSheet key={rec.id} rec={rec} step={stepKg}
+            row={(() => { const e = exercises.find(x => x.id === rec.exerciseId); return e ? planRowsOf(e)[rec.setIndex || 0] : null; })()}
+            onClose={() => setSheet(null)}
+            onSave={(w, r) => {
+              onSave({ ...session, sets: logged.map(s => (s.id === rec.id ? { ...s, weight: w, reps: r } : s)) });
+              setDrafts(d => ({ ...d, [`${rec.exerciseId}:${rec.setIndex || 0}`]: { weight: String(w), reps: String(r) } }));
+              setSheet(null);
+              toastMsg('Подход изменён');
             }}
-          />
-        </div>
+            onDelete={() => { removeSet(rec.id); setSheet(null); gxSfx.undo(); toastMsg('Подход удалён'); }} />
+        );
+      })()}
+
+      {sheet && sheet.type === 'finish' && (
+        <GxSheet onClose={() => setSheet(null)}>
+          <div className="gx-sh-t">{logged.length ? 'Завершить тренировку?' : 'Завершить без подходов?'}</div>
+          <p className="gx-fin-p">
+            {logged.length
+              ? `Записано ${finishWord(logged.length)} из ${planTotal}. Незаписанные подходы в историю не попадут.`
+              : 'Ни одного подхода не записано — тренировка будет удалена.'}
+          </p>
+          <button className="gx-np-ok" onClick={finish}>{logged.length ? 'Завершить' : 'Удалить тренировку'}</button>
+          <button className="gx-ghost-wide" onClick={() => setSheet(null)}>Продолжить тренировку</button>
+        </GxSheet>
       )}
 
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 mb-4 flex items-center gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="text-[14px] flex items-center gap-2">
-            Свободные руки
-            {listening && (
-              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full text-white" style={{ background: GYM_ACCENT }}>
-                <Icon name="mic" size={11} /> слушаю
-              </span>
-            )}
-            {handsFree && rewriting && (
-              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full text-white" style={{ background: '#b45309' }}>
-                перезапись
-              </span>
-            )}
-            {handsFree && !listening && micBlocked && (
-              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full text-white" style={{ background: '#b45309' }}>
-                <Icon name="mic" size={11} /> коснитесь экрана
-              </span>
-            )}
-          </div>
-          {handsFree && heard && (
-            <div className="text-[12px] text-[var(--text-muted)] mt-0.5 truncate">Услышано: «{heard}»</div>
-          )}
-          <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">
-            {!gymListener.supported()
-              ? 'Браузер не поддерживает распознавание речи'
-              : !handsFree
-                ? 'Скажете «25 на 12» — подход запишется сам, руки не нужны'
-                : micBlocked
-                  ? 'Микрофон остановился — режим включён, коснитесь экрана, и он вернётся'
-                  : rewriting
-                  ? 'Перезапись: скажите вес и повторения прошлого подхода заново'
-                  : !armed
-                  ? 'Включится со следующего подхода'
-                  : resting
-                    ? (micRest
-                      ? 'Идёт отдых. Команды: «пропустить отдых», «пропустить подход», «повтори», «перезапись». А «Джарвис, …» — вопрос ассистенту о чём угодно'
-                      : 'Идёт отдых. Микрофон выключен — пропустить отдых можно кнопкой')
-                    : voiceHint}
-          </div>
-          {handsFree && (
-            <button
-              onClick={() => onToggleMicRest(!micRest)}
-              className="mt-1.5 text-[11px] px-2 py-1 rounded-full border"
-              style={micRest
-                ? { borderColor: GYM_ACCENT, color: GYM_ACCENT }
-                : { borderColor: 'var(--border)', color: 'var(--text-subtle)' }}
-            >
-              {/* Пока микрофон слушает, iOS держит запись, и на Bluetooth это
-                  слышно по звуку музыки. Выключатель — на случай, если слышно. */}
-              {micRest ? 'Микрофон слушает и на отдыхе' : 'На отдыхе микрофон молчит'}
-            </button>
-          )}
-          {handsFree && micRest && music.playing && (
-            // Bluetooth-наушники умеют либо хорошее звучание, либо микрофон:
-            // профиль один на оба направления. Пока распознавание слушает,
-            // музыка идёт в разговорном качестве — это не наша настройка.
-            <div className="text-[11px] text-[var(--text-subtle)] mt-1 leading-snug">
-              Пока микрофон слушает, Bluetooth-наушники отдают музыку в разговорном
-              качестве. Выключите слушание на отдыхе — и хотя бы отдых будет звучать
-              нормально. Полностью вопрос снимают проводные наушники.
-            </div>
-          )}
-        </div>
-        <Toggle
-          checked={handsFree}
-          onChange={(on) => {
-            onToggleHandsFree(on);
-            if (on) {
-              // Разрешение на микрофон спрашиваем здесь: это жест, позже
-              // старт распознавания молча провалится.
-              gymListener.prime();
-              setArmed(false);
-              gymPrimeVoice(voiceOn, 'Свободные руки включатся со следующего подхода');
-            } else {
-              gymListener.stop();
-              setArmed(false);
-            }
-          }}
-        />
+      {toast && <div className="gx-toast" key={toast.id} role="status">{toast.text}</div>}
+    </React.Fragment>
+  );
+
+  return <GxRoot theme={theme}>{body}</GxRoot>;
+}
+
+// Правка записанного подхода: вес и повторы, удаление.
+function GxEditSheet({ rec, row, step, onSave, onDelete, onClose }) {
+  const [w, setW] = useState(gymNum(rec.weight));
+  const [r, setR] = useState(gymInt(rec.reps, 0));
+  const noWeight = !!(row && row.unit === 'body');
+  return (
+    <GxSheet onClose={onClose}>
+      <div className="gx-eyebrow">{(row && row.label) || (gymIsWorking(rec) ? 'Рабочий' : 'Разминка')}</div>
+      <div className="gx-sh-t">{rec.exerciseName || 'Без названия'}</div>
+      <div className={'gx-steppers' + (noWeight ? ' gx-one' : '')}>
+        {!noWeight && <GxStepper label="Вес, кг" kind="kg" value={w} step={step} onChange={setW} />}
+        <GxStepper label="Повторы" kind="reps" value={r} step={1} min={1} max={99} onChange={setR} />
       </div>
-
-      {restLeft > 0 && (
-        <div className="rounded-2xl px-4 py-3 mb-4 flex items-center gap-3 text-white" style={{ background: '#3f5372' }}>
-          <Icon name="timer" size={20} />
-          <div className="flex-1">
-            <div className="text-[13px] opacity-80">Отдых</div>
-            <div className="text-xl font-display">{gymFmtRest(restLeft)}</div>
-          </div>
-          <button
-            onClick={() => setRest(restUntil + 15000, (restSpoken.current.total || 0) + 15)}
-            className="px-3 py-1.5 rounded-lg bg-white/15 text-sm"
-          >+15 с</button>
-          <button
-            onClick={() => { setRest(0); announceNext(); }}
-            className="px-3 py-1.5 rounded-lg bg-white/15 text-sm"
-          >Пропустить</button>
-        </div>
-      )}
-
-      <div className="space-y-2">
-        {exercises.map(ex => {
-          const doneN = loggedFor(ex.id).length;
-          const plannedN = gymSetCount(ex);
-          const open = openId === ex.id;
-          const prev = prevBestOf(ex);
-          // Только у раскрытого упражнения: в свёрнутых «сейчас» не имеет
-          // смысла и лишним узлом висит в разметке.
-          const curIdx = open ? currentIndex(ex) : -1;
-          return (
-            <div
-              key={ex.id}
-              className={`bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden ${justOpened === ex.id ? 'gym-focus' : ''}`}
-            >
-              <button onClick={() => setOpenId(open ? '' : ex.id)} className="w-full px-4 py-3 flex items-center gap-3 text-left">
-                <GymRing value={plannedN ? Math.min(1, doneN / plannedN) : 0} size={38} stroke={3} label={`${doneN}/${plannedN}`} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-[15px] font-medium leading-snug">{ex.name || 'Без названия'}</div>
-                  <div className="text-[13px] text-[var(--text-muted)] truncate">{gymSchemeText(ex, pctBaseOf(ex))}</div>
-                </div>
-                <div className={open ? 'rotate-180' : ''}><Icon name="chevronDown" size={16} /></div>
-              </button>
-
-              <div className={`gym-collapse ${open ? 'open' : ''}`} aria-hidden={!open}>
-               <div className="gym-collapse-inner">
-                <div className="px-4 pb-4 space-y-2">
-                  {ex.comment && (
-                    <div className="text-[13px] text-[var(--text-muted)] bg-[var(--bg)] rounded-xl px-3 py-2">{ex.comment}</div>
-                  )}
-                  {Array.from({ length: rowCount(ex) }).map((_, i) => {
-                    const done = loggedAt(ex.id, i);
-                    const row = draftRow(ex, i);
-                    const plan = planRowsOf(ex)[i] || { kind: 'working', label: `Подход ${i + 1}` };
-                    const warm = plan.kind === 'warmup';
-                    const skippedRow = !done && isSkipped(ex.id, i);
-                    const badge = done ? gymFactBadge(plan, pctBaseOf(ex), done.weight, done.reps) : null;
-                    const isPr = done && gymIsWorking(done) && prev.seen && (
-                      prev.weight > 0
-                        ? (gymNum(done.weight) > prev.weight || gymEpley(done.weight, done.reps) > prev.orm)
-                        : (!gymNum(done.weight) && gymInt(done.reps, 0) > prev.reps)
-                    );
-                    return (
-                      <div
-                        key={i}
-                        data-gym-first-row={i === 0 ? ex.id : undefined}
-                        data-gym-current={i === curIdx ? 'true' : undefined}
-                        className={`rounded-xl border px-3 py-2.5 ${i === curIdx ? 'gym-current' : ''}`}
-                        style={{
-                          ...(skippedRow ? { opacity: 0.5 } : {}),
-                          ...(warm ? { background: GYM_WARMUP_BG } : {}),
-                          borderColor: i === curIdx
-                            ? GYM_ACCENT
-                            : (warm ? GYM_WARMUP_BORDER : 'var(--border)'),
-                        }}
-                      >
-                        <div className="flex items-center gap-2 mb-1.5">
-                          <span className="text-[13px] font-medium" style={{ color: gymKindColor(warm ? 'warmup' : 'working') }}>
-                            {plan.label || `Подход ${i + 1}`}
-                          </span>
-                          {i === curIdx && (
-                            <span
-                              className="text-[11px] px-2 py-0.5 rounded-full text-white"
-                              style={{ background: GYM_ACCENT }}
-                            >
-                              сейчас
-                            </span>
-                          )}
-                          {isPr && <span title="Личный рекорд" style={{ color: '#eab308' }}><Icon name="starFilled" size={14} /></span>}
-                          {skippedRow && (
-                            // Пропущенный подход не записан нигде — это только
-                            // метка в плане, вернуть его можно галочкой.
-                            <button
-                              onClick={() => onSave({ ...session, skipped: skipped.filter(k => k !== skipKey(ex.id, i)) })}
-                              className="text-[11px] px-2 py-0.5 rounded-full"
-                              style={{ background: 'var(--bg)', color: 'var(--text-subtle)' }}
-                              title="Вернуть подход в план"
-                            >
-                              пропущен
-                            </button>
-                          )}
-                          <span className="flex-1" />
-                          {badge && (
-                            <span
-                              className="text-[12px] px-2 py-0.5 rounded-full"
-                              style={badge.tone === 'ok'
-                                // Зелёный на тренировке занят разминкой, поэтому
-                                // «в плане» — бирюзовый, цвет самого раздела.
-                                ? { background: '#ccfbf1', color: '#0f766e' }
-                                : badge.tone === 'under'
-                                  ? { background: '#fee2e2', color: '#b91c1c' }
-                                  : { background: '#dbeafe', color: '#1d4ed8' }}
-                            >
-                              {badge.text}
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[12px] text-[var(--text-subtle)] mb-2">
-                          План: {gymRowPlanText(plan, pctBaseOf(ex)) || 'не задан'}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <input
-                            inputMode="decimal"
-                            value={row.weight}
-                            onChange={e => setDraft(ex, i, { weight: e.target.value })}
-                            className="flex-1 text-center"
-                            placeholder="кг"
-                          />
-                          <span className="text-[var(--text-subtle)] text-sm">×</span>
-                          <input
-                            inputMode="numeric"
-                            value={row.reps}
-                            onChange={e => setDraft(ex, i, { reps: e.target.value })}
-                            className="flex-1 text-center"
-                            placeholder="повт."
-                          />
-                          <button
-                            onClick={() => logSet(ex, i)}
-                            className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-white"
-                            style={{ background: done ? GYM_ACCENT : 'var(--border-strong)' }}
-                          >
-                            <Icon name="check" size={18} />
-                          </button>
-                          {done && (
-                            <button onClick={() => removeSet(done.id)} className="text-red-300 flex-shrink-0"><Icon name="x" size={16} /></button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  <button
-                    onClick={() => addExtraSet(ex)}
-                    className="w-full py-2 rounded-xl border border-dashed border-[var(--border-strong)] text-[var(--text-muted)] text-[13px]"
-                  >
-                    + Ещё подход
-                  </button>
-                </div>
-               </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+      <button className="gx-np-ok" onClick={() => onSave(w, r)}>Сохранить</button>
+      <button className="gx-danger" onClick={onDelete}><GxIc n="trash" s={18} /> Удалить подход</button>
+    </GxSheet>
   );
 }
 // ── Аналитика ──────────────────────────────────────────────────────────────
