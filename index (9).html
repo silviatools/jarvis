@@ -733,6 +733,9 @@
 .gx-prog-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .gx-prog-t b { font: 600 22px/1.1 var(--d); letter-spacing: .03em; text-transform: uppercase; color: var(--text); overflow-wrap: anywhere; }
 .gx-prog-t i { font-style: normal; font-size: 12.5px; }
+.gx-prog-nx { display: flex; align-items: flex-start; gap: 8px; margin-top: 6px; font: 600 14px/1.25 var(--b); color: var(--text); }
+.gx-prog-nx .gx-mark { flex: none; }
+.gx-prog-nx > span:last-child { min-width: 0; padding-top: 1px; overflow-wrap: anywhere; }
 
 .gx-dayc { display: flex; align-items: center; gap: 8px; padding: 6px 14px 6px 6px; border-radius: 22px; background: var(--surface); border: 1px solid var(--line); color: var(--muted); }
 .gx-dayc-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 14px; padding: 8px; text-align: left; border-radius: 16px; }
@@ -740,6 +743,11 @@
 .gx-dayc-t b { font: 600 19px/1.15 var(--d); letter-spacing: .02em; color: var(--text); overflow-wrap: anywhere; }
 .gx-dayc-t i { font-style: normal; font-size: 12.5px; }
 .gx-dayc-t .gx-eyebrow { font-size: 11px; }
+.gx-dayc.gx-isnext { border-color: var(--lime); background: linear-gradient(135deg, var(--lime-soft), transparent 60%), var(--surface); box-shadow: 0 10px 30px -16px var(--lime-glow); }
+.gx-mark-row { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-bottom: 3px; }
+.gx-mark { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 4px 7px 4px 5px; border-radius: 8px; font: 600 10.5px/1.1 var(--d); letter-spacing: .08em; text-transform: uppercase; }
+.gx-mark-next { background: var(--lime); color: var(--lime-ink); }
+.gx-mark-last { background: var(--surface2); color: var(--muted); }
 .gx-mv { display: inline-flex; flex-direction: column; gap: 2px; }
 .gx-mv button { width: 34px; height: 30px; border-radius: 10px; background: var(--surface2); display: grid; place-items: center; color: var(--muted); }
 .gx-mv button:first-child svg { transform: rotate(180deg); }
@@ -30789,6 +30797,32 @@ const gxAgo = (iso) => {
   return `${n} ${gymPlural(n, 'день', 'дня', 'дней')} назад`;
 };
 
+// Порядок дней в программе — как его показывают списки.
+const gxByOrder = (a, b) => (a.order || 0) - (b.order || 0) || (a.createdAt || 0) - (b.createdAt || 0);
+
+// Где остановился цикл программы: последний пройденный день и тот, что следует
+// за ним по кругу. days — дни одной программы в порядке показа. Идущую
+// тренировку не считаем (она ещё не пройдена), дни без упражнений не
+// предлагаем; если выбирать не из чего (меньше двух дней с упражнениями) —
+// пометок нет.
+const gxDayCycle = (days, exercises, sessions) => {
+  const ready = days.map(d => exercises.some(e => e.dayId === d.id));
+  if (ready.filter(Boolean).length < 2) return { lastIndex: -1, nextIndex: -1, lastSession: null };
+  const at = (s) => s.startedAt || s.finishedAt || 0;
+  let last = null;
+  (sessions || []).forEach(s => {
+    if (!s.finishedAt) return;
+    const index = days.findIndex(d => d.id === s.dayId);
+    if (index >= 0 && (!last || at(s) >= at(last.session))) last = { index, session: s };
+  });
+  let nextIndex = -1;
+  for (let k = 1; k <= days.length && nextIndex < 0; k++) {
+    const i = ((last ? last.index : -1) + k) % days.length;
+    if (ready[i]) nextIndex = i;
+  }
+  return { lastIndex: last ? last.index : -1, nextIndex, lastSession: last ? last.session : null };
+};
+
 // Идущая тренировка — большая лаймовая плашка «продолжить».
 function GymResumeBanner({ session, settings, onResume }) {
   if (!session) return null;
@@ -31158,7 +31192,7 @@ function GymProgramsView({ programs, days, exercises, sessions, settings, onExit
             <div className="gx-sec"><h2>Мои тренировки</h2></div>
             <div className="gx-list">
               {programs.map(p => {
-                const pDays = days.filter(d => d.programId === p.id);
+                const pDays = days.filter(d => d.programId === p.id).sort(gxByOrder);
                 const total = pDays.reduce((acc, d) => {
                   const exs = exercises.filter(e => e.dayId === d.id);
                   return acc + gymDayProgress(exs, sessions, d.resetAt) * (exs.length ? 1 : 0);
@@ -31166,12 +31200,15 @@ function GymProgramsView({ programs, days, exercises, sessions, settings, onExit
                 const withEx = pDays.filter(d => exercises.some(e => e.dayId === d.id)).length;
                 const progress = withEx ? total / withEx : 0;
                 const n = doneCount(p.id);
+                const cycle = gxDayCycle(pDays, exercises, sessions);
+                const nextDay = cycle.nextIndex >= 0 ? pDays[cycle.nextIndex] : null;
                 return (
                   <button key={p.id} className="gx-prog" onClick={() => { gxTick(); onOpen(p); }}>
                     <GymRing value={progress} size={54} stroke={5} />
                     <span className="gx-prog-t">
                       <b>{p.name || 'Без названия'}</b>
                       <i>{pDays.length} {gymPlural(pDays.length, 'день', 'дня', 'дней')} · {n} {gymPlural(n, 'занятие', 'занятия', 'занятий')}</i>
+                      {nextDay && <span className="gx-prog-nx"><span className="gx-mark gx-mark-next"><GxIc n="play" s={10} />Дальше</span><span>{gymDayTitle(nextDay, cycle.nextIndex)}</span></span>}
                     </span>
                     <GxIc n="chevR" s={20} sw={2.4} />
                   </button>
@@ -31208,6 +31245,8 @@ function GymProgramView({ program, days, exercises, sessions, settings, onBack, 
   const [imported, setImported] = useState(null);
 
   const doneCount = sessions.filter(s => s.programId === program.id && s.finishedAt).length;
+  const cycle = gxDayCycle(days, exercises, sessions);
+  const lastAgo = cycle.lastSession ? gxAgo(cycle.lastSession.date) : '';
 
   const move = (index, dir) => {
     const next = [...days];
@@ -31250,11 +31289,19 @@ function GymProgramView({ program, days, exercises, sessions, settings, onBack, 
               const exs = exercises.filter(e => e.dayId === d.id).sort((a, b) => (a.order || 0) - (b.order || 0));
               const progress = gymDayProgress(exs, sessions, d.resetAt);
               const sum = gymDaySummary(exs);
+              const isNext = i === cycle.nextIndex;
+              const isLast = i === cycle.lastIndex;
               return (
-                <div key={d.id} className="gx-dayc">
+                <div key={d.id} className={'gx-dayc' + (isNext ? ' gx-isnext' : '')}>
                   <button className="gx-dayc-main" onClick={() => { gxTick(); onOpenDay(d); }}>
                     <GymRing value={progress} size={54} stroke={5} />
                     <span className="gx-dayc-t">
+                      {(isNext || isLast) && (
+                        <span className="gx-mark-row">
+                          {isNext && <span className="gx-mark gx-mark-next"><GxIc n="play" s={10} />Следующая</span>}
+                          {isLast && <span className="gx-mark gx-mark-last"><GxIc n="check" s={11} sw={3.4} />Последняя{lastAgo ? ` · ${lastAgo}` : ''}</span>}
+                        </span>
+                      )}
                       <span className="gx-eyebrow">{i + 1} тренировка</span>
                       <b>{gymDayTitle(d, i)}</b>
                       <i>{exs.length
