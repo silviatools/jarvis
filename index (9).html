@@ -699,6 +699,234 @@
 .gx-ib.gx-armed { color: var(--lime-text); border-color: var(--lime-text); }
 .gx-excomment { margin-top: -2px; margin-bottom: 4px; }
 
+/* ---------- разделы GYM: страницы, списки, формы, аналитика ---------- */
+.gx-ib-ph { width: 40px; height: 40px; flex: none; }
+.gx-pg-title { flex: 1; min-width: 0; text-align: center; font: 500 13px/1 var(--d); letter-spacing: .22em; text-transform: uppercase; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gx-pg-right { display: flex; gap: 8px; flex: none; min-width: 40px; justify-content: flex-end; }
+.gx-pg-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 18px 22px; scrollbar-width: none; overscroll-behavior: contain; }
+.gx-pg-scroll::-webkit-scrollbar { display: none; }
+.gx-h1 { font: 700 clamp(40px, 6.8vh, 56px)/.98 var(--d); letter-spacing: .01em; text-transform: uppercase; margin: 10px 0 8px; text-wrap: balance; overflow-wrap: anywhere; }
+.gx-h1-s { font-size: clamp(26px, 4.4vh, 34px); margin: 8px 0 14px; }
+.gx-meta { color: var(--muted); font-size: 13.5px; }
+.gx-inline-ib { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line2); color: var(--text); vertical-align: middle; margin-left: 10px; }
+.gx-sec { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 24px 0 10px; }
+.gx-sec h2 { margin: 0; font: 600 13px/1 var(--d); letter-spacing: .2em; text-transform: uppercase; color: var(--lime-text); }
+.gx-list { display: flex; flex-direction: column; gap: 10px; }
+.gx-pg-scroll > .gx-week { margin-top: 16px; }
+.gx-week-s { margin-left: auto; font: 600 15px/1 var(--d); letter-spacing: .04em; color: var(--text); }
+
+.gx-resume { width: 100%; display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 14px; border-radius: 20px; background: var(--lime); color: var(--lime-ink); text-align: left; box-shadow: 0 8px 30px -10px var(--lime-glow); animation: gx-pulseCard 2.4s ease-in-out infinite; }
+.gx-resume-i { width: 42px; height: 42px; border-radius: 14px; background: rgba(0, 0, 0, .12); display: grid; place-items: center; flex: none; }
+.gx-resume-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.gx-resume-t b { font: 700 18px/1.1 var(--d); letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gx-resume-t i { font-style: normal; font-size: 12.5px; opacity: .75; }
+@keyframes gx-pulseCard { 0%, 100% { box-shadow: 0 8px 30px -10px var(--lime-glow); } 50% { box-shadow: 0 8px 38px -2px var(--lime-glow); } }
+
+.gx-pring { position: relative; flex: none; display: grid; place-items: center; }
+.gx-pring svg { position: absolute; inset: 0; }
+.gx-pring-bg { fill: none; stroke: var(--line2); }
+.gx-pring-fg { fill: none; stroke: var(--lime); stroke-linecap: round; transition: stroke-dashoffset .5s cubic-bezier(.2, .9, .25, 1); }
+.gx-pring b { position: relative; font: 600 13px/1 var(--d); letter-spacing: .02em; color: var(--text); }
+
+.gx-prog { width: 100%; display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: 22px; background: var(--surface); border: 1px solid var(--line); text-align: left; color: var(--muted); transition: transform .12s, border-color .2s; }
+.gx-prog:active { transform: scale(.985); border-color: var(--lime-text); }
+.gx-prog-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.gx-prog-t b { font: 600 22px/1.1 var(--d); letter-spacing: .03em; text-transform: uppercase; color: var(--text); overflow-wrap: anywhere; }
+.gx-prog-t i { font-style: normal; font-size: 12.5px; }
+
+.gx-dayc { display: flex; align-items: center; gap: 8px; padding: 6px 14px 6px 6px; border-radius: 22px; background: var(--surface); border: 1px solid var(--line); color: var(--muted); }
+.gx-dayc-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 14px; padding: 8px; text-align: left; border-radius: 16px; }
+.gx-dayc-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.gx-dayc-t b { font: 600 19px/1.15 var(--d); letter-spacing: .02em; color: var(--text); overflow-wrap: anywhere; }
+.gx-dayc-t i { font-style: normal; font-size: 12.5px; }
+.gx-dayc-t .gx-eyebrow { font-size: 11px; }
+.gx-mv { display: inline-flex; flex-direction: column; gap: 2px; }
+.gx-mv button { width: 34px; height: 30px; border-radius: 10px; background: var(--surface2); display: grid; place-items: center; color: var(--muted); }
+.gx-mv button:first-child svg { transform: rotate(180deg); }
+.gx-mv button:disabled { opacity: .25; }
+.gx-mv-col { margin-right: 4px; }
+.gx-danger-gap { margin-top: 28px; }
+.gx-danger-solid { width: 100%; height: 58px; margin-top: 12px; border-radius: 19px; background: var(--coral); color: #fff; font: 700 18px/1 var(--d); letter-spacing: .14em; text-transform: uppercase; }
+.gx-np-ok:disabled { opacity: .4; }
+
+.gx-lastw { margin-top: 16px; padding: 14px; border-radius: 18px; background: var(--surface); border: 1px solid var(--line); }
+.gx-lw-h { font: 600 11px/1 var(--d); letter-spacing: .2em; text-transform: uppercase; color: var(--subtle); }
+.gx-lw-r { display: flex; gap: 18px; margin-top: 9px; color: var(--muted); font-size: 13px; flex-wrap: wrap; }
+.gx-lw-r b { font: 600 21px/1 var(--d); color: var(--text); letter-spacing: .02em; margin-right: 2px; }
+.gx-dl { margin-top: 16px; display: flex; flex-direction: column; }
+.gx-dl-r { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); }
+.gx-dl-r:last-child { border-bottom: 0; }
+.gx-dl-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 14px; padding: 13px 2px; text-align: left; }
+.gx-dl-n { font: 500 18px/1 var(--d); color: var(--lime-text); width: 26px; letter-spacing: .04em; flex: none; }
+.gx-dl-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.gx-dl-t b { font-weight: 600; font-size: 15px; }
+.gx-dl-t i { font-style: normal; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.gx-dl-t em { font-style: normal; font-size: 11.5px; color: var(--subtle); }
+.gx-dl-p { font: 600 14px/1 var(--d); letter-spacing: .04em; color: var(--lime-text); flex: none; padding-right: 2px; }
+.gx-del { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; color: var(--coral); background: var(--coral-soft); flex: none; }
+.gx-addrow { display: flex; gap: 8px; margin-top: 14px; }
+.gx-dash { flex: 1; min-height: 48px; border-radius: 16px; border: 1.5px dashed var(--line2); color: var(--muted); display: flex; align-items: center; justify-content: center; gap: 8px; font: 600 14px/1.1 var(--b); cursor: pointer; padding: 0 10px; text-align: center; }
+.gx-dash:active { background: var(--surface); }
+.gx-dash.gx-lime { border-color: var(--lime-text); color: var(--lime-text); }
+.gx-reset { margin-top: 18px; }
+.gx-dock .gx-log:disabled { opacity: .4; box-shadow: none; }
+
+.gx-link { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); font: 600 13px/1 var(--b); color: var(--muted); cursor: pointer; }
+.gx-link.gx-busy, .gx-dash.gx-busy { opacity: .55; pointer-events: none; }
+.gx-imp { min-width: 0; display: contents; }
+.gx-imp-d { display: flex; flex: 1; flex-direction: column; align-items: stretch; }
+.gx-imp-err { flex: 1 0 100%; order: 3; font-size: 12.5px; line-height: 1.35; color: var(--coral); }
+.gx-imp-d .gx-imp-err { flex: none; margin-top: 6px; }
+
+/* формы */
+:where(.gx-root) label { font: inherit; text-transform: none; letter-spacing: normal; margin: 0; color: inherit; display: inline; }
+.gx-field { margin-top: 16px; }
+.gx-root .gx-lbl { display: block; font: 600 11px/1 var(--d); letter-spacing: .2em; text-transform: uppercase; color: var(--subtle); margin: 0 0 8px; }
+.gx-root input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=range]), .gx-root select, .gx-root textarea {
+  width: 100%; background: var(--surface); color: var(--text); border: 1px solid var(--line2); border-radius: 14px; padding: 13px 14px;
+  font: 500 16px/1.25 var(--b); box-shadow: none; transition: border-color .15s, box-shadow .15s; -webkit-appearance: none; appearance: none; margin: 0;
+}
+.gx-root textarea { resize: none; display: block; }
+.gx-root input::placeholder, .gx-root textarea::placeholder { color: var(--subtle); font-weight: 400; }
+.gx-root input:focus, .gx-root select:focus, .gx-root textarea:focus { outline: none; border-color: var(--lime-text); box-shadow: 0 0 0 3px var(--lime-soft); }
+.gx-root input:disabled, .gx-root select:disabled { opacity: .4; }
+.gx-root select { padding-right: 38px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239BA69D' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; }
+.gx-root input.gx-c { text-align: center; padding-left: 4px; padding-right: 4px; font-weight: 600; }
+.gx-sheet input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=range]) { background: var(--surface2); }
+.gx-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.gx-grid-n { display: grid; gap: 8px; }
+.gx-pair { display: flex; gap: 8px; }
+.gx-pair select { flex: 1; min-width: 0; }
+.gx-stack { display: flex; flex-direction: column; gap: 12px; }
+.gx-form .gx-stack { margin-top: 16px; }
+.gx-step { display: inline-flex; align-items: center; gap: 4px; }
+.gx-step b { min-width: 34px; text-align: center; font: 600 22px/1 var(--d); letter-spacing: .02em; }
+.gx-step button { width: 42px; height: 42px; border-radius: 14px; background: var(--surface2); display: grid; place-items: center; color: var(--text); }
+.gx-step button.gx-plus { background: var(--lime-soft); color: var(--lime-text); }
+.gx-step button:active { transform: scale(.92); }
+.gx-radios { display: flex; gap: 22px; margin-top: 14px; flex-wrap: wrap; }
+.gx-radio { display: inline-flex; align-items: center; gap: 10px; color: var(--muted); font-size: 15px; }
+.gx-radio i { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line2); display: grid; place-items: center; }
+.gx-radio.gx-on { color: var(--text); }
+.gx-radio.gx-on i { border-color: var(--lime-text); }
+.gx-radio.gx-on i::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--lime); }
+.gx-chipbox { display: flex; flex-wrap: wrap; gap: 8px; }
+.gx-chipb { height: 36px; padding: 0 14px; border-radius: 18px; background: var(--surface); border: 1px solid var(--line2); color: var(--muted); font: 600 13.5px/1 var(--b); transition: all .15s; }
+.gx-chipb.gx-on { background: var(--lime); border-color: var(--lime); color: var(--lime-ink); }
+.gx-row2 { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
+.gx-row2-top { margin-top: 12px; }
+.gx-rowl { color: var(--muted); font-size: 14.5px; }
+.gx-rowl-b { color: var(--text); font: 600 17px/1.1 var(--b); }
+.gx-note { font-size: 12.5px; color: var(--subtle); line-height: 1.4; margin-top: 8px; }
+.gx-segc.gx-full { display: flex; width: 100%; }
+.gx-segc.gx-full button { flex: 1; min-width: 0; }
+.gx-segc button.gx-on.gx-warm { background: var(--ice); color: var(--ice-ink); }
+.gx-gcard { background: var(--surface); border: 1px solid var(--line); border-radius: 22px; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.gx-gcard.gx-warm { border-color: color-mix(in srgb, var(--ice) 35%, transparent); }
+.gx-gcard-h { display: flex; align-items: center; gap: 4px; }
+.gx-gcard-t { flex: 1; font: 600 18px/1 var(--d); letter-spacing: .1em; text-transform: uppercase; color: var(--lime-text); }
+.gx-gcard.gx-warm .gx-gcard-t { color: var(--ice); }
+.gx-gcard-h button { width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; color: var(--muted); background: var(--surface2); }
+.gx-gcard-h button.gx-up svg { transform: rotate(180deg); }
+.gx-gcard-h button:disabled { opacity: .25; }
+.gx-gcard-h button.gx-del { color: var(--coral); background: var(--coral-soft); }
+.gx-gcard .gx-field, .gx-gcard .gx-row2 { margin-top: 0; }
+.gx-gplan { font-size: 12.5px; color: var(--subtle); }
+.gx-plancard { margin-top: 18px; background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 14px; }
+.gx-plancard-h { display: flex; flex-direction: column; gap: 4px; font: 600 12px/1 var(--d); letter-spacing: .2em; text-transform: uppercase; color: var(--subtle); }
+.gx-plancard-h i { font: 400 12.5px/1.3 var(--b); font-style: normal; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.gx-plancard-b { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+.gx-pl-r { display: flex; align-items: baseline; gap: 10px; font-size: 14px; width: 100%; text-align: left; padding: 3px 6px; margin: 0 -6px; border-radius: 10px; }
+.gx-pl-btn.gx-warm { background: color-mix(in srgb, var(--ice) 12%, transparent); }
+.gx-pl-k { width: 92px; flex: none; color: var(--lime-text); font-weight: 600; }
+.gx-pl-k.gx-warm, .gx-pl-t.gx-warm { color: var(--ice); }
+.gx-pl-v { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
+.gx-pl-t { font-size: 11px; color: var(--lime-text); flex: none; }
+.gx-hist { display: flex; flex-direction: column; gap: 12px; }
+.gx-hist-d { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; font-weight: 600; font-size: 14.5px; }
+.gx-hist-r { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-bottom: 1px solid var(--line); font-size: 14.5px; }
+.gx-hist-r:last-child { border-bottom: 0; }
+.gx-hist-k { color: var(--lime-text); font-weight: 600; }
+.gx-hist-k.gx-warm { color: var(--ice); }
+.gx-hist-v { flex: 1; font-variant-numeric: tabular-nums; }
+.gx-hist-t { color: var(--subtle); font-size: 12.5px; }
+.gx-same.gx-clear { align-items: center; justify-content: center; }
+.gx-clear .gx-t { font: 600 14px/1 var(--d); letter-spacing: .14em; text-transform: uppercase; }
+
+/* аналитика */
+.gx-tabs { padding: 2px 18px 10px; flex: none; }
+.gx-card2 { background: var(--surface); border: 1px solid var(--line); border-radius: 22px; padding: 14px 16px; }
+.gx-card2-t { font: 600 12px/1 var(--d); letter-spacing: .2em; text-transform: uppercase; color: var(--subtle); margin-bottom: 14px; }
+.gx-chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.gx-chart-grid { stroke: var(--line); stroke-width: 1; }
+.gx-chart-line { fill: none; stroke: var(--lime); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.gx-chart-dot { fill: var(--surface); stroke: var(--lime); stroke-width: 1.6; }
+.gx-chart-end { fill: var(--lime); stroke: var(--surface); stroke-width: 2.5; filter: drop-shadow(0 0 6px var(--lime-glow)); }
+.gx-chart-x { display: flex; justify-content: space-between; gap: 8px; margin-top: 10px; font-size: 11.5px; color: var(--subtle); }
+.gx-stats3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.gx-stats2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.gx-stat { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.gx-stat-l { font: 600 11px/1 var(--d); letter-spacing: .18em; text-transform: uppercase; color: var(--subtle); }
+.gx-stat b { font: 600 28px/1 var(--d); letter-spacing: .02em; overflow-wrap: anywhere; }
+.gx-stat-s { font-size: 11.5px; color: var(--subtle); }
+.gx-rows { padding: 4px 16px; }
+.gx-arow { display: flex; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.gx-arow:last-child { border-bottom: 0; }
+.gx-arow-d { width: 64px; flex: none; color: var(--muted); }
+.gx-arow-v { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
+.gx-arow-s { color: var(--subtle); font-size: 12px; }
+.gx-bars { overflow-x: auto; scrollbar-width: none; }
+.gx-bars::-webkit-scrollbar { display: none; }
+.gx-bars-in { display: flex; align-items: flex-end; gap: 8px; }
+.gx-bar-c { width: 36px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.gx-bar-c i { display: block; width: 100%; border-radius: 6px 6px 3px 3px; background: color-mix(in srgb, var(--lime) 55%, var(--surface2)); }
+.gx-bar-c.gx-last i { background: var(--lime); box-shadow: 0 0 16px -2px var(--lime-glow); }
+.gx-bar-c i.gx-zero { background: var(--line2); }
+.gx-bar-v { height: 12px; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.gx-bar-l { font-size: 10px; color: var(--subtle); white-space: nowrap; }
+.gx-muscles { display: flex; flex-direction: column; gap: 14px; }
+.gx-mus-h { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; margin-bottom: 6px; }
+.gx-mus-h span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; }
+.gx-mus-b { height: 8px; border-radius: 4px; background: var(--line2); overflow: hidden; }
+.gx-mus-b i { display: block; height: 100%; border-radius: 4px; background: var(--lime); }
+.gx-hcard { background: var(--surface); border: 1px solid var(--line); border-radius: 20px; overflow: hidden; }
+.gx-hcard-h { width: 100%; display: flex; align-items: center; gap: 10px; padding: 14px 16px; text-align: left; }
+.gx-hcard-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.gx-hcard-t .gx-eyebrow { font-size: 11px; }
+.gx-hcard-t b { font: 600 20px/1.1 var(--d); letter-spacing: .03em; text-transform: uppercase; }
+.gx-hcard-t i { font-style: normal; font-size: 12.5px; color: var(--muted); }
+.gx-hcard-c { color: var(--muted); transition: transform .2s; }
+.gx-hcard.gx-open .gx-hcard-c { transform: rotate(180deg); }
+.gx-hcard-b { padding: 0 16px 16px; }
+.gx-hex { padding: 10px 0; border-top: 1px solid var(--line); }
+.gx-hex b { font-weight: 600; font-size: 14.5px; display: block; margin-bottom: 8px; }
+.gx-hex > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.gx-hcard-b .gx-danger { margin-top: 10px; height: 44px; }
+.gx-rcrd { background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 14px 16px; }
+.gx-rcrd-h { display: flex; align-items: center; gap: 10px; }
+.gx-rcrd-h span { color: var(--gold); filter: drop-shadow(0 0 8px rgba(255, 200, 61, .45)); display: grid; }
+.gx-rcrd-h b { flex: 1; min-width: 0; font-weight: 600; font-size: 15px; }
+.gx-rcrd-g { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; text-align: center; }
+.gx-rcrd-g > div { display: flex; flex-direction: column; gap: 4px; }
+.gx-rcrd-l { font-size: 10.5px; color: var(--subtle); }
+.gx-rcrd-g b { font: 600 22px/1 var(--d); letter-spacing: .02em; }
+.gx-rcrd-s { font-size: 11px; color: var(--subtle); }
+.gx-empty-in { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 36px 16px; text-align: center; color: var(--subtle); }
+.gx-empty-in b { font: 600 18px/1.2 var(--d); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.gx-empty-in span { font-size: 13px; }
+.gx-imp-day { background: var(--surface2); border-radius: 18px; padding: 12px; }
+.gx-imp-h { display: flex; align-items: center; gap: 10px; }
+.gx-imp-h b { font: 600 17px/1.2 var(--b); }
+.gx-imp-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.gx-imp-ex { display: flex; gap: 12px; align-items: flex-start; }
+.gx-check { width: 28px; height: 28px; border-radius: 9px; border: 1.5px solid var(--line2); display: grid; place-items: center; flex: none; color: transparent; transition: all .15s; }
+.gx-check.gx-on { background: var(--lime); border-color: var(--lime); color: var(--lime-ink); }
+.gx-imp-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.gx-imp-t.gx-off { opacity: .4; }
+.gx-imp-t b { font-weight: 600; font-size: 14.5px; line-height: 1.25; }
+.gx-imp-t i { font-style: normal; font-size: 12px; color: var(--muted); }
+.gx-imp-t em { font-style: normal; font-size: 11.5px; color: var(--subtle); display: flex; flex-direction: column; gap: 1px; }
+
   /* Voice button pulse animation */
   @keyframes pulse-ring {
     0% { transform: scale(1); opacity: 0.6; }
@@ -30390,94 +30618,117 @@ const gymSaySet = (row, base, exerciseName, lastWeight) => {
   return parts.join('. ');
 };
 
-// ── Мелкие общие компоненты ────────────────────────────────────────────────
+// ── GYM · общие части разделов (в стиле «Фокус») ───────────────────────────
+// Весь раздел живёт в одном полноэкранном корне (GxRoot): список тренировок,
+// программа, день, упражнение, аналитика, сама тренировка и итог. Корень один,
+// поэтому тема и подтверждения общие; экраны внутри него — обычные .gx-screen.
 
+const GxPrefCtx = React.createContext({ theme: 'dark', setPref: () => {} });
+const GxAskCtx = React.createContext(() => Promise.resolve(false));
+
+// Подтверждение листом вместо confirm(): ask({ title, text, ok, danger }) →
+// Promise<boolean>. Лист рисуется в корне, поэтому не прячется под экраном.
+function useGxAsk() {
+  const [q, setQ] = useState(null);
+  const ask = (opts) => new Promise((resolve) => setQ({ ...opts, resolve }));
+  const done = (ok) => {
+    const resolve = q && q.resolve;
+    setQ(null);
+    if (resolve) resolve(ok);
+  };
+  const node = q ? (
+    <GxSheet onClose={() => done(false)}>
+      <div className="gx-sh-t">{q.title}</div>
+      {q.text ? <p className="gx-fin-p">{q.text}</p> : null}
+      <button className={q.danger ? 'gx-danger-solid' : 'gx-np-ok'} onClick={() => done(true)}>{q.ok || 'Да'}</button>
+      <button className="gx-ghost-wide" onClick={() => done(false)}>{q.cancel || 'Отмена'}</button>
+    </GxSheet>
+  ) : null;
+  return [node, ask];
+}
+
+function GxThemeBtn() {
+  const { theme, setPref } = React.useContext(GxPrefCtx);
+  return (
+    <button className="gx-ib" onClick={() => { gxTick(); setPref('gymTheme', theme === 'dark' ? 'light' : 'dark'); }}
+      aria-label={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}>
+      <GxIc n={theme === 'dark' ? 'sun' : 'moon'} />
+    </button>
+  );
+}
+
+// Верхняя панель экрана: назад, заголовок по центру, действия справа.
+function GxTop({ onBack, title, right }) {
+  return (
+    <div className="gx-top">
+      {onBack ? <button className="gx-ib" onClick={onBack} aria-label="Назад"><GxIc n="chevL" /></button> : <span className="gx-ib-ph" />}
+      <div className="gx-pg-title">{title}</div>
+      <div className="gx-pg-right">{right}</div>
+    </div>
+  );
+}
+
+// Кольцо прогресса (процент или своя подпись).
 function GymRing({ value, size = 52, stroke = 4, label }) {
   const pct = Math.max(0, Math.min(1, value || 0));
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
   return (
-    <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
-      <svg width={size} height={size} className="-rotate-90">
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--border)" strokeWidth={stroke} />
-        <circle
-          cx={size / 2} cy={size / 2} r={r} fill="none"
-          stroke={GYM_ACCENT} strokeWidth={stroke} strokeLinecap="round"
-          strokeDasharray={c} strokeDashoffset={c * (1 - pct)}
-          style={{ transition: 'stroke-dashoffset 0.4s ease' }}
-        />
+    <div className="gx-pring" style={{ width: size, height: size }}>
+      <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }} aria-hidden="true">
+        <circle cx={size / 2} cy={size / 2} r={r} className="gx-pring-bg" strokeWidth={stroke} />
+        <circle cx={size / 2} cy={size / 2} r={r} className="gx-pring-fg" strokeWidth={stroke}
+          strokeDasharray={c} strokeDashoffset={c * (1 - pct)} />
       </svg>
-      <div className="absolute inset-0 flex items-center justify-center text-[11px] font-medium" style={{ color: GYM_ACCENT }}>
-        {label !== undefined ? label : `${Math.round(pct * 100)}%`}
-      </div>
+      <b style={{ fontSize: Math.max(11, size * 0.24) }}>{label !== undefined ? label : `${Math.round(pct * 100)}%`}</b>
     </div>
   );
 }
 
+// Количество − значение + (подходы подряд, число подходов).
 function GymStepper({ value, onChange, min = 1, max = 20 }) {
   const set = (v) => onChange(Math.max(min, Math.min(max, v)));
   return (
-    <div className="flex items-center gap-4">
-      <button
-        type="button"
-        onClick={() => set(gymInt(value, min) - 1)}
-        className="w-9 h-9 rounded-full border border-red-300 text-red-500 flex items-center justify-center text-xl leading-none"
-      >−</button>
-      <div className="w-8 text-center text-lg font-medium">{gymInt(value, min)}</div>
-      <button
-        type="button"
-        onClick={() => set(gymInt(value, min) + 1)}
-        className="w-9 h-9 rounded-full border flex items-center justify-center text-xl leading-none"
-        style={{ borderColor: GYM_ACCENT, color: GYM_ACCENT }}
-      >+</button>
+    <div className="gx-step">
+      <button type="button" onClick={() => { gxTick(); set(gymInt(value, min) - 1); }} aria-label="Меньше"><GxIc n="minus" s={18} sw={2.6} /></button>
+      <b>{gymInt(value, min)}</b>
+      <button type="button" className="gx-plus" onClick={() => { gxTick(); set(gymInt(value, min) + 1); }} aria-label="Больше"><GxIc n="plus" s={18} sw={2.6} /></button>
     </div>
   );
 }
 
 function GymRadio({ checked, onChange, children }) {
   return (
-    <button type="button" onClick={onChange} className="flex items-center gap-2.5 text-[15px]">
-      <span
-        className="w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0"
-        style={{ borderColor: checked ? GYM_ACCENT : 'var(--border-strong)' }}
-      >
-        {checked && <span className="w-2.5 h-2.5 rounded-full" style={{ background: GYM_ACCENT }} />}
-      </span>
-      <span className={checked ? 'text-[var(--text)]' : 'text-[var(--text-muted)]'}>{children}</span>
+    <button type="button" className={'gx-radio' + (checked ? ' gx-on' : '')} onClick={onChange} role="radio" aria-checked={checked}>
+      <i />
+      <span>{children}</span>
     </button>
   );
 }
 
 function GymChips({ options, selected, onToggle }) {
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="gx-chipbox">
       {options.map(o => {
         const on = (selected || []).includes(o);
         return (
-          <button
-            key={o}
-            type="button"
-            onClick={() => onToggle(o)}
-            className={`px-3 py-1.5 rounded-full text-[13px] border transition-all ${on ? 'text-white' : 'text-[var(--text-muted)] border-[var(--border)]'}`}
-            style={on ? { background: GYM_ACCENT, borderColor: GYM_ACCENT } : {}}
-          >
-            {o}
-          </button>
+          <button key={o} type="button" onClick={() => onToggle(o)} className={'gx-chipb' + (on ? ' gx-on' : '')} aria-pressed={on}>{o}</button>
         );
       })}
     </div>
   );
 }
 
-function GymEmpty({ icon = 'dumbbell', text, hint }) {
+function GymEmpty({ icon = 'dumb', text, hint }) {
   return (
-    <div className="text-center py-12 text-[var(--text-subtle)]">
-      <div className="flex justify-center mb-3 opacity-40"><Icon name={icon} size={34} /></div>
-      <div className="text-[15px] text-[var(--text-muted)]">{text}</div>
-      {hint && <div className="text-[13px] mt-1">{hint}</div>}
+    <div className="gx-empty-in">
+      <GxIc n={icon} s={34} />
+      <b>{text}</b>
+      {hint ? <span>{hint}</span> : null}
     </div>
   );
 }
+
 // Тумбстоны для каскадных удалений (программа → дни → упражнения → тренировки):
 // withDeletedId умеет один id за вызов, а тут их всегда пачка.
 const gymWithDeleted = (all, key, ids) => {
@@ -30487,35 +30738,84 @@ const gymWithDeleted = (all, key, ids) => {
   return { ...(all || {}), [key]: map };
 };
 
+// Ввод названия (новая тренировка, день, переименование) — листом снизу.
 function GymTextModal({ title, label, placeholder, initial = '', onSave, onClose }) {
   const [value, setValue] = useState(initial);
-  return ReactDOM.createPortal(
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm p-0 sm:p-4" onClick={onClose}>
-      <div className="bg-[var(--bg)] w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-5 pb-safe fade-in" onClick={e => e.stopPropagation()}>
-        <div className="font-display text-xl mb-4">{title}</div>
-        <label>{label}</label>
-        <input
-          autoFocus
-          value={value}
-          onChange={e => setValue(e.target.value)}
-          placeholder={placeholder}
-          onKeyDown={e => { if (e.key === 'Enter' && value.trim()) { onSave(value.trim()); } }}
-        />
-        <div className="flex gap-2 mt-5">
-          <button className="btn-secondary flex-1" onClick={onClose}>Отмена</button>
-          <button
-            className="btn-primary flex-1 disabled:opacity-40"
-            disabled={!value.trim()}
-            onClick={() => onSave(value.trim())}
-          >Сохранить</button>
-        </div>
-      </div>
-    </div>,
-    document.body
+  const ok = value.trim();
+  return (
+    <GxSheet onClose={onClose}>
+      <div className="gx-sh-t">{title}</div>
+      <label className="gx-lbl" htmlFor="gx-text-in">{label}</label>
+      <input id="gx-text-in" autoFocus value={value} onChange={e => setValue(e.target.value)} placeholder={placeholder}
+        onKeyDown={e => { if (e.key === 'Enter' && ok) onSave(value.trim()); }} />
+      <button className="gx-np-ok" disabled={!ok} onClick={() => onSave(value.trim())}>Сохранить</button>
+      <button className="gx-ghost-wide" onClick={onClose}>Отмена</button>
+    </GxSheet>
   );
 }
 
-function GymView({ data, setData }) {
+// Неделя: дни с тренировкой и их число — для карточки на главной и в итоге.
+const gxWeekInfo = (sessions, refDate) => {
+  const ref = refDate || dateToLocalStr(new Date());
+  const start = gymWeekStart(ref);
+  const list = (sessions || []).filter(s => s.finishedAt && gymWeekStart(s.date) === start);
+  const dayOf = (s) => { const d = gymParseDate(s.date); return d ? (d.getDay() + 6) % 7 : 0; };
+  const tonnage = list.reduce((a, s) => a + (s.sets || []).filter(gymIsWorking).reduce((b, x) => b + gymSetTonnage(x), 0), 0);
+  return { list, trained: new Set(list.map(dayOf)), count: list.length, tonnage };
+};
+
+const GX_DAY_NAMES = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+function GxWeekDots({ trained, todayIdx }) {
+  return (
+    <div className="gx-week-d">
+      {GX_DAY_NAMES.map((n, i) => (
+        <span key={n} className={'gx-wd' + (trained.has(i) ? ' gx-on' : '') + (i === todayIdx ? ' gx-now' : '')}>
+          <i>{i === todayIdx ? <GxIc n="flame" s={15} /> : trained.has(i) ? <GxIc n="check" s={14} sw={3.4} /> : null}</i>{n}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// «Сегодня», «вчера», «5 дней назад» — по ISO-дате тренировки.
+const gxAgo = (iso) => {
+  const d = gymParseDate(iso);
+  if (!d) return '';
+  const t = new Date();
+  t.setHours(0, 0, 0, 0);
+  const n = Math.round((t - d) / 864e5);
+  if (n <= 0) return 'сегодня';
+  if (n === 1) return 'вчера';
+  return `${n} ${gymPlural(n, 'день', 'дня', 'дней')} назад`;
+};
+
+// Идущая тренировка — большая лаймовая плашка «продолжить».
+function GymResumeBanner({ session, settings, onResume }) {
+  if (!session) return null;
+  const n = (session.sets || []).length;
+  return (
+    <button className="gx-resume"
+      onClick={() => {
+        // Возврат к тренировке — единственный жест на этом экране, другого
+        // шанса забрать аудиовыход у iOS не будет.
+        if ((settings || {}).gymVoice !== false) gymSound.start(!!(settings || {}).gymBackgroundAudio);
+        // Если приложение перезапускали, разрешение на микрофон надо снова
+        // спросить в жесте — другого шанса на этом экране не будет.
+        if ((settings || {}).gymHandsFree) gymListener.prime();
+        gxHaptic.medium();
+        onResume(session);
+      }}>
+      <span className="gx-resume-i"><GxIc n="dumb" s={22} /></span>
+      <span className="gx-resume-t">
+        <b>Идёт тренировка{session.dayTitle ? ` · ${session.dayTitle}` : ''}</b>
+        <i>{n} {gymPlural(n, 'подход', 'подхода', 'подходов')} записано — продолжить</i>
+      </span>
+      <GxIc n="chevR" s={20} sw={2.6} />
+    </button>
+  );
+}
+
+function GymView({ data, setData, onExit }) {
   const programs = [...(data.gymPrograms || [])].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   const allDays = data.gymDays || [];
   const allExercises = data.gymExercises || [];
@@ -30527,6 +30827,11 @@ function GymView({ data, setData }) {
   const [exerciseId, setExerciseId] = useState(''); // '' → новое упражнение
   const [sessionId, setSessionId] = useState('');
   const [summaryId, setSummaryId] = useState('');
+
+  // Тема и подтверждения — общие для всего раздела.
+  const theme = (data.settings || {}).gymTheme === 'light' ? 'light' : 'dark';
+  const setPref = (key, value) => setData(d => ({ ...d, settings: { ...(d.settings || {}), [key]: value } }));
+  const [askNode, ask] = useGxAsk();
 
   const program = programs.find(p => p.id === programId) || null;
   const day = allDays.find(d => d.id === dayId) || null;
@@ -30553,7 +30858,6 @@ function GymView({ data, setData }) {
   const saveSession = (s) => upsert('gymSessions', s);
 
   const deleteProgram = (id) => {
-    if (!confirm('Удалить тренировку со всеми днями и упражнениями? История проведённых тренировок сохранится.')) return;
     setData(d => {
       const dayIds = (d.gymDays || []).filter(x => x.programId === id).map(x => x.id);
       const exIds = (d.gymExercises || []).filter(x => dayIds.includes(x.dayId)).map(x => x.id);
@@ -30579,7 +30883,6 @@ function GymView({ data, setData }) {
   // тренировки — это факт, они остаются в аналитике (в них уже лежат имена
   // упражнений, так что подписи не потеряются).
   const deleteDay = (id) => {
-    if (!confirm('Удалить тренировочный день с упражнениями? История проведённых тренировок останется.')) return;
     setData(d => {
       const exIds = (d.gymExercises || []).filter(x => x.dayId === id).map(x => x.id);
       let del = gymWithDeleted(d.deletedIds, 'gymDays', [id]);
@@ -30673,10 +30976,22 @@ function GymView({ data, setData }) {
   const runningSession = screen === 'session' ? sessions.find(x => x.id === sessionId) : null;
   const screenNow = (screen === 'session' && !runningSession) ? 'day' : screen;
 
+  // Весь раздел — в одном полноэкранном корне «Фокус»: общие тема и подтверждения.
+  const wrap = (node) => (
+    <GxRoot theme={theme}>
+      <GxPrefCtx.Provider value={{ theme, setPref }}>
+        <GxAskCtx.Provider value={ask}>
+          {node}
+          {askNode}
+        </GxAskCtx.Provider>
+      </GxPrefCtx.Provider>
+    </GxRoot>
+  );
+
   if (screenNow === 'summary') {
     const done = sessions.find(x => x.id === summaryId);
     if (done) {
-      return (
+      return wrap(
         <GymSessionSummary
           session={done}
           exercises={exercisesOf(done.dayId)}
@@ -30689,12 +31004,12 @@ function GymView({ data, setData }) {
   }
 
   if (screenNow === 'analytics') {
-    return <GymAnalyticsView sessions={sessions} onBack={() => setScreen(programId ? 'program' : 'programs')} onDeleteSession={deleteSession} />;
+    return wrap(<GymAnalyticsView sessions={sessions} onBack={() => setScreen(programId ? 'program' : 'programs')} onDeleteSession={deleteSession} />);
   }
 
   if (screenNow === 'session') {
     const s = runningSession;
-    return (
+    return wrap(
       <GymSessionView
         session={s}
         day={allDays.find(x => x.id === s.dayId) || { id: s.dayId, title: s.dayTitle }}
@@ -30719,20 +31034,20 @@ function GymView({ data, setData }) {
 
   if (screenNow === 'exercise') {
     const ex = allExercises.find(e => e.id === exerciseId);
-    return (
+    return wrap(
       <GymExerciseForm
         exercise={ex || null}
         day={day}
         sessions={sessions}
         onSave={(next) => { saveExercise(next); setScreen('day'); }}
-        onDelete={ex ? () => { if (confirm('Удалить упражнение?')) { deleteExercise(ex.id); setScreen('day'); } } : null}
+        onDelete={ex ? () => { deleteExercise(ex.id); setScreen('day'); } : null}
         onBack={() => setScreen('day')}
       />
     );
   }
 
   if (screenNow === 'day' && day) {
-    return (
+    return wrap(
       <GymDayView
         day={day}
         index={daysOf(day.programId).findIndex(x => x.id === day.id)}
@@ -30761,7 +31076,7 @@ function GymView({ data, setData }) {
   }
 
   if (screenNow === 'program' && program) {
-    return (
+    return wrap(
       <GymProgramView
         program={program}
         days={daysOf(program.id)}
@@ -30785,13 +31100,14 @@ function GymView({ data, setData }) {
     );
   }
 
-  return (
+  return wrap(
     <GymProgramsView
       programs={programs}
       days={allDays}
       exercises={allExercises}
       sessions={sessions}
       settings={data.settings}
+      onExit={onExit}
       onOpen={openProgram}
       onCreate={(name) => {
         const p = newGymProgram(name);
@@ -30806,92 +31122,74 @@ function GymView({ data, setData }) {
   );
 }
 
-function GymResumeBanner({ session, settings, onResume }) {
-  if (!session) return null;
-  return (
-    <button
-      onClick={() => {
-        // Возврат к тренировке — единственный жест на этом экране, другого
-        // шанса забрать аудиовыход у iOS не будет.
-        if ((settings || {}).gymVoice !== false) gymSound.start(!!(settings || {}).gymBackgroundAudio);
-        // Если приложение перезапускали, разрешение на микрофон надо снова
-        // спросить в жесте — другого шанса на этом экране не будет.
-        if ((settings || {}).gymHandsFree) gymListener.prime();
-        onResume(session);
-      }}
-      className="w-full mb-4 rounded-2xl px-4 py-3 flex items-center gap-3 text-left text-white"
-      style={{ background: GYM_ACCENT }}
-    >
-      <Icon name="dumbbell" size={20} />
-      <div className="min-w-0 flex-1">
-        <div className="text-[15px] font-medium truncate">Идёт тренировка{session.dayTitle ? ` · ${session.dayTitle}` : ''}</div>
-        <div className="text-[12px] opacity-80">{(session.sets || []).length} подходов записано — продолжить</div>
-      </div>
-      <Icon name="chevronRight" size={18} />
-    </button>
-  );
-}
-
-function GymProgramsView({ programs, days, exercises, sessions, settings, onOpen, onCreate, onAnalytics, activeSession, onResume }) {
+// ── Главная: список тренировок ─────────────────────────────────────────────
+function GymProgramsView({ programs, days, exercises, sessions, settings, onExit, onOpen, onCreate, onAnalytics, activeSession, onResume }) {
   const [adding, setAdding] = useState(false);
-
   const doneCount = (pid) => sessions.filter(s => s.programId === pid && s.finishedAt).length;
+  const week = gxWeekInfo(sessions);
+  const todayIdx = (new Date().getDay() + 6) % 7;
 
   return (
-    <div className="fade-in">
-      <div className="mb-6 flex items-end justify-between gap-3">
-        <div>
-          <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Раздел</div>
-          <h1 className="font-display text-3xl md:text-4xl">GYM</h1>
+    <div className="gx-screen">
+      <GxTop onBack={onExit} title="GYM" right={<React.Fragment>
+        <GxThemeBtn />
+        <button className="gx-ib" onClick={onAnalytics} aria-label="Аналитика"><GxIc n="chart" /></button>
+      </React.Fragment>} />
+      <div className="gx-pg-scroll">
+        <div className="gx-eyebrow">Раздел</div>
+        <h1 className="gx-h1">Тренировки</h1>
+
+        <GymResumeBanner session={activeSession} settings={settings} onResume={onResume} />
+
+        <div className="gx-week">
+          <div className="gx-week-t"><GxIc n="flame" s={18} />
+            {week.count
+              ? `${week.count} ${gymPlural(week.count, 'тренировка', 'тренировки', 'тренировок')} на этой неделе`
+              : 'На этой неделе тренировок пока нет'}
+            {week.tonnage > 0 && <span className="gx-week-s">{Math.round(week.tonnage).toLocaleString('ru-RU')} кг</span>}
+          </div>
+          <GxWeekDots trained={week.trained} todayIdx={todayIdx} />
         </div>
-        <div className="flex gap-2">
-          <button onClick={onAnalytics} className="btn-secondary flex items-center gap-2 text-sm">
-            <Icon name="barChart" size={16} /> Аналитика
-          </button>
-          <button onClick={() => setAdding(true)} className="btn-primary flex items-center gap-2 text-sm">
-            <Icon name="plus" size={16} /> Тренировка
-          </button>
-        </div>
+
+        {programs.length === 0 ? (
+          <GymEmpty text="Пока нет ни одной тренировки" hint="Создайте программу — внутри неё будут тренировочные дни" />
+        ) : (
+          <React.Fragment>
+            <div className="gx-sec"><h2>Мои тренировки</h2></div>
+            <div className="gx-list">
+              {programs.map(p => {
+                const pDays = days.filter(d => d.programId === p.id);
+                const total = pDays.reduce((acc, d) => {
+                  const exs = exercises.filter(e => e.dayId === d.id);
+                  return acc + gymDayProgress(exs, sessions, d.resetAt) * (exs.length ? 1 : 0);
+                }, 0);
+                const withEx = pDays.filter(d => exercises.some(e => e.dayId === d.id)).length;
+                const progress = withEx ? total / withEx : 0;
+                const n = doneCount(p.id);
+                return (
+                  <button key={p.id} className="gx-prog" onClick={() => { gxTick(); onOpen(p); }}>
+                    <GymRing value={progress} size={54} stroke={5} />
+                    <span className="gx-prog-t">
+                      <b>{p.name || 'Без названия'}</b>
+                      <i>{pDays.length} {gymPlural(pDays.length, 'день', 'дня', 'дней')} · {n} {gymPlural(n, 'занятие', 'занятия', 'занятий')}</i>
+                    </span>
+                    <GxIc n="chevR" s={20} sw={2.4} />
+                  </button>
+                );
+              })}
+            </div>
+          </React.Fragment>
+        )}
       </div>
-
-      <GymResumeBanner session={activeSession} settings={settings} onResume={onResume} />
-
-      {programs.length === 0 ? (
-        <GymEmpty text="Пока нет ни одной тренировки" hint="Создайте программу — внутри неё будут тренировочные дни" />
-      ) : (
-        <div className="space-y-3">
-          {programs.map(p => {
-            const pDays = days.filter(d => d.programId === p.id);
-            const total = pDays.reduce((acc, d) => {
-              const exs = exercises.filter(e => e.dayId === d.id);
-              return acc + gymDayProgress(exs, sessions, d.resetAt) * (exs.length ? 1 : 0);
-            }, 0);
-            const withEx = pDays.filter(d => exercises.some(e => e.dayId === d.id)).length;
-            return (
-              <button
-                key={p.id}
-                onClick={() => onOpen(p)}
-                className="w-full text-left rounded-2xl p-5 text-white relative overflow-hidden"
-                style={{ background: 'linear-gradient(135deg, #1f2937 0%, #0f766e 100%)' }}
-              >
-                <div className="text-[13px] opacity-80">Моя тренировка</div>
-                <div className="font-display text-2xl mt-0.5">{p.name || 'Без названия'}</div>
-                <div className="text-[13px] opacity-80 mt-3">Выполнено занятий: {doneCount(p.id)}</div>
-                <div className="text-[13px] opacity-80">
-                  Дней: {pDays.length}
-                  {withEx > 0 && ` · прогресс ${Math.round(total / withEx * 100)}%`}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      )}
+      <div className="gx-dock gx-one">
+        <button className="gx-log gx-wide" onClick={() => setAdding(true)}><GxIc n="plus" s={24} sw={3} /> Новая тренировка</button>
+      </div>
 
       {adding && (
         <GymTextModal
           title="Новая тренировка"
           label="Название"
-          placeholder="Например: Андрей"
+          placeholder="Например: Сила · верх/низ"
           onSave={(name) => { setAdding(false); onCreate(name); }}
           onClose={() => setAdding(false)}
         />
@@ -30900,8 +31198,10 @@ function GymProgramsView({ programs, days, exercises, sessions, settings, onOpen
   );
 }
 
+// ── Тренировка: дни ────────────────────────────────────────────────────────
 function GymProgramView({ program, days, exercises, sessions, settings, onBack, onSaveProgram, onDeleteProgram,
                          onOpenDay, onAddDay, onReorderDays, onImportDays, onAnalytics, activeSession, onResume }) {
+  const ask = React.useContext(GxAskCtx);
   const [adding, setAdding] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [editMode, setEditMode] = useState(false);
@@ -30919,90 +31219,69 @@ function GymProgramView({ program, days, exercises, sessions, settings, onBack, 
   };
 
   return (
-    <div className="fade-in">
-      <div className="mb-5 flex items-center justify-between gap-3">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)]">
-          <Icon name="chevronLeft" size={16} /> Тренировки
+    <div className="gx-screen">
+      <GxTop onBack={onBack} title="Тренировка" right={<React.Fragment>
+        <GxThemeBtn />
+        <button className="gx-ib" onClick={onAnalytics} aria-label="Аналитика"><GxIc n="chart" /></button>
+        <button className={'gx-ib' + (editMode ? ' gx-armed' : '')} onClick={() => setEditMode(v => !v)} aria-label={editMode ? 'Готово' : 'Правка'}>
+          <GxIc n={editMode ? 'check' : 'edit'} s={20} sw={editMode ? 3 : 2} />
         </button>
-        <div className="flex items-center gap-2">
-          <button onClick={onAnalytics} className="btn-ghost flex items-center gap-1.5 text-sm">
-            <Icon name="barChart" size={16} /> Аналитика
-          </button>
-          <button onClick={() => setEditMode(v => !v)} className="btn-ghost flex items-center gap-1.5 text-sm">
-            <Icon name={editMode ? 'check' : 'edit'} size={16} /> {editMode ? 'Готово' : 'Правка'}
-          </button>
-        </div>
-      </div>
+      </React.Fragment>} />
+      <div className="gx-pg-scroll">
+        <div className="gx-eyebrow">Моя тренировка</div>
+        <h1 className="gx-h1">
+          {program.name || 'Без названия'}
+          {editMode && <button className="gx-inline-ib" onClick={() => setRenaming(true)} aria-label="Переименовать"><GxIc n="edit" s={20} /></button>}
+        </h1>
+        <div className="gx-meta">Выполнено занятий: {doneCount}</div>
 
-      <GymResumeBanner session={activeSession} settings={settings} onResume={onResume} />
+        <GymResumeBanner session={activeSession} settings={settings} onResume={onResume} />
 
-      <div
-        className="rounded-2xl p-5 text-white mb-6"
-        style={{ background: 'linear-gradient(135deg, #1f2937 0%, #0f766e 100%)' }}
-      >
-        <div className="text-[13px] opacity-80">Моя тренировка</div>
-        <div className="flex items-center gap-2">
-          <div className="font-display text-2xl mt-0.5 flex-1 min-w-0 truncate">{program.name || 'Без названия'}</div>
-          {editMode && (
-            <button onClick={() => setRenaming(true)} className="opacity-80"><Icon name="edit" size={18} /></button>
-          )}
-        </div>
-        <div className="text-[13px] opacity-80 mt-3">Выполнено занятий: {doneCount}</div>
-      </div>
-
-      <div className="flex items-center justify-between mb-3 gap-2">
-        <div className="text-[15px] font-medium" style={{ color: GYM_ACCENT }}>Тренировочные дни</div>
-        <div className="flex items-center gap-1">
+        <div className="gx-sec">
+          <h2>Тренировочные дни</h2>
           <GymImportButton settings={settings} onDraftReady={setImported} />
-          <button onClick={() => setAdding(true)} className="btn-ghost flex items-center gap-1.5 text-sm">
-            <Icon name="plus" size={16} /> День
-          </button>
         </div>
+
+        {days.length === 0 ? (
+          <GymEmpty text="Нет тренировочных дней" hint="Например: «1 день. Спина, бицепс»" />
+        ) : (
+          <div className="gx-list">
+            {days.map((d, i) => {
+              const exs = exercises.filter(e => e.dayId === d.id).sort((a, b) => (a.order || 0) - (b.order || 0));
+              const progress = gymDayProgress(exs, sessions, d.resetAt);
+              const sum = gymDaySummary(exs);
+              return (
+                <div key={d.id} className="gx-dayc">
+                  <button className="gx-dayc-main" onClick={() => { gxTick(); onOpenDay(d); }}>
+                    <GymRing value={progress} size={54} stroke={5} />
+                    <span className="gx-dayc-t">
+                      <span className="gx-eyebrow">{i + 1} тренировка</span>
+                      <b>{gymDayTitle(d, i)}</b>
+                      <i>{exs.length
+                        ? `${exs.length} упр. · раб. ${sum.working}${sum.warmup ? ` + разм. ${sum.warmup}` : ''} · ~ ${gymFmtDuration(sum.sec)}`
+                        : 'нет упражнений'}</i>
+                    </span>
+                  </button>
+                  {editMode ? (
+                    <span className="gx-mv">
+                      <button onClick={() => move(i, -1)} disabled={i === 0} aria-label="Выше"><GxIc n="chevD" s={18} /></button>
+                      <button onClick={() => move(i, 1)} disabled={i === days.length - 1} aria-label="Ниже"><GxIc n="chevD" s={18} /></button>
+                    </span>
+                  ) : <GxIc n="chevR" s={20} sw={2.4} />}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {editMode && (
+          <button className="gx-danger gx-danger-gap" onClick={() => ask({ title: 'Удалить тренировку?', text: 'Вместе с днями и упражнениями. История проведённых тренировок сохранится.', ok: 'Удалить', danger: true })
+            .then(ok => { if (ok) onDeleteProgram(); })}><GxIc n="trash" s={18} /> Удалить тренировку</button>
+        )}
       </div>
-
-      {days.length === 0 ? (
-        <GymEmpty text="Нет тренировочных дней" hint="Например: «1 день. Спина, бицепс»" />
-      ) : (
-        <div className="space-y-3">
-          {days.map((d, i) => {
-            const exs = exercises.filter(e => e.dayId === d.id).sort((a, b) => (a.order || 0) - (b.order || 0));
-            const progress = gymDayProgress(exs, sessions, d.resetAt);
-            return (
-              <div key={d.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 flex items-center gap-4">
-                <GymRing value={progress} />
-                <button onClick={() => onOpenDay(d)} className="flex-1 min-w-0 text-left">
-                  <div className="text-[13px]" style={{ color: GYM_ACCENT }}>{i + 1} тренировка</div>
-                  <div className="text-[16px] font-medium truncate">{gymDayTitle(d, i)}</div>
-                  <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">
-                    {exs.length ? (() => {
-                      const sum = gymDaySummary(exs);
-                      return `${exs.length} упр. · раб. ${sum.working}${sum.warmup ? ` + разм. ${sum.warmup}` : ''} · ~ ${gymFmtDuration(sum.sec)}`;
-                    })() : 'нет упражнений'}
-                  </div>
-                </button>
-                {editMode ? (
-                  <div className="flex flex-col gap-1">
-                    <button onClick={() => move(i, -1)} disabled={i === 0} className="p-1 disabled:opacity-25 text-[var(--text-muted)] rotate-180">
-                      <Icon name="chevronDown" size={16} />
-                    </button>
-                    <button onClick={() => move(i, 1)} disabled={i === days.length - 1} className="p-1 disabled:opacity-25 text-[var(--text-muted)]">
-                      <Icon name="chevronDown" size={16} />
-                    </button>
-                  </div>
-                ) : (
-                  <Icon name="chevronRight" size={18} />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {editMode && (
-        <button onClick={onDeleteProgram} className="w-full mt-8 py-3 rounded-xl border border-dashed border-red-200 text-red-500 text-sm flex items-center justify-center gap-2">
-          <Icon name="trash" size={16} /> Удалить тренировку
-        </button>
-      )}
+      <div className="gx-dock gx-one">
+        <button className="gx-log gx-wide" onClick={() => setAdding(true)}><GxIc n="plus" s={24} sw={3} /> Добавить день</button>
+      </div>
 
       {adding && (
         <GymTextModal
@@ -31034,16 +31313,21 @@ function GymProgramView({ program, days, exercises, sessions, settings, onBack, 
   );
 }
 
+// ── День: упражнения и старт ───────────────────────────────────────────────
 function GymDayView({ day, index, exercises, sessions, programName, settings, onBack, onSaveDay, onDeleteDay,
                      onOpenExercise, onNewExercise, onReorder, onDeleteExercise, onImportExercises, onStart,
                      activeSession, onResume }) {
+  const ask = React.useContext(GxAskCtx);
   const [editMode, setEditMode] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [imported, setImported] = useState(null);
 
-  const progress = gymDayProgress(exercises, sessions, day.resetAt);
   const summary = gymDaySummary(exercises);
-  const doneCount = sessions.filter(s => s.dayId === day.id && s.finishedAt).length;
+  const dayDone = sessions.filter(s => s.dayId === day.id && s.finishedAt)
+    .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+  const lastSession = dayDone[0] || null;
+  const lastTonnage = lastSession ? Math.round((lastSession.sets || []).filter(gymIsWorking).reduce((a, s) => a + gymSetTonnage(s), 0)) : 0;
+  const title = gymDayTitle(day, index);
 
   const move = (i, dir) => {
     const next = [...exercises];
@@ -31054,125 +31338,112 @@ function GymDayView({ day, index, exercises, sessions, programName, settings, on
     onReorder(next);
   };
 
-  const resetProgress = () => {
-    if (!confirm('Сбросить прогресс дня? История проведённых тренировок сохранится.')) return;
-    onSaveDay({ ...day, resetAt: Date.now() });
+  const resetProgress = () => ask({
+    title: 'Сбросить прогресс дня?',
+    text: 'Проценты выполнения обнулятся. История проведённых тренировок сохранится.',
+    ok: 'Сбросить',
+  }).then(ok => { if (ok) onSaveDay({ ...day, resetAt: Date.now() }); });
+
+  const start = () => {
+    const first = exercises[0];
+    const row = first ? gymPlanRows(first)[0] : null;
+    const voice = (settings || {}).gymVoice !== false;
+    if (voice) gymSound.start(!!(settings || {}).gymBackgroundAudio);
+    gymPrimeVoice(
+      voice,
+      row
+        ? `Поехали. ${gymSaySet(
+            row,
+            gymPctBase(first, sessions),
+            first.name,
+            gymLastWorkingWeight(sessions, first.name, Date.now()),
+          )}`
+        : 'Поехали',
+    );
+    gxHaptic.medium();
+    onStart();
   };
 
   return (
-    <div className="fade-in pb-28">
-      <div className="mb-5 flex items-center justify-between gap-3">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)] min-w-0">
-          <Icon name="chevronLeft" size={16} /> <span className="truncate">{programName || 'Программа'}</span>
+    <div className="gx-screen">
+      <GxTop onBack={onBack} title={programName || 'Тренировка'} right={<React.Fragment>
+        <GxThemeBtn />
+        <button className={'gx-ib' + (editMode ? ' gx-armed' : '')} onClick={() => setEditMode(v => !v)} aria-label={editMode ? 'Готово' : 'Правка'}>
+          <GxIc n={editMode ? 'check' : 'edit'} s={20} sw={editMode ? 3 : 2} />
         </button>
-        <button onClick={() => setEditMode(v => !v)} className="btn-ghost flex items-center gap-1.5 text-sm flex-shrink-0">
-          <Icon name={editMode ? 'check' : 'edit'} size={16} /> {editMode ? 'Готово' : 'Правка'}
-        </button>
-      </div>
-
-      <GymResumeBanner session={activeSession && activeSession.dayId === day.id ? activeSession : null} settings={settings} onResume={onResume} />
-
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 flex items-center gap-4 mb-6">
-        <GymRing value={progress} size={60} stroke={5} />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-[13px]" style={{ color: GYM_ACCENT }}>{index + 1} тренировка</div>
-            <div className="text-[13px] text-[var(--text-muted)]">~ {gymFmtDuration(summary.sec)}</div>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="text-[17px] font-medium truncate flex-1">{gymDayTitle(day, index)}</div>
-            {editMode && <button onClick={() => setRenaming(true)}><Icon name="edit" size={16} /></button>}
-          </div>
-          <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">
-            Разминочных: {summary.warmup} · Рабочих: {summary.working} · проведено: {doneCount}
-          </div>
+      </React.Fragment>} />
+      <div className="gx-pg-scroll">
+        <div className="gx-eyebrow">{index + 1} тренировка</div>
+        <h1 className="gx-h1">
+          {title}
+          {editMode && <button className="gx-inline-ib" onClick={() => setRenaming(true)} aria-label="Переименовать"><GxIc n="edit" s={20} /></button>}
+        </h1>
+        <div className="gx-meta">
+          {summary.working} раб.{summary.warmup ? ` + ${summary.warmup} разм.` : ''} подходов · ~ {gymFmtDuration(summary.sec)}
         </div>
-      </div>
 
-      {exercises.length === 0 ? (
-        <GymEmpty text="В этом дне пока нет упражнений" />
-      ) : (
-        <div className="space-y-2">
-          {exercises.map((ex, i) => {
-            const p = gymExerciseProgress(ex, sessions, day.resetAt);
-            return (
-              <div key={ex.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 flex items-center gap-3">
-                {editMode && (
-                  <div className="flex flex-col">
-                    <button onClick={() => move(i, -1)} disabled={i === 0} className="p-0.5 disabled:opacity-25 rotate-180 text-[var(--text-muted)]"><Icon name="chevronDown" size={14} /></button>
-                    <button onClick={() => move(i, 1)} disabled={i === exercises.length - 1} className="p-0.5 disabled:opacity-25 text-[var(--text-muted)]"><Icon name="chevronDown" size={14} /></button>
-                  </div>
-                )}
-                <button onClick={() => onOpenExercise(ex)} className="flex-1 min-w-0 text-left">
-                  <div className="text-[15px] font-medium leading-snug">{ex.name || 'Без названия'}</div>
-                  <div className="text-[13px] text-[var(--text-muted)] truncate mt-0.5">{gymSchemeText(ex, gymPctBase(ex, sessions))}</div>
-                  {(ex.targetMuscle || (ex.muscles || []).length > 0) && (
-                    <div className="text-[12px] text-[var(--text-subtle)] mt-0.5">
-                      {ex.targetMuscle || (ex.muscles || []).join(' · ')}
-                    </div>
+        <GymResumeBanner session={activeSession && activeSession.dayId === day.id ? activeSession : null} settings={settings} onResume={onResume} />
+
+        {lastSession && (
+          <div className="gx-lastw">
+            <div className="gx-lw-h">Прошлый раз · {gxAgo(lastSession.date)}</div>
+            <div className="gx-lw-r">
+              {lastSession.durationSec ? <span><b>{gymFmtDuration(lastSession.durationSec)}</b></span> : null}
+              <span><b>{lastTonnage.toLocaleString('ru-RU')}</b> кг</span>
+              <span><b>{(lastSession.sets || []).filter(gymIsWorking).length}</b> подходов</span>
+            </div>
+          </div>
+        )}
+
+        {exercises.length === 0 ? (
+          <GymEmpty text="В этом дне пока нет упражнений" hint="Добавьте упражнение или загрузите программу со скриншота" />
+        ) : (
+          <div className="gx-dl">
+            {exercises.map((ex, i) => {
+              const p = gymExerciseProgress(ex, sessions, day.resetAt);
+              return (
+                <div key={ex.id} className="gx-dl-r">
+                  {editMode && (
+                    <span className="gx-mv gx-mv-col">
+                      <button onClick={() => move(i, -1)} disabled={i === 0} aria-label="Выше"><GxIc n="chevD" s={16} /></button>
+                      <button onClick={() => move(i, 1)} disabled={i === exercises.length - 1} aria-label="Ниже"><GxIc n="chevD" s={16} /></button>
+                    </span>
                   )}
-                </button>
-                {editMode ? (
-                  <button
-                    onClick={() => { if (confirm('Удалить упражнение?')) onDeleteExercise(ex.id); }}
-                    className="text-red-400 p-1"
-                  ><Icon name="trash" size={16} /></button>
-                ) : (
-                  <div className="flex items-center gap-1 flex-shrink-0">
-                    <span className="text-[13px]" style={{ color: GYM_ACCENT }}>{Math.round(p * 100)}%</span>
-                    <Icon name="chevronRight" size={16} />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
+                  <button className="gx-dl-main" onClick={() => { gxTick(); onOpenExercise(ex); }}>
+                    <span className="gx-dl-n">{String(i + 1).padStart(2, '0')}</span>
+                    <span className="gx-dl-t">
+                      <b>{ex.name || 'Без названия'}</b>
+                      <i>{gxDash(gymSchemeText(ex, gymPctBase(ex, sessions)))}</i>
+                      {(ex.targetMuscle || (ex.muscles || []).length > 0) && <em>{ex.targetMuscle || (ex.muscles || []).join(' · ')}</em>}
+                    </span>
+                  </button>
+                  {editMode ? (
+                    <button className="gx-del" onClick={() => ask({ title: 'Удалить упражнение?', text: ex.name || '', ok: 'Удалить', danger: true })
+                      .then(ok => { if (ok) onDeleteExercise(ex.id); })} aria-label="Удалить"><GxIc n="trash" s={18} /></button>
+                  ) : (
+                    <span className="gx-dl-p">{Math.round(p * 100)}%</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
 
-      <div className="mt-3 flex gap-2">
-        <button
-          onClick={onNewExercise}
-          className="flex-1 py-3 rounded-2xl border border-dashed border-[var(--border-strong)] text-[var(--text-muted)] text-sm flex items-center justify-center gap-2"
-        >
-          <Icon name="plus" size={16} /> Добавить упражнение
-        </button>
-        <div className="flex-1 py-2 rounded-2xl border border-dashed border-[var(--border-strong)] flex items-center justify-center">
-          <GymImportButton settings={settings} onDraftReady={setImported} label="Из скриншота" />
+        <div className="gx-addrow">
+          <button className="gx-dash" onClick={onNewExercise}><GxIc n="plus" s={18} sw={2.6} /> Упражнение</button>
+          <GymImportButton settings={settings} onDraftReady={setImported} label="Из скриншота" dashed />
         </div>
+
+        {editMode && (
+          <button className="gx-danger gx-danger-gap" onClick={() => ask({ title: 'Удалить тренировочный день?', text: 'Вместе с упражнениями. История проведённых тренировок останется.', ok: 'Удалить', danger: true })
+            .then(ok => { if (ok) onDeleteDay(); })}><GxIc n="trash" s={18} /> Удалить день</button>
+        )}
+
+        <button className="gx-ghost-wide gx-reset" onClick={resetProgress}>Сбросить прогресс</button>
       </div>
-
-      {editMode && (
-        <button onClick={onDeleteDay} className="w-full mt-6 py-3 rounded-xl border border-dashed border-red-200 text-red-500 text-sm flex items-center justify-center gap-2">
-          <Icon name="trash" size={16} /> Удалить тренировочный день
-        </button>
-      )}
-
-      <div className="mt-6 space-y-2">
-        <button onClick={resetProgress} className="btn-secondary w-full">Сбросить прогресс</button>
-        <button
-          onClick={() => {
-            const first = exercises[0];
-            const row = first ? gymPlanRows(first)[0] : null;
-            const voice = (settings || {}).gymVoice !== false;
-            if (voice) gymSound.start(!!(settings || {}).gymBackgroundAudio);
-            gymPrimeVoice(
-              voice,
-              row
-                ? `Поехали. ${gymSaySet(
-                    row,
-                    gymPctBase(first, sessions),
-                    first.name,
-                    gymLastWorkingWeight(sessions, first.name, Date.now()),
-                  )}`
-                : 'Поехали',
-            );
-            onStart();
-          }}
-          disabled={exercises.length === 0}
-          className="w-full py-3.5 rounded-xl text-white font-medium disabled:opacity-40 flex items-center justify-center gap-2"
-          style={{ background: GYM_ACCENT }}
-        >
-          <Icon name="play" size={18} /> Начать тренировку
+      <div className="gx-dock gx-one">
+        <button className="gx-log gx-wide" onClick={start} disabled={exercises.length === 0}>
+          <GxIc n="play" s={24} /> Начать тренировку
         </button>
       </div>
 
@@ -31181,7 +31452,7 @@ function GymDayView({ day, index, exercises, sessions, programName, settings, on
           title="Название дня"
           label="Название"
           initial={day.title}
-          onSave={(title) => { setRenaming(false); onSaveDay({ ...day, title }); }}
+          onSave={(t) => { setRenaming(false); onSaveDay({ ...day, title: t }); }}
           onClose={() => setRenaming(false)}
         />
       )}
@@ -31196,6 +31467,7 @@ function GymDayView({ day, index, exercises, sessions, programName, settings, on
     </div>
   );
 }
+
 // Цвета подходов в пирамиде: от лёгкого к тяжёлому — как в приложении,
 // чтобы схема читалась одним взглядом.
 const GYM_SET_COLORS = ['#22c55e', '#15803d', '#eab308', '#f97316', '#ef4444', '#a855f7', '#0ea5e9', '#64748b'];
@@ -31223,11 +31495,11 @@ function GymRestPicker({ value, onChange }) {
   const min = Math.floor(Math.max(0, gymInt(value, 0)) / 60);
   const sec = Math.max(0, gymInt(value, 0)) % 60;
   return (
-    <div className="flex items-center gap-2">
-      <select value={min} onChange={e => onChange(gymInt(e.target.value, 0) * 60 + sec)} className="flex-1">
+    <div className="gx-pair">
+      <select value={min} onChange={e => onChange(gymInt(e.target.value, 0) * 60 + sec)} aria-label="Минуты">
         {Array.from({ length: 11 }).map((_, i) => <option key={i} value={i}>{i} мин</option>)}
       </select>
-      <select value={sec} onChange={e => onChange(min * 60 + gymInt(e.target.value, 0))} className="flex-1">
+      <select value={sec} onChange={e => onChange(min * 60 + gymInt(e.target.value, 0))} aria-label="Секунды">
         {Array.from({ length: 12 }).map((_, i) => <option key={i} value={i * 5}>{i * 5} сек</option>)}
       </select>
     </div>
@@ -31251,9 +31523,9 @@ function GymGroupsEditor({ groups, base, onChange }) {
   const counters = { warmup: 0, working: 0 };
 
   return (
-    <div className="space-y-3">
+    <div className="gx-stack">
       {groups.length === 0 && (
-        <div className="text-[13px] text-[var(--text-subtle)]">
+        <div className="gx-note">
           Добавьте подходы: сначала разминочные, потом рабочие — как в вашей программе.
         </div>
       )}
@@ -31266,53 +31538,41 @@ function GymGroupsEditor({ groups, base, onChange }) {
         const title = count > 1
           ? `${GYM_KIND_LABEL[kind]} ${from}-${counters[kind]}`
           : `${GYM_KIND_LABEL[kind]} ${counters[kind]}`;
-        const accent = gymKindColor(kind);
         return (
-          <div key={g.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <div className="text-[15px] font-medium flex-1" style={{ color: accent }}>{title}</div>
-              <button onClick={() => move(i, -1)} disabled={i === 0} className="p-1 disabled:opacity-25 rotate-180 text-[var(--text-muted)]"><Icon name="chevronDown" size={15} /></button>
-              <button onClick={() => move(i, 1)} disabled={i === groups.length - 1} className="p-1 disabled:opacity-25 text-[var(--text-muted)]"><Icon name="chevronDown" size={15} /></button>
-              <button onClick={() => remove(g.id)} className="p-1 text-red-400"><Icon name="trash" size={15} /></button>
+          <div key={g.id} className={'gx-gcard' + (kind === 'warmup' ? ' gx-warm' : '')}>
+            <div className="gx-gcard-h">
+              <span className="gx-gcard-t">{title}</span>
+              <button onClick={() => move(i, -1)} disabled={i === 0} aria-label="Выше" className="gx-up"><GxIc n="chevD" s={17} /></button>
+              <button onClick={() => move(i, 1)} disabled={i === groups.length - 1} aria-label="Ниже"><GxIc n="chevD" s={17} /></button>
+              <button onClick={() => remove(g.id)} aria-label="Удалить подход" className="gx-del"><GxIc n="trash" s={17} /></button>
             </div>
 
-            <div className="inline-flex w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl p-1">
-              {['warmup', 'working'].map(k => (
-                <button
-                  key={k}
-                  onClick={() => patch(g.id, { kind: k })}
-                  className={`flex-1 py-1.5 rounded-lg text-[13px] font-medium ${kind === k ? 'text-white' : 'text-[var(--text-muted)]'}`}
-                  style={kind === k ? { background: gymKindColor(k) } : {}}
-                >
-                  {k === 'warmup' ? 'Разминочный' : 'Рабочий'}
-                </button>
-              ))}
-            </div>
+            <GxSeg full value={kind} onChange={(k) => patch(g.id, { kind: k })}
+              options={[{ v: 'warmup', t: 'Разминочный', cls: 'gx-warm' }, { v: 'working', t: 'Рабочий' }]} />
 
-            <div className="flex items-center justify-between">
-              <span className="text-[14px] text-[var(--text-muted)]">Подходов подряд</span>
+            <div className="gx-row2">
+              <span className="gx-rowl">Подходов подряд</span>
               <GymStepper value={g.count} onChange={(v) => patch(g.id, { count: v })} min={1} max={10} />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label>Вес</label>
+            <div className="gx-grid2">
+              <div className="gx-field">
+                <label className="gx-lbl">Вес</label>
                 <input
                   value={g.weight ?? ''}
                   onChange={e => patch(g.id, { weight: e.target.value })}
                   placeholder="55-65"
                   disabled={(g.weightUnit || 'kg') === 'body'}
-                  className="disabled:opacity-40"
                 />
               </div>
-              <div>
-                <label>Повторы</label>
+              <div className="gx-field">
+                <label className="gx-lbl">Повторы</label>
                 <input value={g.reps ?? ''} onChange={e => patch(g.id, { reps: e.target.value })} placeholder="8-10" />
               </div>
             </div>
 
-            <div>
-              <label>Единица веса</label>
+            <div className="gx-field">
+              <label className="gx-lbl">Единица веса</label>
               <select value={g.weightUnit || 'kg'} onChange={e => patch(g.id, { weightUnit: e.target.value })}>
                 <option value="kg">кг</option>
                 <option value="pct">% от рабочего веса</option>
@@ -31320,44 +31580,33 @@ function GymGroupsEditor({ groups, base, onChange }) {
               </select>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label>Отдых</label>
-                <GymRestPicker value={g.restSec} onChange={(v) => patch(g.id, { restSec: v })} />
-              </div>
-              <div>
-                <label>RIR (в запасе)</label>
-                <input value={g.rir ?? ''} onChange={e => patch(g.id, { rir: e.target.value })} placeholder="2" />
-              </div>
+            <div className="gx-field">
+              <label className="gx-lbl">Отдых</label>
+              <GymRestPicker value={g.restSec} onChange={(v) => patch(g.id, { restSec: v })} />
             </div>
 
-            <div className="text-[13px] text-[var(--text-subtle)]">
-              {gymRowPlanText({ ...g, unit: g.weightUnit || 'kg' }, base) || 'настройки не заданы'}
+            <div className="gx-field">
+              <label className="gx-lbl">RIR (в запасе)</label>
+              <input value={g.rir ?? ''} onChange={e => patch(g.id, { rir: e.target.value })} placeholder="2" />
+            </div>
+
+            <div className="gx-gplan">
+              {gxDash(gymRowPlanText({ ...g, unit: g.weightUnit || 'kg' }, base)) || 'настройки не заданы'}
             </div>
           </div>
         );
       })}
 
-      <div className="flex gap-2">
-        <button
-          onClick={() => onChange([...groups, newGymSetGroup('warmup')])}
-          className="flex-1 py-2.5 rounded-xl border border-dashed border-[var(--border-strong)] text-[13px] text-[var(--text-muted)]"
-        >
-          + Разминочные
-        </button>
-        <button
-          onClick={() => onChange([...groups, newGymSetGroup('working')])}
-          className="flex-1 py-2.5 rounded-xl border border-dashed text-[13px]"
-          style={{ borderColor: GYM_ACCENT, color: GYM_ACCENT }}
-        >
-          + Рабочие
-        </button>
+      <div className="gx-addrow">
+        <button className="gx-dash" onClick={() => onChange([...groups, newGymSetGroup('warmup')])}>+ Разминочные</button>
+        <button className="gx-dash gx-lime" onClick={() => onChange([...groups, newGymSetGroup('working')])}>+ Рабочие</button>
       </div>
     </div>
   );
 }
 
 function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) {
+  const ask = React.useContext(GxAskCtx);
   const base = exercise || newGymExercise(day ? day.id : '', 0);
   const [form, setForm] = useState(() => ({
     ...base,
@@ -31397,26 +31646,30 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
   const kinds = gymCountKinds(form);
   const history = gymExerciseHistory(sessions, form);
 
-  const clear = () => {
-    if (!confirm('Очистить настройки упражнения? Название и история сохранятся.')) return;
+  const clear = () => ask({
+    title: 'Очистить настройки упражнения?',
+    text: 'Название и история сохранятся.',
+    ok: 'Очистить',
+    danger: true,
+  }).then(ok => {
+    if (!ok) return;
     const fresh = newGymExercise(form.dayId, form.order);
     setForm(f => ({ ...fresh, id: f.id, dayId: f.dayId, order: f.order, name: f.name, muscles: f.muscles, targetMuscle: f.targetMuscle, equipment: f.equipment, createdAt: f.createdAt }));
-  };
+  });
+
+  const modes = [{ v: 'linear', t: 'Линейное' }, { v: 'pyramid', t: 'Пирамида' }, { v: 'groups', t: 'Подробно' }];
 
   return (
-    <div className="fade-in pb-28">
-      <div className="mb-5 flex items-center justify-between gap-3">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)]">
-          <Icon name="chevronLeft" size={16} /> Упражнения
-        </button>
-        <button onClick={() => onSave(form)} className="flex items-center gap-1.5 text-sm font-medium" style={{ color: GYM_ACCENT }}>
-          <Icon name="check" size={18} /> Сохранить
-        </button>
-      </div>
+    <div className="gx-screen">
+      <GxTop onBack={onBack} title="Упражнение" right={
+        <button className="gx-ib gx-armed" onClick={() => onSave(form)} aria-label="Сохранить"><GxIc n="check" s={22} sw={3} /></button>
+      } />
+      <div className="gx-pg-scroll gx-form">
+        <div className="gx-eyebrow">{exercise ? 'Настройки упражнения' : 'Новое упражнение'}</div>
+        <h1 className="gx-h1 gx-h1-s">{form.name || 'Без названия'}</h1>
 
-      <div className="space-y-5">
-        <div>
-          <label>Название упражнения</label>
+        <div className="gx-field">
+          <label className="gx-lbl">Название упражнения</label>
           <input
             value={form.name}
             onChange={e => set({ name: e.target.value })}
@@ -31424,8 +31677,8 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
           />
         </div>
 
-        <div>
-          <label>Мышцы</label>
+        <div className="gx-field">
+          <label className="gx-lbl">Мышцы</label>
           <GymChips
             options={GYM_MUSCLES}
             selected={form.muscles}
@@ -31437,8 +31690,8 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
           />
         </div>
 
-        <div>
-          <label>Целевая мышца</label>
+        <div className="gx-field">
+          <label className="gx-lbl">Целевая мышца</label>
           <input
             value={form.targetMuscle || ''}
             onChange={e => set({ targetMuscle: e.target.value })}
@@ -31446,8 +31699,8 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
           />
         </div>
 
-        <div>
-          <label>Оборудование</label>
+        <div className="gx-field">
+          <label className="gx-lbl">Оборудование</label>
           <select value={form.equipment || ''} onChange={e => set({ equipment: e.target.value })}>
             <option value="">Не указано</option>
             {GYM_EQUIPMENT.map(x => <option key={x} value={x}>{x}</option>)}
@@ -31455,22 +31708,15 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
         </div>
 
         {/* Режим: одинаковые подходы, пирамида или разбивка по типам подходов */}
-        <div className="inline-flex w-full bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-1">
-          {[{ id: 'linear', label: 'Линейное' }, { id: 'pyramid', label: 'Пирамида' }, { id: 'groups', label: 'Подробно' }].map(m => (
-            <button
-              key={m.id}
-              onClick={() => set({
-                mode: m.id,
-                groups: (m.id === 'groups' && gymGroups(form).length === 0)
-                  ? [newGymSetGroup('warmup'), newGymSetGroup('working')]
-                  : form.groups,
-              })}
-              className={`flex-1 py-2.5 rounded-xl text-[15px] font-medium transition-all ${form.mode === m.id ? 'text-white' : 'text-[var(--text-muted)]'}`}
-              style={form.mode === m.id ? { background: '#3f5372' } : {}}
-            >
-              {m.label}
-            </button>
-          ))}
+        <div className="gx-field">
+          <label className="gx-lbl">Схема подходов</label>
+          <GxSeg full value={form.mode} options={modes}
+            onChange={(m) => set({
+              mode: m,
+              groups: (m === 'groups' && gymGroups(form).length === 0)
+                ? [newGymSetGroup('warmup'), newGymSetGroup('working')]
+                : form.groups,
+            })} />
         </div>
 
         {form.mode === 'groups' ? (
@@ -31480,65 +31726,65 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
             onChange={(groups) => set({ groups })}
           />
         ) : form.mode === 'linear' ? (
-          <>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label>Подходы</label>
+          <React.Fragment>
+            <div className="gx-grid2">
+              <div className="gx-field">
+                <label className="gx-lbl">Подходы</label>
                 <input inputMode="numeric" value={form.sets ?? ''} onChange={e => setCount(gymInt(e.target.value, 1) || 1)} />
               </div>
-              <div>
-                <label>Повторы</label>
+              <div className="gx-field">
+                <label className="gx-lbl">Повторы</label>
                 <input inputMode="numeric" value={form.reps ?? ''} onChange={e => set({ reps: e.target.value })} />
               </div>
             </div>
-            <div>
-              <label>При необходимости укажите вес</label>
+            <div className="gx-field">
+              <label className="gx-lbl">При необходимости укажите вес</label>
               <input inputMode="decimal" value={form.weight ?? ''} onChange={e => set({ weight: e.target.value })} placeholder="Вес" />
             </div>
-          </>
+          </React.Fragment>
         ) : (
-          <>
-            <div className="flex items-center justify-between">
-              <div className="text-[17px] font-medium">Количество подходов</div>
+          <React.Fragment>
+            <div className="gx-row2">
+              <span className="gx-rowl gx-rowl-b">Количество подходов</span>
               <GymStepper value={form.sets} onChange={setCount} />
             </div>
 
-            <div>
-              <div className="text-[15px] font-medium mb-2" style={{ color: '#3f5372' }}>Количество повторений</div>
-              <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${Math.min(n, 4)}, minmax(0, 1fr))` }}>
+            <div className="gx-field">
+              <label className="gx-lbl">Количество повторений</label>
+              <div className="gx-grid-n" style={{ gridTemplateColumns: `repeat(${Math.min(n, 4)}, minmax(0, 1fr))` }}>
                 {Array.from({ length: n }).map((_, i) => (
                   <input
                     key={i}
                     inputMode="numeric"
                     value={gymResizeList(form.repsList, n, '')[i] ?? ''}
                     onChange={e => setListValue('repsList', i, e.target.value)}
-                    className="text-center"
+                    className="gx-c"
                     style={{ color: gymSetColor(i), borderColor: gymSetColor(i) }}
                   />
                 ))}
               </div>
             </div>
 
-            <div>
-              <div className="text-[15px] font-medium mb-2" style={{ color: '#3f5372' }}>Вес</div>
-              <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${Math.min(n, 4)}, minmax(0, 1fr))` }}>
+            <div className="gx-field">
+              <label className="gx-lbl">Вес</label>
+              <div className="gx-grid-n" style={{ gridTemplateColumns: `repeat(${Math.min(n, 4)}, minmax(0, 1fr))` }}>
                 {Array.from({ length: n }).map((_, i) => (
                   <input
                     key={i}
                     inputMode="decimal"
                     value={gymResizeList(form.weightList, n, '')[i] ?? ''}
                     onChange={e => setListValue('weightList', i, e.target.value)}
-                    className="text-center"
+                    className="gx-c"
                     style={{ color: gymSetColor(i), borderColor: gymSetColor(i) }}
                   />
                 ))}
               </div>
             </div>
-          </>
+          </React.Fragment>
         )}
 
         {form.mode !== 'groups' && (
-          <div className="flex items-center gap-6">
+          <div className="gx-radios" role="radiogroup">
             <GymRadio checked={(form.weightUnit || 'kg') === 'kg'} onChange={() => set({ weightUnit: 'kg' })}>кг</GymRadio>
             <GymRadio checked={form.weightUnit === 'pct'} onChange={() => set({ weightUnit: 'pct' })}>% от макс. веса</GymRadio>
           </div>
@@ -31549,15 +31795,15 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
         {form.mode === 'groups'
           && gymGroups(form).some(g => (g.weightUnit || 'kg') === 'pct')
           && !gymGroups(form).some(g => g.kind !== 'warmup' && (g.weightUnit || 'kg') === 'kg' && !gymRange(g.weight).empty) && (
-          <div>
-            <label>Рабочий вес, кг</label>
+          <div className="gx-field">
+            <label className="gx-lbl">Рабочий вес, кг</label>
             <input
               inputMode="decimal"
               value={form.maxWeight ?? ''}
               onChange={e => set({ maxWeight: e.target.value })}
               placeholder={maxFromHistory ? `из истории: ${gymRound1(maxFromHistory)}` : 'например 40'}
             />
-            <div className="text-[12px] text-[var(--text-subtle)] mt-1.5">
+            <div className="gx-note">
               {pctBase
                 ? `Проценты считаются от ${gymRound1(pctBase)} кг${gymNum(form.maxWeight) > 0 ? '' : ' — лучший результат из истории'}`
                 : 'Проценты пока не в чем показать: укажите рабочий вес или проведите тренировку'}
@@ -31566,15 +31812,15 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
         )}
 
         {form.mode !== 'groups' && form.weightUnit === 'pct' && (
-          <div>
-            <label>Макс. вес, кг</label>
+          <div className="gx-field">
+            <label className="gx-lbl">Макс. вес, кг</label>
             <input
               inputMode="decimal"
               value={form.maxWeight ?? ''}
               onChange={e => set({ maxWeight: e.target.value })}
               placeholder={maxFromHistory ? `из истории: ${gymRound1(maxFromHistory)}` : 'например 80'}
             />
-            <div className="text-[12px] text-[var(--text-subtle)] mt-1.5">
+            <div className="gx-note">
               {effectiveMax
                 ? `Проценты считаются от ${gymRound1(effectiveMax)} кг${gymNum(form.maxWeight) > 0 ? '' : ' — лучший результат из истории'}`
                 : 'Пока не от чего считать: укажите макс. вес или проведите тренировку'}
@@ -31583,36 +31829,35 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
         )}
 
         {form.mode !== 'groups' && (
-        <div>
-          <label>Время отдыха</label>
-          <div className="flex items-center gap-3">
-            <select
-              value={restMin}
-              disabled={form.noRest}
-              onChange={e => set({ restSec: gymInt(e.target.value, 0) * 60 + restSec })}
-              className="flex-1 disabled:opacity-40"
-            >
-              {Array.from({ length: 11 }).map((_, i) => <option key={i} value={i}>{String(i).padStart(2, '0')} мин</option>)}
-            </select>
-            <span className="text-[var(--text-muted)]">:</span>
-            <select
-              value={restSec}
-              disabled={form.noRest}
-              onChange={e => set({ restSec: restMin * 60 + gymInt(e.target.value, 0) })}
-              className="flex-1 disabled:opacity-40"
-            >
-              {Array.from({ length: 12 }).map((_, i) => <option key={i} value={i * 5}>{String(i * 5).padStart(2, '0')} сек</option>)}
-            </select>
+          <div className="gx-field">
+            <label className="gx-lbl">Время отдыха</label>
+            <div className="gx-pair">
+              <select
+                value={restMin}
+                disabled={form.noRest}
+                onChange={e => set({ restSec: gymInt(e.target.value, 0) * 60 + restSec })}
+                aria-label="Минуты отдыха"
+              >
+                {Array.from({ length: 11 }).map((_, i) => <option key={i} value={i}>{String(i).padStart(2, '0')} мин</option>)}
+              </select>
+              <select
+                value={restSec}
+                disabled={form.noRest}
+                onChange={e => set({ restSec: restMin * 60 + gymInt(e.target.value, 0) })}
+                aria-label="Секунды отдыха"
+              >
+                {Array.from({ length: 12 }).map((_, i) => <option key={i} value={i * 5}>{String(i * 5).padStart(2, '0')} сек</option>)}
+              </select>
+            </div>
+            <div className="gx-row2 gx-row2-top">
+              <span className="gx-rowl">Без отдыха</span>
+              <GxSwitch on={!!form.noRest} onChange={v => set({ noRest: v })} label="Без отдыха" />
+            </div>
           </div>
-          <div className="flex items-center justify-between mt-3">
-            <span className="text-[15px] text-[var(--text-muted)]">Без отдыха</span>
-            <Toggle checked={!!form.noRest} onChange={v => set({ noRest: v })} />
-          </div>
-        </div>
         )}
 
-        <div>
-          <label>Комментарий</label>
+        <div className="gx-field">
+          <label className="gx-lbl">Комментарий</label>
           <textarea
             rows={2}
             value={form.comment || ''}
@@ -31621,34 +31866,27 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
           />
         </div>
 
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3">
-          <div className="flex items-center justify-between">
-            <div className="text-[13px] text-[var(--text-muted)]">План упражнения</div>
-            <div className="text-[12px] text-[var(--text-subtle)]">
-              {kinds.warmup ? `разминочных ${kinds.warmup} · ` : ''}рабочих {kinds.working} · ~ {gymFmtDuration(gymExerciseSec(form))}
-            </div>
+        <div className="gx-plancard">
+          <div className="gx-plancard-h">
+            <span>План упражнения</span>
+            <i>{kinds.warmup ? `разминочных ${kinds.warmup} · ` : ''}рабочих {kinds.working} · ~ {gymFmtDuration(gymExerciseSec(form))}</i>
           </div>
-          <div className="mt-2 space-y-1">
+          <div className="gx-plancard-b">
             {gymPlanRows(form).map((r, i) => {
               const cells = (
-                <>
-                  <span className="w-[92px] flex-shrink-0 text-left" style={{ color: gymKindColor(r.kind) }}>{r.label}</span>
-                  <span className="flex-1 min-w-0 text-left">{gymRowPlanText(r, pctBase) || '—'}</span>
-                </>
+                <React.Fragment>
+                  <span className={'gx-pl-k' + (r.kind === 'warmup' ? ' gx-warm' : '')}>{r.label}</span>
+                  <span className="gx-pl-v">{gxDash(gymRowPlanText(r, pctBase)) || '—'}</span>
+                </React.Fragment>
               );
               // В «Подробно» тип задаётся у самой группы подходов и здесь только
               // показывается; в линейном режиме и пирамиде строка — переключатель.
               return form.mode === 'groups' ? (
-                <div key={i} className="flex items-baseline gap-2 text-[14px]">{cells}</div>
+                <div key={i} className="gx-pl-r">{cells}</div>
               ) : (
-                <button
-                  key={i}
-                  onClick={() => toggleWarmup(i)}
-                  className="w-full flex items-baseline gap-2 text-[14px] rounded-lg px-1 -mx-1 py-0.5"
-                  style={r.kind === 'warmup' ? { background: GYM_WARMUP_BG } : {}}
-                >
+                <button key={i} onClick={() => toggleWarmup(i)} className={'gx-pl-r gx-pl-btn' + (r.kind === 'warmup' ? ' gx-warm' : '')}>
                   {cells}
-                  <span className="text-[11px] flex-shrink-0" style={{ color: gymKindColor(r.kind) }}>
+                  <span className={'gx-pl-t' + (r.kind === 'warmup' ? ' gx-warm' : '')}>
                     {r.kind === 'warmup' ? 'разминка' : 'сделать разминкой'}
                   </span>
                 </button>
@@ -31656,56 +31894,47 @@ function GymExerciseForm({ exercise, day, sessions, onSave, onDelete, onBack }) 
             })}
           </div>
           {form.mode !== 'groups' && (
-            <div className="text-[12px] text-[var(--text-subtle)] mt-2">
+            <div className="gx-note">
               Нажмите на подход, чтобы отметить его разминочным — разминка не идёт в тоннаж, рекорды и графики прогресса.
             </div>
           )}
         </div>
-      </div>
 
-      <div className="mt-8">
-        <div className="text-[15px] font-medium mb-3" style={{ color: GYM_ACCENT }}>История выполнения</div>
+        <div className="gx-sec"><h2>История выполнения</h2></div>
         {history.length === 0 ? (
-          <div className="text-[14px] text-[var(--text-subtle)]">Упражнение ещё ни разу не выполнялось</div>
+          <div className="gx-note">Упражнение ещё ни разу не выполнялось</div>
         ) : (
-          <div className="space-y-4">
+          <div className="gx-hist">
             {history.slice(0, 12).map(group => (
-              <div key={group.date}>
-                <div className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-[15px] font-medium">
-                  {gymFmtDate(group.date)}
-                </div>
-                <div className="px-3">
-                  {group.sets.map(s => (
-                    <div key={s.id} className="flex items-center gap-3 py-2 border-b border-[var(--border)] last:border-0 text-[15px]">
-                      <span style={{ color: gymKindColor(gymIsWorking(s) ? 'working' : 'warmup') }}>
-                        #{(s.setIndex || 0) + 1}{gymIsWorking(s) ? '' : ' р'}
-                      </span>
-                      <span className="flex-1">{gymFmtWeight(s.weight)} x {gymInt(s.reps, 0)} повт.</span>
-                      <span className="text-[var(--text-subtle)] text-[13px]">{gymFmtTime(s.at)}</span>
-                    </div>
-                  ))}
-                </div>
+              <div key={group.date} className="gx-hist-g">
+                <div className="gx-hist-d">{gymFmtDate(group.date)}</div>
+                {group.sets.map(s => (
+                  <div key={s.id} className="gx-hist-r">
+                    <span className={'gx-hist-k' + (gymIsWorking(s) ? '' : ' gx-warm')}>
+                      #{(s.setIndex || 0) + 1}{gymIsWorking(s) ? '' : ' р'}
+                    </span>
+                    <span className="gx-hist-v">{gymFmtWeight(s.weight)} × {gymInt(s.reps, 0)} повт.</span>
+                    <span className="gx-hist-t">{gymFmtTime(s.at)}</span>
+                  </div>
+                ))}
               </div>
             ))}
           </div>
         )}
-      </div>
 
-      <div className="flex gap-3 mt-8">
-        <button onClick={clear} className="btn-secondary flex-1">Очистить</button>
-        <button onClick={() => onSave(form)} className="flex-1 py-3.5 rounded-xl text-white font-medium" style={{ background: GYM_ACCENT }}>
-          Сохранить
-        </button>
+        {onDelete && (
+          <button className="gx-danger gx-danger-gap" onClick={() => ask({ title: 'Удалить упражнение?', text: form.name || '', ok: 'Удалить', danger: true })
+            .then(ok => { if (ok) onDelete(); })}><GxIc n="trash" s={18} /> Удалить упражнение</button>
+        )}
       </div>
-
-      {onDelete && (
-        <button onClick={onDelete} className="w-full mt-3 py-3 rounded-xl border border-dashed border-red-200 text-red-500 text-sm flex items-center justify-center gap-2">
-          <Icon name="trash" size={16} /> Удалить упражнение
-        </button>
-      )}
+      <div className="gx-dock">
+        <button className="gx-same gx-clear" onClick={clear}><span className="gx-t">Очистить</span></button>
+        <button className="gx-log" onClick={() => onSave(form)}><GxIc n="check" s={24} sw={3} /> Сохранить</button>
+      </div>
     </div>
   );
 }
+
 // Личные рекорды до этой тренировки — чтобы прямо во время подхода было
 // видно, что результат новый (сравниваем только с тем, что было раньше).
 const gymPrevBest = (sessions, name, beforeMs) => {
@@ -31872,6 +32101,10 @@ const gxTick = () => { gxHaptic.light(); gxSfx.tick(); };
 const GX_ICONS = {
   chevD: <path d="M6 9l6 6 6-6" />,
   chevL: <path d="M15 6l-6 6 6 6" />,
+  chevR: <path d="M9 6l6 6-6 6" />,
+  chart: <path d="M4 20V10M10 20V4M16 20v-8M22 20H2" />,
+  edit: <g><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3z" /><path d="M13.5 8.5l3 3" /></g>,
+  upload: <path d="M12 16V4M7 9l5-5 5 5M4 20h16" />,
   more: <g><circle cx="5" cy="12" r="1.9" /><circle cx="12" cy="12" r="1.9" /><circle cx="19" cy="12" r="1.9" /></g>,
   check: <path d="M5 12.5l4.5 4.5L19 7.5" />,
   plus: <path d="M12 5v14M5 12h14" />,
@@ -32073,11 +32306,12 @@ function GxSwitch({ on, onChange, label }) {
     <button className={'gx-sw' + (on ? ' gx-on' : '')} role="switch" aria-checked={on} aria-label={label} onClick={() => onChange(!on)}><i /></button>
   );
 }
-function GxSeg({ value, options, onChange }) {
+function GxSeg({ value, options, onChange, full }) {
   return (
-    <div className="gx-segc">
+    <div className={'gx-segc' + (full ? ' gx-full' : '')} role="group">
       {options.map((o) => (
-        <button key={String(o.v)} className={o.v === value ? 'gx-on' : ''} onClick={() => onChange(o.v)}>{o.t}</button>
+        <button key={String(o.v)} className={(o.v === value ? 'gx-on ' : '') + (o.cls || '')} aria-pressed={o.v === value}
+          onClick={() => { gxTick(); onChange(o.v); }}>{o.t}</button>
       ))}
     </div>
   );
@@ -32272,16 +32506,24 @@ function useGxCountUp(target, ms = 1200, delay = 300) {
 }
 
 // Экран на весь телефон: свой фон, тема, запрет прокрутки страницы под ним.
+// Корень один на весь раздел GYM: вложенный GxRoot (экран тренировки, итог)
+// второй портал не создаёт.
+const GxCtx = React.createContext(false);
 function GxRoot({ theme, children }) {
+  const inside = React.useContext(GxCtx);
   useEffect(() => {
+    if (inside) return undefined;
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => { document.body.style.overflow = prev; };
-  }, []);
+  }, [inside]);
+  if (inside) return <React.Fragment>{children}</React.Fragment>;
   return ReactDOM.createPortal(
-    <div className="gx-root" data-theme={theme}>
-      <div className="gx-col">{children}</div>
-    </div>,
+    <GxCtx.Provider value={true}>
+      <div className="gx-root" data-theme={theme}>
+        <div className="gx-col">{children}</div>
+      </div>
+    </GxCtx.Provider>,
     document.body
   );
 }
@@ -33907,11 +34149,14 @@ const gymDaysAgo = (n) => {
   return dateToLocalStr(d);
 };
 
+// ── Аналитика ──────────────────────────────────────────────────────────────
+
+// Линия прогресса: заливка под линией, лёгкая сетка, подсвеченная последняя точка.
 function GymLineChart({ points, unit = '' }) {
   if (!points || points.length === 0) return null;
   const W = 320;
-  const H = 130;
-  const pad = { l: 6, r: 6, t: 12, b: 18 };
+  const H = 150;
+  const pad = { l: 8, r: 10, t: 16, b: 10 };
   const values = points.map(p => p.value);
   const max = Math.max(...values);
   const min = Math.min(...values);
@@ -33920,53 +34165,67 @@ function GymLineChart({ points, unit = '' }) {
     ? W / 2
     : pad.l + i * (W - pad.l - pad.r) / (points.length - 1);
   const y = (v) => pad.t + (1 - (v - min) / span) * (H - pad.t - pad.b);
-  const path = points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ');
+  const line = points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ');
+  const area = `${line} L${x(points.length - 1).toFixed(1)},${H - pad.b} L${x(0).toFixed(1)},${H - pad.b} Z`;
+  const lastI = points.length - 1;
 
   return (
-    <div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 150 }} preserveAspectRatio="none">
-        <path d={path} fill="none" stroke={GYM_ACCENT} strokeWidth="2" vectorEffect="non-scaling-stroke" />
+    <div className="gx-chart">
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="График прогресса">
+        <defs>
+          <linearGradient id="gx-area" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="var(--lime)" stopOpacity=".32" />
+            <stop offset="1" stopColor="var(--lime)" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {[0, 0.5, 1].map(f => (
+          <line key={f} x1={pad.l} x2={W - pad.r} y1={pad.t + f * (H - pad.t - pad.b)} y2={pad.t + f * (H - pad.t - pad.b)} className="gx-chart-grid" />
+        ))}
+        {points.length > 1 && <path d={area} fill="url(#gx-area)" />}
+        <path d={line} className="gx-chart-line" />
         {points.map((p, i) => (
-          <circle key={i} cx={x(i)} cy={y(p.value)} r="3" fill={GYM_ACCENT} />
+          <circle key={i} cx={x(i)} cy={y(p.value)} r={i === lastI ? 5 : 2.6} className={i === lastI ? 'gx-chart-end' : 'gx-chart-dot'} />
         ))}
       </svg>
-      <div className="flex justify-between text-[11px] text-[var(--text-subtle)] mt-1">
+      <div className="gx-chart-x">
         <span>{points[0].label}</span>
         <span>мин {gymRound1(min)}{unit} · макс {gymRound1(max)}{unit}</span>
-        <span>{points[points.length - 1].label}</span>
+        <span>{points[lastI].label}</span>
       </div>
     </div>
   );
 }
 
+// Столбики по неделям; последняя неделя подсвечена, пустые — тонкая линия.
 function GymBars({ bars, unit = '' }) {
   if (!bars || bars.length === 0) return null;
   const max = Math.max(...bars.map(b => b.value), 1);
+  const scrollRef = useRef(null);
+  useEffect(() => { const el = scrollRef.current; if (el) el.scrollLeft = el.scrollWidth; }, [bars.length]);
   return (
-    <div className="overflow-x-auto scrollbar-hide -mx-1 px-1">
-      <div className="flex items-end gap-2" style={{ minWidth: Math.max(bars.length * 40, 100) }}>
-        {bars.map((b, i) => (
-          <div key={i} className="flex flex-col items-center gap-1" style={{ width: 36 }}>
-            <div className="text-[10px] text-[var(--text-subtle)] h-3">{b.value ? Math.round(b.value) : ''}</div>
-            <div
-              className="w-full rounded-t-md"
-              style={{ height: Math.max(2, Math.round(b.value / max * 90)), background: b.value ? GYM_ACCENT : 'var(--border)' }}
-            />
-            <div className="text-[10px] text-[var(--text-subtle)] whitespace-nowrap">{b.label}</div>
-          </div>
-        ))}
+    <div className="gx-bars-wrap">
+      <div className="gx-bars" ref={scrollRef}>
+        <div className="gx-bars-in" style={{ minWidth: Math.max(bars.length * 44, 100) }}>
+          {bars.map((b, i) => (
+            <div key={i} className={'gx-bar-c' + (i === bars.length - 1 ? ' gx-last' : '')}>
+              <span className="gx-bar-v">{b.value ? Math.round(b.value) : ''}</span>
+              <i style={{ height: Math.max(3, Math.round(b.value / max * 96)) }} className={b.value ? '' : 'gx-zero'} />
+              <span className="gx-bar-l">{b.label}</span>
+            </div>
+          ))}
+        </div>
       </div>
-      {unit && <div className="text-[11px] text-[var(--text-subtle)] mt-1">{unit}</div>}
+      {unit && <div className="gx-note">{unit}</div>}
     </div>
   );
 }
 
 function GymStat({ label, value, sub }) {
   return (
-    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3">
-      <div className="text-[12px] text-[var(--text-muted)]">{label}</div>
-      <div className="font-display text-xl mt-0.5">{value}</div>
-      {sub && <div className="text-[11px] text-[var(--text-subtle)] mt-0.5">{sub}</div>}
+    <div className="gx-stat">
+      <span className="gx-stat-l">{label}</span>
+      <b>{value}</b>
+      {sub ? <span className="gx-stat-s">{sub}</span> : null}
     </div>
   );
 }
@@ -33976,45 +34235,28 @@ function GymAnalyticsView({ sessions, onBack, onDeleteSession }) {
   const done = sessions.filter(s => s.finishedAt || (s.sets || []).length > 0);
 
   const tabs = [
-    { id: 'progress', label: 'Прогресс'  },
-    { id: 'volume',   label: 'Объём'     },
-    { id: 'history',  label: 'История'   },
-    { id: 'records',  label: 'Рекорды'   },
+    { v: 'progress', t: 'Прогресс' },
+    { v: 'volume', t: 'Объём' },
+    { v: 'history', t: 'История' },
+    { v: 'records', t: 'Рекорды' },
   ];
 
   return (
-    <div className="fade-in pb-10">
-      <div className="mb-5 flex items-center justify-between gap-3">
-        <button onClick={onBack} className="flex items-center gap-1 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)]">
-          <Icon name="chevronLeft" size={16} /> Назад
-        </button>
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest">Аналитика</div>
+    <div className="gx-screen">
+      <GxTop onBack={onBack} title="Аналитика" right={<GxThemeBtn />} />
+      <div className="gx-tabs"><GxSeg full value={tab} onChange={setTab} options={tabs} /></div>
+      <div className="gx-pg-scroll">
+        {done.length === 0 ? (
+          <GymEmpty text="Пока нет проведённых тренировок" hint="Аналитика появится после первой записанной тренировки" />
+        ) : (
+          <React.Fragment>
+            {tab === 'progress' && <GymProgressTab sessions={done} />}
+            {tab === 'volume' && <GymVolumeTab sessions={done} />}
+            {tab === 'history' && <GymHistoryTab sessions={done} onDelete={onDeleteSession} />}
+            {tab === 'records' && <GymRecordsTab sessions={done} />}
+          </React.Fragment>
+        )}
       </div>
-
-      <div className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-5">
-        <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
-          {tabs.map(t => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap ${tab === t.id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {done.length === 0 ? (
-        <GymEmpty text="Пока нет проведённых тренировок" hint="Аналитика появится после первой записанной тренировки" />
-      ) : (
-        <>
-          {tab === 'progress' && <GymProgressTab sessions={done} />}
-          {tab === 'volume'   && <GymVolumeTab sessions={done} />}
-          {tab === 'history'  && <GymHistoryTab sessions={done} onDelete={onDeleteSession} />}
-          {tab === 'records'  && <GymRecordsTab sessions={done} />}
-        </>
-      )}
     </div>
   );
 }
@@ -34066,64 +34308,51 @@ function GymProgressTab({ sessions }) {
 
   const metrics = hasWeight
     ? [
-        { id: 'weight',  label: 'Рабочий вес' },
-        { id: 'orm',     label: '1ПМ (расч.)' },
-        { id: 'tonnage', label: 'Тоннаж' },
-        { id: 'reps',    label: 'Повторы' },
+        { v: 'weight', t: 'Вес' },
+        { v: 'orm', t: '1ПМ' },
+        { v: 'tonnage', t: 'Тоннаж' },
+        { v: 'reps', t: 'Повторы' },
       ]
     // Без веса остальные метрики всегда нулевые — не показываем их вовсе.
-    : [{ id: 'reps', label: 'Повторы в подходе' }, { id: 'totalReps', label: 'Всего повторов' }];
+    : [{ v: 'reps', t: 'В подходе' }, { v: 'totalReps', t: 'Всего' }];
 
   return (
-    <div className="space-y-4">
-      <div>
-        <label>Упражнение</label>
+    <div className="gx-stack">
+      <div className="gx-field">
+        <label className="gx-lbl">Упражнение</label>
         <select value={name} onChange={e => setName(e.target.value)}>
           {names.map(x => <option key={x} value={x}>{x}</option>)}
         </select>
       </div>
 
-      <div className="inline-flex w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
-        {metrics.map(m => (
-          <button
-            key={m.id}
-            onClick={() => setMetric(m.id)}
-            className={`flex-1 py-2 rounded-lg text-[13px] font-medium ${shown === m.id ? 'text-white' : 'text-[var(--text-muted)]'}`}
-            style={shown === m.id ? { background: GYM_ACCENT } : {}}
-          >
-            {m.label}
-          </button>
-        ))}
-      </div>
+      <GxSeg full value={shown} onChange={setMetric} options={metrics} />
 
       {points.length === 0 ? (
         <GymEmpty text="Нет данных по этому упражнению" />
       ) : (
-        <>
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
-            <GymLineChart points={points} unit={(shown === 'reps' || shown === 'totalReps') ? ' повт.' : ' кг'} />
-          </div>
-          <div className="grid grid-cols-3 gap-2">
+        <React.Fragment>
+          <div className="gx-card2"><GymLineChart points={points} unit={(shown === 'reps' || shown === 'totalReps') ? ' повт.' : ' кг'} /></div>
+          <div className="gx-stats3">
             <GymStat label="Сейчас" value={`${gymRound1(last.value)}`} sub={last.label} />
             <GymStat label="Было" value={`${gymRound1(first.value)}`} sub={first.label} />
             <GymStat label="Δ" value={`${delta >= 0 ? '+' : ''}${gymRound1(delta)}`} sub={first.value ? `${Math.round(delta / first.value * 100)}%` : ''} />
           </div>
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl divide-y divide-[var(--border)]">
+          <div className="gx-card2 gx-rows">
             {dates.slice().reverse().slice(0, 15).map(d => (
-              <div key={d} className="px-4 py-2.5 flex items-center gap-3 text-[14px]">
-                <span className="text-[var(--text-muted)] w-24 flex-shrink-0">{gymShortDate(d)}</span>
-                <span className="flex-1">
+              <div key={d} className="gx-arow">
+                <span className="gx-arow-d">{gymShortDate(d)}</span>
+                <span className="gx-arow-v">
                   {byDate[d].weight > 0
                     ? `${gymRound1(byDate[d].weight)} кг · ${byDate[d].sets} подх.`
                     : `своим весом · ${byDate[d].sets} подх.`}
                 </span>
-                <span className="text-[var(--text-subtle)] text-[12px]">
+                <span className="gx-arow-s">
                   {byDate[d].weight > 0 ? `1ПМ ${gymRound1(byDate[d].orm)}` : `${byDate[d].totalReps} повт.`}
                 </span>
               </div>
             ))}
           </div>
-        </>
+        </React.Fragment>
       )}
     </div>
   );
@@ -34171,49 +34400,35 @@ function GymVolumeTab({ sessions }) {
   const avgWeek = weeks ? totalTonnage / weeks : 0;
 
   return (
-    <div className="space-y-4">
-      <div className="inline-flex w-full bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
-        {[{ w: 4, l: '4 нед' }, { w: 8, l: '8 нед' }, { w: 12, l: '12 нед' }, { w: 52, l: 'Год' }].map(o => (
-          <button
-            key={o.w}
-            onClick={() => setWeeks(o.w)}
-            className={`flex-1 py-2 rounded-lg text-[13px] font-medium ${weeks === o.w ? 'text-white' : 'text-[var(--text-muted)]'}`}
-            style={weeks === o.w ? { background: GYM_ACCENT } : {}}
-          >
-            {o.l}
-          </button>
-        ))}
-      </div>
+    <div className="gx-stack">
+      <GxSeg full value={weeks} onChange={setWeeks}
+        options={[{ v: 4, t: '4 нед' }, { v: 8, t: '8 нед' }, { v: 12, t: '12 нед' }, { v: 52, t: 'Год' }]} />
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className="gx-stats2">
         <GymStat label="Тренировок" value={workouts} sub={`за ${weeks} нед.`} />
         <GymStat label="Подходов" value={sets.length} />
         <GymStat label="Повторов" value={totalReps} />
-        <GymStat label="Тоннаж" value={`${Math.round(totalTonnage)} кг`} sub={`в неделю ${Math.round(avgWeek)} кг`} />
+        <GymStat label="Тоннаж" value={`${Math.round(totalTonnage).toLocaleString('ru-RU')} кг`} sub={`в неделю ${Math.round(avgWeek).toLocaleString('ru-RU')} кг`} />
       </div>
 
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
-        <div className="text-[14px] font-medium mb-3">Тоннаж по неделям</div>
+      <div className="gx-card2">
+        <div className="gx-card2-t">Тоннаж по неделям</div>
         <GymBars bars={buckets.map(b => ({ label: b.label, value: b.value }))} unit="кг за неделю" />
       </div>
 
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
-        <div className="text-[14px] font-medium mb-3">Нагрузка по группам мышц</div>
+      <div className="gx-card2">
+        <div className="gx-card2-t">Нагрузка по группам мышц</div>
         {muscles.length === 0 ? (
-          <div className="text-[13px] text-[var(--text-subtle)]">Нет данных за период</div>
+          <div className="gx-note">Нет данных за период</div>
         ) : (
-          <div className="space-y-2.5">
+          <div className="gx-muscles">
             {muscles.map(([m, v]) => (
               <div key={m}>
-                <div className="flex justify-between text-[13px] mb-1">
+                <div className="gx-mus-h">
                   <span>{m}</span>
-                  <span className="text-[var(--text-muted)]">
-                    {Math.round(v.sets)} подх. · {v.tonnage > 0 ? `${Math.round(v.tonnage)} кг` : `${Math.round(v.reps)} повт.`}
-                  </span>
+                  <span>{Math.round(v.sets)} подх. · {v.tonnage > 0 ? `${Math.round(v.tonnage).toLocaleString('ru-RU')} кг` : `${Math.round(v.reps)} повт.`}</span>
                 </div>
-                <div className="h-2 rounded-full bg-[var(--border)] overflow-hidden">
-                  <div className="h-full rounded-full" style={{ width: `${Math.round(v.sets / maxMuscleSets * 100)}%`, background: GYM_ACCENT }} />
-                </div>
+                <div className="gx-mus-b"><i style={{ width: `${Math.round(v.sets / maxMuscleSets * 100)}%` }} /></div>
               </div>
             ))}
           </div>
@@ -34224,11 +34439,12 @@ function GymVolumeTab({ sessions }) {
 }
 
 function GymHistoryTab({ sessions, onDelete }) {
+  const ask = React.useContext(GxAskCtx);
   const [openId, setOpenId] = useState('');
   const list = [...sessions].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
 
   return (
-    <div className="space-y-2">
+    <div className="gx-stack">
       {list.map(s => {
         const sets = s.sets || [];
         const working = sets.filter(gymIsWorking);
@@ -34239,36 +34455,33 @@ function GymHistoryTab({ sessions, onDelete }) {
         });
         const open = openId === s.id;
         return (
-          <div key={s.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
-            <button onClick={() => setOpenId(open ? '' : s.id)} className="w-full px-4 py-3 text-left">
-              <div className="flex items-center gap-2">
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px]" style={{ color: GYM_ACCENT }}>{gymFmtDate(s.date)}{!s.finishedAt && ' · не завершена'}</div>
-                  <div className="text-[15px] font-medium truncate">{s.dayTitle || 'Тренировка'}</div>
-                </div>
-                <div className={open ? 'rotate-180' : ''}><Icon name="chevronDown" size={16} /></div>
-              </div>
-              <div className="text-[12px] text-[var(--text-muted)] mt-1">
-                {working.length} раб.{sets.length > working.length ? ` + ${sets.length - working.length} разм.` : ''} · {Math.round(tonnage)} кг{s.durationSec ? ` · ${gymFmtDuration(s.durationSec)}` : ''}
-              </div>
+          <div key={s.id} className={'gx-hcard' + (open ? ' gx-open' : '')}>
+            <button className="gx-hcard-h" onClick={() => { gxTick(); setOpenId(open ? '' : s.id); }} aria-expanded={open}>
+              <span className="gx-hcard-t">
+                <span className="gx-eyebrow">{gymFmtDate(s.date)}{!s.finishedAt && ' · не завершена'}</span>
+                <b>{s.dayTitle || 'Тренировка'}</b>
+                <i>
+                  {working.length} раб.{sets.length > working.length ? ` + ${sets.length - working.length} разм.` : ''} · {Math.round(tonnage).toLocaleString('ru-RU')} кг{s.durationSec ? ` · ${gymFmtDuration(s.durationSec)}` : ''}
+                </i>
+              </span>
+              <span className="gx-hcard-c"><GxIc n="chevD" s={18} /></span>
             </button>
             {open && (
-              <div className="px-4 pb-4">
+              <div className="gx-hcard-b">
                 {Object.keys(byEx).map(nm => (
-                  <div key={nm} className="py-2 border-t border-[var(--border)]">
-                    <div className="text-[14px] font-medium">{nm}</div>
-                    <div className="text-[13px] text-[var(--text-muted)] mt-0.5">
-                      {byEx[nm].sort((a, b) => (a.setIndex || 0) - (b.setIndex || 0))
-                        .map(x => `${gymRound1(gymNum(x.weight)) || '—'}×${gymInt(x.reps, 0)}${gymIsWorking(x) ? '' : ' (р)'}`).join(' · ')}
+                  <div key={nm} className="gx-hex">
+                    <b>{nm}</b>
+                    <div>
+                      {byEx[nm].sort((a, b) => (a.setIndex || 0) - (b.setIndex || 0)).map((x, i) => (
+                        <span key={i} className={'gx-sc' + (gymIsWorking(x) ? '' : ' gx-w')}>
+                          {gymNum(x.weight) ? `${gymRound1(gymNum(x.weight))}×${gymInt(x.reps, 0)}` : `×${gymInt(x.reps, 0)}`}
+                        </span>
+                      ))}
                     </div>
                   </div>
                 ))}
-                <button
-                  onClick={() => { if (confirm('Удалить эту тренировку из истории?')) onDelete(s.id); }}
-                  className="mt-3 text-[13px] text-red-500 flex items-center gap-1.5"
-                >
-                  <Icon name="trash" size={14} /> Удалить тренировку
-                </button>
+                <button className="gx-danger" onClick={() => ask({ title: 'Удалить тренировку из истории?', text: `${gymFmtDate(s.date)} · ${s.dayTitle || 'Тренировка'}`, ok: 'Удалить', danger: true })
+                  .then(ok => { if (ok) onDelete(s.id); })}><GxIc n="trash" s={16} /> Удалить тренировку</button>
               </div>
             )}
           </div>
@@ -34301,28 +34514,25 @@ function GymRecordsTab({ sessions }) {
   if (list.length === 0) return <GymEmpty text="Рекордов пока нет" />;
 
   return (
-    <div className="space-y-2">
+    <div className="gx-stack">
       {list.map(r => (
-        <div key={r.name} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3">
-          <div className="flex items-center gap-2">
-            <span style={{ color: '#eab308' }}><Icon name="starFilled" size={16} /></span>
-            <div className="text-[15px] font-medium flex-1 min-w-0 truncate">{r.name}</div>
-          </div>
-          <div className="grid grid-cols-3 gap-2 mt-2 text-center">
+        <div key={r.name} className="gx-rcrd">
+          <div className="gx-rcrd-h"><span><GxIc n="star" s={18} /></span><b>{r.name}</b></div>
+          <div className="gx-rcrd-g">
             <div>
-              <div className="text-[11px] text-[var(--text-muted)]">Макс. вес</div>
-              <div className="text-[15px] font-medium">{r.weight > 0 ? `${gymRound1(r.weight)} кг` : 'свой вес'}</div>
-              <div className="text-[11px] text-[var(--text-subtle)]">{r.weight > 0 ? gymShortDate(r.weightAt) : `${r.sets} подх.`}</div>
+              <span className="gx-rcrd-l">Макс. вес</span>
+              <b>{r.weight > 0 ? `${gymRound1(r.weight)} кг` : 'свой вес'}</b>
+              <span className="gx-rcrd-s">{r.weight > 0 ? gymShortDate(r.weightAt) : `${r.sets} подх.`}</span>
             </div>
             <div>
-              <div className="text-[11px] text-[var(--text-muted)]">Макс. повторы</div>
-              <div className="text-[15px] font-medium">{r.reps || '—'}</div>
-              <div className="text-[11px] text-[var(--text-subtle)]">{gymShortDate(r.repsAt)}</div>
+              <span className="gx-rcrd-l">Макс. повторы</span>
+              <b>{r.reps || '—'}</b>
+              <span className="gx-rcrd-s">{gymShortDate(r.repsAt)}</span>
             </div>
             <div>
-              <div className="text-[11px] text-[var(--text-muted)]">{r.weight > 0 ? '1ПМ (расч.)' : 'Всего повторов'}</div>
-              <div className="text-[15px] font-medium">{r.weight > 0 ? `${gymRound1(r.orm)} кг` : r.totalReps}</div>
-              <div className="text-[11px] text-[var(--text-subtle)]">{r.weight > 0 ? gymShortDate(r.ormAt) : 'за всю историю'}</div>
+              <span className="gx-rcrd-l">{r.weight > 0 ? '1ПМ (расч.)' : 'Всего повторов'}</span>
+              <b>{r.weight > 0 ? `${gymRound1(r.orm)} кг` : r.totalReps}</b>
+              <span className="gx-rcrd-s">{r.weight > 0 ? gymShortDate(r.ormAt) : 'за всю историю'}</span>
             </div>
           </div>
         </div>
@@ -34330,7 +34540,6 @@ function GymRecordsTab({ sessions }) {
     </div>
   );
 }
-
 
 // ── Загрузка тренировочного дня по скриншоту ───────────────────────────────
 // Тот же механизм, что и распознавание документа в «Здоровье»: общий callAI
@@ -34435,7 +34644,7 @@ async function extractGymDaysFromImages(files, settings) {
   return days;
 }
 
-function GymImportButton({ settings, onDraftReady, label = 'Из скриншота' }) {
+function GymImportButton({ settings, onDraftReady, label = 'Из скриншота', dashed }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -34463,13 +34672,13 @@ function GymImportButton({ settings, onDraftReady, label = 'Из скриншо�
   };
 
   return (
-    <div className="text-right">
-      <label className={`btn-ghost inline-flex items-center gap-1.5 text-sm cursor-pointer ${busy ? 'opacity-60 pointer-events-none' : ''}`}>
-        <Icon name="upload" size={16} />
+    <div className={'gx-imp' + (dashed ? ' gx-imp-d' : '')}>
+      <label className={(dashed ? 'gx-dash' : 'gx-link') + (busy ? ' gx-busy' : '')}>
+        <GxIc n="upload" s={16} />
         {busy ? 'Распознаю…' : label}
-        <input type="file" accept=".pdf,image/*" multiple className="hidden" onChange={handleFiles} disabled={busy} />
+        <input type="file" accept=".pdf,image/*" multiple style={{ display: 'none' }} onChange={handleFiles} disabled={busy} />
       </label>
-      {error && <div className="text-[12px] text-red-500 mt-1 max-w-[260px] ml-auto">{error}</div>}
+      {error && <div className="gx-imp-err">{error}</div>}
     </div>
   );
 }
@@ -34495,77 +34704,54 @@ function GymImportPreview({ days, mode, onApply, onClose }) {
     .filter(d => d.exercises.length > 0);
   const total = chosen.reduce((a, d) => a + d.exercises.length, 0);
 
-  return ReactDOM.createPortal(
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm sm:p-4" onClick={onClose}>
-      <div
-        className="bg-[var(--bg)] w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl p-5 pb-safe fade-in max-h-[88vh] overflow-y-auto"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="font-display text-xl mb-1">Распознано</div>
-        <div className="text-[13px] text-[var(--text-muted)] mb-4">
-          Проверьте, что перенеслось верно — всё можно поправить и после добавления.
-        </div>
+  return (
+    <GxSheet onClose={onClose}>
+      <div className="gx-sh-t">Распознано</div>
+      <p className="gx-fin-p">Проверьте, что перенеслось верно — всё можно поправить и после добавления.</p>
 
-        <div className="space-y-4">
-          {state.map((d, i) => (
-            <div key={i} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
-              <div className="flex items-start gap-3">
-                {mode === 'days' && (
-                  <button onClick={() => patchDay(i, { include: !d.include })} className={`check-box mt-1 ${d.include ? 'checked' : ''}`}>
-                    <Icon name="check" size={16} />
-                  </button>
-                )}
-                <div className="flex-1 min-w-0">
-                  {mode === 'days' ? (
-                    <input value={d.title} onChange={e => patchDay(i, { title: e.target.value })} placeholder="Название дня" />
-                  ) : (
-                    <div className="text-[15px] font-medium">{d.title || 'Упражнения'}</div>
-                  )}
-                </div>
-              </div>
-
-              <div className="mt-3 space-y-2">
-                {d.exercises.map((e, j) => {
-                  const kinds = gymCountKinds(e.ex);
-                  return (
-                    <div key={j} className="flex items-start gap-3">
-                      <button onClick={() => toggleEx(i, j)} className={`check-box mt-0.5 ${e.include ? 'checked' : ''}`}>
-                        <Icon name="check" size={16} />
-                      </button>
-                      <div className={`flex-1 min-w-0 ${e.include ? '' : 'opacity-40'}`}>
-                        <div className="text-[15px] leading-snug">{e.ex.name}</div>
-                        <div className="text-[12px] text-[var(--text-muted)] mt-0.5">
-                          {kinds.warmup ? `разм. ${kinds.warmup} + ` : ''}раб. {kinds.working}
-                          {e.ex.targetMuscle ? ` · ${e.ex.targetMuscle}` : ''}
-                        </div>
-                        <div className="text-[12px] text-[var(--text-subtle)] mt-1 space-y-0.5">
-                          {gymPlanRows(e.ex).map((r, ri) => (
-                            <div key={ri}>{r.label}: {gymRowPlanText(r, gymPctBase(e.ex, [])) || '—'}</div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+      <div className="gx-stack">
+        {state.map((d, i) => (
+          <div key={i} className="gx-imp-day">
+            <div className="gx-imp-h">
+              {mode === 'days' && (
+                <button onClick={() => patchDay(i, { include: !d.include })} className={'gx-check' + (d.include ? ' gx-on' : '')} aria-label="Добавить день" aria-pressed={d.include}>
+                  <GxIc n="check" s={16} sw={3.2} />
+                </button>
+              )}
+              {mode === 'days' ? (
+                <input value={d.title} onChange={e => patchDay(i, { title: e.target.value })} placeholder="Название дня" />
+              ) : (
+                <b>{d.title || 'Упражнения'}</b>
+              )}
             </div>
-          ))}
-        </div>
-
-        <div className="flex gap-2 mt-5">
-          <button className="btn-secondary flex-1" onClick={onClose}>Отмена</button>
-          <button
-            className="flex-1 py-3.5 rounded-xl text-white font-medium disabled:opacity-40"
-            style={{ background: GYM_ACCENT }}
-            disabled={total === 0}
-            onClick={() => onApply(chosen)}
-          >
-            Добавить ({total})
-          </button>
-        </div>
+            <div className="gx-imp-list">
+              {d.exercises.map((e, j) => {
+                const kinds = gymCountKinds(e.ex);
+                return (
+                  <div key={j} className="gx-imp-ex">
+                    <button onClick={() => toggleEx(i, j)} className={'gx-check' + (e.include ? ' gx-on' : '')} aria-label="Добавить упражнение" aria-pressed={e.include}>
+                      <GxIc n="check" s={16} sw={3.2} />
+                    </button>
+                    <div className={'gx-imp-t' + (e.include ? '' : ' gx-off')}>
+                      <b>{e.ex.name}</b>
+                      <i>{kinds.warmup ? `разм. ${kinds.warmup} + ` : ''}раб. {kinds.working}{e.ex.targetMuscle ? ` · ${e.ex.targetMuscle}` : ''}</i>
+                      <em>
+                        {gymPlanRows(e.ex).map((r, ri) => (
+                          <span key={ri}>{r.label}: {gxDash(gymRowPlanText(r, gymPctBase(e.ex, []))) || '—'}</span>
+                        ))}
+                      </em>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </div>
-    </div>,
-    document.body
+
+      <button className="gx-np-ok" disabled={total === 0} onClick={() => onApply(chosen)}>Добавить ({total})</button>
+      <button className="gx-ghost-wide" onClick={onClose}>Отмена</button>
+    </GxSheet>
   );
 }
 
@@ -34882,7 +35068,7 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
         />
       )}
       {sub === 'wishlist' && <WishlistView data={data} setData={setData} />}
-      {sub === 'gym' && <GymView data={data} setData={setData} />}
+      {sub === 'gym' && <GymView data={data} setData={setData} onExit={() => setSub('')} />}
       {sub === 'music' && <MusicView data={data} setData={setData} />}
       {sub === 'knowledge' && <KnowledgeView data={data} setData={setData} />}
       {sub === 'quiz' && <QuizView data={data} setData={setData} />}
