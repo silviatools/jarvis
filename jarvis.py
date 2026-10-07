@@ -2754,8 +2754,10 @@ def rea_fetch_subgroup_rooms(group: str, day_iso: str, pair: str) -> str:
     return " / ".join(rooms)
 
 
-def rea_fetch_weeks(group: str, weeks: int = 2) -> dict:
-    """Текущая неделя и weeks-1 следующих. {'weeks': [{weekNum, days, lessons, ok}], 'lessons': [...]}"""
+def rea_fetch_weeks(group: str, weeks: int = 2, back: int = 0) -> dict:
+    """Текущая неделя, weeks-1 следующих и back прошлых. {'weeks': [{weekNum, days, lessons, ok}],
+    'lessons': [...], 'requestedFrom'/'requestedUntil': границы запрошенных недель (даже если
+    сайт их не опубликовал)}"""
     if not group:
         raise StudyError("Не указана учебная группа (Настройки → Учеба).")
     # Сайт ищет группу по точному написанию; пробуем как ввели и в нижнем
@@ -2773,7 +2775,7 @@ def rea_fetch_weeks(group: str, weeks: int = 2) -> dict:
                          f"Ответ сайта: {tried[-1]}. Подробнее — кнопка «Диагностика».")
     out = [{**first, "ok": True}]
     base = first["weekNum"]
-    for i in range(1, weeks):
+    for i in [*range(-max(0, back), 0), *range(1, weeks)]:
         if base is None:
             break
         try:
@@ -2781,12 +2783,15 @@ def rea_fetch_weeks(group: str, weeks: int = 2) -> dict:
             out.append({**wk, "ok": bool(wk["days"])})
         except StudyError as e:
             out.append({"weekNum": base + i, "days": [], "lessons": [], "ok": False, "error": str(e)})
+    cur_mon = date.fromisoformat(first["days"][0]) - timedelta(days=date.fromisoformat(first["days"][0]).weekday())
     lessons = [l for w in out for l in w["lessons"]]
     for l in lessons:
         if l.pop("subgroups", False):
             l["room"] = rea_fetch_subgroup_rooms(group, l["date"], l["pair"]) or l["room"] or "подгруппы"
     lessons.sort(key=lambda l: (l["date"], l["start"], l["slot"]))
-    return {"weeks": out, "lessons": lessons}
+    return {"weeks": out, "lessons": lessons,
+            "requestedFrom": (cur_mon - timedelta(days=7 * max(0, back))).isoformat(),
+            "requestedUntil": (cur_mon + timedelta(days=7 * max(1, weeks) - 1)).isoformat()}
 
 
 # ── Сверка с Apple Календарём ──────────────────────────────────────────────
@@ -2900,13 +2905,7 @@ def _study_sync_locked(preview: bool, reason: str) -> dict:
     # следующая неделя не загрузилась, её события не трогаем.
     loaded_days = {d for w in fetched["weeks"] if w["ok"] for d in w["days"]}
     all_days = sorted(d for w in fetched["weeks"] for d in w["days"])
-    state.update({
-        "group": s["group"],
-        "lessons": lessons,
-        "fetchedAt": started,
-        "coveredFrom": all_days[0] if all_days else today,
-        "coveredUntil": all_days[-1] if all_days else today,
-    })
+    state.update(_study_cache_fields(s["group"], fetched, started, today))
     if preview:
         study_save_state(state)
         return {"ok": True, "preview": True, "lessons": lessons,
@@ -3057,44 +3056,96 @@ def study_notify(app: dict, result: dict, first_run: bool) -> None:
         send_message(token, cid, text)
 
 
+def _study_cache_fields(group: str, fetched: dict, fetched_at: int, today: str) -> dict:
+    """Что кладём в study_state.json после загрузки с сайта. days — дни, которые сайт
+    реально показал; requestedFrom/Until — что мы просили (неопубликованная неделя
+    не должна перезапрашиваться при каждом вопросе)."""
+    days = sorted(d for w in fetched["weeks"] for d in w["days"])
+    return {"group": group, "fetchedAt": fetched_at, "lessons": fetched["lessons"], "days": days,
+            "coveredFrom": days[0] if days else today, "coveredUntil": days[-1] if days else today,
+            "requestedFrom": fetched.get("requestedFrom") or (days[0] if days else today),
+            "requestedUntil": fetched.get("requestedUntil") or (days[-1] if days else today)}
+
+
+def _date_ranges(days: list) -> str:
+    """['2026-10-12','2026-10-13','2026-10-20'] → '12.10–13.10, 20.10'."""
+    out, run = [], []
+    for d in days:
+        if run and (date.fromisoformat(d) - date.fromisoformat(run[-1])).days == 1:
+            run.append(d)
+        else:
+            if run:
+                out.append(run)
+            run = [d]
+    if run:
+        out.append(run)
+    fmt = lambda x: date.fromisoformat(x).strftime("%d.%m")
+    return ", ".join(fmt(r[0]) if len(r) == 1 else f"{fmt(r[0])}–{fmt(r[-1])}" for r in out)
+
+
 def study_lessons(date_from: str = None, date_to: str = None) -> dict:
     """Пары для ассистента: из кэша последней загрузки; если кэш старше 6 ч
-    или не покрывает запрошенные даты — освежаем с сайта (без записи в календарь)."""
+    или не покрывает запрошенные даты (в том числе прошлые) — освежаем с сайта
+    (без записи в календарь)."""
     s = study_settings()
     if not s["group"]:
         return {"error": "Учебная группа не задана — Настройки → Учеба."}
     today = today_msk().isoformat()
     d_from = (date_from or today)[:10]
     d_to = (date_to or (today_msk() + timedelta(days=7)).isoformat())[:10]
+    try:
+        date.fromisoformat(d_from), date.fromisoformat(d_to)
+    except ValueError:
+        return {"error": "Даты должны быть в формате YYYY-MM-DD."}
+    if d_to < d_from:
+        d_from, d_to = d_to, d_from
+    warning = ""
+
+    def need_fetch(st: dict) -> bool:
+        stale = (time.time() * 1000 - (st.get("fetchedAt") or 0)) > 6 * 3600 * 1000
+        return (stale or st.get("group") != s["group"]
+                or d_to > (st.get("requestedUntil") or st.get("coveredUntil") or "")
+                or d_from < (st.get("requestedFrom") or st.get("coveredFrom") or ""))
+
     state = study_load_state()
-    stale = (time.time() * 1000 - (state.get("fetchedAt") or 0)) > 6 * 3600 * 1000
-    if stale or state.get("group") != s["group"] or d_to > (state.get("coveredUntil") or ""):
-        need_weeks = 2
-        try:
-            mon = today_msk() - timedelta(days=today_msk().weekday())
-            need_weeks = max(s["weeks"], min(6, (date.fromisoformat(d_to) - mon).days // 7 + 1))
-        except Exception:
-            pass
+    if need_fetch(state):
+        mon = today_msk() - timedelta(days=today_msk().weekday())
+        need_weeks = max(s["weeks"], min(6, (date.fromisoformat(d_to) - mon).days // 7 + 1))
+        back = max(0, min(8, -((date.fromisoformat(d_from) - mon).days // 7)))
         with _STUDY_LOCK:
-            try:
-                fetched = rea_fetch_weeks(s["group"], need_weeks)
-                days = sorted(d for w in fetched["weeks"] for d in w["days"])
-                state.update({"group": s["group"], "fetchedAt": int(time.time() * 1000),
-                              "lessons": [l for l in fetched["lessons"] if l["date"] >= today],
-                              "coveredFrom": days[0] if days else today,
-                              "coveredUntil": days[-1] if days else today})
-                study_save_state(state)
-            except StudyError as e:
-                if not state.get("lessons"):
-                    return {"error": str(e)}
-                state["warning"] = f"Сайт сейчас недоступен ({e}); показываю последнюю загрузку."
+            # Состояние перечитываем под замком: пока ждали, синхронизация могла
+            # записать свои поля (lastRunAt, log…) — затирать их нельзя. Заодно
+            # не ходим на сайт второй раз, если параллельный вызов уже обновил кэш.
+            state = study_load_state()
+            if need_fetch(state):
+                try:
+                    fetched = rea_fetch_weeks(s["group"], need_weeks, back)
+                    state.update(_study_cache_fields(s["group"], fetched, int(time.time() * 1000), today))
+                    study_save_state(state)
+                except StudyError as e:
+                    if not state.get("lessons"):
+                        return {"error": str(e)}
+                    warning = f"Сайт сейчас недоступен ({e}); показываю последнюю загрузку."
     items = [{k: l.get(k) for k in ("date", "pair", "start", "end", "subject", "kind", "room")}
              for l in state.get("lessons") or [] if d_from <= l["date"] <= d_to]
+    # Дни периода, которых сайт не показал (неделя не опубликована / не загрузилась):
+    # про них нельзя говорить «пар нет».
+    shown = set(state.get("days") or [])
+    missing, d = [], date.fromisoformat(d_from)
+    while d <= date.fromisoformat(d_to) and len(missing) < 400:
+        if d.isoweekday() != 7 and d.isoformat() not in shown:
+            missing.append(d.isoformat())
+        d += timedelta(days=1)
+    note = ""
+    if missing:
+        note = (f"Сайт не показал расписание на: {_date_ranges(missing)} — вероятно, ещё не опубликовано. "
+                "Не утверждай, что пар нет, скажи, что данных пока нет.")
+    elif not items:
+        note = "Пар нет"
     out = {"group": s["group"], "from": d_from, "to": d_to, "lessons": items,
-           "coveredUntil": state.get("coveredUntil"),
-           "note": "Пар нет" if not items else ""}
-    if state.get("warning"):
-        out["warning"] = state["warning"]
+           "coveredUntil": state.get("coveredUntil"), "note": note}
+    if warning:
+        out["warning"] = warning
     return out
 
 
