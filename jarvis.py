@@ -3186,6 +3186,123 @@ def student_check() -> dict:
             "diag": _rea_diag(text), "loginAt": _student["loginAt"]}
 
 
+def _student_time(t: str) -> str:
+    return t.zfill(5)
+
+
+def student_parse_week(markup: str) -> dict:
+    """Страница /lessons/ кабинета → {'group', 'days': ['YYYY-MM-DD'…], 'lessons': [...]}.
+    В таблице table_lessons заголовок дня («Вторник, 06.10.2026»), под ним строки пар
+    (span.pairnum: «7 пара 18:55 - 20:25»); занятия — div.lesson__block, а ссылка на
+    вебинар лежит в всплывающем div.lesson_popup («Ссылка: <a>») и в кнопке
+    a.lesson__external-link-lenta."""
+    gm = re.search(r"Расписание для группы:\s*([^\s<]+)", markup or "")
+    root = _mini_parse(markup or "")
+    popups = {}
+    for div in root.iter("div", "lesson_popup"):
+        url = ""
+        for p in div.iter("p"):
+            lines = p.text_lines()
+            if lines and lines[0].startswith("Ссылка"):
+                a = next(p.iter("a"), None)
+                url = (a.attrs.get("href") or "").strip() if a is not None else ""
+                break
+        popups[div.attrs.get("id") or ""] = url
+    days, lessons, day = [], [], ""
+    table = next(root.iter("table", "table_lessons"), None)
+    for row in (table.iter("tr") if table is not None else []):
+        text = " ".join(row.text_lines())
+        pairnum = next(row.iter("span", "pairnum"), None)
+        if pairnum is None:
+            dm = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", text)
+            if dm:
+                day = f"{dm.group(3)}-{dm.group(2)}-{dm.group(1)}"
+                days.append(day)
+            continue
+        pm_lines = pairnum.text_lines()
+        times = re.findall(r"\b(\d{1,2}:\d{2})\b", " ".join(pm_lines))
+        pn = re.search(r"(\d+)\s*пара", " ".join(pm_lines))
+        if not day or len(times) < 2:
+            continue
+        for block in row.iter("div", "lesson__block"):
+            a = next(block.iter("a", "fancybox"), None)
+            span = next(a.iter("span"), None) if a is not None else None
+            lines = span.text_lines() if span is not None else []
+            if not lines:
+                continue
+            ext = next(block.iter("a", "lesson__external-link-lenta"), None)
+            url = popups.get((a.attrs.get("href") or "").lstrip("#")) or \
+                ((ext.attrs.get("href") or "").strip() if ext is not None else "")
+            lessons.append({"date": day, "pair": pn.group(1) if pn else "",
+                            "start": _student_time(times[0]), "end": _student_time(times[1]),
+                            "subject": lines[0], "kind": lines[-1] if len(lines) > 2 else "", "url": url})
+    return {"group": gm.group(1) if gm else "", "days": days, "lessons": lessons}
+
+
+_student_profile = {"group": "", "id": ""}
+
+
+def _student_week_page(wn: int, student_id: str = "") -> str:
+    params = {"wn": wn}
+    if student_id:
+        params["student_id"] = student_id
+    return student_get("/lessons/index.php", params)
+
+
+def _student_find_profile(group: str, markup: str) -> str:
+    """В кабинете может быть несколько профилей студента (data-url="/lessons/?student_id=…").
+    Находит тот, чья страница расписания — для нужной группы."""
+    for m in re.finditer(r"""data-url=["']/lessons/\?student_id=(\d+)["']""", markup):
+        sid = m.group(1)
+        if student_parse_week(_student_week_page(0, sid))["group"].lower() == group.lower():
+            return sid
+    raise StudentError(f"В кабинете нет профиля с группой «{group}».")
+
+
+def student_fetch_links(group: str, weeks: int = 2, back: int = 0) -> dict:
+    """{'lessons': [...], 'days': [...]} со страниц кабинета: текущая неделя (wn=0),
+    weeks-1 следующих и back прошлых."""
+    sid = _student_profile["id"] if _student_profile["group"].lower() == group.lower() else ""
+    first = _student_week_page(0, sid)
+    parsed = student_parse_week(first)
+    if parsed["group"] and parsed["group"].lower() != group.lower():
+        sid = _student_find_profile(group, first)
+        _student_profile.update({"group": group, "id": sid})
+        parsed = student_parse_week(_student_week_page(0, sid))
+    elif parsed["group"]:
+        _student_profile.update({"group": group, "id": sid})
+    out_days, out_lessons = list(parsed["days"]), list(parsed["lessons"])
+    for wn in [*range(-max(0, back), 0), *range(1, weeks)]:
+        wk = student_parse_week(_student_week_page(wn, sid))
+        out_days += wk["days"]
+        out_lessons += wk["lessons"]
+    return {"lessons": out_lessons, "days": sorted(set(out_days))}
+
+
+def _norm_subject(s: str) -> str:
+    return re.sub(r"[\W_]+", "", (s or "").casefold())
+
+
+def attach_lesson_links(lessons: list, student_lessons: list) -> int:
+    """Кладёт l['link'] парам с rasp.rea.ru по (дата, начало). Если в слоте несколько
+    занятий — берёт то, у которого совпал предмет. Возвращает, сколько пар получили ссылку."""
+    by_slot = {}
+    for sl in student_lessons:
+        if sl.get("url"):
+            by_slot.setdefault((sl["date"], sl["start"]), []).append(sl)
+    n = 0
+    for l in lessons:
+        cands = by_slot.get((l["date"], l["start"])) or []
+        if len(cands) > 1:
+            subj = _norm_subject(l.get("subject"))
+            cands = [c for c in cands if _norm_subject(c["subject"]) == subj] or \
+                    [c for c in cands if subj and (subj in _norm_subject(c["subject"]) or _norm_subject(c["subject"]) in subj)]
+        if cands:
+            l["link"] = cands[0]["url"]
+            n += 1
+    return n
+
+
 def student_status() -> dict:
     return {"configured": bool((os.environ.get("STUDENT_LOGIN") or "").strip() and os.environ.get("STUDENT_PASSWORD")),
             "hasSession": bool(_student["s"]) or STUDENT_SESSION_FILE.exists(),
@@ -3195,15 +3312,42 @@ def student_status() -> dict:
 
 # ── Сверка с Apple Календарём ──────────────────────────────────────────────
 
+def study_fetch(group: str, weeks: int = 2, back: int = 0) -> dict:
+    """rea_fetch_weeks + ссылки на занятия из кабинета student.rea.ru (если заданы
+    STUDENT_LOGIN/STUDENT_PASSWORD). Сбой кабинета расписание не ломает: ссылки просто
+    не подставятся, причина — в linksError. linksDays — дни, которые кабинет показал."""
+    fetched = rea_fetch_weeks(group, weeks, back)
+    fetched.update({"linksDays": [], "linksError": ""})
+    if not student_status()["configured"]:
+        return fetched
+    try:
+        sl = student_fetch_links(group, weeks, back)
+        fetched["linksDays"] = sl["days"]
+        fetched["linksCount"] = attach_lesson_links(fetched["lessons"], sl["lessons"])
+    except StudentError as e:
+        fetched["linksError"] = str(e)
+    except Exception as e:      # разбор чужой вёрстки не должен ронять расписание
+        fetched["linksError"] = f"{type(e).__name__}: {e}"
+    return fetched
+
+
 def study_uid(group: str, lesson: dict) -> str:
     key = f"{group.lower()}|{lesson['date']}|{lesson['start']}|{lesson.get('slot', 0)}"
     return STUDY_UID_PREFIX + hashlib.sha1(key.encode("utf-8")).hexdigest()[:20]
 
 
-def study_event_fields(group: str, lesson: dict) -> dict:
+_STUDY_LINK_RE = re.compile(r"Ссылка:\s*(\S+)")
+
+
+def study_event_fields(group: str, lesson: dict, keep_link: str = "") -> dict:
+    """keep_link — ссылка из уже существующего события: подставляется, когда кабинет
+    не ответил и новой ссылки нет (чтобы не стереть её из описания)."""
     notes = [lesson.get("kind") or ""]
     if lesson.get("pair"):
         notes.append(f"{lesson['pair']} пара · {group}")
+    link = lesson.get("link") or keep_link
+    if link:
+        notes.append(f"Ссылка: {link}")
     notes.append("Добавлено Джарвисом из rasp.rea.ru")
     return {
         "title": lesson.get("subject") or "Пара",
@@ -3291,7 +3435,7 @@ def _study_sync_locked(preview: bool, reason: str) -> dict:
     state = study_load_state()
     started = int(time.time() * 1000)
     try:
-        fetched = rea_fetch_weeks(s["group"], s["weeks"])
+        fetched = study_fetch(s["group"], s["weeks"])
     except StudyError as e:
         state.update({"lastRunAt": started, "lastOk": False, "lastError": str(e), "lastReason": reason})
         if not preview:
@@ -3305,6 +3449,7 @@ def _study_sync_locked(preview: bool, reason: str) -> dict:
     loaded_days = {d for w in fetched["weeks"] if w["ok"] for d in w["days"]}
     all_days = sorted(d for w in fetched["weeks"] for d in w["days"])
     state.update(_study_cache_fields(s["group"], fetched, started, today))
+    state["linksError"] = fetched.get("linksError") or ""
     if preview:
         study_save_state(state)
         return {"ok": True, "preview": True, "lessons": lessons,
@@ -3319,12 +3464,17 @@ def _study_sync_locked(preview: bool, reason: str) -> dict:
         win_to = datetime.combine(date.fromisoformat(last_day), datetime.min.time(), MSK) + timedelta(days=1)
         existing = _study_existing(cal, win_from, win_to)
 
-        wanted = {}
-        for l in lessons:
-            wanted[study_uid(s["group"], l)] = (l, study_event_fields(s["group"], l))
+        wanted = {study_uid(s["group"], l): l for l in lessons}
+        links_days = set(fetched.get("linksDays") or [])
 
-        for uid, (lesson, fields) in wanted.items():
+        for uid, lesson in wanted.items():
             have = existing.get(uid)
+            # Кабинет не показал этот день (сбой/неопубликовано) — ссылку из календаря не трогаем.
+            keep = ""
+            if have and not lesson.get("link") and lesson["date"] not in links_days:
+                m = _STUDY_LINK_RE.search(have["fields"].get("notes") or "")
+                keep = m.group(1) if m else ""
+            fields = study_event_fields(s["group"], lesson, keep)
             try:
                 if not have:
                     _study_put(urljoin(cal["href"], uid + ".ics"), uid, fields)
@@ -3518,14 +3668,14 @@ def study_lessons(date_from: str = None, date_to: str = None) -> dict:
             state = study_load_state()
             if need_fetch(state):
                 try:
-                    fetched = rea_fetch_weeks(s["group"], need_weeks, back)
+                    fetched = study_fetch(s["group"], need_weeks, back)
                     state.update(_study_cache_fields(s["group"], fetched, int(time.time() * 1000), today))
                     study_save_state(state)
                 except StudyError as e:
                     if not state.get("lessons"):
                         return {"error": str(e)}
                     warning = f"Сайт сейчас недоступен ({e}); показываю последнюю загрузку."
-    items = [{k: l.get(k) for k in ("date", "pair", "start", "end", "subject", "kind", "room")}
+    items = [{k: l.get(k) for k in ("date", "pair", "start", "end", "subject", "kind", "room", "link")}
              for l in state.get("lessons") or [] if d_from <= l["date"] <= d_to]
     # Дни периода, которых сайт не показал (неделя не опубликована / не загрузилась):
     # про них нельзя говорить «пар нет».
@@ -3559,6 +3709,7 @@ def study_status() -> dict:
         "lastOk": state.get("lastOk"),
         "lastError": state.get("lastError") or "",
         "lastResult": state.get("lastResult") or {},
+        "linksError": state.get("linksError") or "",
         "syncedAt": state.get("syncedAt") or 0,
         "fetchedAt": state.get("fetchedAt") or 0,
         "coveredUntil": state.get("coveredUntil") or "",
