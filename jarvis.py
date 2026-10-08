@@ -9091,7 +9091,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             "scope": "/",
             "display": "standalone",
             "orientation": "portrait",
-            "background_color": "#E9EDF8",
+            "background_color": "#061230",
             "theme_color": "#4F8EF7",
             "lang": "ru",
             "icons": [
