@@ -7463,9 +7463,12 @@ const dietNum = (v) => {
 };
 const fmtKcal = (n) => n == null ? '—' : Math.round(n).toLocaleString('ru-RU');
 const fmtKcalDiff = (d) => d > 0 ? `+${fmtKcal(d)}` : d < 0 ? `−${fmtKcal(-d)}` : '±0';
-const getDietOptions = (data) => Array.isArray(data.dietOptions)
-  ? data.dietOptions.filter(o => o && o.id && !o.archived)
+// Все варианты, включая архивные (archived): архивный не попадает в опрос, но
+// записанные им дни сохраняют цвет и калории в аналитике.
+const getAllDietOptions = (data) => Array.isArray(data.dietOptions)
+  ? data.dietOptions.filter(o => o && o.id)
   : DEFAULT_DIET_OPTIONS;
+const getDietOptions = (data) => getAllDietOptions(data).filter(o => !o.archived);
 
 // Активный план на дату: самый поздний «с», покрывающий дату; при равных — свежая правка.
 const dietActivePlan = (plans, date) => {
@@ -7486,7 +7489,7 @@ const dietOptionKcal = (opt, plan) => {
 };
 const dietCtx = (data) => ({
   plans: data.dietPlans || [],
-  optById: Object.fromEntries(getDietOptions(data).map(o => [o.id, o])),
+  optById: Object.fromEntries(getAllDietOptions(data).map(o => [o.id, o])),
   legacy: (data.dietLegacyKcal && data.dietLegacyKcal.levels) || {},
 });
 const dietLegacyLevel = (e) => (e.optionId || e.label) ? null : (e.level || (e.onPlan ? 'on_plan' : null));
@@ -7746,7 +7749,8 @@ function DietDiary({ data, setData, today, openSettings }) {
       {log.length > 0 && (
         <DietKcalChart days={chartDays} today={today} selDate={selDate}
           onSelect={(date) => { setSelDate(date); entryCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}
-          options={options} hasCustom={log.some(e => e.optionId === DIET_CUSTOM_ID)} />
+          options={getAllDietOptions(data).filter(o => !o.archived || log.some(e => e.optionId === o.id))}
+          hasCustom={log.some(e => e.optionId === DIET_CUSTOM_ID)} />
       )}
 
       {/* История */}
@@ -7974,24 +7978,32 @@ function DietPlansEditor({ data, setData, today }) {
 
 function DietOptionsEditor({ data, setData, today }) {
   const options = getDietOptions(data);
+  const archived = getAllDietOptions(data).filter(o => o.archived);
+  const [showArchive, setShowArchive] = useState(false);
   const plan = dietPlanFor(data.dietPlans || [], today);
+  const usedDays = (id) => (data.dietLog || []).filter(e => e && e.optionId === id).length;
 
   // Первая правка «материализует» варианты по умолчанию в data.dietOptions.
-  const mutate = (fn) => setData(d => ({ ...d, dietOptions: fn(getDietOptions(d).map(o => ({ ...o }))) }));
+  // Работаем со всем списком, включая архив, чтобы архивные не потерялись.
+  const mutate = (fn) => setData(d => ({ ...d, dietOptions: fn(getAllDietOptions(d).map(o => ({ ...o }))) }));
   const update = (id, patch) => mutate(list => list.map(o => o.id === id ? { ...o, ...patch } : o));
+  // idx — позиция среди активных; меняем местами с соседним активным в общем списке.
   const move = (idx, dir) => mutate(list => {
-    const to = idx + dir;
-    if (to < 0 || to >= list.length) return list;
+    const activeIdx = list.map((o, i) => o.archived ? -1 : i).filter(i => i >= 0);
+    const a = activeIdx[idx], b = activeIdx[idx + dir];
+    if (a == null || b == null) return list;
     // Штамп на обоих: слияние упорядочивает по стороне со свежей правкой.
     const now = Date.now();
-    [list[idx], list[to]] = [{ ...list[to], updatedAt: now }, { ...list[idx], updatedAt: now }];
+    [list[a], list[b]] = [{ ...list[b], updatedAt: now }, { ...list[a], updatedAt: now }];
     return list;
   });
+  const archive = (o) => update(o.id, { archived: true });
+  const restore = (o) => update(o.id, { archived: false });
   const remove = (o) => {
-    if (!confirm(`Удалить вариант «${o.label}»? Записанные дни сохранят название и калории.`)) return;
+    if (!confirm(`Удалить вариант «${o.label}» навсегда? Записанные дни сохранят название и калории, но потеряют цвет.`)) return;
     setData(d => ({
       ...d,
-      dietOptions: getDietOptions(d).filter(x => x.id !== o.id),
+      dietOptions: getAllDietOptions(d).filter(x => x.id !== o.id),
       deletedIds: withDeletedId(d, 'dietOptions', o.id),
     }));
   };
@@ -8019,7 +8031,7 @@ function DietOptionsEditor({ data, setData, today }) {
                   className={`flex-1 min-w-0 ${DIET_INPUT} !bg-[var(--surface)]`} />
                 <button onClick={() => move(i, -1)} disabled={i === 0} className="p-1 text-[var(--text-subtle)] disabled:opacity-25">↑</button>
                 <button onClick={() => move(i, 1)} disabled={i === options.length - 1} className="p-1 text-[var(--text-subtle)] disabled:opacity-25">↓</button>
-                <button onClick={() => remove(o)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0"><Icon name="trash" size={14} /></button>
+                <button onClick={() => archive(o)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0" title="В архив — не присылать в опросе, оставить в аналитике"><Icon name="archive" size={14} /></button>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-lg p-0.5 shrink-0">
@@ -8053,6 +8065,40 @@ function DietOptionsEditor({ data, setData, today }) {
       </div>
       <div className="text-xs text-[var(--text-subtle)]">Кнопка «✏️ Своё значение» есть в опросе всегда — для дней, которые не совпадают ни с одним вариантом.</div>
       <button onClick={add} className="btn-secondary text-sm flex items-center gap-2"><Icon name="plus" size={14} /> Добавить вариант</button>
+
+      {archived.length > 0 && (
+        <div>
+          <button onClick={() => setShowArchive(!showArchive)} className="flex items-center gap-2 text-[var(--text-muted)] hover:text-[var(--text)] text-sm">
+            <Icon name="archive" size={16} />
+            Архив ({archived.length})
+            <span className={`transition-transform ${showArchive ? 'rotate-180' : ''}`}><Icon name="chevronDown" size={16} /></span>
+          </button>
+          {showArchive && (
+            <div className="space-y-2 mt-3 fade-in">
+              <div className="text-xs text-[var(--text-subtle)]">Архивные варианты не приходят в опросе и не видны в дневнике, но дни, отмеченные ими, остаются в графике и сводке со своими калориями и цветом.</div>
+              {archived.map(o => {
+                const kcal = dietOptionKcal(o, plan);
+                const days = usedDays(o.id);
+                return (
+                  <div key={o.id} className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2.5 flex items-center gap-3 opacity-70">
+                    <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: o.color }} />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{o.label}</div>
+                      <div className="text-xs text-[var(--text-muted)]">
+                        {o.mode === 'plan' ? `план ${fmtKcalDiff(dietNum(o.delta) || 0)}` : `${fmtKcal(dietNum(o.kcal))} ккал`}
+                        {o.mode === 'plan' && kcal != null ? ` (= ${fmtKcal(kcal)} сегодня)` : ''}
+                        {` · ${days} дн. в истории`}
+                      </div>
+                    </div>
+                    <button onClick={() => restore(o)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Вернуть в опрос"><Icon name="restore" size={14} /></button>
+                    <button onClick={() => remove(o)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500" title="Удалить навсегда"><Icon name="trash" size={14} /></button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -12227,8 +12273,9 @@ const VOICE_DATA_DOMAINS = {
       supplements: d.supplements || [],
       // Учёт питания в калориях: dietLog — по дню {date, label, kcal, planKcal},
       // dietPlans — план калорий по периодам, dietOptions — варианты опроса
-      // (mode fixed — kcal, plan — план на дату + delta).
-      dietLog: dietLogForAssistant(d), dietPlans: d.dietPlans || [], dietOptions: getDietOptions(d),
+      // (mode fixed — kcal, plan — план на дату + delta; archived — в архиве:
+      // в опрос не попадает, история остаётся).
+      dietLog: dietLogForAssistant(d), dietPlans: d.dietPlans || [], dietOptions: getAllDietOptions(d),
       shoppingLists: d.shoppingLists || [],
     }),
   },
@@ -12621,7 +12668,8 @@ function cookingPlanDeleteIngredient(data, planId, ingredientId) {
 // значение»; kcal вместе с option — уточнённые калории варианта.
 function logDietCompliance(data, date, option, kcal) {
   if (!date) return { data, error: 'date_required' };
-  const options = getDietOptions(data);
+  // Сначала активные: архивный вариант находится, только если активного с таким названием нет.
+  const options = [...getDietOptions(data), ...getAllDietOptions(data).filter(o => o.archived)];
   let kcalN = dietNum(kcal);
   let optionId, label;
   if (option) {

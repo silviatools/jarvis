@@ -735,11 +735,14 @@ def fmt_kcal(n: int) -> str:
     return f"{n:,}".replace(",", " ")
 
 
-def diet_options(app: dict) -> list:
+def diet_options(app: dict, include_archived: bool = False) -> list:
+    """Варианты опроса. Архивные (archived) в опрос не попадают, но нужны,
+    чтобы записанные ими дни по-прежнему находили свои калории и цвет."""
     opts = app.get("dietOptions")
     if not isinstance(opts, list):
         return [dict(o) for o in DEFAULT_DIET_OPTIONS]
-    return [o for o in opts if isinstance(o, dict) and o.get("id") and not o.get("archived")]
+    return [o for o in opts if isinstance(o, dict) and o.get("id")
+            and (include_archived or not o.get("archived"))]
 
 
 def diet_plan_for(app: dict, date_iso: str) -> int | None:
@@ -776,7 +779,7 @@ def diet_entry_kcal(app: dict, e: dict) -> int | None:
         return kcal
     date_iso = e.get("date") or ""
     if e.get("optionId"):
-        opt = next((o for o in diet_options(app) if o.get("id") == e["optionId"]), None)
+        opt = next((o for o in diet_options(app, include_archived=True) if o.get("id") == e["optionId"]), None)
         return diet_option_kcal(opt, diet_plan_for(app, date_iso)) if opt else None
     level = e.get("level") or ("on_plan" if e.get("onPlan") else None)
     legacy = ((app.get("dietLegacyKcal") or {}).get("levels") or {}).get(level) if level else None
@@ -840,7 +843,7 @@ def save_diet_option(date_iso: str, option_id: str) -> dict | None:
     """Записать выбранный вариант (с калориями на сегодня). None — варианта нет."""
     with APP_DATA_LOCK:
         app = load_app_data()
-        opt = next((o for o in diet_options(app) if o.get("id") == option_id), None)
+        opt = next((o for o in diet_options(app, include_archived=True) if o.get("id") == option_id), None)
         if not opt:
             return None
         kcal = diet_option_kcal(opt, diet_plan_for(app, date_iso))
@@ -3571,9 +3574,10 @@ ASSISTANT_DATA_DOMAINS = {
             "supplements": app.get("supplements", []),
             # Учёт питания в калориях: dietLog — по дню {date, label, kcal, planKcal},
             # dietPlans — план калорий по периодам, dietOptions — варианты опроса
-            # (mode fixed — kcal, plan — план на дату + delta).
+            # (mode fixed — kcal, plan — план на дату + delta;
+            # archived — вариант в архиве: в опрос не попадает, история остаётся).
             "dietLog": diet_log_for_assistant(app), "dietPlans": app.get("dietPlans", []),
-            "dietOptions": diet_options(app), "shoppingLists": app.get("shoppingLists", []),
+            "dietOptions": diet_options(app, include_archived=True), "shoppingLists": app.get("shoppingLists", []),
             # вкладка «База продуктов» → «Мои блюда»: свои блюда из продуктов
             # статичного справочника (foods_data.py), КБЖУ на 100г — сумма ингредиентов
             "customDishes": app.get("customDishes", []),
@@ -4042,7 +4046,9 @@ def log_diet_compliance(app: dict, date: str, option: str | None = None, kcal=No
     kcal_n = _kcal_num(kcal)
     if option:
         needle = str(option).strip().lower()
-        opt = next((o for o in diet_options(app)
+        # Сначала активные: архивный вариант находится, только если активного с таким названием нет.
+        candidates = sorted(diet_options(app, include_archived=True), key=lambda o: bool(o.get("archived")))
+        opt = next((o for o in candidates
                     if o.get("id") == option or str(o.get("label") or "").strip().lower() == needle), None)
         if not opt:
             return {"error": "option_not_found", "options": [o.get("label") for o in diet_options(app)]}
