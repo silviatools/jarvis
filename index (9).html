@@ -7653,7 +7653,7 @@ function DietDiary({ data, setData, today, openSettings }) {
           )}
           {unmappedLegacy > 0 && (
             <button onClick={() => openSettings('legacy')} className="w-full text-left bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3 text-sm">
-              <span className="font-medium">{unmappedLegacy} старых записей без калорий.</span> <span className="text-[var(--text-muted)]">Укажи, сколько ккал значил каждый старый вариант →</span>
+              <span className="font-medium">{unmappedLegacy} старых записей без калорий.</span> <span className="text-[var(--text-muted)]">Не задано соответствие или нет плана калорий на эти даты →</span>
             </button>
           )}
         </div>
@@ -8107,13 +8107,37 @@ function DietOptionsEditor({ data, setData, today }) {
 // ккал значил каждый уровень, — записи получают калории сразу, без переписывания.
 function DietLegacyEditor({ data, setData }) {
   const ctx = dietCtx(data);
+  const [gapKcal, setGapKcal] = useState(null);
   const legacyEntries = (data.dietLog || []).filter(e => e && e.date && dietLegacyLevel(e) && dietNum(e.kcal) == null && dietNum(e.calories) == null);
   if (legacyEntries.length === 0) return null;
-  const counts = {};
-  legacyEntries.forEach(e => { const l = dietLegacyLevel(e); counts[l] = (counts[l] || 0) + 1; });
+  const counts = {}, resolved = {};
+  legacyEntries.forEach(e => {
+    const l = dietLegacyLevel(e);
+    counts[l] = (counts[l] || 0) + 1;
+    if (dietResolveEntry(e, ctx).kcal != null) resolved[l] = (resolved[l] || 0) + 1;
+  });
   const levels = DIET_LEGACY_LEVELS.filter(l => counts[l.id]);
   const map = ctx.legacy;
   const range = legacyEntries.map(e => e.date).sort();
+
+  // «От плана» на дату без плана не считается — показываем, какие дни так
+  // выпали, и даём одним действием задать план на этот период.
+  const noPlanDates = legacyEntries
+    .filter(e => map[dietLegacyLevel(e)]?.mode === 'plan' && dietPlanFor(ctx.plans, e.date) == null)
+    .map(e => e.date).sort();
+  // Период нового плана — все старые дни без плана (и с «Фикс» тоже: без плана
+  // они не попадают в отклонение от плана в сводке).
+  const allNoPlan = legacyEntries.filter(e => dietPlanFor(ctx.plans, e.date) == null).map(e => e.date).sort();
+  const gapFrom = allNoPlan[0], gapTo = allNoPlan[allNoPlan.length - 1];
+  const earliestPlan = [...ctx.plans].filter(p => dietNum(p.kcal) != null).sort((a, b) => (a.from || '').localeCompare(b.from || ''))[0];
+  const gapValue = gapKcal ?? (earliestPlan ? dietNum(earliestPlan.kcal) : null);
+  const addGapPlan = () => {
+    if (!(gapValue > 0) || !gapFrom) return;
+    setData(d => ({ ...d, dietPlans: [...(d.dietPlans || []), {
+      id: crypto.randomUUID(), kcal: gapValue, from: gapFrom, to: gapTo, note: 'для старых записей', updatedAt: Date.now(),
+    }] }));
+    setGapKcal(null);
+  };
 
   const update = (levelId, patch) => setData(d => {
     const cur = (d.dietLegacyKcal && d.dietLegacyKcal.levels) || {};
@@ -8139,7 +8163,9 @@ function DietLegacyEditor({ data, setData }) {
               <div className="flex items-center gap-2">
                 <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: l.color }} />
                 <div className="text-sm font-medium flex-1">{l.label}</div>
-                <div className="text-xs text-[var(--text-muted)]">{counts[l.id]} дн.</div>
+                <div className={`text-xs ${map[l.id] && (resolved[l.id] || 0) < counts[l.id] ? 'text-amber-600' : 'text-[var(--text-muted)]'}`}>
+                  {map[l.id] ? `посчитано ${resolved[l.id] || 0} из ${counts[l.id]} дн.` : `${counts[l.id]} дн.`}
+                </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-lg p-0.5 shrink-0">
@@ -8170,8 +8196,23 @@ function DietLegacyEditor({ data, setData }) {
           );
         })}
       </div>
-      {(data.dietPlans || []).length === 0 && levels.some(l => map[l.id]?.mode === 'plan') && (
-        <div className="text-xs text-amber-600">Для «от плана» задай план, покрывающий эти даты (поле «Действует с» можно поставить в прошлое).</div>
+      {noPlanDates.length > 0 && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 space-y-3">
+          <div className="text-sm">
+            <span className="font-medium">{noPlanDates.length} дн. не посчитаны: на эти даты нет плана калорий</span>
+            <span className="text-[var(--text-muted)]"> ({dietFormatDay(gapFrom)} — {dietFormatDay(gapTo)}), а «от плана» считается от плана того дня.
+              Укажи, какой план был тогда, — или переключи вариант на «Фикс».</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <DietNumInput value={gapValue} onChange={setGapKcal} placeholder="ккал"
+              className={`w-28 ${DIET_INPUT} !bg-[var(--surface)] !py-1.5`} />
+            <span className="text-xs text-[var(--text-muted)]">ккал в день</span>
+            <button onClick={addGapPlan} disabled={!(gapValue > 0)} className="btn-primary !py-1.5 text-sm disabled:opacity-40">
+              Задать план {dietFormatDay(gapFrom)} — {dietFormatDay(gapTo)}
+            </button>
+          </div>
+          <div className="text-[11px] text-[var(--text-subtle)]">План появится в списке «План калорий» — его можно поправить или разбить на периоды.</div>
+        </div>
       )}
     </div>
   );
