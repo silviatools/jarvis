@@ -677,12 +677,37 @@ def find_loyalty_card(app_data: dict, card_id: str):
 
 
 # ── diet compliance (Соблюдение) ─────────────────────────────────────────────
+# Питание считается в калориях:
+#   • dietPlans   — план калорий по периодам [{id, kcal, from, to}], to пустое =
+#                   «без конца». На дату действует план с самым поздним from,
+#                   покрывающим её, — новый период перекрывает старый сам.
+#   • dietOptions — варианты ответа опроса [{id, label, color, mode, kcal, delta}]:
+#                   mode "fixed" — ровно kcal, "plan" — план на дату + delta.
+#                   Пока пользователь их не правил (ключа нет) — DEFAULT_DIET_OPTIONS.
+#   • dietLog     — запись за день {date, optionId, label, kcal}: kcal — снимок на
+#                   момент отметки, чтобы правка варианта/плана не переписывала
+#                   прошлое. optionId "custom" — своё значение из Telegram/сайта.
+#   • Старые записи хранят только level (7 уровней ниже) — их калории берутся из
+#     dietLegacyKcal.levels[level] ({mode, kcal, delta}), которую задаёт пользователь.
+# Зеркало этой логики — dietPlanFor/dietOptionKcal/dietResolveEntry в index (9).html.
 
 DIET_LABELS = {
     "much_below": "Ниже", "below": "Чуть ниже", "on_plan": "По плану",
     "above": "Чуть выше", "much_above": "Выше",
     "mini_cheat": "Мини чит мил", "cheat": "Чит мил",
 }
+DIET_CUSTOM_ID = "custom"
+DIET_CUSTOM_LABEL = "Своё значение"
+
+DEFAULT_DIET_OPTIONS = [
+    {"id": "much_below", "label": "Ниже", "color": "#ef4444", "mode": "plan", "delta": -500, "kcal": None},
+    {"id": "below", "label": "Чуть ниже", "color": "#f59e0b", "mode": "plan", "delta": -250, "kcal": None},
+    {"id": "on_plan", "label": "По плану", "color": "#22c55e", "mode": "plan", "delta": 0, "kcal": None},
+    {"id": "above", "label": "Чуть выше", "color": "#f59e0b", "mode": "plan", "delta": 250, "kcal": None},
+    {"id": "much_above", "label": "Выше", "color": "#ef4444", "mode": "plan", "delta": 500, "kcal": None},
+    {"id": "mini_cheat", "label": "Мини чит мил", "color": "#a855f7", "mode": "plan", "delta": 500, "kcal": None},
+    {"id": "cheat", "label": "Чит мил", "color": "#7e22ce", "mode": "plan", "delta": 1000, "kcal": None},
+]
 
 MONTHS_RU_GEN = ["", "января", "февраля", "марта", "апреля", "мая", "июня",
                  "июля", "августа", "сентября", "октября", "ноября", "декабря"]
@@ -695,59 +720,260 @@ def human_date(date_iso: str) -> str:
     except Exception:
         return date_iso
 
-def diet_keyboard(date_iso: str) -> dict:
-    def btn(level):
-        return {"text": DIET_LABELS[level], "callback_data": f"diet:{level}:{date_iso}"}
-    return {"inline_keyboard": [
-        [btn("much_below"), btn("below")],
-        [btn("on_plan")],
-        [btn("above"), btn("much_above")],
-        [btn("mini_cheat"), btn("cheat")],
-    ]}
+
+def _kcal_num(v) -> int | None:
+    if isinstance(v, bool) or v is None:
+        return None
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return None
+    return int(round(n)) if n == n else None  # NaN → None
 
 
-def save_diet_entry(date_iso: str, level: str):
-    """Записать/обновить оценку питания за день прямо в файл БД."""
-    import uuid as _uuid
+def fmt_kcal(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
+
+
+def diet_options(app: dict) -> list:
+    opts = app.get("dietOptions")
+    if not isinstance(opts, list):
+        return [dict(o) for o in DEFAULT_DIET_OPTIONS]
+    return [o for o in opts if isinstance(o, dict) and o.get("id") and not o.get("archived")]
+
+
+def diet_plan_for(app: dict, date_iso: str) -> int | None:
+    best, best_key = None, None
+    for p in app.get("dietPlans") or []:
+        if not isinstance(p, dict):
+            continue
+        kcal = _kcal_num(p.get("kcal"))
+        if kcal is None:
+            continue
+        f, t = p.get("from") or "", p.get("to") or ""
+        if (f and date_iso < f) or (t and date_iso > t):
+            continue
+        key = (f, p.get("updatedAt") or 0)
+        if best_key is None or key > best_key:
+            best, best_key = kcal, key
+    return best
+
+
+def diet_option_kcal(opt: dict, plan: int | None) -> int | None:
+    if not isinstance(opt, dict):
+        return None
+    if opt.get("mode") == "plan":
+        return None if plan is None else plan + (_kcal_num(opt.get("delta")) or 0)
+    return _kcal_num(opt.get("kcal"))
+
+
+def diet_entry_kcal(app: dict, e: dict) -> int | None:
+    """Калории записи: снимок → вариант по id → таблица старых уровней."""
+    kcal = _kcal_num(e.get("kcal"))
+    if kcal is None:
+        kcal = _kcal_num(e.get("calories"))  # самый ранний формат {onPlan, calories}
+    if kcal is not None:
+        return kcal
+    date_iso = e.get("date") or ""
+    if e.get("optionId"):
+        opt = next((o for o in diet_options(app) if o.get("id") == e["optionId"]), None)
+        return diet_option_kcal(opt, diet_plan_for(app, date_iso)) if opt else None
+    level = e.get("level") or ("on_plan" if e.get("onPlan") else None)
+    legacy = ((app.get("dietLegacyKcal") or {}).get("levels") or {}).get(level) if level else None
+    return diet_option_kcal(legacy, diet_plan_for(app, date_iso)) if legacy else None
+
+
+def diet_entry_label(e: dict) -> str:
+    if e.get("label"):
+        return e["label"]
+    level = e.get("level") or ("on_plan" if e.get("onPlan") else "")
+    return DIET_LABELS.get(level, level or "—")
+
+
+def diet_keyboard(app: dict, date_iso: str) -> dict:
+    plan = diet_plan_for(app, date_iso)
+    buttons = []
+    for o in diet_options(app):
+        kcal = diet_option_kcal(o, plan)
+        text = str(o.get("label") or "—") + (f" · {fmt_kcal(kcal)}" if kcal is not None else "")
+        buttons.append({"text": text, "callback_data": f"dieto:{o['id']}:{date_iso}"})
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([{"text": "✏️ Своё значение (ккал)", "callback_data": f"dietc:{date_iso}"}])
+    return {"inline_keyboard": rows}
+
+
+def diet_ask_text(app: dict, date_iso: str) -> str:
+    plan = diet_plan_for(app, date_iso)
+    plan_line = f"\n🎯 План: <b>{fmt_kcal(plan)} ккал</b>" if plan is not None else ""
+    return f"🍽 <b>Как ты кушал сегодня?</b>\n📅 {human_date(date_iso)}{plan_line}"
+
+
+def diet_result_text(app: dict, date_iso: str, label: str, kcal: int | None) -> str:
+    plan = diet_plan_for(app, date_iso)
+    line = f"✅ Записано: <b>{html.escape(label)}</b>"
+    if kcal is not None:
+        line += f" — <b>{fmt_kcal(kcal)} ккал</b>"
+        if plan is not None:
+            diff = kcal - plan
+            sign = "+" if diff > 0 else ("−" if diff < 0 else "±")
+            line += f"\n🎯 План {fmt_kcal(plan)} ккал ({sign}{fmt_kcal(abs(diff))})"
+    return f"🍽 <b>Питание за {human_date(date_iso)}</b>\n\n{line}"
+
+
+def diet_write_entry(app: dict, date_iso: str, option_id: str | None, label: str, kcal: int | None) -> dict:
+    """Апсерт записи за дату в app (без сохранения). level=None явно — иначе
+    слияние дат оставило бы в записи старый уровень."""
+    existing = next((e for e in app.get("dietLog", []) if e.get("date") == date_iso), None)
+    entry = {
+        "id": (existing or {}).get("id") or str(uuid.uuid4()), "date": date_iso,
+        "optionId": option_id, "label": label, "kcal": kcal, "level": None,
+        "updatedAt": int(time.time() * 1000),
+    }
+    log = [e for e in app.get("dietLog", []) if e.get("date") != date_iso]
+    log.append(entry)
+    log.sort(key=lambda e: e.get("date", ""), reverse=True)
+    app["dietLog"] = log
+    return entry
+
+
+def save_diet_option(date_iso: str, option_id: str) -> dict | None:
+    """Записать выбранный вариант (с калориями на сегодня). None — варианта нет."""
     with APP_DATA_LOCK:
         app = load_app_data()
+        opt = next((o for o in diet_options(app) if o.get("id") == option_id), None)
+        if not opt:
+            return None
+        kcal = diet_option_kcal(opt, diet_plan_for(app, date_iso))
+        entry = diet_write_entry(app, date_iso, option_id, str(opt.get("label") or "—"), kcal)
+        save_app_data(app)
+        return entry
+
+
+def save_diet_custom(date_iso: str, kcal: int) -> dict:
+    with APP_DATA_LOCK:
+        app = load_app_data()
+        entry = diet_write_entry(app, date_iso, DIET_CUSTOM_ID, DIET_CUSTOM_LABEL, kcal)
+        save_app_data(app)
+        return entry
+
+
+def save_diet_legacy_level(date_iso: str, level: str):
+    """Нажатие на кнопку старого опроса (diet:<level>:…), если такого варианта уже нет."""
+    with APP_DATA_LOCK:
+        app = load_app_data()
+        existing = next((e for e in app.get("dietLog", []) if e.get("date") == date_iso), None)
         log = [e for e in app.get("dietLog", []) if e.get("date") != date_iso]
-        log.append({"id": str(_uuid.uuid4()), "date": date_iso, "level": level,
+        log.append({"id": (existing or {}).get("id") or str(uuid.uuid4()), "date": date_iso,
+                    "level": level, "optionId": None, "label": None, "kcal": None,
                     "updatedAt": int(time.time() * 1000)})
         log.sort(key=lambda e: e.get("date", ""), reverse=True)
         app["dietLog"] = log
         save_app_data(app)
 
 
+# «Своё значение»: после кнопки бот ждёт число следующим сообщением из этого
+# чата. Ожидание живёт в памяти (рестарт — просто нажать кнопку ещё раз).
+DIET_CUSTOM_TTL_SEC = 6 * 3600
+_diet_custom_pending: dict = {}
+_diet_custom_lock = threading.Lock()
+
+
+def parse_kcal_text(text: str) -> int | None:
+    s = (text or "").strip().lower().replace(" ", "").replace(" ", "").replace(" ", "")
+    s = re.sub(r"(ккал|kcal|кал|к)\.?$", "", s)
+    return int(s) if re.fullmatch(r"\d{1,5}", s) else None
+
+
 def handle_diet_callback(token: str, cq: dict):
     cq_id = cq.get("id")
     data_str = cq.get("data", "") or ""
-    if not data_str.startswith("diet:"):
-        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
-        return
-    chat_id = ((cq.get("message") or {}).get("chat") or {}).get("id")
-    if not chat_id or not is_routed_recipient(chat_id, "diet"):
-        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": "Недоступно"})
-        return
-    parts = data_str.split(":")
-    level = parts[1] if len(parts) > 1 else ""
-    date_iso = parts[2] if len(parts) > 2 else today_msk().isoformat()
-    if level not in DIET_LABELS:
-        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
-        return
-    save_diet_entry(date_iso, level)
-    label = DIET_LABELS[level]
-    tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": f"✅ Записано: {label}"})
     msg = cq.get("message") or {}
     chat_id = (msg.get("chat") or {}).get("id")
     mid = msg.get("message_id")
-    if chat_id and mid:
-        tg_post(token, "editMessageText", {
-            "chat_id": chat_id, "message_id": mid,
-            "text": f"🍽 <b>Питание за {human_date(date_iso)}</b>\n\n✅ Записано: <b>{label}</b>",
-            "parse_mode": "HTML",
+    if not chat_id or not is_routed_recipient(chat_id, "diet"):
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": "Недоступно"})
+        return
+    kind, _, rest = data_str.partition(":")
+
+    if kind == "dietc":
+        date_iso = rest or today_msk().isoformat()
+        with _diet_custom_lock:
+            _diet_custom_pending[chat_id] = {"date": date_iso, "mid": mid, "ts": time.time()}
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+        plan = diet_plan_for(load_app_data(), date_iso)
+        hint = f" План — {fmt_kcal(plan)}." if plan is not None else ""
+        tg_post(token, "sendMessage", {
+            "chat_id": chat_id, "parse_mode": "HTML",
+            "text": f"✏️ Сколько ккал ты съел за <b>{human_date(date_iso)}</b>?{hint}\nНапиши число, например <code>2350</code>.",
+            "reply_markup": {"force_reply": True, "input_field_placeholder": "ккал"},
         })
-    print(f"  diet callback: {date_iso} → {level}")
+        return
+
+    # dieto:<optionId>:<date> — новый формат; diet:<level>:<date> — кнопки старых опросов.
+    option_id, _, date_iso = rest.partition(":")
+    date_iso = date_iso or today_msk().isoformat()
+    if kind not in ("dieto", "diet") or not option_id:
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+        return
+    entry = save_diet_option(date_iso, option_id)
+    if entry is None and kind == "diet" and option_id in DIET_LABELS:
+        save_diet_legacy_level(date_iso, option_id)
+        entry = {"label": DIET_LABELS[option_id], "kcal": None}
+    if entry is None:
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": "Этого варианта больше нет"})
+        return
+    with _diet_custom_lock:
+        _diet_custom_pending.pop(chat_id, None)
+    label, kcal = entry["label"], entry["kcal"]
+    toast = f"✅ Записано: {label}" + (f" — {fmt_kcal(kcal)} ккал" if kcal is not None else "")
+    tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": toast})
+    if mid:
+        tg_post(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": mid, "parse_mode": "HTML",
+            "text": diet_result_text(load_app_data(), date_iso, label, kcal),
+        })
+    print(f"  diet callback: {date_iso} → {option_id} ({kcal} kcal)")
+
+
+def handle_diet_custom_reply(token: str, chat_id, text: str) -> bool:
+    """Число после «Своё значение». True — сообщение обработано здесь и
+    ассистенту его отдавать не надо."""
+    with _diet_custom_lock:
+        pending = _diet_custom_pending.get(chat_id)
+        if pending and time.time() - pending["ts"] > DIET_CUSTOM_TTL_SEC:
+            _diet_custom_pending.pop(chat_id, None)
+            pending = None
+    if not pending:
+        return False
+    if text.strip().lower() in ("отмена", "cancel"):
+        with _diet_custom_lock:
+            _diet_custom_pending.pop(chat_id, None)
+        send_message(token, chat_id, "Ок, не записываю.")
+        return True
+    kcal = parse_kcal_text(text)
+    if kcal is None:
+        # Не число — значит, это уже другой разговор: ожидание снимаем и
+        # отдаём сообщение ассистенту.
+        with _diet_custom_lock:
+            _diet_custom_pending.pop(chat_id, None)
+        return False
+    if not is_routed_recipient(chat_id, "diet"):
+        return False
+    if kcal < 100 or kcal > 15000:
+        send_message(token, chat_id, f"{fmt_kcal(kcal)} ккал — похоже на опечатку. Напиши число ещё раз или «отмена».")
+        return True
+    with _diet_custom_lock:
+        _diet_custom_pending.pop(chat_id, None)
+    date_iso = pending["date"]
+    save_diet_custom(date_iso, kcal)
+    text_out = diet_result_text(load_app_data(), date_iso, DIET_CUSTOM_LABEL, kcal)
+    send_message(token, chat_id, text_out)
+    if pending.get("mid"):
+        tg_post(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": pending["mid"], "parse_mode": "HTML", "text": text_out,
+        })
+    print(f"  diet custom: {date_iso} → {kcal} kcal")
+    return True
 
 
 # ── app data store ─────────────────────────────────────────────────────────────
@@ -3336,14 +3562,18 @@ ASSISTANT_DATA_DOMAINS = {
             "items": app.get("campingItems", []), "categories": app.get("campingCategories", []),
             "trips": app.get("campingTrips", []), "places": app.get("campingPlaces", []),
         }),
-    "meals": ("Питание: вкладки План/Готовка/Контейнеры/Счётчик/Закупка/База продуктов — рационы, планы готовки, контейнеры для взвешивания, остаток порций, БАДы, списки покупок, свои блюда",
+    "meals": ("Питание: вкладки План/Готовка/Контейнеры/Счётчик/Закупка/База продуктов — рационы, планы готовки, контейнеры для взвешивания, остаток порций, БАДы, списки покупок, свои блюда, учёт калорий по дням (план калорий по периодам, отметки опроса)",
         lambda app: {
             "meals": app.get("meals", [])[-30:],  # вкладка «План»
             "cookingPlans": app.get("cookingPlans", [])[-30:],  # вкладка «Готовка» — отдельная сущность от meals
             "containers": app.get("containers", []),  # вкладка «Контейнеры»
             "rationStock": app.get("rationStock", 0),  # вкладка «Счётчик»
             "supplements": app.get("supplements", []),
-            "dietLog": app.get("dietLog", [])[-30:], "shoppingLists": app.get("shoppingLists", []),
+            # Учёт питания в калориях: dietLog — по дню {date, label, kcal, planKcal},
+            # dietPlans — план калорий по периодам, dietOptions — варианты опроса
+            # (mode fixed — kcal, plan — план на дату + delta).
+            "dietLog": diet_log_for_assistant(app), "dietPlans": app.get("dietPlans", []),
+            "dietOptions": diet_options(app), "shoppingLists": app.get("shoppingLists", []),
             # вкладка «База продуктов» → «Мои блюда»: свои блюда из продуктов
             # статичного справочника (foods_data.py), КБЖУ на 100г — сумма ингредиентов
             "customDishes": app.get("customDishes", []),
@@ -3804,11 +4034,34 @@ def cooking_plan_delete_ingredient(app: dict, plan_id: str, ingredient_id: str) 
 
 # ── Дневные логи (dietLog, dailyChecklistLog): один ряд на дату — апсерт
 # заменяет запись за эту дату целиком, а не добавляет новую.
-def log_diet_compliance(app: dict, date: str, level: str) -> dict:
-    log = [e for e in app.get("dietLog", []) if e.get("date") != date]
-    log.append({"id": str(uuid.uuid4()), "date": date, "level": level, "updatedAt": int(time.time() * 1000)})
-    app["dietLog"] = log
-    return {"ok": True}
+def log_diet_compliance(app: dict, date: str, option: str | None = None, kcal=None) -> dict:
+    """option — id или название варианта из dietOptions; kcal без option —
+    «своё значение»; kcal вместе с option — уточнённые калории варианта."""
+    if not date:
+        return {"error": "date_required"}
+    kcal_n = _kcal_num(kcal)
+    if option:
+        needle = str(option).strip().lower()
+        opt = next((o for o in diet_options(app)
+                    if o.get("id") == option or str(o.get("label") or "").strip().lower() == needle), None)
+        if not opt:
+            return {"error": "option_not_found", "options": [o.get("label") for o in diet_options(app)]}
+        if kcal_n is None:
+            kcal_n = diet_option_kcal(opt, diet_plan_for(app, date))
+        entry = diet_write_entry(app, date, opt["id"], str(opt.get("label") or "—"), kcal_n)
+    elif kcal_n is not None:
+        entry = diet_write_entry(app, date, DIET_CUSTOM_ID, DIET_CUSTOM_LABEL, kcal_n)
+    else:
+        return {"error": "option_or_kcal_required"}
+    return {"ok": True, "label": entry["label"], "kcal": entry["kcal"], "planKcal": diet_plan_for(app, date)}
+
+
+def diet_log_for_assistant(app: dict, limit: int = 60) -> list:
+    """Последние записи с уже посчитанными калориями и планом на дату."""
+    log = sorted((e for e in app.get("dietLog", []) if isinstance(e, dict) and e.get("date")),
+                 key=lambda e: e["date"])[-limit:]
+    return [{"date": e["date"], "label": diet_entry_label(e), "kcal": diet_entry_kcal(app, e),
+             "planKcal": diet_plan_for(app, e["date"])} for e in log]
 
 
 def log_checklist_answer(app: dict, date: str, field_id: str, option: str) -> dict:
@@ -3963,14 +4216,15 @@ ASSISTANT_TOOLS = [
     },
     {
         "name": "log_diet_compliance",
-        "description": "Отметить соблюдение диеты за конкретный день.",
+        "description": "Отметить питание за конкретный день: вариант опроса (калории возьмутся из его настроек и плана на дату) и/или точное число ккал.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "date": {"type": "string", "description": "YYYY-MM-DD"},
-                "level": {"type": "string", "enum": ["much_below", "below", "on_plan", "above", "much_above", "mini_cheat", "cheat"]},
+                "option": {"type": "string", "description": "id или название варианта из get_data(\"meals\").dietOptions (например «По плану», «Чит мил»)"},
+                "kcal": {"type": "number", "description": "Сколько ккал съедено за день. Без option — записывается как «своё значение»."},
             },
-            "required": ["date", "level"],
+            "required": ["date"],
         },
     },
     {
@@ -4207,7 +4461,7 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
         "4. Канбан-доска «Задачи» (house_tasks) устроена отдельно от прочих разделов — свои инструменты: "
         "kanban_create_task, kanban_update_task, kanban_delete_task, kanban_move_task, kanban_add_comment, "
         "kanban_delete_comment, kanban_add_subtask, kanban_toggle_subtask.\n\n"
-        "5. log_diet_compliance(date, level) / log_checklist_answer(date, fieldId, option) — отметки по дням "
+        "5. log_diet_compliance(date, option, kcal) / log_checklist_answer(date, fieldId, option) — отметки по дням "
         "(один раз на дату — вызов заменяет предыдущую отметку на эту дату, если она была).\n\n"
         "6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — "
         "свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и "
@@ -4316,7 +4570,7 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
         "kanban_delete_comment": lambda: kanban_delete_comment(app, inp.get("taskId"), inp.get("commentId")),
         "kanban_add_subtask": lambda: kanban_add_subtask(app, inp.get("taskId"), inp.get("text")),
         "kanban_toggle_subtask": lambda: kanban_toggle_subtask(app, inp.get("taskId"), inp.get("subtaskId"), inp.get("done")),
-        "log_diet_compliance": lambda: log_diet_compliance(app, inp.get("date"), inp.get("level")),
+        "log_diet_compliance": lambda: log_diet_compliance(app, inp.get("date"), inp.get("option"), inp.get("kcal")),
         "log_checklist_answer": lambda: log_checklist_answer(app, inp.get("date"), inp.get("fieldId"), inp.get("option")),
         "cooking_plan_add_ingredient": lambda: cooking_plan_add_ingredient(app, inp.get("planId"), {
             "name": inp.get("name"), "portions": inp.get("portions"),
@@ -4533,7 +4787,7 @@ def updates_loop():
             if cq:
                 data_str = cq.get("data", "") or ""
                 try:
-                    if data_str.startswith("diet:"):
+                    if data_str.startswith(("diet:", "dieto:", "dietc:")):
                         handle_diet_callback(token, cq)
                     elif data_str.startswith("chk:"):
                         handle_checklist_callback(token, cq)
@@ -4564,6 +4818,13 @@ def updates_loop():
             # может занять несколько секунд, а держать им long-poll нельзя —
             # это задержит ответы диет-опросникам и остальным подписчикам.
             if text and not text.startswith("/"):
+                # Ждём «своё значение» калорий после кнопки опроса питания — число
+                # уходит в dietLog, а не ассистенту.
+                try:
+                    if handle_diet_custom_reply(token, cid, text):
+                        continue
+                except Exception as e:
+                    print(f"  diet custom reply error: {e}")
                 threading.Thread(
                     target=handle_assistant_message, args=(token, cid, text), daemon=True,
                 ).start()
@@ -5088,13 +5349,14 @@ def _tick():
             days = reminder.get("days", [0, 1, 2, 3, 4, 5, 6]) or []
             already = any(e.get("date") == today_iso for e in diet_log)
             if today_js in days and not already:
-                kb = diet_keyboard(today_iso)
+                kb = diet_keyboard(app_data_raw, today_iso)
+                ask_text = diet_ask_text(app_data_raw, today_iso)
                 recipients = recipients_for(app_data_raw, subs, "diet")
                 print(f"[{now_str} MSK] → diet ask ({len(recipients)} subscriber(s))")
                 for cid in recipients:
                     tg_post(token, "sendMessage", {
                         "chat_id": cid,
-                        "text": f"🍽 <b>Как ты кушал сегодня?</b>\n📅 {human_date(today_iso)}",
+                        "text": ask_text,
                         "parse_mode": "HTML",
                         "reply_markup": kb,
                     })

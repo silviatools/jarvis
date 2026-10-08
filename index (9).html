@@ -7421,223 +7421,711 @@ function MealItemAddForm({ foods, onAdd, onCancel }) {
 }
 
 // ============== DIET COMPLIANCE ==============
+// Учёт питания в калориях. Зеркало серверной логики (jarvis.py → diet_plan_for,
+// diet_option_kcal, diet_entry_kcal) — Telegram-бот считает так же.
+//  • dietPlans   — план калорий по периодам {kcal, from, to}; на дату действует
+//                  план с самым поздним «с», покрывающим её.
+//  • dietOptions — варианты опроса: mode 'fixed' — ровно kcal, 'plan' — план на
+//                  дату + delta. Пока ключа нет — DEFAULT_DIET_OPTIONS.
+//  • dietLog     — {date, optionId, label, kcal}: kcal — снимок на момент отметки,
+//                  правка варианта/плана прошлое не переписывает.
+//  • dietLegacyKcal.levels — калории для старых записей, где есть только level.
 
-// 5-уровневая шкала соблюдения питания (по плану или нет)
-const DIET_LEVELS = [
-  { id: 'much_below', label: 'Ниже',          offset: -2, color: '#ef4444' },
-  { id: 'below',      label: 'Чуть ниже',     offset: -1, color: '#f59e0b' },
-  { id: 'on_plan',    label: 'По плану',      offset:  0, color: '#22c55e' },
-  { id: 'above',      label: 'Чуть выше',     offset: +1, color: '#f59e0b' },
-  { id: 'much_above', label: 'Выше',          offset: +2, color: '#ef4444' },
-  { id: 'mini_cheat', label: 'Мини чит мил',  offset: +1, color: '#a855f7' },
-  { id: 'cheat',      label: 'Чит мил',       offset: +2, color: '#7e22ce' },
+const DIET_LEGACY_LEVELS = [
+  { id: 'much_below', label: 'Ниже',         color: '#ef4444' },
+  { id: 'below',      label: 'Чуть ниже',    color: '#f59e0b' },
+  { id: 'on_plan',    label: 'По плану',     color: '#22c55e' },
+  { id: 'above',      label: 'Чуть выше',    color: '#f59e0b' },
+  { id: 'much_above', label: 'Выше',         color: '#ef4444' },
+  { id: 'mini_cheat', label: 'Мини чит мил', color: '#a855f7' },
+  { id: 'cheat',      label: 'Чит мил',      color: '#7e22ce' },
 ];
-const DIET_LEVEL_BY_ID = Object.fromEntries(DIET_LEVELS.map(l => [l.id, l]));
+const DIET_LEGACY_BY_ID = Object.fromEntries(DIET_LEGACY_LEVELS.map(l => [l.id, l]));
+const DIET_CUSTOM_ID = 'custom';
+const DIET_CUSTOM_LABEL = 'Своё значение';
+const DIET_CUSTOM_COLOR = '#64748b';
+const DEFAULT_DIET_OPTIONS = [
+  { id: 'much_below', label: 'Ниже',         color: '#ef4444', mode: 'plan', delta: -500, kcal: null },
+  { id: 'below',      label: 'Чуть ниже',    color: '#f59e0b', mode: 'plan', delta: -250, kcal: null },
+  { id: 'on_plan',    label: 'По плану',     color: '#22c55e', mode: 'plan', delta: 0,    kcal: null },
+  { id: 'above',      label: 'Чуть выше',    color: '#f59e0b', mode: 'plan', delta: 250,  kcal: null },
+  { id: 'much_above', label: 'Выше',         color: '#ef4444', mode: 'plan', delta: 500,  kcal: null },
+  { id: 'mini_cheat', label: 'Мини чит мил', color: '#a855f7', mode: 'plan', delta: 500,  kcal: null },
+  { id: 'cheat',      label: 'Чит мил',      color: '#7e22ce', mode: 'plan', delta: 1000, kcal: null },
+];
 const DOW_SHORT = ['вс','пн','вт','ср','чт','пт','сб'];
 const MONTHS_SHORT = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
 
+const dietNum = (v) => {
+  if (v === null || v === undefined || v === '' || typeof v === 'boolean') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n) : null;
+};
+const fmtKcal = (n) => n == null ? '—' : Math.round(n).toLocaleString('ru-RU');
+const fmtKcalDiff = (d) => d > 0 ? `+${fmtKcal(d)}` : d < 0 ? `−${fmtKcal(-d)}` : '±0';
+const getDietOptions = (data) => Array.isArray(data.dietOptions)
+  ? data.dietOptions.filter(o => o && o.id && !o.archived)
+  : DEFAULT_DIET_OPTIONS;
+
+// Активный план на дату: самый поздний «с», покрывающий дату; при равных — свежая правка.
+const dietActivePlan = (plans, date) => {
+  let best = null;
+  for (const p of plans || []) {
+    if (!p || dietNum(p.kcal) == null) continue;
+    const f = p.from || '', t = p.to || '';
+    if ((f && date < f) || (t && date > t)) continue;
+    if (!best || f > (best.from || '') || (f === (best.from || '') && (p.updatedAt || 0) > (best.updatedAt || 0))) best = p;
+  }
+  return best;
+};
+const dietPlanFor = (plans, date) => { const p = dietActivePlan(plans, date); return p ? dietNum(p.kcal) : null; };
+const dietOptionKcal = (opt, plan) => {
+  if (!opt) return null;
+  if (opt.mode === 'plan') return plan == null ? null : plan + (dietNum(opt.delta) || 0);
+  return dietNum(opt.kcal);
+};
+const dietCtx = (data) => ({
+  plans: data.dietPlans || [],
+  optById: Object.fromEntries(getDietOptions(data).map(o => [o.id, o])),
+  legacy: (data.dietLegacyKcal && data.dietLegacyKcal.levels) || {},
+});
+const dietLegacyLevel = (e) => (e.optionId || e.label) ? null : (e.level || (e.onPlan ? 'on_plan' : null));
+
+// Запись → { kcal, plan, label, color, legacyLevel }
+const dietResolveEntry = (e, ctx) => {
+  const plan = dietPlanFor(ctx.plans, e.date);
+  const legacyLevel = dietLegacyLevel(e);
+  const opt = e.optionId ? ctx.optById[e.optionId] : null;
+  let kcal = dietNum(e.kcal);
+  if (kcal == null && !e.optionId) kcal = dietNum(e.calories); // самый ранний формат {onPlan, calories}
+  if (kcal == null && opt) kcal = dietOptionKcal(opt, plan);
+  if (kcal == null && legacyLevel) kcal = dietOptionKcal(ctx.legacy[legacyLevel], plan);
+  const label = e.label
+    || (e.optionId === DIET_CUSTOM_ID ? DIET_CUSTOM_LABEL : opt?.label)
+    || DIET_LEGACY_BY_ID[legacyLevel]?.label || '—';
+  const color = e.optionId === DIET_CUSTOM_ID ? DIET_CUSTOM_COLOR
+    : opt?.color
+    || (legacyLevel && (ctx.optById[legacyLevel]?.color || DIET_LEGACY_BY_ID[legacyLevel]?.color))
+    || DIET_CUSTOM_COLOR;
+  return { kcal, plan, label, color, legacyLevel };
+};
+const isDietEntry = (e) => e && e.date && (e.optionId || e.label || e.level || e.onPlan || dietNum(e.kcal) != null || dietNum(e.calories) != null);
+
+const dietFormatDate = (dateStr) => {
+  const d = new Date(dateStr + 'T00:00:00');
+  return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]} (${DOW_SHORT[d.getDay()]})`;
+};
+const dietFormatDay = (dateStr) => {
+  if (!dateStr) return '';
+  const d = new Date(dateStr + 'T00:00:00');
+  return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]} ${d.getFullYear()}`;
+};
+
+const DIET_INPUT = 'bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]';
+
+// Числовое поле со своей строкой: «-» и пустое значение во время набора не
+// сбрасываются, наружу уходит число или null.
+function DietNumInput({ value, onChange, allowNegative, className, placeholder }) {
+  const show = (v) => v == null ? '' : (allowNegative && v > 0 ? `+${v}` : String(v));
+  const [str, setStr] = useState(show(value));
+  React.useEffect(() => {
+    if (dietNum(str.replace('+', '')) !== (value ?? null)) setStr(show(value));
+  }, [value]);
+  return (
+    <input type="text" inputMode={allowNegative ? 'text' : 'numeric'} value={str} placeholder={placeholder}
+      onChange={e => {
+        const s = e.target.value.replace(allowNegative ? /[^\d+\-−]/g : /[^\d]/g, '').replace('−', '-');
+        setStr(s);
+        onChange(dietNum(s.replace('+', '')));
+      }}
+      className={className || DIET_INPUT} />
+  );
+}
+
 function DietComplianceView({ data, setData }) {
   const today = getTodayKey();
+  const [view, setView] = useState('diary');
+  const [settingsFocus, setSettingsFocus] = useState(null);
+  const openSettings = (focus) => { setSettingsFocus(focus || null); setView('settings'); };
 
-  // Нормализация: старые записи (onPlan/калории) → уровень
-  const normLevel = (e) => e.level || (e.onPlan ? 'on_plan' : null);
+  return (
+    <div className="fade-in space-y-5">
+      <div className="inline-flex bg-[var(--bg)] border border-[var(--border)] rounded-xl p-1 gap-0">
+        {[{ id: 'diary', label: 'Дневник' }, { id: 'settings', label: 'План и варианты' }].map(t => (
+          <button key={t.id} onClick={() => setView(t.id)}
+            className={`px-3 sm:px-4 py-1.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${view === t.id ? 'bg-[var(--surface)] text-[var(--text)] shadow-sm' : 'text-[var(--text-muted)]'}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {view === 'diary'
+        ? <DietDiary data={data} setData={setData} today={today} openSettings={openSettings} />
+        : <DietSettings data={data} setData={setData} today={today} focus={settingsFocus} />}
+    </div>
+  );
+}
+
+function DietDiary({ data, setData, today, openSettings }) {
+  const ctx = dietCtx(data);
+  const options = getDietOptions(data);
   const rawLog = data.dietLog || [];
-  const log = rawLog.map(e => ({ ...e, level: normLevel(e) })).filter(e => e.level);
+  const log = rawLog.filter(isDietEntry).map(e => ({ ...e, ...dietResolveEntry(e, ctx) }));
+  const byDate = Object.fromEntries(log.map(e => [e.date, e]));
 
   const [selDate, setSelDate] = useState(today);
-  const chartScrollRef = React.useRef(null);
+  const [period, setPeriod] = useState(30);
+  const selEntry = byDate[selDate];
+  const selPlan = dietPlanFor(ctx.plans, selDate);
+  const [customVal, setCustomVal] = useState(null);
+  React.useEffect(() => {
+    setCustomVal(selEntry && selEntry.optionId === DIET_CUSTOM_ID ? selEntry.kcal : null);
+  }, [selDate, selEntry?.updatedAt]);
+  const entryCardRef = React.useRef(null);
 
-  const selEntry = log.find(e => e.date === selDate);
-
-  const setLevel = (level) => {
-    const existing = rawLog.find(e => e.date === selDate);
-    // Явный updatedAt — см. setAnswer чек-листа: перекрывает tombstone
-    // когда-то удалённой даты.
-    const entry = { id: existing ? existing.id : crypto.randomUUID(), date: selDate, level, updatedAt: Date.now() };
+  const writeEntry = (date, optionId, label, kcal) => {
     setData(d => {
-      const list = (d.dietLog || []).filter(e => e.date !== selDate);
+      const existing = (d.dietLog || []).find(e => e.date === date);
+      // Явный updatedAt — перекрывает tombstone когда-то удалённой даты;
+      // level: null — чтобы слияние по дате не оставило старый уровень.
+      const entry = { id: existing ? existing.id : crypto.randomUUID(), date, optionId, label, kcal, level: null, updatedAt: Date.now() };
+      const list = (d.dietLog || []).filter(e => e.date !== date);
       return { ...d, dietLog: [...list, entry].sort((a, b) => b.date.localeCompare(a.date)) };
     });
   };
-
+  const chooseOption = (opt) => writeEntry(selDate, opt.id, opt.label, dietOptionKcal(opt, selPlan));
+  const saveCustom = () => {
+    if (customVal == null || customVal <= 0) return;
+    writeEntry(selDate, DIET_CUSTOM_ID, DIET_CUSTOM_LABEL, customVal);
+  };
   const deleteEntry = (date) => {
     deleteLogEntryOnServer('dietLog', date);
     setData(d => ({ ...d, dietLog: (d.dietLog || []).filter(e => e.date !== date), deletedIds: withDeletedId(d, 'dietLog', date) }));
   };
 
-  const onPlanCount = log.filter(e => e.level === 'on_plan').length;
-  const totalCount = log.length;
-  const adherencePct = totalCount > 0 ? Math.round((onPlanCount / totalCount) * 100) : null;
+  // ── Статистика за период ──
+  const periodStart = (() => { const d = new Date(); d.setDate(d.getDate() - (period - 1)); return dateToLocalStr(d); })();
+  const inPeriod = log.filter(e => e.date >= periodStart && e.date <= today && e.kcal != null);
+  const withPlan = inPeriod.filter(e => e.plan != null);
+  const avg = (arr) => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null;
+  const avgKcal = avg(inPeriod.map(e => e.kcal));
+  const avgPlan = avg(withPlan.map(e => e.plan));
+  const sumDiff = withPlan.reduce((s, e) => s + (e.kcal - e.plan), 0);
+  const avgDiff = withPlan.length ? sumDiff / withPlan.length : null;
+  const notAbove = withPlan.filter(e => e.kcal <= e.plan).length;
+  const notAbovePct = withPlan.length ? Math.round(notAbove / withPlan.length * 100) : null;
 
-  const formatDate = (dateStr) => {
-    const d = new Date(dateStr + 'T00:00:00');
-    return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]} (${DOW_SHORT[d.getDay()]})`;
-  };
+  const unmappedLegacy = log.filter(e => e.legacyLevel && e.kcal == null).length;
+  const noPlans = !(data.dietPlans || []).some(p => dietNum(p.kcal) != null);
+  const optionsNoKcal = options.filter(o => dietOptionKcal(o, selPlan) == null);
 
-  const sortedLog = [...log].sort((a, b) => b.date.localeCompare(a.date));
-
-  // ── Построение 90 дней для графика ──
-  const CHART_DAYS = 90;
+  // ── 90 дней для графика ──
   const chartDays = [];
-  for (let i = CHART_DAYS - 1; i >= 0; i--) {
+  for (let i = 89; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
     const ds = dateToLocalStr(d);
-    chartDays.push({
-      date: ds,
-      entry: log.find(e => e.date === ds),
-      dow: d.getDay(),
-      dayNum: d.getDate(),
-      month: d.getMonth(),
-    });
+    const e = byDate[ds];
+    chartDays.push({ date: ds, entry: e, kcal: e ? e.kcal : null, color: e ? e.color : null, plan: dietPlanFor(ctx.plans, ds), dow: d.getDay(), dayNum: d.getDate(), month: d.getMonth() });
   }
-  const todayIndex = chartDays.findIndex(d => d.date === today);
 
-  // Диаграмма отклонений: центр = «По плану», вверх = выше, вниз = ниже
-  const barW = 16, gap = 8, totalBarW = barW + gap;
-  const maxOffset = Math.max(1, ...DIET_LEVELS.map(l => Math.abs(l.offset)));
-  const TOP = 22, plotH = 96, center = TOP + plotH / 2, unit = (plotH / 2 - 8) / maxOffset;
-  const svgW = chartDays.length * totalBarW;
-  const svgH = TOP + plotH + 36;
+  const sortedLog = [...log].sort((a, b) => b.date.localeCompare(a.date));
 
-  // Авто-скролл к сегодняшнему дню
-  React.useEffect(() => {
-    const el = chartScrollRef.current;
-    if (!el) return;
-    const todayX = todayIndex * totalBarW + barW / 2;
-    el.scrollLeft = todayX - el.offsetWidth / 2;
-  }, [log.length]);
+  const Tile = ({ label, value, sub, tone }) => (
+    <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2.5 min-w-0">
+      <div className="text-[11px] text-[var(--text-muted)] truncate">{label}</div>
+      <div className={`text-lg font-semibold tabular-nums leading-tight mt-0.5 ${tone || ''}`}>{value}</div>
+      {sub && <div className="text-[11px] text-[var(--text-subtle)] mt-0.5 truncate">{sub}</div>}
+    </div>
+  );
+  const diffTone = (d) => d == null ? '' : d > 0 ? 'text-red-500' : 'text-green-600';
 
   return (
-    <div className="fade-in space-y-5">
-      {/* Header */}
-      {adherencePct !== null && (
-        <div className="text-[var(--text-subtle)] text-sm">
-          По плану: <span className={`font-semibold ${adherencePct >= 80 ? 'text-green-500' : adherencePct >= 50 ? 'text-yellow-500' : 'text-red-400'}`}>{adherencePct}%</span>
-          <span className="text-[var(--text-subtle)]"> ({onPlanCount}/{totalCount} дней)</span>
+    <div className="space-y-5">
+      {(noPlans || unmappedLegacy > 0) && (
+        <div className="space-y-2">
+          {noPlans && (
+            <button onClick={() => openSettings('plans')} className="w-full text-left bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3 text-sm">
+              <span className="font-medium">План калорий не задан.</span> <span className="text-[var(--text-muted)]">Варианты «от плана» без него не посчитаются — задать план →</span>
+            </button>
+          )}
+          {unmappedLegacy > 0 && (
+            <button onClick={() => openSettings('legacy')} className="w-full text-left bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3 text-sm">
+              <span className="font-medium">{unmappedLegacy} старых записей без калорий.</span> <span className="text-[var(--text-muted)]">Укажи, сколько ккал значил каждый старый вариант →</span>
+            </button>
+          )}
         </div>
       )}
 
-      {/* Entry card */}
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
-        {/* Date picker */}
-        <div>
-          <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Дата</label>
-          <input type="date" value={selDate} max={today}
-            onChange={e => setSelDate(e.target.value)}
-            className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]"
-          />
+      {/* Статистика */}
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="font-medium text-sm">Сводка</div>
+          <div className="inline-flex bg-[var(--bg)] border border-[var(--border)] rounded-lg p-0.5">
+            {[7, 30, 90].map(p => (
+              <button key={p} onClick={() => setPeriod(p)}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium ${period === p ? 'bg-[var(--surface)] text-[var(--text)] shadow-sm' : 'text-[var(--text-muted)]'}`}>
+                {p} дн
+              </button>
+            ))}
+          </div>
+        </div>
+        {inPeriod.length === 0 ? (
+          <div className="text-sm text-[var(--text-muted)]">За {period} дней нет записей с калориями.</div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <Tile label="Среднее в день" value={`${fmtKcal(avgKcal)}`} sub={`ккал · ${inPeriod.length} дн`} />
+            <Tile label="План в среднем" value={avgPlan == null ? '—' : fmtKcal(avgPlan)} sub="ккал" />
+            <Tile label="Отклонение в день" value={avgDiff == null ? '—' : fmtKcalDiff(Math.round(avgDiff))} sub={withPlan.length ? `баланс ${fmtKcalDiff(sumDiff)} ккал` : 'нет плана'} tone={diffTone(avgDiff)} />
+            <Tile label="Не выше плана" value={notAbovePct == null ? '—' : `${notAbovePct}%`} sub={withPlan.length ? `${notAbove} из ${withPlan.length} дн` : ''}
+              tone={notAbovePct == null ? '' : notAbovePct >= 80 ? 'text-green-600' : notAbovePct >= 50 ? 'text-yellow-500' : 'text-red-500'} />
+          </div>
+        )}
+      </div>
+
+      {/* Отметка за день */}
+      <div ref={entryCardRef} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div className="flex items-end gap-3">
+          <div className="flex-1">
+            <label className="block text-xs text-[var(--text-muted)] font-medium mb-1.5">Дата</label>
+            <input type="date" value={selDate} max={today} onChange={e => e.target.value && setSelDate(e.target.value)} className={`w-full ${DIET_INPUT}`} />
+          </div>
+          <div className="text-right pb-2">
+            <div className="text-[11px] text-[var(--text-muted)]">План на дату</div>
+            <div className="text-sm font-semibold tabular-nums">{selPlan == null ? '—' : `${fmtKcal(selPlan)} ккал`}</div>
+          </div>
         </div>
 
-        {/* Rating buttons */}
         <div>
           <div className="text-xs text-[var(--text-muted)] font-medium mb-2">Как кушал в этот день?</div>
-          <div className="grid grid-cols-4 gap-1.5">
-            {DIET_LEVELS.map(lvl => {
-              const active = selEntry?.level === lvl.id;
+          <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5">
+            {options.map(opt => {
+              const kcal = dietOptionKcal(opt, selPlan);
+              const active = selEntry?.optionId === opt.id || (!selEntry?.optionId && selEntry?.legacyLevel === opt.id);
               return (
-                <button key={lvl.id} onClick={() => setLevel(lvl.id)}
-                  className="flex flex-col items-center justify-center gap-1.5 py-2.5 px-1 rounded-xl border text-[11px] font-medium leading-tight text-center transition-all"
+                <button key={opt.id} onClick={() => chooseOption(opt)}
+                  className="flex flex-col items-center justify-center gap-1 py-2.5 px-1 rounded-xl border text-[11px] font-medium leading-tight text-center transition-all"
                   style={active
-                    ? { background: lvl.color, borderColor: lvl.color, color: '#fff' }
+                    ? { background: opt.color, borderColor: opt.color, color: '#fff' }
                     : { borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
-                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: active ? '#fff' : lvl.color }} />
-                  {lvl.label}
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: active ? '#fff' : opt.color }} />
+                  {opt.label}
+                  <span className={`tabular-nums text-[10px] ${active ? 'opacity-90' : 'text-[var(--text-subtle)]'}`}>{kcal == null ? '— ккал' : `${fmtKcal(kcal)} ккал`}</span>
                 </button>
               );
             })}
           </div>
-          {selEntry && (
-            <button onClick={() => deleteEntry(selDate)}
-              className="mt-2 w-full text-xs text-[var(--text-subtle)] hover:text-red-400 py-1.5 transition-colors">
-              Убрать отметку за {formatDate(selDate)}
-            </button>
+          {optionsNoKcal.length > 0 && selPlan == null && options.some(o => o.mode === 'plan') && (
+            <div className="text-[11px] text-[var(--text-subtle)] mt-1.5">Без плана на эту дату варианты «от плана» запишутся без калорий.</div>
           )}
         </div>
-      </div>
 
-      {/* Chart — last 90 days */}
-      {log.length > 0 && (
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-          <div className="font-medium text-sm mb-4">90 дней</div>
-          <div className="overflow-x-auto" ref={chartScrollRef}>
-            <svg width={svgW} height={svgH} style={{ display: 'block' }}>
-              {/* Baseline «По плану» */}
-              <line x1={0} y1={center} x2={svgW} y2={center} stroke="#22c55e" strokeWidth={1} strokeDasharray="3 3" opacity={0.5} />
-              {chartDays.map((day, i) => {
-                const x = i * totalBarW;
-                const cx = x + barW / 2;
-                const lvl = day.entry ? DIET_LEVEL_BY_ID[day.entry.level] : null;
-                const isToday = day.date === today;
-                const weekend = day.dow === 0 || day.dow === 6;
-                const showMonth = i === 0 || day.dayNum === 1;
-                return (
-                  <g key={day.date}>
-                    {/* Метка месяца при смене */}
-                    {showMonth && (
-                      <text x={x} y={12} fontSize="9" fill="var(--text-subtle)" fontWeight="600">
-                        {MONTHS_SHORT[day.month]}
-                      </text>
-                    )}
-                    {/* Столбик отклонения / отметка «нет данных» */}
-                    {!lvl ? (
-                      <rect x={x} y={center - 1} width={barW} height={2} rx={1} fill="var(--border)" />
-                    ) : lvl.offset === 0 ? (
-                      <rect x={x} y={center - 5} width={barW} height={10} rx={3} fill={lvl.color} />
-                    ) : lvl.offset > 0 ? (
-                      <rect x={x} y={center - lvl.offset * unit} width={barW} height={lvl.offset * unit} rx={3} fill={lvl.color} />
-                    ) : (
-                      <rect x={x} y={center} width={barW} height={-lvl.offset * unit} rx={3} fill={lvl.color} />
-                    )}
-                    {/* Подсветка сегодня */}
-                    {isToday && <rect x={x - 1} y={TOP - 4} width={barW + 2} height={plotH + 8} rx={4} fill="none" stroke="var(--text)" strokeWidth={1.5} opacity={0.35} />}
-                    {/* День недели */}
-                    <text x={cx} y={svgH - 20} textAnchor="middle" fontSize="8"
-                      fill={weekend ? '#ef4444' : 'var(--text-subtle)'} opacity={weekend ? 0.75 : 0.6}>
-                      {DOW_SHORT[day.dow]}
-                    </text>
-                    {/* Число */}
-                    <text x={cx} y={svgH - 7} textAnchor="middle" fontSize="9"
-                      fill="var(--text-muted)" fontWeight={isToday ? 700 : 400}>
-                      {day.dayNum}
-                    </text>
-                    {lvl && <title>{formatDate(day.date)}: {lvl.label}</title>}
-                  </g>
-                );
-              })}
-            </svg>
-          </div>
-          {/* Легенда */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-4 text-xs text-[var(--text-muted)]">
-            {DIET_LEVELS.map(lvl => (
-              <div key={lvl.id} className="flex items-center gap-1.5">
-                <div className="w-2.5 h-2.5 rounded-sm" style={{ background: lvl.color }} /> {lvl.label}
-              </div>
-            ))}
-            <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm" style={{ background: 'var(--border)' }} /> Нет данных</div>
+        <div>
+          <div className="text-xs text-[var(--text-muted)] font-medium mb-2">Или своё значение</div>
+          <div className="flex gap-2">
+            <DietNumInput value={customVal} onChange={setCustomVal} placeholder="ккал за день" className={`flex-1 min-w-0 ${DIET_INPUT}`} />
+            <button onClick={saveCustom} disabled={!customVal || customVal <= 0} className="btn-primary !py-2 text-sm disabled:opacity-40 shrink-0">Записать</button>
           </div>
         </div>
+
+        {selEntry && (
+          <div className="flex items-center gap-3 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2.5">
+            <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: selEntry.color }} />
+            <div className="flex-1 min-w-0 text-sm">
+              <span className="font-medium">{selEntry.label}</span>
+              <span className="text-[var(--text-muted)]"> · {selEntry.kcal == null ? 'ккал не указаны' : `${fmtKcal(selEntry.kcal)} ккал`}</span>
+              {selEntry.kcal != null && selEntry.plan != null && (
+                <span className={`ml-1 text-xs ${diffTone(selEntry.kcal - selEntry.plan)}`}>({fmtKcalDiff(selEntry.kcal - selEntry.plan)})</span>
+              )}
+            </div>
+            <button onClick={() => deleteEntry(selDate)} className="text-xs text-[var(--text-subtle)] hover:text-red-400 shrink-0">Убрать</button>
+          </div>
+        )}
+      </div>
+
+      {/* График — 90 дней */}
+      {log.length > 0 && (
+        <DietKcalChart days={chartDays} today={today} selDate={selDate}
+          onSelect={(date) => { setSelDate(date); entryCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }}
+          options={options} hasCustom={log.some(e => e.optionId === DIET_CUSTOM_ID)} />
       )}
 
-      {/* Log list */}
+      {/* История */}
       {sortedLog.length > 0 && (
         <div className="space-y-2">
           <div className="font-medium text-sm text-[var(--text-muted)] px-1">История</div>
           {sortedLog.map(entry => {
-            const lvl = DIET_LEVEL_BY_ID[entry.level] || DIET_LEVELS[2];
+            const diff = entry.kcal != null && entry.plan != null ? entry.kcal - entry.plan : null;
             return (
               <div key={entry.id || entry.date} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 flex items-center gap-3">
-                <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: lvl.color }} />
+                <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: entry.color }} />
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium">{formatDate(entry.date)}</div>
-                  <div className="text-xs text-[var(--text-muted)] mt-0.5">{lvl.label}</div>
+                  <div className="text-sm font-medium">{dietFormatDate(entry.date)}</div>
+                  <div className="text-xs text-[var(--text-muted)] mt-0.5 truncate">
+                    {entry.label}{entry.legacyLevel && <span className="text-[var(--text-subtle)]"> · старая запись</span>}
+                  </div>
                 </div>
-                <button onClick={() => { setSelDate(entry.date); }} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Изменить"><Icon name="edit" size={16} /></button>
+                <div className="text-right shrink-0">
+                  <div className="text-sm font-semibold tabular-nums">{entry.kcal == null ? '—' : fmtKcal(entry.kcal)}</div>
+                  <div className={`text-[11px] tabular-nums ${diff == null ? 'text-[var(--text-subtle)]' : diffTone(diff)}`}>
+                    {diff == null ? (entry.plan == null ? 'нет плана' : 'ккал') : fmtKcalDiff(diff)}
+                  </div>
+                </div>
+                <button onClick={() => { setSelDate(entry.date); entryCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Изменить"><Icon name="edit" size={16} /></button>
                 <button onClick={() => { if (confirm('Удалить запись?')) deleteEntry(entry.date); }} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="trash" size={16} /></button>
               </div>
             );
           })}
         </div>
+      )}
+    </div>
+  );
+}
+
+// Калории по дням: столбик цвета варианта, пунктир — план (ступеньками по периодам).
+function DietKcalChart({ days, today, selDate, onSelect, options, hasCustom }) {
+  const scrollRef = React.useRef(null);
+  const barW = 16, gap = 8, step = barW + gap;
+  const TOP = 10, plotH = 150, axisW = 40;
+  const svgW = days.length * step;
+  const svgH = TOP + plotH + 34;
+  const values = days.flatMap(d => [d.kcal, d.plan]).filter(v => v != null);
+  const rawMax = Math.max(1000, ...values);
+  const tickStep = rawMax > 4000 ? 1000 : 500;
+  const maxV = Math.ceil(rawMax * 1.05 / tickStep) * tickStep;
+  const y = (v) => TOP + plotH - (Math.max(0, v) / maxV) * plotH;
+  const ticks = [];
+  for (let v = 0; v <= maxV; v += tickStep) ticks.push(v);
+
+  // Линия плана: горизонталь на каждый день, вертикаль на смене периода, разрыв там, где плана нет.
+  let planPath = '';
+  days.forEach((d, i) => {
+    if (d.plan == null) return;
+    const x0 = i * step - gap / 2, x1 = x0 + step, yy = y(d.plan);
+    const prev = i > 0 ? days[i - 1].plan : null;
+    planPath += prev == null ? ` M ${Math.max(0, x0)} ${yy} H ${x1}` : ` V ${yy} H ${x1}`;
+  });
+
+  const todayIndex = days.findIndex(d => d.date === today);
+  React.useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollLeft = todayIndex * step + barW / 2 - el.offsetWidth / 2;
+  }, []);
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+      <div className="font-medium text-sm mb-4">Калории · 90 дней</div>
+      <div className="flex">
+        <svg width={axisW} height={svgH} style={{ display: 'block', flexShrink: 0 }}>
+          {ticks.map(v => (
+            <text key={v} x={axisW - 6} y={y(v) + 3} textAnchor="end" fontSize="9" fill="var(--text-subtle)">
+              {v >= 1000 ? `${(v / 1000).toLocaleString('ru-RU')}к` : v}
+            </text>
+          ))}
+        </svg>
+        <div className="overflow-x-auto flex-1 min-w-0" ref={scrollRef}>
+          <svg width={svgW} height={svgH} style={{ display: 'block' }}>
+            {ticks.map(v => (
+              <line key={v} x1={0} y1={y(v)} x2={svgW} y2={y(v)} stroke="var(--border)" strokeWidth={1} opacity={v === 0 ? 1 : 0.5} />
+            ))}
+            {days.map((day, i) => {
+              const x = i * step;
+              const cx = x + barW / 2;
+              const isToday = day.date === today;
+              const isSel = day.date === selDate;
+              const weekend = day.dow === 0 || day.dow === 6;
+              const showMonth = i === 0 || day.dayNum === 1;
+              const diff = day.kcal != null && day.plan != null ? day.kcal - day.plan : null;
+              return (
+                <g key={day.date} onClick={() => onSelect(day.date)} style={{ cursor: 'pointer' }}>
+                  <rect x={x - gap / 2} y={TOP} width={step} height={plotH} fill="transparent" />
+                  {showMonth && (
+                    <text x={x} y={TOP + 9} fontSize="9" fill="var(--text-subtle)" fontWeight="600">{MONTHS_SHORT[day.month]}</text>
+                  )}
+                  {day.kcal != null ? (
+                    <rect x={x} y={y(day.kcal)} width={barW} height={Math.max(2, TOP + plotH - y(day.kcal))} rx={3} fill={day.color} />
+                  ) : day.entry ? (
+                    <rect x={x} y={TOP + plotH - 6} width={barW} height={6} rx={2} fill={day.color} opacity={0.4} />
+                  ) : null}
+                  {(isToday || isSel) && (
+                    <rect x={x - 1} y={TOP - 2} width={barW + 2} height={plotH + 4} rx={4} fill="none" stroke="var(--text)" strokeWidth={1.5} opacity={isSel ? 0.6 : 0.3} />
+                  )}
+                  <text x={cx} y={svgH - 18} textAnchor="middle" fontSize="8" fill={weekend ? '#ef4444' : 'var(--text-subtle)'} opacity={weekend ? 0.75 : 0.6}>{DOW_SHORT[day.dow]}</text>
+                  <text x={cx} y={svgH - 6} textAnchor="middle" fontSize="9" fill="var(--text-muted)" fontWeight={isToday ? 700 : 400}>{day.dayNum}</text>
+                  <title>
+                    {dietFormatDate(day.date)}
+                    {day.entry ? `: ${day.entry.label} — ${day.kcal == null ? 'ккал не указаны' : `${fmtKcal(day.kcal)} ккал`}` : ': нет записи'}
+                    {day.plan != null ? `\nПлан: ${fmtKcal(day.plan)} ккал${diff != null ? ` (${fmtKcalDiff(diff)})` : ''}` : ''}
+                  </title>
+                </g>
+              );
+            })}
+            {planPath && <path d={planPath} fill="none" stroke="#22c55e" strokeWidth={2} strokeDasharray="4 3" style={{ pointerEvents: 'none' }} />}
+          </svg>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-4 text-xs text-[var(--text-muted)]">
+        <div className="flex items-center gap-1.5"><svg width="16" height="4"><line x1="0" y1="2" x2="16" y2="2" stroke="#22c55e" strokeWidth="2" strokeDasharray="4 3" /></svg> План</div>
+        {options.map(o => (
+          <div key={o.id} className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm" style={{ background: o.color }} /> {o.label}</div>
+        ))}
+        {hasCustom && <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm" style={{ background: DIET_CUSTOM_COLOR }} /> {DIET_CUSTOM_LABEL}</div>}
+      </div>
+    </div>
+  );
+}
+
+function DietSettings({ data, setData, today, focus }) {
+  const legacyRef = React.useRef(null);
+  const plansRef = React.useRef(null);
+  React.useEffect(() => {
+    const el = focus === 'legacy' ? legacyRef.current : focus === 'plans' ? plansRef.current : null;
+    el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [focus]);
+  return (
+    <div className="space-y-5">
+      <div ref={plansRef}><DietPlansEditor data={data} setData={setData} today={today} /></div>
+      <DietOptionsEditor data={data} setData={setData} today={today} />
+      <div ref={legacyRef}><DietLegacyEditor data={data} setData={setData} /></div>
+    </div>
+  );
+}
+
+function DietPlansEditor({ data, setData, today }) {
+  const plans = (data.dietPlans || []).filter(p => p && p.id);
+  const sorted = [...plans].sort((a, b) => (b.from || '').localeCompare(a.from || ''));
+  const active = dietActivePlan(plans, today);
+  const [draft, setDraft] = useState(null); // { id?, kcal, from, to, note }
+
+  const save = () => {
+    const kcal = dietNum(draft.kcal);
+    if (kcal == null || kcal <= 0 || !draft.from) return;
+    if (draft.to && draft.to < draft.from) { alert('Дата «по» раньше даты «с».'); return; }
+    const item = { id: draft.id || crypto.randomUUID(), kcal, from: draft.from, to: draft.to || '', note: (draft.note || '').trim(), updatedAt: Date.now() };
+    setData(d => {
+      const list = d.dietPlans || [];
+      return { ...d, dietPlans: list.some(p => p.id === item.id) ? list.map(p => p.id === item.id ? item : p) : [...list, item] };
+    });
+    setDraft(null);
+  };
+  const remove = (id) => {
+    if (!confirm('Удалить этот план? Записанные дни сохранят свои калории.')) return;
+    setData(d => ({ ...d, dietPlans: (d.dietPlans || []).filter(p => p.id !== id), deletedIds: withDeletedId(d, 'dietPlans', id) }));
+    if (draft?.id === id) setDraft(null);
+  };
+
+  const form = draft && (
+    <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-4 space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <div>
+          <label className="block text-xs text-[var(--text-muted)] font-medium mb-1">Ккал в день</label>
+          <DietNumInput value={dietNum(draft.kcal)} onChange={v => setDraft(x => ({ ...x, kcal: v }))} placeholder="2200" className={`w-full ${DIET_INPUT}`} />
+        </div>
+        <div>
+          <label className="block text-xs text-[var(--text-muted)] font-medium mb-1">Действует с</label>
+          <input type="date" value={draft.from || ''} onChange={e => setDraft(x => ({ ...x, from: e.target.value }))} className={`w-full ${DIET_INPUT}`} />
+        </div>
+        <div>
+          <label className="block text-xs text-[var(--text-muted)] font-medium mb-1">По (необязательно)</label>
+          <input type="date" value={draft.to || ''} min={draft.from || undefined} onChange={e => setDraft(x => ({ ...x, to: e.target.value }))} className={`w-full ${DIET_INPUT}`} />
+        </div>
+      </div>
+      <input value={draft.note || ''} onChange={e => setDraft(x => ({ ...x, note: e.target.value }))} placeholder="Заметка (например, сушка)" className={`w-full ${DIET_INPUT}`} />
+      <div className="flex gap-2">
+        <button onClick={save} disabled={!(dietNum(draft.kcal) > 0) || !draft.from} className="btn-primary text-sm flex-1 disabled:opacity-40">Сохранить</button>
+        <button onClick={() => setDraft(null)} className="btn-secondary text-sm flex-1">Отмена</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+      <div>
+        <h3 className="font-display text-lg mb-1">План калорий</h3>
+        <p className="text-sm text-[var(--text-muted)]">План действует с указанной даты. Новый план с более поздней датой сам перекрывает предыдущий — закрывать старый не обязательно.</p>
+      </div>
+      {sorted.length > 0 && (
+        <div className="space-y-2">
+          {sorted.map(p => draft?.id === p.id ? <div key={p.id}>{form}</div> : (
+            <div key={p.id} className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-4 py-3 flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold tabular-nums">
+                  {fmtKcal(dietNum(p.kcal))} ккал
+                  {active?.id === p.id && <span className="ml-2 text-[10px] font-medium px-1.5 py-0.5 rounded bg-green-500/15 text-green-600 align-middle">сейчас</span>}
+                </div>
+                <div className="text-xs text-[var(--text-muted)] mt-0.5">
+                  {p.from ? `с ${dietFormatDay(p.from)}` : 'с начала'} {p.to ? `по ${dietFormatDay(p.to)}` : '— без конца'}
+                  {p.note ? ` · ${p.note}` : ''}
+                </div>
+              </div>
+              <button onClick={() => setDraft({ ...p })} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Изменить"><Icon name="edit" size={14} /></button>
+              <button onClick={() => remove(p.id)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" title="Удалить"><Icon name="trash" size={14} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+      {draft && !draft.id ? form : !draft && (
+        <button onClick={() => setDraft({ kcal: active ? dietNum(active.kcal) : null, from: today, to: '', note: '' })}
+          className="btn-secondary text-sm flex items-center gap-2"><Icon name="plus" size={14} /> Новый план</button>
+      )}
+    </div>
+  );
+}
+
+function DietOptionsEditor({ data, setData, today }) {
+  const options = getDietOptions(data);
+  const plan = dietPlanFor(data.dietPlans || [], today);
+
+  // Первая правка «материализует» варианты по умолчанию в data.dietOptions.
+  const mutate = (fn) => setData(d => ({ ...d, dietOptions: fn(getDietOptions(d).map(o => ({ ...o }))) }));
+  const update = (id, patch) => mutate(list => list.map(o => o.id === id ? { ...o, ...patch } : o));
+  const move = (idx, dir) => mutate(list => {
+    const to = idx + dir;
+    if (to < 0 || to >= list.length) return list;
+    // Штамп на обоих: слияние упорядочивает по стороне со свежей правкой.
+    const now = Date.now();
+    [list[idx], list[to]] = [{ ...list[to], updatedAt: now }, { ...list[idx], updatedAt: now }];
+    return list;
+  });
+  const remove = (o) => {
+    if (!confirm(`Удалить вариант «${o.label}»? Записанные дни сохранят название и калории.`)) return;
+    setData(d => ({
+      ...d,
+      dietOptions: getDietOptions(d).filter(x => x.id !== o.id),
+      deletedIds: withDeletedId(d, 'dietOptions', o.id),
+    }));
+  };
+  const add = () => mutate(list => [...list, {
+    id: crypto.randomUUID(), label: 'Новый вариант',
+    color: CHECKLIST_OPTION_COLORS[list.length % CHECKLIST_OPTION_COLORS.length],
+    mode: 'fixed', kcal: plan, delta: 0, updatedAt: Date.now(),
+  }]);
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+      <div>
+        <h3 className="font-display text-lg mb-1">Варианты ответа</h3>
+        <p className="text-sm text-[var(--text-muted)]">Кнопки опроса в Telegram и в дневнике. Калории — фиксированное число или «от плана» (план на дату ± N). Записанный день хранит калории на момент отметки.</p>
+      </div>
+      <div className="space-y-2">
+        {options.map((o, i) => {
+          const kcal = dietOptionKcal(o, plan);
+          return (
+            <div key={o.id} className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <input type="color" value={o.color || '#64748b'} onChange={e => update(o.id, { color: e.target.value })}
+                  className="w-9 h-9 rounded-lg border border-[var(--border)] cursor-pointer p-0.5 bg-transparent shrink-0" title="Цвет на графике" />
+                <input value={o.label || ''} onChange={e => update(o.id, { label: e.target.value })} placeholder="Название"
+                  className={`flex-1 min-w-0 ${DIET_INPUT} !bg-[var(--surface)]`} />
+                <button onClick={() => move(i, -1)} disabled={i === 0} className="p-1 text-[var(--text-subtle)] disabled:opacity-25">↑</button>
+                <button onClick={() => move(i, 1)} disabled={i === options.length - 1} className="p-1 text-[var(--text-subtle)] disabled:opacity-25">↓</button>
+                <button onClick={() => remove(o)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0"><Icon name="trash" size={14} /></button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-lg p-0.5 shrink-0">
+                  {[{ id: 'fixed', label: 'Фикс' }, { id: 'plan', label: 'От плана' }].map(m => (
+                    <button key={m.id} onClick={() => update(o.id, m.id === 'plan'
+                        ? { mode: 'plan', delta: dietNum(o.delta) ?? (plan != null && dietNum(o.kcal) != null ? dietNum(o.kcal) - plan : 0) }
+                        : { mode: 'fixed', kcal: dietNum(o.kcal) ?? kcal })}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium ${(o.mode === 'plan' ? 'plan' : 'fixed') === m.id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+                {o.mode === 'plan' ? (
+                  <>
+                    <span className="text-xs text-[var(--text-muted)]">план</span>
+                    <DietNumInput key={o.id + ':delta'} allowNegative value={dietNum(o.delta)} onChange={v => update(o.id, { delta: v })} placeholder="+500"
+                      className={`w-24 ${DIET_INPUT} !bg-[var(--surface)] !py-1.5`} />
+                    <span className="text-xs text-[var(--text-subtle)]">= {kcal == null ? 'нет плана' : `${fmtKcal(kcal)} ккал сегодня`}</span>
+                  </>
+                ) : (
+                  <>
+                    <DietNumInput key={o.id + ':kcal'} value={dietNum(o.kcal)} onChange={v => update(o.id, { kcal: v })} placeholder="ккал"
+                      className={`w-28 ${DIET_INPUT} !bg-[var(--surface)] !py-1.5`} />
+                    <span className="text-xs text-[var(--text-subtle)]">ккал{plan != null && kcal != null ? ` (${fmtKcalDiff(kcal - plan)} к плану)` : ''}</span>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="text-xs text-[var(--text-subtle)]">Кнопка «✏️ Своё значение» есть в опросе всегда — для дней, которые не совпадают ни с одним вариантом.</div>
+      <button onClick={add} className="btn-secondary text-sm flex items-center gap-2"><Icon name="plus" size={14} /> Добавить вариант</button>
+    </div>
+  );
+}
+
+// Старые записи (до калорий) хранят только уровень. Пользователь задаёт, сколько
+// ккал значил каждый уровень, — записи получают калории сразу, без переписывания.
+function DietLegacyEditor({ data, setData }) {
+  const ctx = dietCtx(data);
+  const legacyEntries = (data.dietLog || []).filter(e => e && e.date && dietLegacyLevel(e) && dietNum(e.kcal) == null && dietNum(e.calories) == null);
+  if (legacyEntries.length === 0) return null;
+  const counts = {};
+  legacyEntries.forEach(e => { const l = dietLegacyLevel(e); counts[l] = (counts[l] || 0) + 1; });
+  const levels = DIET_LEGACY_LEVELS.filter(l => counts[l.id]);
+  const map = ctx.legacy;
+  const range = legacyEntries.map(e => e.date).sort();
+
+  const update = (levelId, patch) => setData(d => {
+    const cur = (d.dietLegacyKcal && d.dietLegacyKcal.levels) || {};
+    const base = cur[levelId] || { mode: 'plan', delta: 0, kcal: null };
+    return { ...d, dietLegacyKcal: { levels: { ...cur, [levelId]: { ...base, ...patch } }, updatedAt: Date.now() } };
+  });
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+      <div>
+        <h3 className="font-display text-lg mb-1">Старые записи</h3>
+        <p className="text-sm text-[var(--text-muted)]">
+          {legacyEntries.length} дн. ({dietFormatDay(range[0])} — {dietFormatDay(range[range.length - 1])}) записаны без калорий.
+          Укажи, сколько ккал значил каждый вариант: «от плана» берёт план, действовавший в тот день.
+        </p>
+      </div>
+      <div className="space-y-2">
+        {levels.map(l => {
+          const m = map[l.id];
+          const mode = m ? (m.mode === 'plan' ? 'plan' : 'fixed') : null;
+          return (
+            <div key={l.id} className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: l.color }} />
+                <div className="text-sm font-medium flex-1">{l.label}</div>
+                <div className="text-xs text-[var(--text-muted)]">{counts[l.id]} дн.</div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-lg p-0.5 shrink-0">
+                  {[{ id: 'fixed', label: 'Фикс' }, { id: 'plan', label: 'От плана' }].map(x => (
+                    <button key={x.id} onClick={() => update(l.id, { mode: x.id })}
+                      className={`px-2.5 py-1 rounded-md text-xs font-medium ${mode === x.id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
+                      {x.label}
+                    </button>
+                  ))}
+                </div>
+                {mode === 'plan' && (
+                  <>
+                    <span className="text-xs text-[var(--text-muted)]">план</span>
+                    <DietNumInput key={l.id + ':delta'} allowNegative value={dietNum(m.delta)} onChange={v => update(l.id, { delta: v })} placeholder="+500"
+                      className={`w-24 ${DIET_INPUT} !bg-[var(--surface)] !py-1.5`} />
+                  </>
+                )}
+                {mode === 'fixed' && (
+                  <>
+                    <DietNumInput key={l.id + ':kcal'} value={dietNum(m.kcal)} onChange={v => update(l.id, { kcal: v })} placeholder="ккал"
+                      className={`w-28 ${DIET_INPUT} !bg-[var(--surface)] !py-1.5`} />
+                    <span className="text-xs text-[var(--text-subtle)]">ккал</span>
+                  </>
+                )}
+                {!mode && <span className="text-xs text-[var(--text-subtle)]">не указано</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {(data.dietPlans || []).length === 0 && levels.some(l => map[l.id]?.mode === 'plan') && (
+        <div className="text-xs text-amber-600">Для «от плана» задай план, покрывающий эти даты (поле «Действует с» можно поставить в прошлое).</div>
       )}
     </div>
   );
@@ -11730,14 +12218,18 @@ const VOICE_DATA_DOMAINS = {
     get: d => ({ items: d.campingItems || [], categories: d.campingCategories || [], trips: d.campingTrips || [] }),
   },
   meals: {
-    label: 'Питание: вкладки План/Готовка/Контейнеры/Счётчик/Закупка — рационы, планы готовки, контейнеры для взвешивания, остаток порций, БАДы, списки покупок',
+    label: 'Питание: вкладки План/Готовка/Контейнеры/Счётчик/Закупка — рационы, планы готовки, контейнеры для взвешивания, остаток порций, БАДы, списки покупок, учёт калорий по дням (план калорий по периодам, отметки опроса)',
     get: d => ({
       meals: (d.meals || []).slice(-30), // вкладка «План»
       cookingPlans: (d.cookingPlans || []).slice(-30), // вкладка «Готовка» — отдельная сущность от meals, не путать
       containers: d.containers || [], // вкладка «Контейнеры»
       rationStock: d.rationStock ?? 0, // вкладка «Счётчик»
       supplements: d.supplements || [],
-      dietLog: (d.dietLog || []).slice(-30), shoppingLists: d.shoppingLists || [],
+      // Учёт питания в калориях: dietLog — по дню {date, label, kcal, planKcal},
+      // dietPlans — план калорий по периодам, dietOptions — варианты опроса
+      // (mode fixed — kcal, plan — план на дату + delta).
+      dietLog: dietLogForAssistant(d), dietPlans: d.dietPlans || [], dietOptions: getDietOptions(d),
+      shoppingLists: d.shoppingLists || [],
     }),
   },
   body: {
@@ -12125,9 +12617,35 @@ function cookingPlanDeleteIngredient(data, planId, ingredientId) {
 
 // ── Дневные логи (dietLog, dailyChecklistLog): один ряд на дату, а не на id —
 // апсерт заменяет запись за эту дату целиком, удаление тоже адресуется датой.
-function logDietCompliance(data, date, level) {
+// option — id или название варианта из dietOptions; kcal без option — «своё
+// значение»; kcal вместе с option — уточнённые калории варианта.
+function logDietCompliance(data, date, option, kcal) {
+  if (!date) return { data, error: 'date_required' };
+  const options = getDietOptions(data);
+  let kcalN = dietNum(kcal);
+  let optionId, label;
+  if (option) {
+    const needle = String(option).trim().toLowerCase();
+    const opt = options.find(o => o.id === option || String(o.label || '').trim().toLowerCase() === needle);
+    if (!opt) return { data, error: 'option_not_found', options: options.map(o => o.label) };
+    if (kcalN == null) kcalN = dietOptionKcal(opt, dietPlanFor(data.dietPlans || [], date));
+    optionId = opt.id; label = opt.label || '—';
+  } else if (kcalN != null) {
+    optionId = DIET_CUSTOM_ID; label = DIET_CUSTOM_LABEL;
+  } else {
+    return { data, error: 'option_or_kcal_required' };
+  }
+  const existing = (data.dietLog || []).find(e => e.date === date);
   const list = (data.dietLog || []).filter(e => e.date !== date);
-  return { data: { ...data, dietLog: [...list, { id: crypto.randomUUID(), date, level, updatedAt: Date.now() }] } };
+  const entry = { id: existing ? existing.id : crypto.randomUUID(), date, optionId, label, kcal: kcalN, level: null, updatedAt: Date.now() };
+  return { data: { ...data, dietLog: [...list, entry] } };
+}
+
+// Записи питания для ассистента — с уже посчитанными калориями и планом на дату.
+function dietLogForAssistant(d, limit = 60) {
+  const ctx = dietCtx(d);
+  return (d.dietLog || []).filter(isDietEntry).sort((a, b) => a.date.localeCompare(b.date)).slice(-limit)
+    .map(e => { const r = dietResolveEntry(e, ctx); return { date: e.date, label: r.label, kcal: r.kcal, planKcal: r.plan }; });
 }
 
 function deleteDietLogEntry(data, date) {
@@ -12462,14 +12980,15 @@ const VOICE_AGENT_TOOLS = [
   },
   {
     name: 'log_diet_compliance',
-    description: 'Отметить соблюдение диеты за конкретный день.',
+    description: 'Отметить питание за конкретный день: вариант опроса (калории возьмутся из его настроек и плана на дату) и/или точное число ккал.',
     input_schema: {
       type: 'object',
       properties: {
         date: { type: 'string', description: 'YYYY-MM-DD' },
-        level: { type: 'string', enum: ['much_below', 'below', 'on_plan', 'above', 'much_above', 'mini_cheat', 'cheat'] },
+        option: { type: 'string', description: 'id или название варианта из get_data("meals").dietOptions (например «По плану», «Чит мил»)' },
+        kcal: { type: 'number', description: 'Сколько ккал съедено за день. Без option — записывается как «своё значение».' },
       },
-      required: ['date', 'level'],
+      required: ['date'],
     },
   },
   {
@@ -12645,7 +13164,7 @@ ${writeList}
 
 4. Канбан-доска «Задачи» (house_tasks) устроена отдельно от прочих разделов — свои инструменты: kanban_create_task, kanban_update_task, kanban_delete_task, kanban_move_task, kanban_add_comment, kanban_delete_comment, kanban_add_subtask, kanban_toggle_subtask.
 
-5. log_diet_compliance(date, level) / log_checklist_answer(date, fieldId, option) — отметки по дням (один раз на дату — вызов заменяет предыдущую отметку на эту дату, если она была).
+5. log_diet_compliance(date, option, kcal) / log_checklist_answer(date, fieldId, option) — отметки по дням (один раз на дату — вызов заменяет предыдущую отметку на эту дату, если она была).
 
 6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и готового веса), cooking_plan_delete_ingredient.
 
@@ -12848,7 +13367,7 @@ async function executeVoiceTool(name, input, nav, data) {
     return applied(kanbanToggleSubtask(data, input.taskId, input.subtaskId, input.done));
   }
   if (name === 'log_diet_compliance') {
-    return applied(logDietCompliance(data, input.date, input.level));
+    return applied(logDietCompliance(data, input.date, input.option, input.kcal));
   }
   if (name === 'log_checklist_answer') {
     return applied(logChecklistAnswer(data, input.date, input.fieldId, input.option));
