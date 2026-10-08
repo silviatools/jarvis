@@ -193,7 +193,15 @@ SPA_ROUTES = {
 # straight back to it, instead of iOS falling back to the main manifest's
 # start_url "/" (same fix as the per-user /pf/<token>/ finance app below).
 SHORTCUT_MANIFESTS = {
-    "/misc": {"manifest_route": "/misc/manifest.json", "apple_title": "Jarvis: Прочее"},
+    "/misc": {
+        "manifest_route": "/misc/manifest.json",
+        "apple_title": "Jarvis: Прочее",
+        # Свой значок вместо общей «J»: подменяет <link rel="apple-touch-icon">
+        # в _serve_html (iOS берёт значок «Домой» из apple-touch-icon страницы,
+        # а не из манифеста). Иконка вкладки браузера остаётся общей — как и
+        # на клиенте, см. SHORTCUT_MANIFESTS_CLIENT в index (9).html.
+        "icon_180": "/icons/misc-180.png",
+    },
 }
 
 # ── Парольный доступ на весь сайт ───────────────────────────────────────────
@@ -212,6 +220,13 @@ AUTH_PUBLIC_FILES  = {
     # ним и остальной рендер (например, пропадает нижнее меню событий).
     "/planner-split.js",
 }
+# Иконки приложений «Финансы» (/pf/<токен>/) и «Прочее» (/misc): их забирает iOS
+# в момент «На экран Домой» и Android при установке — часто без cookie. Только
+# точные имена: route не нормализуется, и префикс «/icons/» пропустил бы
+# «/icons/../jarvis.py» мимо пароля.
+APP_ICON_FILES = {"finance": (32, 180, 192, 512), "misc": (180, 192, 512)}
+AUTH_PUBLIC_FILES |= {f"/icons/{app}-{size}.png"
+                      for app, sizes in APP_ICON_FILES.items() for size in sizes}
 
 
 def _route_token_prefix_public(route: str, prefix: str) -> bool:
@@ -9044,9 +9059,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             "background_color": "#f2f2fa",
             "theme_color": "#4338ca",
             "lang": "ru",
+            # Содержимое иконки целиком в безопасной зоне maskable (радиус 40%),
+            # поэтому тот же файл годится и как «any», и как «maskable».
             "icons": [
-                {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
-                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/finance-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/finance-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/finance-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
             ],
         }
         body = json.dumps(manifest, ensure_ascii=False).encode()
@@ -9073,12 +9091,13 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             "scope": "/",
             "display": "standalone",
             "orientation": "portrait",
-            "background_color": "#4F8EF7",
+            "background_color": "#E9EDF8",
             "theme_color": "#4F8EF7",
             "lang": "ru",
             "icons": [
-                {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
-                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+                {"src": "/icons/misc-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/misc-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/misc-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
             ],
         }
         body = json.dumps(manifest, ensure_ascii=False).encode()
@@ -9435,6 +9454,14 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                     f'<meta name="apple-mobile-web-app-title" content="{shortcut["apple_title"]}" />'.encode("utf-8"),
                     1,
                 )
+                if shortcut.get("icon_180"):
+                    for old_tag, new_tag in (
+                        (b'<link rel="apple-touch-icon" href="/apple-touch-icon.png" />',
+                         f'<link rel="apple-touch-icon" href="{shortcut["icon_180"]}" />'),
+                        (b'<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />',
+                         f'<link rel="apple-touch-icon" sizes="180x180" href="{shortcut["icon_180"]}" />'),
+                    ):
+                        content = content.replace(old_tag, new_tag.encode("utf-8"), 1)
             # ETag поверх итогового контента (после подмены manifest/title у
             # шорткатов), чтобы у /misc и site-wide "/" не совпадал и оба
             # корректно инвалидировались при правке index (9).html.

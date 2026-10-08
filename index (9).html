@@ -2322,7 +2322,7 @@ const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', 
 // it was on first load. Keep it in sync here so "Add to Home Screen" picks
 // up the right shortcut no matter how you navigated to the tab.
 const SHORTCUT_MANIFESTS_CLIENT = {
-  '/misc': { manifestHref: '/misc/manifest.json', appleTitle: 'Jarvis: Прочее' },
+  '/misc': { manifestHref: '/misc/manifest.json', appleTitle: 'Jarvis: Прочее', touchIcon: '/icons/misc-180.png' },
 };
 function syncShortcutManifest(path){
   const shortcut = SHORTCUT_MANIFESTS_CLIENT[path];
@@ -2330,6 +2330,10 @@ function syncShortcutManifest(path){
   if(link) link.setAttribute('href', shortcut ? shortcut.manifestHref : '/manifest.json');
   const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
   if(appleTitle) appleTitle.setAttribute('content', shortcut ? shortcut.appleTitle : 'Jarvis');
+  // Значок на экране «Домой» iOS берёт из apple-touch-icon страницы, а не из
+  // манифеста — меняем его вместе с манифестом (см. icon_180 в SHORTCUT_MANIFESTS).
+  document.querySelectorAll('link[rel="apple-touch-icon"]').forEach(l =>
+    l.setAttribute('href', shortcut ? shortcut.touchIcon : '/apple-touch-icon.png'));
 }
 
 const currentPathname = () => {
