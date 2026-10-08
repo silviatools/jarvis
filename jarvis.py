@@ -2112,9 +2112,15 @@ def _apple_event_lines(fields: dict, uid: str) -> list:
         lines.append(f"LOCATION:{_ics_escape(fields['location'])}")
     if fields.get("notes"):
         lines.append(f"DESCRIPTION:{_ics_escape(fields['notes'])}")
+    if fields.get("url"):
+        # Поле «URL» события: в Календаре на iPhone это отдельная нажимаемая строка.
+        lines.append("URL:" + re.sub(r"\s+", "", str(fields["url"])))
     # Оповещение о событии — только когда пользователь просит напомнить о событии
     # календаря. Это не замена Apple Напоминаний.
-    if fields.get("alarm") or fields.get("alarmMinutesBefore") is not None:
+    if fields.get("alarmsBefore"):
+        for mins in sorted({max(0, int(m)) for m in fields["alarmsBefore"]}):
+            lines += _apple_alarm_lines(title, mins)
+    elif fields.get("alarm") or fields.get("alarmMinutesBefore") is not None:
         mins = fields.get("alarmMinutesBefore")
         if mins is None:
             mins = 0
@@ -2709,6 +2715,8 @@ STUDY_DEFAULTS = {
     "time": "08:00",     # МСК
     "weeks": 2,          # текущая + следующая
     "notify": True,
+    "remind": False,     # напоминание из Календаря перед парой
+    "remindBefore": [5], # за сколько минут (можно несколько)
 }
 _STUDY_LOCK = threading.Lock()
 
@@ -2726,6 +2734,15 @@ def study_settings(app: dict = None) -> dict:
     except Exception:
         s["weeks"] = 2
     s["days"] = sorted({int(d) for d in (s.get("days") or []) if str(d).isdigit() and 1 <= int(d) <= 7})
+    s["remind"] = bool(s.get("remind"))
+    mins = set()
+    for m in (s.get("remindBefore") if isinstance(s.get("remindBefore"), list) else [s.get("remindBefore")]):
+        try:
+            if int(m) >= 0:
+                mins.add(min(10080, int(m)))
+        except (TypeError, ValueError):
+            pass
+    s["remindBefore"] = sorted(mins)[:3] or list(STUDY_DEFAULTS["remindBefore"])
     s["group"] = str(s.get("group") or "").strip()
     s["calendar"] = str(s.get("calendar") or "").strip() or STUDY_DEFAULTS["calendar"]
     return s
@@ -3339,7 +3356,7 @@ def study_uid(group: str, lesson: dict) -> str:
 _STUDY_LINK_RE = re.compile(r"Ссылка:\s*(\S+)")
 
 
-def study_event_fields(group: str, lesson: dict, keep_link: str = "") -> dict:
+def study_event_fields(group: str, lesson: dict, keep_link: str = "", remind: list = None) -> dict:
     """keep_link — ссылка из уже существующего события: подставляется, когда кабинет
     не ответил и новой ссылки нет (чтобы не стереть её из описания)."""
     notes = [lesson.get("kind") or ""]
@@ -3355,6 +3372,8 @@ def study_event_fields(group: str, lesson: dict, keep_link: str = "") -> dict:
         "end": f"{lesson['date']} {lesson['end']}",
         "location": lesson.get("room") or "",
         "notes": "\n".join(n for n in notes if n),
+        "url": link,
+        "alarmsBefore": sorted(remind or []),
     }
 
 
@@ -3384,6 +3403,22 @@ def _study_calendar(name: str, create: bool = True) -> dict:
     return {"name": name, "href": url}
 
 
+def _ics_alarm_minutes(text: str) -> list:
+    """За сколько минут до начала сработают оповещения события (по TRIGGER внутри VALARM):
+    -PT5M → 5, PT0S → 0. Абсолютные (VALUE=DATE-TIME) и «после начала» пропускаются."""
+    out = []
+    for line in _ics_unfold(text):
+        if not line.upper().startswith("TRIGGER"):
+            continue
+        m = re.match(r"^-P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$", line.rsplit(":", 1)[-1].strip().upper())
+        if m:
+            d, h, mi, sec = (int(x or 0) for x in m.groups())
+            out.append(d * 1440 + h * 60 + mi + (1 if sec > 0 else 0))
+        elif line.rsplit(":", 1)[-1].strip().upper() in ("PT0S", "P0D", "PT0M"):
+            out.append(0)
+    return sorted(set(out))
+
+
 def _study_existing(cal: dict, start_dt: datetime, end_dt: datetime) -> dict:
     """{uid: {url, etag, fields}} — только наши события в окне."""
     rng = (start_dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
@@ -3398,7 +3433,8 @@ def _study_existing(cal: dict, start_dt: datetime, end_dt: datetime) -> dict:
             out[ev["id"]] = {
                 "url": urljoin(cal["href"], href), "etag": etag,
                 "fields": {"title": ev["title"], "start": ev["start"], "end": ev["end"],
-                           "location": ev["location"], "notes": ev["notes"]},
+                           "location": ev["location"], "notes": ev["notes"],
+                           "alarms": _ics_alarm_minutes(text)},
             }
     return out
 
@@ -3465,6 +3501,7 @@ def _study_sync_locked(preview: bool, reason: str) -> dict:
         existing = _study_existing(cal, win_from, win_to)
 
         wanted = {study_uid(s["group"], l): l for l in lessons}
+        alarms = s["remindBefore"] if s["remind"] else []
         links_days = set(fetched.get("linksDays") or [])
 
         for uid, lesson in wanted.items():
@@ -3474,7 +3511,7 @@ def _study_sync_locked(preview: bool, reason: str) -> dict:
             if have and not lesson.get("link") and lesson["date"] not in links_days:
                 m = _STUDY_LINK_RE.search(have["fields"].get("notes") or "")
                 keep = m.group(1) if m else ""
-            fields = study_event_fields(s["group"], lesson, keep)
+            fields = study_event_fields(s["group"], lesson, keep, alarms)
             try:
                 if not have:
                     _study_put(urljoin(cal["href"], uid + ".ics"), uid, fields)
@@ -3482,6 +3519,8 @@ def _study_sync_locked(preview: bool, reason: str) -> dict:
                     continue
                 diff = [k for k in ("title", "start", "end", "location", "notes")
                         if (have["fields"].get(k) or "").strip() != (fields.get(k) or "").strip()]
+                if sorted(have["fields"].get("alarms") or []) != sorted(alarms):
+                    diff.append("alarms")
                 if diff:
                     _study_put(have["url"], uid, fields, have["etag"])
                     updated.append({"lesson": lesson, "before": have["fields"], "changed": diff})
@@ -3562,6 +3601,8 @@ def study_change_lines(result: dict) -> list:
         l, before = item["lesson"], item["before"]
         bits = []
         for k in item["changed"]:
+            if k == "alarms":
+                continue
             if k == "notes":
                 old_kind = (before.get("notes") or "").split("\n")[0]
                 if old_kind != (l.get("kind") or ""):

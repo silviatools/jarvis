@@ -5654,7 +5654,44 @@ function TelegramSettings() {
   );
 }
 
-const STUDY_DEFAULTS = { enabled: false, group: '', calendar: 'Учеба', days: [1, 3, 5], time: '08:00', weeks: 2, notify: true };
+const STUDY_DEFAULTS = { enabled: false, group: '', calendar: 'Учеба', days: [1, 3, 5], time: '08:00', weeks: 2, notify: true, remind: false, remindBefore: [5] };
+const STUDY_REMIND_OPTIONS = [[0, 'В начале'], [5, '5 мин'], [10, '10 мин'], [15, '15 мин'], [30, '30 мин'], [60, '1 час']];
+const studyRemindText = (m) => (m === 0 ? 'в момент начала' : m % 60 === 0 ? `за ${m / 60} ч` : `за ${m} мин`);
+
+function StudySwitch({ on, onChange, label }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={!!on}
+      aria-label={label}
+      onClick={() => onChange(!on)}
+      className={`relative w-12 h-7 rounded-full transition-colors flex-shrink-0 ${on ? 'bg-[var(--text)]' : 'bg-[var(--border)]'}`}
+    >
+      <span className={`absolute top-1 w-5 h-5 rounded-full bg-white transition-all ${on ? 'left-6' : 'left-1'}`} />
+    </button>
+  );
+}
+
+// Строка настройки: иконка, название, пояснение и переключатель справа;
+// включённая строка раскрывает детали (children) под собой.
+function StudyToggleRow({ icon, title, hint, on, onChange, children }) {
+  return (
+    <div className="p-4">
+      <div className="flex items-center gap-3">
+        <span className="w-9 h-9 rounded-lg bg-[var(--bg)] border border-[var(--border)] flex items-center justify-center flex-shrink-0 text-[var(--text-muted)]">
+          {icon}
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium">{title}</div>
+          <div className="text-xs text-[var(--text-muted)] mt-0.5 leading-snug">{hint}</div>
+        </div>
+        <StudySwitch on={on} onChange={onChange} label={title} />
+      </div>
+      {on && children ? <div className="mt-3 sm:pl-12">{children}</div> : null}
+    </div>
+  );
+}
 const STUDY_WEEKDAYS = [[1, 'Пн'], [2, 'Вт'], [3, 'Ср'], [4, 'Чт'], [5, 'Пт'], [6, 'Сб'], [7, 'Вс']];
 
 function StudySettings({ data, setData }) {
@@ -5698,6 +5735,13 @@ function StudySettings({ data, setData }) {
     load();
   };
 
+  const toggleRemind = (m) => {
+    const set = new Set(cfg.remindBefore && cfg.remindBefore.length ? cfg.remindBefore : [5]);
+    if (set.has(m)) { if (set.size > 1) set.delete(m); }
+    else if (set.size < 3) set.add(m);
+    update({ remindBefore: [...set].sort((a, b) => a - b) });
+  };
+
   const toggleDay = (d) => {
     const set = new Set(cfg.days || []);
     set.has(d) ? set.delete(d) : set.add(d);
@@ -5728,13 +5772,7 @@ function StudySettings({ data, setData }) {
               Джарвис забирает пары с rasp.rea.ru и сам ведёт календарь: добавляет новые, обновляет изменённые, удаляет отменённые. Трогает только свои события и только с сегодняшнего дня.
             </p>
           </div>
-          <button
-            onClick={() => update({ enabled: !cfg.enabled })}
-            className={`relative w-12 h-7 rounded-full transition-colors flex-shrink-0 ${cfg.enabled ? 'bg-[var(--text)]' : 'bg-[var(--border)]'}`}
-            aria-label="Автосинхронизация"
-          >
-            <span className={`absolute top-1 w-5 h-5 rounded-full bg-white transition-all ${cfg.enabled ? 'left-6' : 'left-1'}`} />
-          </button>
+          <StudySwitch on={!!cfg.enabled} onChange={v => update({ enabled: v })} label="Автосинхронизация" />
         </div>
 
         <div className="grid sm:grid-cols-2 gap-3 mt-4">
@@ -5794,15 +5832,58 @@ function StudySettings({ data, setData }) {
           </label>
         </div>
 
-        <label className="flex items-center gap-2 mt-4 text-sm cursor-pointer">
-          <input type="checkbox" checked={!!cfg.notify} onChange={e => update({ notify: e.target.checked })} />
-          Присылать изменения в Telegram
-        </label>
-        {cfg.notify && (
-          <p className="text-[11px] text-[var(--text-subtle)] mt-1">
-            Получатели — те, у кого в Маршрутизации уведомлений включена категория «Учеба».
-          </p>
-        )}
+        <div className="mt-5">
+          <div className="text-xs text-[var(--text-subtle)] mb-1.5">Уведомления</div>
+          <div className="rounded-xl border border-[var(--border)] divide-y divide-[var(--border)] overflow-hidden">
+            <StudyToggleRow
+              icon={(
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M21 3 3 10.5l6.5 2.5L12 20l2.5-5.5L21 3Z" /><path d="m9.5 13 5-4" />
+                </svg>
+              )}
+              title="Изменения в Telegram"
+              hint={cfg.notify
+                ? 'Пишу, когда пара появилась, перенеслась или отменилась. Получатели — те, у кого в Маршрутизации уведомлений включена категория «Учеба».'
+                : 'Выключено — изменения видны только в календаре.'}
+              on={!!cfg.notify}
+              onChange={v => update({ notify: v })}
+            />
+            <StudyToggleRow
+              icon={(
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M6 9a6 6 0 1 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9Z" /><path d="M10 20a2 2 0 0 0 4 0" />
+                </svg>
+              )}
+              title="Напоминать о парах"
+              hint={cfg.remind
+                ? 'Напоминание придёт на iPhone из Календаря. Откройте событие — ссылка на занятие в строке URL и в описании.'
+                : 'Календарь напомнит о каждой паре — ссылка на занятие будет в событии.'}
+              on={!!cfg.remind}
+              onChange={v => update({ remind: v })}
+            >
+              <div className="text-xs text-[var(--text-subtle)] mb-1.5">За сколько до начала (можно до трёх)</div>
+              <div className="flex flex-wrap gap-1.5">
+                {STUDY_REMIND_OPTIONS.map(([m, label]) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => toggleRemind(m)}
+                    className={`px-3 h-9 rounded-lg text-sm font-medium border transition-all ${
+                      (cfg.remindBefore || [5]).includes(m)
+                        ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                        : 'border-[var(--border)] text-[var(--text-muted)]'
+                    }`}
+                  >{label}</button>
+                ))}
+              </div>
+              <p className="text-[11px] text-[var(--text-subtle)] mt-2">
+                Напомню {(cfg.remindBefore && cfg.remindBefore.length ? cfg.remindBefore : [5]).map(studyRemindText).join(' и ')} о каждой паре.
+                Появится в календаре при следующей синхронизации — можно нажать «Синхронизировать сейчас».
+                Напоминания в событиях Джарвиса задаёт он сам.
+              </p>
+            </StudyToggleRow>
+          </div>
+        </div>
 
         <div className="flex flex-wrap gap-2 mt-5">
           <button onClick={() => run(false)} disabled={!!busy || !cfg.group} className="btn-primary text-sm px-4 py-2">
