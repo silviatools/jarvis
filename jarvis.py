@@ -3023,6 +3023,176 @@ def rea_fetch_weeks(group: str, weeks: int = 2, back: int = 0) -> dict:
             "requestedUntil": (cur_mon + timedelta(days=7 * max(1, weeks) - 1)).isoformat()}
 
 
+# ── student.rea.ru: вход в личный кабинет и хранение сессии ────────────────
+# Личный кабинет — обычный Bitrix: форма POST /personal/index.php?login=yes
+# (AUTH_FORM=Y, TYPE=AUTH, USER_LOGIN, USER_PASSWORD). Логин и пароль берём из
+# переменных окружения STUDENT_LOGIN / STUDENT_PASSWORD (в данные приложения и
+# в код не кладём). Куки сессии сохраняем в student_session.json, чтобы пережить
+# перезапуск сервера; когда сайт сбрасывает сессию (вместо страницы приходит
+# форма входа) — входим заново и повторяем запрос один раз.
+
+STUDENT_BASE_URL = "https://student.rea.ru"
+STUDENT_SESSION_FILE = DATA_DIR / "student_session.json"
+_STUDENT_LOCK = threading.RLock()
+_student = {"s": None, "loginAt": 0}
+_student_last = {"url": "", "status": 0, "text": ""}
+
+
+class StudentError(Exception):
+    pass
+
+
+def student_creds() -> tuple:
+    login = (os.environ.get("STUDENT_LOGIN") or "").strip()
+    password = os.environ.get("STUDENT_PASSWORD") or ""
+    if not login or not password:
+        raise StudentError("Не заданы STUDENT_LOGIN и STUDENT_PASSWORD (переменные окружения сервера).")
+    return login, password
+
+
+def _student_proxies():
+    proxy = (os.environ.get("STUDENT_PROXY") or os.environ.get("REA_PROXY") or "").strip()
+    return {"http": proxy, "https": proxy} if proxy else None
+
+
+def _student_is_login_page(text: str) -> bool:
+    return bool(re.search(r"""name=["']USER_PASSWORD["']""", text or ""))
+
+
+def _student_form_error(text: str) -> str:
+    """Сообщение Bitrix об ошибке входа (errortext / alert-danger) или про капчу."""
+    if re.search(r"captcha_sid|captcha_word", text or ""):
+        return "сайт требует капчу — зайдите в кабинет в браузере и введите её, затем повторите"
+    root = _mini_parse(text or "")
+    msgs = []
+    for cls in ("errortext", "alert-danger", "alert-error", "has-error"):
+        for node in root.iter(None, cls):
+            line = " ".join(node.text_lines()).strip()
+            if line and line not in msgs:
+                msgs.append(line)
+    return "; ".join(msgs)[:300]
+
+
+def _student_new_session():
+    if requests is None:
+        raise StudentError("На сервере не установлена библиотека requests.")
+    sess = requests.Session()
+    sess.headers.update({"User-Agent": _REA_UA, "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.5"})
+    return sess
+
+
+def _student_save_cookies(sess) -> None:
+    cookies = [{"name": c.name, "value": c.value, "domain": c.domain, "path": c.path,
+                "expires": c.expires, "secure": c.secure} for c in sess.cookies]
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STUDENT_SESSION_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"savedAt": int(time.time() * 1000), "loginAt": _student["loginAt"],
+                               "cookies": cookies}, ensure_ascii=False), encoding="utf-8")
+    try:
+        tmp.chmod(0o600)    # внутри — живая сессия кабинета
+    except OSError:
+        pass
+    tmp.replace(STUDENT_SESSION_FILE)
+
+
+def _student_load_session():
+    """Сессия с куками из файла или None, если сохранённой нет."""
+    try:
+        data = json.loads(STUDENT_SESSION_FILE.read_text(encoding="utf-8"))
+        cookies = data.get("cookies") or []
+    except Exception:
+        return None
+    if not cookies:
+        return None
+    sess = _student_new_session()
+    for c in cookies:
+        sess.cookies.set(c["name"], c["value"], domain=c.get("domain") or "student.rea.ru",
+                         path=c.get("path") or "/", expires=c.get("expires"), secure=bool(c.get("secure")))
+    _student["loginAt"] = int(data.get("loginAt") or 0)
+    return sess
+
+
+def _student_record(r) -> None:
+    _student_last.update({"url": r.url, "status": r.status_code, "text": r.text[:200000]})
+
+
+def _student_request(sess, method: str, path: str, **kw):
+    try:
+        r = sess.request(method, f"{STUDENT_BASE_URL}{path}", timeout=REA_HTTP_TIMEOUT,
+                         proxies=_student_proxies(), **kw)
+    except Exception as e:
+        raise StudentError(f"Не достучался до student.rea.ru: {type(e).__name__}. Если сайт режет "
+                           "зарубежные IP — задайте STUDENT_PROXY (или REA_PROXY) с российским прокси.")
+    r.encoding = r.encoding if r.encoding and r.encoding.lower() != "iso-8859-1" else "utf-8"
+    return r
+
+
+def student_login() -> "requests.Session":
+    """Заходит в кабинет заново (старую сессию выбрасывает) и сохраняет куки."""
+    login, password = student_creds()
+    with _STUDENT_LOCK:
+        sess = _student_new_session()
+        _student_request(sess, "GET", "/personal/")      # куки PHPSESSID / BITRIX_SM_*
+        r = _student_request(
+            sess, "POST", "/personal/index.php?login=yes",
+            data={"AUTH_FORM": "Y", "TYPE": "AUTH", "backurl": "/personal/index.php",
+                  "USER_LOGIN": login, "USER_PASSWORD": password, "USER_REMEMBER": "Y", "Login": "Войти"},
+            headers={"Referer": f"{STUDENT_BASE_URL}/personal/", "Origin": STUDENT_BASE_URL})
+        _student_record(r)
+        if _student_is_login_page(r.text):
+            why = _student_form_error(r.text)
+            raise StudentError("Кабинет не принял вход" + (f": {why.rstrip('.')}" if why else
+                               " (проверьте STUDENT_LOGIN и STUDENT_PASSWORD)") + ".")
+        if r.status_code >= 400:
+            raise StudentError(f"student.rea.ru ответил {r.status_code} при входе.")
+        _student.update({"s": sess, "loginAt": int(time.time() * 1000)})
+        _student_save_cookies(sess)
+        return sess
+
+
+def student_get(path: str, params: dict = None) -> str:
+    """GET страницы кабинета под сохранённой сессией; если сессия слетела — входит заново."""
+    with _STUDENT_LOCK:
+        sess = _student["s"] or _student_load_session()
+        relogged = False
+        if sess is None:
+            sess, relogged = student_login(), True
+        for _ in range(2):
+            r = _student_request(sess, "GET", path, params=params,
+                                 headers={"Referer": f"{STUDENT_BASE_URL}/personal/"})
+            _student_record(r)
+            if not _student_is_login_page(r.text) and r.status_code < 400:
+                _student["s"] = sess
+                _student_save_cookies(sess)     # Bitrix может обновить куки
+                return r.text
+            if relogged:
+                break
+            sess, relogged = student_login(), True
+        if r.status_code >= 400:
+            raise StudentError(f"student.rea.ru ответил {r.status_code} на {path}.")
+        raise StudentError("Сессия кабинета не держится: после входа снова показывается форма входа.")
+
+
+def student_check() -> dict:
+    """Проверка из настроек: вход + открытие /lessons/ (без разбора)."""
+    try:
+        started_logged = bool(_student["s"] or _student_load_session())
+        text = student_get("/lessons/")
+    except StudentError as e:
+        return {"ok": False, "error": str(e)}
+    title = re.search(r"(?is)<title>(.*?)</title>", text)
+    return {"ok": True, "reusedSession": started_logged, "url": _student_last["url"],
+            "title": re.sub(r"\s+", " ", title.group(1)).strip()[:120] if title else "",
+            "diag": _rea_diag(text), "loginAt": _student["loginAt"]}
+
+
+def student_status() -> dict:
+    return {"configured": bool((os.environ.get("STUDENT_LOGIN") or "").strip() and os.environ.get("STUDENT_PASSWORD")),
+            "hasSession": bool(_student["s"]) or STUDENT_SESSION_FILE.exists(),
+            "loginAt": _student["loginAt"],
+            "proxy": bool(_student_proxies())}
+
+
 # ── Сверка с Apple Календарём ──────────────────────────────────────────────
 
 def study_uid(group: str, lesson: dict) -> str:
@@ -3396,6 +3566,7 @@ def study_status() -> dict:
         "upcoming": upcoming,
         "appleConfigured": bool(apple_creds()),
         "proxy": bool((os.environ.get("REA_PROXY") or "").strip()),
+        "student": student_status(),
     }
 
 
@@ -7674,6 +7845,15 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif route == "/api/student/debug":
+            # Сырая последняя страница кабинета student.rea.ru (после входа) — для отладки разбора.
+            body = (f"URL: {_student_last['url']}\nHTTP: {_student_last['status']}\n"
+                    f"Разбор: {_rea_diag(_student_last['text'])}\n\n{_student_last['text']}").encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif route == "/api/study/lessons":
             q = self._apple_query()
             self._json(200, study_lessons(q.get("from"), q.get("to")))
@@ -7828,6 +8008,11 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._apple_post(route)
         elif route.startswith("/api/tg/"):
             self._tg_post(route)
+        elif route == "/api/student/check":
+            try:
+                self._json(200, student_check())
+            except Exception as e:
+                self._json(200, {"ok": False, "error": str(e)})
         elif route == "/api/study/sync":
             length = self._content_length() or 0
             try:
