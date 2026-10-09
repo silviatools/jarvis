@@ -372,7 +372,8 @@ def list_folders(with_chats=False) -> dict:
     return _run(_go(), 90)
 
 
-def list_dialogs(query="", limit=30, kind="", folder="", unread_only=False, archived=None, pinned_only=False, muted=None) -> dict:
+def list_dialogs(query="", limit=30, kind="", folder="", unread_only=False, archived=None, pinned_only=False, muted=None,
+                 include_muted=False) -> dict:
     limit = max(1, min(int(limit or 30), 100))
     q = (query or "").strip().lower().lstrip("@")
 
@@ -382,14 +383,17 @@ def list_dialogs(query="", limit=30, kind="", folder="", unread_only=False, arch
         fl = _find_folder(st["folders"], folder) if folder else None
         out = []
         matched = []
+        pool = []  # всё, что подошло по остальным фильтрам (до отсева по мьюту) — для сводки
+        # «Непрочитанное / что нового» — только чаты со звуком. Замьюченные показываем лишь
+        # по явной просьбе (muted=true или include_muted=true); конкретный чат по имени
+        # читается инструментами чтения независимо от мьюта.
+        hide_muted = unread_only and muted is None and not include_muted
         for d in st["dialogs"]:
             if fl and d.id not in fl["members"]:
                 continue
             if kind and _kind(d.entity) != kind:
                 continue
             if unread_only and not d.unread_count:
-                continue
-            if muted is not None and _muted(d) != bool(muted):
                 continue
             if archived is not None and bool(d.archived) != bool(archived):
                 continue
@@ -400,12 +404,19 @@ def list_dialogs(query="", limit=30, kind="", folder="", unread_only=False, arch
             uname = (getattr(d.entity, "username", "") or "").lower()
             if q and q not in (d.name or "").lower() and q not in uname:
                 continue
+            pool.append(d)
+            m = _muted(d)
+            if hide_muted and m:
+                continue
+            if muted is not None and m != bool(muted):
+                continue
             matched.append(d)
             if len(out) < limit:
                 out.append(_dialog_row(d, st["folders"]))
-        unread = [d for d in matched if d.unread_count]
+        unread = [d for d in pool if d.unread_count]
         summary = {
             "matched_chats": len(matched),
+            "muted_chats_hidden": (len(pool) - len(matched)) if hide_muted else 0,
             "unread_chats": len(unread), "unread_messages": sum(d.unread_count for d in unread),
             "unread_chats_with_sound": sum(1 for d in unread if not _muted(d)),
             "unread_messages_with_sound": sum(d.unread_count for d in unread if not _muted(d)),
@@ -944,13 +955,14 @@ TG_TOOLS = [
     _t("tg_sessions", "Активные сессии (устройства) аккаунта Telegram: устройство, приложение, страна, IP, активность. Подтверждения не требует.", {}),
     _t("tg_list_folders", "Папки Telegram пользователя (Работа, Личное и т.д.): название, число чатов и непрочитанных в каждой; with_chats=true — ещё и список чатов папки. Подтверждения не требует.",
        {"with_chats": ("boolean", "Показать чаты внутри каждой папки.")}),
-    _t("tg_list_dialogs", "Диалоги личного Telegram (чаты, группы, каналы, боты) — для КАЖДОГО указаны папки, в которых он лежит (folders), непрочитанные, закреп, мьют, архив. Фильтры: query (имя/@username), folder (название или id папки), type, unread_only, archived, pinned_only, muted. Каждый чат помечен muted:true, если его уведомления выключены (свой мьют или общая настройка для типа чатов). В ответе summary: сколько чатов/сообщений непрочитано всего, со звуком и замьюченных. Подтверждения не требует.",
+    _t("tg_list_dialogs", "Диалоги личного Telegram (чаты, группы, каналы, боты) — для КАЖДОГО указаны папки, в которых он лежит (folders), непрочитанные, закреп, мьют, архив. Фильтры: query (имя/@username), folder (название или id папки), type, unread_only, archived, pinned_only, muted. ВАЖНО: при unread_only=true замьюченные чаты автоматически скрыты (в summary.muted_chats_hidden — сколько), пока пользователь явно не попросил про них (muted=true / include_muted=true). Каждый чат помечен muted:true, если его уведомления выключены (свой мьют или общая настройка для типа чатов). В ответе summary: сколько чатов/сообщений непрочитано всего, со звуком и замьюченных. Подтверждения не требует.",
        {"query": ("string", "Часть названия или @username."), "folder": ("string", "Название или id папки."),
         "limit": ("integer", "Сколько вернуть (до 100), по умолчанию 30."),
         "type": ("string", "Тип чата.", ["user", "group", "channel", "bot"]),
         "unread_only": ("boolean", "Только с непрочитанными."), "archived": ("boolean", "true — только архив, false — без архива."),
         "pinned_only": ("boolean", "Только закреплённые."),
-        "muted": ("boolean", "false — только чаты со ВКЛЮЧЁННЫМИ уведомлениями, true — только замьюченные.")}),
+        "muted": ("boolean", "false — только чаты со ВКЛЮЧЁННЫМИ уведомлениями, true — только замьюченные."),
+        "include_muted": ("boolean", "Показать и замьюченные при unread_only. ТОЛЬКО если пользователь сам попросил про замьюченные.")}),
     _t("tg_chat_info", "Полная информация о чате/человеке/канале: описание (bio), статус «был(а)», число участников, админы, дата создания, всего сообщений, непрочитанные, папки, мьют, ссылка-приглашение, общие чаты. Подтверждения не требует.", {"peer": PEER}, ["peer"]),
     _t("tg_list_contacts", "Контакты пользователя (имя, @username, телефон, статус). query — фильтр. Подтверждения не требует.",
        {"query": ("string", "Часть имени/@username/телефона."), "limit": ("integer", "До 200, по умолчанию 50.")}),
@@ -1089,9 +1101,12 @@ def prompt_section(state=None) -> str:
         "10. Личный Telegram пользователя (его аккаунт, не бот). Доступные инструменты: " + names + ". "
         "Читать и искать можно свободно. У пользователя есть ПАПКИ Telegram: tg_list_dialogs возвращает для каждого "
         "диалога поле folders — так ты знаешь, в какой папке он лежит; tg_list_folders показывает папки целиком. "
-        "У чатов есть muted (уведомления выключены). Когда спрашивают про непрочитанное/«что новое» — по умолчанию "
-        "смотри только чаты со звуком (tg_list_dialogs с unread_only=true, muted=false) и коротко упомяни, сколько "
-        "непрочитанных в замьюченных (summary), если не просили их показать. "
+        "У чатов есть muted (уведомления выключены). ПРАВИЛО: на «что непрочитано», «что нового», «новые сообщения», "
+        "«кто мне писал» и подобное смотри ТОЛЬКО чаты со звуком: tg_list_dialogs(unread_only=true) — замьюченные "
+        "сервер скрывает сам. Историю замьюченных чатов НЕ читай и в ответ не включай; можно лишь одной фразой "
+        "сказать, сколько их скрыто (summary.muted_chats_hidden / unread_messages_muted). Замьюченные читай только "
+        "если пользователь сам назвал такой чат («прочитай Берлогу») или прямо попросил про замьюченные — тогда "
+        "читай его как обычно (tg_read_messages по названию), даже если он замьючен. "
         + ("«Найди в диалоге с @user про X» → tg_search_messages(peer=\"@user\", query=\"X\"); «в папке Работа» → "
            "folder=\"Работа\". Если поиск пуст — попробуй корень/синоним или прочитай историю за период и ответь по "
            "содержимому. " if has_search else "")
@@ -1139,7 +1154,8 @@ def execute_tg_tool(name: str, inp: dict, state=None) -> dict:
             return list_folders(bool(g("with_chats")))
         if name == "tg_list_dialogs":
             return list_dialogs(g("query"), g("limit") or 30, g("type") or "", g("folder") or "",
-                                bool(g("unread_only")), g("archived"), bool(g("pinned_only")), g("muted"))
+                                bool(g("unread_only")), g("archived"), bool(g("pinned_only")), g("muted"),
+                                bool(g("include_muted")))
         if name == "tg_chat_info":
             return chat_info(g("peer"))
         if name == "tg_list_contacts":
