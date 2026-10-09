@@ -428,6 +428,60 @@ def list_dialogs(query="", limit=30, kind="", folder="", unread_only=False, arch
     return _run(_go(), 90)
 
 
+def unread_digest(folder="", with_text=False, include_muted=False, limit=40) -> dict:
+    """Утренняя сводка: чаты с непрочитанным (по умолчанию только со звуком) и КТО
+    именно написал — авторы непрочитанных сообщений с количеством."""
+    limit = max(1, min(int(limit or 40), 60))
+
+    async def _go():
+        c = await _get_client()
+        st = await _load(c, force=True)
+        me = st["me"]
+        fl = _find_folder(st["folders"], folder) if folder else None
+        pool = [d for d in st["dialogs"] if d.unread_count and not d.archived and (not fl or d.id in fl["members"])]
+        shown = [d for d in pool if include_muted or not _muted(d)]
+        hidden = [d for d in pool if d not in shown]
+        shown.sort(key=lambda d: d.date or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        out = []
+        for d in shown[:limit]:
+            try:
+                n = min(d.unread_count, 50)
+                counts, last, texts = {}, "", []
+                async for m in c.iter_messages(d.entity, limit=n, min_id=d.dialog.read_inbox_max_id):
+                    if m.out:
+                        continue
+                    sender = getattr(m, "sender", None)
+                    name = utils.get_display_name(sender) if sender else (d.name or "")
+                    counts[name] = counts.get(name, 0) + 1
+                    if not last:
+                        last = (m.message or "").strip()[:200] or (_media_info(m).get("media") or "")
+                    if with_text and len(texts) < 5 and (m.message or "").strip():
+                        texts.append({"from": name, "text": m.message.strip()[:200]})
+                row = {
+                    "chat": d.name or "", "type": _kind(d.entity), "unread": d.unread_count,
+                    "authors": [{"name": k, "messages": v} for k, v in sorted(counts.items(), key=lambda kv: -kv[1])],
+                    "last_message": last, "folders": [f["title"] for f in st["folders"] if d.id in f["members"]],
+                }
+                if getattr(d.dialog, "unread_mentions_count", 0):
+                    row["mentions_you"] = d.dialog.unread_mentions_count
+                if _muted(d):
+                    row["muted"] = True
+                if with_text and texts:
+                    row["messages"] = list(reversed(texts))
+                out.append(row)
+            except Exception as e:
+                out.append({"chat": d.name or "", "unread": d.unread_count, "error": str(e)})
+        return _cap({
+            "chats": out,
+            "total_chats_with_unread": len(shown), "total_unread_messages": sum(d.unread_count for d in shown),
+            "muted_chats_hidden": 0 if include_muted else len(hidden),
+            "muted_unread_messages_hidden": 0 if include_muted else sum(d.unread_count for d in hidden),
+            "folder": fl["title"] if fl else None,
+        })
+
+    return _run(_go(), 150)
+
+
 # ── Профиль, контакты, информация о чате ─────────────────────────────────
 
 def me_info() -> dict:
@@ -963,6 +1017,10 @@ TG_TOOLS = [
         "pinned_only": ("boolean", "Только закреплённые."),
         "muted": ("boolean", "false — только чаты со ВКЛЮЧЁННЫМИ уведомлениями, true — только замьюченные."),
         "include_muted": ("boolean", "Показать и замьюченные при unread_only. ТОЛЬКО если пользователь сам попросил про замьюченные.")}),
+    _t("tg_unread_digest", "УТРЕННЯЯ СВОДКА новых сообщений: чаты с непрочитанным (ТОЛЬКО со включённым звуком, замьюченные скрыты и лишь посчитаны) и КТО написал — авторы непрочитанных сообщений с количеством, последнее сообщение, упоминания вас, папка. Вызывай первым на «какие у меня новые сообщения», «что нового», «кто мне писал», «есть непрочитанное?». Зачитай пользователю авторов по чатам. with_text=true — ещё и короткие тексты. Подтверждения не требует.",
+       {"folder": ("string", "Ограничить папкой."), "with_text": ("boolean", "Добавить короткие тексты сообщений."),
+        "include_muted": ("boolean", "Включить замьюченные. ТОЛЬКО если пользователь сам попросил."),
+        "limit": ("integer", "Сколько чатов, до 60, по умолчанию 40.")}),
     _t("tg_chat_info", "Полная информация о чате/человеке/канале: описание (bio), статус «был(а)», число участников, админы, дата создания, всего сообщений, непрочитанные, папки, мьют, ссылка-приглашение, общие чаты. Подтверждения не требует.", {"peer": PEER}, ["peer"]),
     _t("tg_list_contacts", "Контакты пользователя (имя, @username, телефон, статус). query — фильтр. Подтверждения не требует.",
        {"query": ("string", "Часть имени/@username/телефона."), "limit": ("integer", "До 200, по умолчанию 50.")}),
@@ -1044,6 +1102,9 @@ TG_SKILLS = [
     {"id": "folders", "title": "Папки", "risk": "read", "default": True,
      "desc": "Видит ваши папки Telegram, сколько в них чатов и непрочитанных, и в какой папке лежит каждый диалог.",
      "tools": ["tg_list_folders"]},
+    {"id": "digest", "title": "Утренняя сводка новых сообщений", "risk": "read", "default": True,
+     "desc": "«Какие у меня новые сообщения?» — зачитывает авторов непрочитанных сообщений по всем чатам со включённым звуком. Замьюченные не трогает, только говорит, сколько их.",
+     "tools": ["tg_unread_digest"]},
     {"id": "dialogs", "title": "Диалоги и непрочитанные", "risk": "read", "default": True,
      "desc": "Список чатов, групп, каналов и ботов: фильтры по папке, типу, непрочитанным, архиву, закрепам, мьюту.",
      "tools": ["tg_list_dialogs", "tg_chat_info"]},
@@ -1101,9 +1162,10 @@ def prompt_section(state=None) -> str:
         "10. Личный Telegram пользователя (его аккаунт, не бот). Доступные инструменты: " + names + ". "
         "Читать и искать можно свободно. У пользователя есть ПАПКИ Telegram: tg_list_dialogs возвращает для каждого "
         "диалога поле folders — так ты знаешь, в какой папке он лежит; tg_list_folders показывает папки целиком. "
-        "У чатов есть muted (уведомления выключены). ПРАВИЛО: на «что непрочитано», «что нового», «новые сообщения», "
-        "«кто мне писал» и подобное смотри ТОЛЬКО чаты со звуком: tg_list_dialogs(unread_only=true) — замьюченные "
-        "сервер скрывает сам. Историю замьюченных чатов НЕ читай и в ответ не включай; можно лишь одной фразой "
+        "У чатов есть muted (уведомления выключены). ПРАВИЛО: на «какие новые сообщения», «что нового», «что непрочитано», "
+        "«кто мне писал» и подобное СНАЧАЛА вызови tg_unread_digest и зачитай авторов по чатам («Иван — 3, Мария — 1; "
+        "в чате Работа: Пётр, Анна»), коротко и по порядку; смотри ТОЛЬКО чаты со звуком (для списков — "
+        "tg_list_dialogs(unread_only=true); замьюченные сервер скрывает сам). Историю замьюченных чатов НЕ читай и в ответ не включай; можно лишь одной фразой "
         "сказать, сколько их скрыто (summary.muted_chats_hidden / unread_messages_muted). Замьюченные читай только "
         "если пользователь сам назвал такой чат («прочитай Берлогу») или прямо попросил про замьюченные — тогда "
         "читай его как обычно (tg_read_messages по названию), даже если он замьючен. "
@@ -1156,6 +1218,8 @@ def execute_tg_tool(name: str, inp: dict, state=None) -> dict:
             return list_dialogs(g("query"), g("limit") or 30, g("type") or "", g("folder") or "",
                                 bool(g("unread_only")), g("archived"), bool(g("pinned_only")), g("muted"),
                                 bool(g("include_muted")))
+        if name == "tg_unread_digest":
+            return unread_digest(g("folder") or "", bool(g("with_text")), bool(g("include_muted")), g("limit") or 40)
         if name == "tg_chat_info":
             return chat_info(g("peer"))
         if name == "tg_list_contacts":
