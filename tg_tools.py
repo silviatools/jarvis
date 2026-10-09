@@ -90,13 +90,19 @@ def _status(st) -> str:
 
 
 def _muted(d) -> bool:
+    """Уведомления чата выключены: свой мьют → иначе общая настройка для типа чатов
+    (личные / группы / каналы), как в самом Telegram."""
     ns = getattr(d.dialog, "notify_settings", None)
     mu = getattr(ns, "mute_until", None)
-    if not mu:
-        return False
-    if isinstance(mu, datetime):
-        return mu > datetime.now(timezone.utc)
-    return mu > time.time()
+    if mu:
+        if isinstance(mu, datetime):
+            return mu > datetime.now(timezone.utc)
+        return mu > time.time()
+    if getattr(ns, "silent", None):
+        return True
+    e = d.entity
+    kind = "users" if isinstance(e, User) else ("broadcasts" if isinstance(e, Channel) and e.broadcast else "chats")
+    return bool((_dialogs_cache.get("muted_defaults") or {}).get(kind))
 
 
 def _cap(result: dict) -> dict:
@@ -275,6 +281,17 @@ async def _load(client, force=False) -> dict:
     if not force and c["dialogs"] is not None and time.time() - c["at"] < _DIALOGS_TTL:
         return c
     me = await client.get_me()
+    defaults = {}
+    for kind, peer in (("users", types.InputNotifyUsers()), ("chats", types.InputNotifyChats()),
+                       ("broadcasts", types.InputNotifyBroadcasts())):
+        try:
+            ns = await client(functions.account.GetNotifySettingsRequest(peer=peer))
+            mu = getattr(ns, "mute_until", None)
+            defaults[kind] = bool((mu and (mu > datetime.now(timezone.utc) if isinstance(mu, datetime) else mu > time.time()))
+                                  or getattr(ns, "silent", None))
+        except Exception:
+            defaults[kind] = False
+    c["muted_defaults"] = defaults
     dialogs = []
     async for d in client.iter_dialogs(limit=1500):
         dialogs.append(d)
@@ -339,6 +356,8 @@ def list_folders(with_chats=False) -> dict:
                 "id": f["id"], "title": f["title"], "emoticon": getattr(f["raw"], "emoticon", None) or "",
                 "chats": len(mem), "unread_chats": sum(1 for d in mem if d.unread_count),
                 "unread_messages": sum(d.unread_count for d in mem),
+                "unread_chats_with_sound": sum(1 for d in mem if d.unread_count and not _muted(d)),
+                "unread_messages_with_sound": sum(d.unread_count for d in mem if not _muted(d)),
                 "shared": isinstance(f["raw"], types.DialogFilterChatlist),
             }
             if with_chats:
@@ -353,7 +372,7 @@ def list_folders(with_chats=False) -> dict:
     return _run(_go(), 90)
 
 
-def list_dialogs(query="", limit=30, kind="", folder="", unread_only=False, archived=None, pinned_only=False) -> dict:
+def list_dialogs(query="", limit=30, kind="", folder="", unread_only=False, archived=None, pinned_only=False, muted=None) -> dict:
     limit = max(1, min(int(limit or 30), 100))
     q = (query or "").strip().lower().lstrip("@")
 
@@ -362,12 +381,15 @@ def list_dialogs(query="", limit=30, kind="", folder="", unread_only=False, arch
         st = await _load(c)
         fl = _find_folder(st["folders"], folder) if folder else None
         out = []
+        matched = []
         for d in st["dialogs"]:
             if fl and d.id not in fl["members"]:
                 continue
             if kind and _kind(d.entity) != kind:
                 continue
             if unread_only and not d.unread_count:
+                continue
+            if muted is not None and _muted(d) != bool(muted):
                 continue
             if archived is not None and bool(d.archived) != bool(archived):
                 continue
@@ -378,10 +400,19 @@ def list_dialogs(query="", limit=30, kind="", folder="", unread_only=False, arch
             uname = (getattr(d.entity, "username", "") or "").lower()
             if q and q not in (d.name or "").lower() and q not in uname:
                 continue
-            out.append(_dialog_row(d, st["folders"]))
-            if len(out) >= limit:
-                break
-        return _cap({"dialogs": out, "folder": fl["title"] if fl else None})
+            matched.append(d)
+            if len(out) < limit:
+                out.append(_dialog_row(d, st["folders"]))
+        unread = [d for d in matched if d.unread_count]
+        summary = {
+            "matched_chats": len(matched),
+            "unread_chats": len(unread), "unread_messages": sum(d.unread_count for d in unread),
+            "unread_chats_with_sound": sum(1 for d in unread if not _muted(d)),
+            "unread_messages_with_sound": sum(d.unread_count for d in unread if not _muted(d)),
+            "unread_chats_muted": sum(1 for d in unread if _muted(d)),
+            "unread_messages_muted": sum(d.unread_count for d in unread if _muted(d)),
+        }
+        return _cap({"dialogs": out, "folder": fl["title"] if fl else None, "summary": summary})
 
     return _run(_go(), 90)
 
@@ -913,12 +944,13 @@ TG_TOOLS = [
     _t("tg_sessions", "Активные сессии (устройства) аккаунта Telegram: устройство, приложение, страна, IP, активность. Подтверждения не требует.", {}),
     _t("tg_list_folders", "Папки Telegram пользователя (Работа, Личное и т.д.): название, число чатов и непрочитанных в каждой; with_chats=true — ещё и список чатов папки. Подтверждения не требует.",
        {"with_chats": ("boolean", "Показать чаты внутри каждой папки.")}),
-    _t("tg_list_dialogs", "Диалоги личного Telegram (чаты, группы, каналы, боты) — для КАЖДОГО указаны папки, в которых он лежит (folders), непрочитанные, закреп, мьют, архив. Фильтры: query (имя/@username), folder (название или id папки), type, unread_only, archived, pinned_only. Подтверждения не требует.",
+    _t("tg_list_dialogs", "Диалоги личного Telegram (чаты, группы, каналы, боты) — для КАЖДОГО указаны папки, в которых он лежит (folders), непрочитанные, закреп, мьют, архив. Фильтры: query (имя/@username), folder (название или id папки), type, unread_only, archived, pinned_only, muted. Каждый чат помечен muted:true, если его уведомления выключены (свой мьют или общая настройка для типа чатов). В ответе summary: сколько чатов/сообщений непрочитано всего, со звуком и замьюченных. Подтверждения не требует.",
        {"query": ("string", "Часть названия или @username."), "folder": ("string", "Название или id папки."),
         "limit": ("integer", "Сколько вернуть (до 100), по умолчанию 30."),
         "type": ("string", "Тип чата.", ["user", "group", "channel", "bot"]),
         "unread_only": ("boolean", "Только с непрочитанными."), "archived": ("boolean", "true — только архив, false — без архива."),
-        "pinned_only": ("boolean", "Только закреплённые.")}),
+        "pinned_only": ("boolean", "Только закреплённые."),
+        "muted": ("boolean", "false — только чаты со ВКЛЮЧЁННЫМИ уведомлениями, true — только замьюченные.")}),
     _t("tg_chat_info", "Полная информация о чате/человеке/канале: описание (bio), статус «был(а)», число участников, админы, дата создания, всего сообщений, непрочитанные, папки, мьют, ссылка-приглашение, общие чаты. Подтверждения не требует.", {"peer": PEER}, ["peer"]),
     _t("tg_list_contacts", "Контакты пользователя (имя, @username, телефон, статус). query — фильтр. Подтверждения не требует.",
        {"query": ("string", "Часть имени/@username/телефона."), "limit": ("integer", "До 200, по умолчанию 50.")}),
@@ -1057,6 +1089,9 @@ def prompt_section(state=None) -> str:
         "10. Личный Telegram пользователя (его аккаунт, не бот). Доступные инструменты: " + names + ". "
         "Читать и искать можно свободно. У пользователя есть ПАПКИ Telegram: tg_list_dialogs возвращает для каждого "
         "диалога поле folders — так ты знаешь, в какой папке он лежит; tg_list_folders показывает папки целиком. "
+        "У чатов есть muted (уведомления выключены). Когда спрашивают про непрочитанное/«что новое» — по умолчанию "
+        "смотри только чаты со звуком (tg_list_dialogs с unread_only=true, muted=false) и коротко упомяни, сколько "
+        "непрочитанных в замьюченных (summary), если не просили их показать. "
         + ("«Найди в диалоге с @user про X» → tg_search_messages(peer=\"@user\", query=\"X\"); «в папке Работа» → "
            "folder=\"Работа\". Если поиск пуст — попробуй корень/синоним или прочитай историю за период и ответь по "
            "содержимому. " if has_search else "")
@@ -1104,7 +1139,7 @@ def execute_tg_tool(name: str, inp: dict, state=None) -> dict:
             return list_folders(bool(g("with_chats")))
         if name == "tg_list_dialogs":
             return list_dialogs(g("query"), g("limit") or 30, g("type") or "", g("folder") or "",
-                                bool(g("unread_only")), g("archived"), bool(g("pinned_only")))
+                                bool(g("unread_only")), g("archived"), bool(g("pinned_only")), g("muted"))
         if name == "tg_chat_info":
             return chat_info(g("peer"))
         if name == "tg_list_contacts":
