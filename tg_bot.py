@@ -514,6 +514,7 @@ class Ctx:
         self.user_message_id = user_message_id
         self.last_message_id = None
         self.sent = []          # заметки об отправленном — уходят в историю диалога
+        self.openai_key = ""    # ключ для генерации картинок (задаёт вызывающий код)
 
 
 _tls = threading.local()
@@ -655,6 +656,66 @@ def pin(ctx, message_id=None, unpin=False):
     return {"ok": True}
 
 
+IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "gpt-image-1")
+_IMAGE_SIZES = {"square": "1024x1024", "landscape": "1536x1024", "portrait": "1024x1536"}
+
+
+def image_generate(ctx, prompt, size="square", caption=None):
+    """Генерирует картинку через OpenAI Images API и отправляет в чат фото."""
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return {"error": "prompt пуст"}
+    if not ctx.openai_key:
+        return {"error": "Нет ключа OpenAI для картинок: добавьте набор ключей OpenAI в Настройки → Ассистент "
+                         "или переменную OPENAI_API_KEY."}
+    try:
+        api(ctx.token, "sendChatAction", {"chat_id": ctx.chat_id, "action": "upload_photo"})
+    except TgApiError:
+        pass
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/images/generations",
+            headers={"Authorization": f"Bearer {ctx.openai_key}", "Content-Type": "application/json"},
+            json={"model": IMAGE_MODEL, "prompt": prompt[:4000], "n": 1,
+                  "size": _IMAGE_SIZES.get(size, "1024x1024")},
+            timeout=180,
+        )
+    except Exception as e:
+        return {"error": f"Ошибка связи с OpenAI: {e}"}
+    if not r.ok:
+        try:
+            err = r.json().get("error", {}).get("message")
+        except Exception:
+            err = None
+        return {"error": f"OpenAI не сгенерировал картинку: {err or r.status_code}"}
+    try:
+        item = r.json()["data"][0]
+        if item.get("b64_json"):
+            data = base64.b64decode(item["b64_json"])
+        else:
+            data = requests.get(item["url"], timeout=60).content
+    except Exception as e:
+        return {"error": f"Не удалось получить картинку: {e}"}
+    payload = {"chat_id": ctx.chat_id}
+    if caption:
+        payload.update(caption=to_tg_html(caption)[:1024], parse_mode="HTML")
+    try:
+        try:
+            res = api(ctx.token, "sendPhoto", payload, files={"photo": ("image.png", data, "image/png")})
+        except TgApiError as e:
+            if "parse entities" in str(e).lower() and payload.get("caption"):
+                payload.update(caption=strip_tags(payload["caption"]))
+                payload.pop("parse_mode")
+                res = api(ctx.token, "sendPhoto", payload, files={"photo": ("image.png", data, "image/png")})
+            else:   # напр. слишком большое для фото — шлём файлом
+                res = api(ctx.token, "sendDocument", payload, files={"document": ("image.png", data, "image/png")})
+    except TgApiError as e:
+        return {"error": str(e)}
+    ctx.last_message_id = res.get("message_id")
+    ctx.sent.append(f"сгенерированная картинка по запросу «{prompt[:100]}»")
+    return {"ok": True, "message_id": res.get("message_id")}
+
+
 def _t(name, desc, props, required=()):
     return {"name": name, "description": desc,
             "input_schema": {"type": "object", "properties": props, "required": list(required)}}
@@ -682,6 +743,11 @@ BOT_TOOLS = [
        "а не простынёй текста.",
        {"filename": _STR, "content": _STR, "content_base64": _STR, "url": _STR,
         "kind": {"type": "string", "enum": list(_KIND_METHOD)}, "caption": _STR}, []),
+    _t("tg_generate_image",
+       "Сгенерировать картинку по описанию и отправить в чат (OpenAI). prompt — подробное описание сцены/стиля "
+       "(на английском работает точнее, но можно и на русском); size: square, landscape (горизонтальная), "
+       "portrait (вертикальная). Занимает до минуты. Просьбы «нарисуй», «сгенерируй картинку/аватар/логотип» — сюда.",
+       {"prompt": _STR, "size": {"type": "string", "enum": list(_IMAGE_SIZES)}, "caption": _STR}, ["prompt"]),
     _t("tg_send_poll",
        "Отправить опрос (2–10 вариантов). Викторина — quiz_correct_option (индекс верного варианта с 0) и explanation.",
        {"question": _STR, "options": _STRS, "multiple": {"type": "boolean"}, "anonymous": {"type": "boolean"},
@@ -714,6 +780,7 @@ _DISPATCH = {
     "tg_get_checklists": lambda c, i: checklists_get(c),
     "tg_send_file": lambda c, i: file_send(c, i.get("filename"), i.get("content"), i.get("content_base64"),
                                            i.get("url"), i.get("kind"), i.get("caption")),
+    "tg_generate_image": lambda c, i: image_generate(c, i.get("prompt"), i.get("size") or "square", i.get("caption")),
     "tg_send_poll": lambda c, i: poll_send(c, i.get("question"), i.get("options"), i.get("multiple"),
                                            i.get("anonymous", True), i.get("quiz_correct_option"), i.get("explanation")),
     "tg_send_buttons": lambda c, i: buttons_send(c, i.get("text"), i.get("buttons")),
@@ -759,6 +826,8 @@ PROMPT_SECTION = (
     "«что ещё не куплено» — tg_get_checklists. После отправки чеклиста не пересказывай его пункты в финальном ответе.\n"
     "• Файл, таблица, выгрузка, код, длинный текст/документ (>~25 строк) — tg_send_file с понятным именем и расширением "
     "(csv для таблиц, md/txt для текстов, html, json…). Картинка или файл по ссылке — tg_send_file с url.\n"
+    "• Картинки ты РИСУЕШЬ САМ: просьбы «нарисуй / сгенерируй картинку, аватар, логотип, открытку» — tg_generate_image "
+    "(не предлагай пользователю промпты для сторонних сервисов, а сразу генерируй). Подпись к картинке — caption.\n"
     "• Выбор из вариантов — tg_send_buttons (reply = что придёт тебе при нажатии) или tg_send_poll для голосования. "
     "Геопозиция — tg_send_location, контакт — tg_send_contact, жребий — tg_send_dice, закрепить важное — tg_pin_message, "
     "быстрое подтверждение без слов — tg_react.\n"

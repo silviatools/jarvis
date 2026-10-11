@@ -5520,6 +5520,11 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
     turn = list(history) + [{"role": "user", "content": _user_turn_content(provider, text, images)}]
 
     ctx = tg_bot.Ctx(token, chat_id, message_id)
+    # Картинки рисует OpenAI: берём ключ текущего набора, иначе любой OpenAI-набор из настроек.
+    ctx.openai_key = (api_key if provider == "openai" else next(
+        (p.get("apiKey", "").strip() for p in (_ensure_ai_presets(settings).get("aiPresets") or [])
+         if p.get("provider") == "openai" and p.get("apiKey", "").strip()), "")
+    ) or os.environ.get("OPENAI_API_KEY", "").strip()
     tg_bot.set_ctx(ctx)
     with_tg = bool(tg_user) and tg_user.is_owner_chat(chat_id)
     loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
