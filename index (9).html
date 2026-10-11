@@ -4972,6 +4972,14 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
           Ассистент
         </button>
         <button
+          onClick={() => setSettingsTab('weather')}
+          className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+            settingsTab === 'weather' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+          }`}
+        >
+          Погода
+        </button>
+        <button
           onClick={() => setSettingsTab('study')}
           className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${
             settingsTab === 'study' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
@@ -4991,6 +4999,7 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
 
       {settingsTab === 'general' && <GeneralSettings data={data} setData={setData} />}
       {settingsTab === 'voice' && <VoiceAssistantSettings data={data} setData={setData} />}
+      {settingsTab === 'weather' && <WeatherSettings data={data} setData={setData} />}
       {settingsTab === 'study' && <StudySettings data={data} setData={setData} />}
       {settingsTab === 'telegram' && <TelegramSettings data={data} setData={setData} />}
     </div>
@@ -5098,7 +5107,7 @@ function WeatherCalendarSettings({ data, setData }) {
           <h3 className="font-display text-lg mb-1">Погода → Apple Календарь</h3>
           <p className="text-sm text-[var(--text-muted)]">
             Джарвис сам кладёт прогноз в календарь: по событию на каждый день, чтобы видеть погоду при планировании недели.
-            Город берётся из поля выше{city ? <> — сейчас <b>{city}</b></> : null}.
+            Город берётся из поля «Город» выше{city ? <> — сейчас <b>{city}</b></> : null}.
           </p>
         </div>
         <StudySwitch on={!!cfg.enabled} onChange={v => update({ enabled: v })} label="Погода в календаре" />
@@ -5253,6 +5262,44 @@ function WeatherCalendarSettings({ data, setData }) {
   );
 }
 
+function WeatherSettings({ data, setData }) {
+  const settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
+
+  const updateSetting = (key, value) => {
+    setData(d => ({
+      ...d,
+      settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), [key]: value, updatedAt: Date.now() },
+    }));
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div>
+          <h3 className="font-display text-lg mb-1">Погода</h3>
+          <p className="text-sm text-[var(--text-muted)]">
+            Фиксированный город для виджета погоды. Если не задан — определяется автоматически.
+          </p>
+        </div>
+        <div>
+          <label>Город</label>
+          <input
+            type="text"
+            value={settings.weatherCity}
+            onChange={e => updateSetting('weatherCity', e.target.value)}
+            placeholder="Например, Москва или Frankfurt"
+          />
+          <p className="text-xs text-[var(--text-subtle)] mt-2">
+            Работает на всех устройствах без разрешения геолокации.
+          </p>
+        </div>
+      </div>
+
+      <WeatherCalendarSettings data={data} setData={setData} />
+    </div>
+  );
+}
+
 function GeneralSettings({ data, setData }) {
   const settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
 
@@ -5302,29 +5349,6 @@ function GeneralSettings({ data, setData }) {
           </p>
         </div>
       )}
-
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
-        <div>
-          <h3 className="font-display text-lg mb-1">Погода</h3>
-          <p className="text-sm text-[var(--text-muted)]">
-            Фиксированный город для виджета погоды. Если не задан — определяется автоматически.
-          </p>
-        </div>
-        <div>
-          <label>Город</label>
-          <input
-            type="text"
-            value={settings.weatherCity}
-            onChange={e => updateSetting('weatherCity', e.target.value)}
-            placeholder="Например, Москва или Frankfurt"
-          />
-          <p className="text-xs text-[var(--text-subtle)] mt-2">
-            Работает на всех устройствах без разрешения геолокации.
-          </p>
-        </div>
-      </div>
-
-      <WeatherCalendarSettings data={data} setData={setData} />
 
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
         <div>
