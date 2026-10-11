@@ -656,6 +656,76 @@ def pin(ctx, message_id=None, unpin=False):
     return {"ok": True}
 
 
+class ProgressMessage:
+    """Сообщение «идёт работа» с анимацией (бегущая луна, полоска прогресса, секундомер,
+    смена этапов): редактируется раз в пару секунд, пока выполняется долгая операция,
+    и удаляется при выходе из with — и при успехе, и при ошибке."""
+    MOON = "🌑🌒🌓🌔🌕🌖🌗🌘"
+
+    def __init__(self, token, chat_id, title, detail="", stages=(), interval=2.0, expected=45.0):
+        self.token, self.chat_id = token, chat_id
+        self.title, self.detail = title, detail
+        self.stages = stages                  # [(с какой секунды, текст)]
+        self.interval, self.expected = interval, expected
+        self.message_id = None
+        self._stop = threading.Event()
+        self._thread = None
+        self._t0 = time.time()
+
+    def _render(self, tick: int) -> str:
+        elapsed = time.time() - self._t0
+        # Точное время неизвестно: полоска плавно приближается к 90% и ждёт.
+        pct = 0.9 * (1 - 2.718281828 ** (-elapsed / (self.expected / 2.5)))
+        filled = max(1, round(pct * 10))
+        bar = "▰" * filled + "▱" * (10 - filled)
+        stage = ""
+        for since, text in self.stages:
+            if elapsed >= since:
+                stage = text
+        dots = "." * (tick % 3 + 1)
+        lines = [f"🎨 <b>{html.escape(self.title)}</b>"]
+        if self.detail:
+            lines += ["", f"<blockquote>{html.escape(self.detail)}</blockquote>"]
+        lines += ["", f"<code>{bar}</code> {int(pct * 100)}%",
+                  f"{self.MOON[tick % len(self.MOON)]} <i>{html.escape(stage)}{dots}</i>",
+                  f"⏱ {int(elapsed)} сек"]
+        return "\n".join(lines)
+
+    def _run(self):
+        tick = 1
+        while not self._stop.wait(self.interval):
+            try:
+                api(self.token, "editMessageText", {"chat_id": self.chat_id, "message_id": self.message_id,
+                                                    "text": self._render(tick), "parse_mode": "HTML"})
+            except TgApiError:
+                pass    # «not modified», лимиты и т.п. — анимация не критична
+            tick += 1
+
+    def __enter__(self):
+        try:
+            self.message_id = api(self.token, "sendMessage", {
+                "chat_id": self.chat_id, "text": self._render(0), "parse_mode": "HTML",
+                "disable_notification": True})["message_id"]
+        except TgApiError:
+            return self
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+        if self.message_id:
+            try:
+                api(self.token, "deleteMessage", {"chat_id": self.chat_id, "message_id": self.message_id})
+            except TgApiError:
+                pass
+        return False
+
+
+IMAGE_STAGES = [(0, "Придумываю композицию"), (8, "Рисую контуры"), (20, "Добавляю цвета и детали"),
+                (38, "Дорабатываю мелочи"), (60, "Почти готово, ещё чуть-чуть")]
 IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "gpt-image-1")
 _IMAGE_SIZES = {"square": "1024x1024", "landscape": "1536x1024", "portrait": "1024x1536"}
 
@@ -668,49 +738,47 @@ def image_generate(ctx, prompt, size="square", caption=None):
     if not ctx.openai_key:
         return {"error": "Нет ключа OpenAI для картинок: добавьте набор ключей OpenAI в Настройки → Ассистент "
                          "или переменную OPENAI_API_KEY."}
-    try:
-        api(ctx.token, "sendChatAction", {"chat_id": ctx.chat_id, "action": "upload_photo"})
-    except TgApiError:
-        pass
-    try:
-        r = requests.post(
-            "https://api.openai.com/v1/images/generations",
-            headers={"Authorization": f"Bearer {ctx.openai_key}", "Content-Type": "application/json"},
-            json={"model": IMAGE_MODEL, "prompt": prompt[:4000], "n": 1,
-                  "size": _IMAGE_SIZES.get(size, "1024x1024")},
-            timeout=180,
-        )
-    except Exception as e:
-        return {"error": f"Ошибка связи с OpenAI: {e}"}
-    if not r.ok:
+    with ProgressMessage(ctx.token, ctx.chat_id, "Рисую картинку", prompt[:140] + ("…" if len(prompt) > 140 else ""),
+                         IMAGE_STAGES):
         try:
-            err = r.json().get("error", {}).get("message")
-        except Exception:
-            err = None
-        return {"error": f"OpenAI не сгенерировал картинку: {err or r.status_code}"}
-    try:
-        item = r.json()["data"][0]
-        if item.get("b64_json"):
-            data = base64.b64decode(item["b64_json"])
-        else:
-            data = requests.get(item["url"], timeout=60).content
-    except Exception as e:
-        return {"error": f"Не удалось получить картинку: {e}"}
-    payload = {"chat_id": ctx.chat_id}
-    if caption:
-        payload.update(caption=to_tg_html(caption)[:1024], parse_mode="HTML")
-    try:
+            r = requests.post(
+                "https://api.openai.com/v1/images/generations",
+                headers={"Authorization": f"Bearer {ctx.openai_key}", "Content-Type": "application/json"},
+                json={"model": IMAGE_MODEL, "prompt": prompt[:4000], "n": 1,
+                      "size": _IMAGE_SIZES.get(size, "1024x1024")},
+                timeout=180,
+            )
+        except Exception as e:
+            return {"error": f"Ошибка связи с OpenAI: {e}"}
+        if not r.ok:
+            try:
+                err = r.json().get("error", {}).get("message")
+            except Exception:
+                err = None
+            return {"error": f"OpenAI не сгенерировал картинку: {err or r.status_code}"}
         try:
-            res = api(ctx.token, "sendPhoto", payload, files={"photo": ("image.png", data, "image/png")})
-        except TgApiError as e:
-            if "parse entities" in str(e).lower() and payload.get("caption"):
-                payload.update(caption=strip_tags(payload["caption"]))
-                payload.pop("parse_mode")
+            item = r.json()["data"][0]
+            if item.get("b64_json"):
+                data = base64.b64decode(item["b64_json"])
+            else:
+                data = requests.get(item["url"], timeout=60).content
+        except Exception as e:
+            return {"error": f"Не удалось получить картинку: {e}"}
+        payload = {"chat_id": ctx.chat_id}
+        if caption:
+            payload.update(caption=to_tg_html(caption)[:1024], parse_mode="HTML")
+        try:
+            try:
                 res = api(ctx.token, "sendPhoto", payload, files={"photo": ("image.png", data, "image/png")})
-            else:   # напр. слишком большое для фото — шлём файлом
-                res = api(ctx.token, "sendDocument", payload, files={"document": ("image.png", data, "image/png")})
-    except TgApiError as e:
-        return {"error": str(e)}
+            except TgApiError as e:
+                if "parse entities" in str(e).lower() and payload.get("caption"):
+                    payload.update(caption=strip_tags(payload["caption"]))
+                    payload.pop("parse_mode")
+                    res = api(ctx.token, "sendPhoto", payload, files={"photo": ("image.png", data, "image/png")})
+                else:   # напр. слишком большое для фото — шлём файлом
+                    res = api(ctx.token, "sendDocument", payload, files={"document": ("image.png", data, "image/png")})
+        except TgApiError as e:
+            return {"error": str(e)}
     ctx.last_message_id = res.get("message_id")
     ctx.sent.append(f"сгенерированная картинка по запросу «{prompt[:100]}»")
     return {"ok": True, "message_id": res.get("message_id")}
