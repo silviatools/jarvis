@@ -87,6 +87,11 @@ except Exception as _e:  # без telethon остальной сервер до�
     def execute_tg_tool(name, inp, state=None):
         return {"error": "Личный Telegram недоступен на сервере."}
     print(f"NOTE: tg_user disabled: {_e}")
+try:
+    import tg_bot
+except Exception as _e:
+    tg_bot = None
+    print(f"NOTE: tg_bot disabled: {_e}")
 HTML_FILE = DIR / "index (9).html"
 
 # Persistent data lives in DATA_DIR (Railway Volume) if set, else next to the script
@@ -1083,7 +1088,7 @@ def build_backup_zip() -> bytes:
             seen_arcnames.add(arcname)
             zf.write(path, arcname=arcname)
 
-        data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json"}
+        data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
@@ -5177,7 +5182,8 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
     weekday_str = WEEKDAYS_RU_NOMINATIVE[today.weekday()]
     return (
         "Ты ассистент приложения Jarvis, отвечаешь в Telegram. "
-        "Отвечай кратко и по-русски, обычным текстом без markdown-разметки и JSON — сообщение уходит как есть.\n\n"
+        "Отвечай кратко и по-русски, без JSON.\n\n"
+        + (tg_bot.PROMPT_SECTION if tg_bot else "Разметку (markdown, HTML) не используй — сообщение уходит как есть.\n\n") +
         f"СЕГОДНЯ: {today.isoformat()}, {weekday_str}. Используй эту дату и день недели как факт — не вычисляй "
         "день недели сам по числу, он уже дан.\n\n"
         f"{about_block}"
@@ -5234,6 +5240,9 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
 
 def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_tg: bool = False) -> dict:
     inp = inp or {}
+    # Возможности бота (чеклисты, файлы, опросы…) — шлют в чат, где идёт диалог.
+    if tg_bot and name in tg_bot.TOOL_NAMES:
+        return tg_bot.execute_tool(name, inp)
     # Личный Telegram — только в чате владельца (см. tg_user.is_owner_chat).
     if name in TG_TOOL_NAMES:
         return execute_tg_tool(name, inp, (app or {}).get("telegramSkills")) if with_tg else {"error": "Личный Telegram в этом чате недоступен."}
@@ -5324,7 +5333,7 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
 # провайдера в середине переписки в истории оказался бы чужой формат.
 _assistant_convo: dict = {}
 _ASSISTANT_MAX_TURNS = 16
-_ASSISTANT_MAX_STEPS = 6
+_ASSISTANT_MAX_STEPS = 8
 
 
 class _AssistantError(Exception):
@@ -5336,10 +5345,13 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
     Возвращает (текст ответа | None, список ссылок navigate). None — агент не
     уложился в отведённые шаги. Ошибки HTTP/сети — как _AssistantError."""
     system = build_assistant_system_prompt(app, with_tg)
-    all_tools = ASSISTANT_TOOLS + (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else [])
+    all_tools = ASSISTANT_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
+        (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else [])
     convo = list(history)
     nav_links = []
-    for _ in range(_ASSISTANT_MAX_STEPS):
+    carried = ""        # текст уже выданных кусков, если ответ упёрся в лимит токенов
+    continuations = 0
+    for _ in range(_ASSISTANT_MAX_STEPS + 4):
         try:
             r = requests.post(
                 ANTHROPIC_MESSAGES_URL,
@@ -5349,10 +5361,10 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
                     "anthropic-version": "2023-06-01",
                 },
                 json={
-                    "model": model, "max_tokens": 800, "system": system,
+                    "model": model, "max_tokens": 8192, "system": system,
                     "messages": convo, "tools": all_tools,
                 },
-                timeout=30,
+                timeout=60,
             )
         except Exception as e:
             raise _AssistantError(f"Ошибка связи с ИИ: {e}")
@@ -5368,7 +5380,14 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
         tool_uses = [b for b in content if b.get("type") == "tool_use"]
         texts = "\n".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
         if not tool_uses:
-            return texts or "Готово", nav_links
+            # Ответ оборвался по лимиту — просим продолжить; пользователь увидит его целиком.
+            if resp.get("stop_reason") == "max_tokens" and texts and continuations < 4:
+                continuations += 1
+                carried += texts
+                convo.append({"role": "assistant", "content": texts})
+                convo.append({"role": "user", "content": "Продолжи с того места, где оборвался, без повторов."})
+                continue
+            return (carried + texts) or "Готово", nav_links
 
         convo.append({"role": "assistant", "content": content})
         tool_results = []
@@ -5392,20 +5411,23 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
     ответа (tool_calls в сообщении assistant, результаты — отдельными
     сообщениями role:"tool"), но те же инструменты и та же семантика."""
     system = build_assistant_system_prompt(app, with_tg)
-    all_tools = ASSISTANT_TOOLS + (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else [])
+    all_tools = ASSISTANT_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
+        (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else [])
     tools = [
         {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
         for t in all_tools
     ]
     convo = [{"role": "system", "content": system}] + list(history)
     nav_links = []
-    for _ in range(_ASSISTANT_MAX_STEPS):
+    carried = ""
+    continuations = 0
+    for _ in range(_ASSISTANT_MAX_STEPS + 4):
         try:
             r = requests.post(
                 OPENAI_CHAT_URL,
                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-                json={"model": model, "max_completion_tokens": 800, "messages": convo, "tools": tools},
-                timeout=30,
+                json={"model": model, "max_completion_tokens": 8192, "messages": convo, "tools": tools},
+                timeout=60,
             )
         except Exception as e:
             raise _AssistantError(f"Ошибка связи с ИИ: {e}")
@@ -5421,7 +5443,14 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
         message = choices[0].get("message") or {}
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
-            return message.get("content") or "Готово", nav_links
+            part = message.get("content") or ""
+            if choices[0].get("finish_reason") == "length" and part and continuations < 4:
+                continuations += 1
+                carried += part
+                convo.append({"role": "assistant", "content": part})
+                convo.append({"role": "user", "content": "Продолжи с того места, где оборвался, без повторов."})
+                continue
+            return (carried + part) or "Готово", nav_links
 
         convo.append({"role": "assistant", "content": message.get("content"), "tool_calls": tool_calls})
         for tc in tool_calls:
@@ -5440,46 +5469,103 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
     return None, nav_links
 
 
-def handle_assistant_message(token: str, chat_id, text: str):
+def _user_turn_content(provider: str, text: str, images: list):
+    """Сообщение пользователя с картинками в формате провайдера. Без картинок — просто текст."""
+    if not images:
+        return text
+    if provider == "openai":
+        return [{"type": "text", "text": text or "Что на фото?"}] + [
+            {"type": "image_url", "image_url": {"url": f"data:{i['media_type']};base64,{i['b64']}"}} for i in images]
+    return [{"type": "image", "source": {"type": "base64", "media_type": i["media_type"], "data": i["b64"]}}
+            for i in images] + [{"type": "text", "text": text or "Что на фото?"}]
+
+
+def handle_assistant_message(token: str, chat_id, text: str, images: list = None, message_id: int = None):
+    # Сообщения одного чата идут строго по очереди: иначе при быстрой переписке
+    # история диалога перемешивается между потоками.
+    with tg_bot.chat_lock(chat_id):
+        _handle_assistant_message(token, chat_id, text, images or [], message_id)
+
+
+def _handle_assistant_message(token: str, chat_id, text: str, images: list, message_id):
+    def say(msg: str):
+        try:
+            tg_bot.send_text(token, chat_id, msg)
+        except Exception as e:
+            print(f"  assistant reply failed: {e}")
+
     app = load_app_data()
     settings = app.get("settings") or {}
     preset = resolve_ai_preset(settings, "voiceAssistant")
     api_key = (preset or {}).get("apiKey", "").strip()
     if not api_key:
-        send_message(
-            token, chat_id,
-            "Ассистенту не назначен набор ключей ИИ. В приложении: Настройки → Ассистент — "
-            "добавьте набор ключей (Claude или OpenAI) и назначьте его функции «Ассистент».",
-        )
+        say("Ассистенту не назначен набор ключей ИИ. В приложении: Настройки → Ассистент — "
+            "добавьте набор ключей (Claude или OpenAI) и назначьте его функции «Ассистент».")
         return
     provider = "openai" if preset.get("provider") == "openai" else "claude"
     model = (preset.get("model") or "").strip() or AI_PROVIDER_DEFAULT_MODEL[provider]
     site_url = (settings.get("publicUrl") or "").strip()
 
-    history = _assistant_convo.setdefault(chat_id, [])
-    history.append({"role": "user", "content": text})
+    # Контекст живёт, пока переписка непрерывна: пауза дольше TTL (10 минут)
+    # сбрасывает историю — это делает history_for.
+    history = tg_bot.history_for(chat_id)
+    tg_bot.touch(chat_id)
+    try:
+        tg_bot.api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
+    except Exception:
+        pass
 
+    # В историю идёт чистый текст; картинка нужна только текущему ходу.
+    stored_text = text + (" [фото]" if images else "")
+    turn = list(history) + [{"role": "user", "content": _user_turn_content(provider, text, images)}]
+
+    ctx = tg_bot.Ctx(token, chat_id, message_id)
+    tg_bot.set_ctx(ctx)
     with_tg = bool(tg_user) and tg_user.is_owner_chat(chat_id)
     loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
     try:
-        answer, nav_links = loop_fn(history, api_key, model, app, site_url, with_tg)
+        answer, nav_links = loop_fn(turn, api_key, model, app, site_url, with_tg)
     except _AssistantError as e:
-        del history[:]
-        send_message(token, chat_id, str(e))
+        say(str(e))
         return
+    finally:
+        tg_bot.set_ctx(None)
 
     if answer is None:
-        del history[:]
-        send_message(token, chat_id, "Не разобрался за отведённое число шагов — попробуйте переформулировать.")
+        say("Не разобрался за отведённое число шагов — попробуйте переформулировать.")
+        if ctx.sent:
+            history.append({"role": "user", "content": stored_text})
+            history.append({"role": "assistant", "content": "(служебно: в чат отправлено — " + "; ".join(ctx.sent) + ")"})
         return
 
-    history.append({"role": "assistant", "content": answer})
-    del history[:-_ASSISTANT_MAX_TURNS]
+    history.append({"role": "user", "content": stored_text})
+    note = ("\n(служебно: в этом ответе ты отправил в чат — " + "; ".join(ctx.sent) + ")") if ctx.sent else ""
+    history.append({"role": "assistant", "content": answer + note})
+    tg_bot.trim(history)
+    tg_bot.touch(chat_id)
 
-    reply = html.escape(answer)
+    reply = answer
     for label, url in nav_links:
         reply += f'\n\n<a href="{html.escape(url)}">Открыть: {html.escape(label)}</a>'
-    send_message(token, chat_id, reply)
+    say(reply)
+
+
+def _dispatch_user_message(token: str, chat_id, msg: dict):
+    """Текст + вложения (фото, текстовые файлы) → ассистент. Скачивание файлов — в
+    потоке, чтобы не задерживать long-poll."""
+    if not tg_bot:
+        return handle_assistant_message(token, chat_id, (msg.get("text") or "").strip())
+    try:
+        text, images, unsupported = tg_bot.extract_attachments(token, msg)
+    except Exception as e:
+        print(f"  attachment error: {e}")
+        text, images, unsupported = (msg.get("text") or msg.get("caption") or "").strip(), [], "не удалось скачать вложение"
+    if unsupported and not text and not images:
+        tg_bot.send_text(token, chat_id, unsupported[0].upper() + unsupported[1:] + ".")
+        return
+    if unsupported:
+        text = (text + "\n\n" if text else "") + f"[Вложение не прочитано: {unsupported}]"
+    handle_assistant_message(token, chat_id, text, images, msg.get("message_id"))
 
 
 # ── update-poller loop ───────────────────────────────────────────────────────
@@ -5518,6 +5604,13 @@ def updates_loop():
                         handle_diet_callback(token, cq)
                     elif data_str.startswith("chk:"):
                         handle_checklist_callback(token, cq)
+                    elif tg_bot and data_str.startswith("tcl:"):
+                        tg_bot.handle_checklist_callback(token, cq)
+                    elif tg_bot and data_str.startswith("tqr:"):
+                        tg_bot.handle_quick_callback(
+                            token, cq,
+                            lambda tk, cid_, reply: threading.Thread(
+                                target=handle_assistant_message, args=(tk, cid_, reply), daemon=True).start())
                     else:
                         tg_post(token, "answerCallbackQuery", {"callback_query_id": cq.get("id")})
                 except Exception as e:
@@ -5539,21 +5632,26 @@ def updates_loop():
                 subs["chat_ids"].append(cid)
                 print(f"  New subscriber: {cid}")
                 send_message(token, cid, WELCOME_TEXT)
-            text = (msg.get("text") or "").strip()
+            text = (msg.get("text") or msg.get("caption") or "").strip()
+            if tg_bot and text.split("@")[0] in ("/new", "/reset"):
+                tg_bot.reset(cid)
+                send_message(token, cid, "Контекст диалога сброшен.")
+                continue
             # Всё, что не /команда — обращение к ассистенту (get_data/navigate/
             # add_task поверх данных проекта). В отдельном потоке: цикл tool-use
             # может занять несколько секунд, а держать им long-poll нельзя —
             # это задержит ответы диет-опросникам и остальным подписчикам.
-            if text and not text.startswith("/"):
+            has_media = any(msg.get(k) for k in ("photo", "document", "voice", "audio", "video", "video_note"))
+            if (text or has_media) and not text.startswith("/"):
                 # Ждём «своё значение» калорий после кнопки опроса питания — число
                 # уходит в dietLog, а не ассистенту.
                 try:
-                    if handle_diet_custom_reply(token, cid, text):
+                    if text and not has_media and handle_diet_custom_reply(token, cid, text):
                         continue
                 except Exception as e:
                     print(f"  diet custom reply error: {e}")
                 threading.Thread(
-                    target=handle_assistant_message, args=(token, cid, text), daemon=True,
+                    target=_dispatch_user_message, args=(token, cid, msg), daemon=True,
                 ).start()
         if changed:
             save_subscribers(subs)
