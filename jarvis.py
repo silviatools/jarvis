@@ -3810,6 +3810,356 @@ def execute_study_tool(name: str, inp: dict) -> dict:
     return {"error": "unknown_tool"}
 
 
+# ── Погода → Apple Календарь ────────────────────────────────────────────────
+# В выбранные дни и время сервер берёт прогноз Open-Meteo для города из
+# Настроек (Общее → Погода) и пишет по событию на каждый из ближайших дней в
+# выбранный календарь iCloud: название собирается из шаблона (по умолчанию
+# «иконка, основная температура дня, осадки»), подробности — в описании.
+# События с UID jarvis-weather-<дата>: повторный прогон обновляет их, а не
+# дублирует, и не трогает ничего чужого. Время везде московское.
+#
+# Настройки — data.weatherCalendar (синхронизируются как обычные данные),
+# состояние последнего прогона — weather_cal_state.json.
+
+WEATHER_CAL_STATE_FILE = DATA_DIR / "weather_cal_state.json"
+WEATHER_CAL_UID_PREFIX = "jarvis-weather-"
+WEATHER_CAL_DEFAULTS = {
+    "enabled": False,
+    "calendar": "Погода",
+    "days": [7],                       # ISO: когда формировать (7 = воскресенье)
+    "time": "06:00",                   # во сколько формировать, МСК
+    "startOffset": 1,                  # 0 = с сегодня, 1 = с завтра
+    "daysAhead": 7,                    # на сколько дней вперёд (1–16)
+    "eventTime": "06:00",              # во сколько ставить событие, МСК
+    "duration": 15,                    # минут; 0 = событие на весь день
+    "title": "{icon} {temp}, {precip}",
+}
+_WEATHER_CAL_LOCK = threading.Lock()
+
+
+class WeatherCalError(Exception):
+    pass
+
+
+def _wx_hhmm(value, default: str) -> str:
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(value or "").strip())
+    if m and int(m.group(1)) < 24 and int(m.group(2)) < 60:
+        return f"{int(m.group(1)):02d}:{m.group(2)}"
+    return default
+
+
+def _wx_int(value, lo: int, hi: int, default: int) -> int:
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def weather_cal_settings(app: dict = None) -> dict:
+    app = app if app is not None else load_app_data()
+    raw = app.get("weatherCalendar") if isinstance(app.get("weatherCalendar"), dict) else {}
+    d = WEATHER_CAL_DEFAULTS
+    s = {**d, **raw}
+    s["enabled"] = bool(s.get("enabled"))
+    s["days"] = sorted({int(x) for x in (s.get("days") or []) if str(x).isdigit() and 1 <= int(x) <= 7})
+    s["time"] = _wx_hhmm(s.get("time"), d["time"])
+    s["eventTime"] = _wx_hhmm(s.get("eventTime"), d["eventTime"])
+    s["daysAhead"] = _wx_int(s.get("daysAhead"), 1, 16, d["daysAhead"])
+    s["startOffset"] = _wx_int(s.get("startOffset"), 0, 1, d["startOffset"])
+    s["duration"] = _wx_int(s.get("duration"), 0, 1440, d["duration"])
+    s["calendar"] = str(s.get("calendar") or "").strip() or d["calendar"]
+    s["title"] = str(s.get("title") or "").strip()[:200] or d["title"]
+    s["city"] = str((app.get("settings") or {}).get("weatherCity") or "").strip()
+    return s
+
+
+def weather_cal_load_state() -> dict:
+    try:
+        if WEATHER_CAL_STATE_FILE.exists():
+            return json.loads(WEATHER_CAL_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def weather_cal_save_state(state: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = WEATHER_CAL_STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(WEATHER_CAL_STATE_FILE)
+
+
+def weather_cal_forecast(city: str, state: dict) -> dict:
+    """Прогноз Open-Meteo на 16 дней по дням: {city, days: {YYYY-MM-DD: {...}}}.
+    Координаты города кэшируем в state — Nominatim просим только при смене города."""
+    if not requests:
+        raise WeatherCalError("На сервере не установлена библиотека requests.")
+    geo = state.get("geo") or {}
+    try:
+        if geo.get("city") != city:
+            r = requests.get("https://nominatim.openstreetmap.org/search",
+                             params={"q": city, "format": "json", "limit": 1},
+                             headers={"Accept-Language": "ru", "User-Agent": "Jarvis/1.0"}, timeout=10)
+            found = r.json() if r.ok else []
+            if not found:
+                raise WeatherCalError(f"Город «{city}» не найден.")
+            geo = {"city": city, "lat": float(found[0]["lat"]), "lon": float(found[0]["lon"]),
+                   "name": (found[0].get("display_name") or city).split(",")[0].strip()}
+            state["geo"] = geo
+        fc = requests.get("https://api.open-meteo.com/v1/forecast", params={
+            "latitude": geo["lat"], "longitude": geo["lon"],
+            "daily": ("weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,"
+                      "precipitation_probability_max,wind_speed_10m_max,sunrise,sunset"),
+            "hourly": "temperature_2m",
+            "wind_speed_unit": "ms", "timezone": "auto", "forecast_days": 16,
+        }, timeout=15)
+        if not fc.ok:
+            raise WeatherCalError(f"Open-Meteo ответил {fc.status_code}.")
+        w = fc.json()
+    except WeatherCalError:
+        raise
+    except Exception as e:
+        raise WeatherCalError(f"Не удалось загрузить погоду: {e}")
+
+    daily = w.get("daily") or {}
+    hourly = w.get("hourly") or {}
+    by_day_temps: dict = {}
+    for t, v in zip(hourly.get("time") or [], hourly.get("temperature_2m") or []):
+        if v is not None and 9 <= int(t[11:13]) <= 20:   # «основная» температура — дневные часы
+            by_day_temps.setdefault(t[:10], []).append(float(v))
+
+    def col(name):
+        return daily.get(name) or []
+
+    days = {}
+    for i, d in enumerate(col("time")):
+        def at(name):
+            c = col(name)
+            return c[i] if i < len(c) else None
+        tmin, tmax = at("temperature_2m_min"), at("temperature_2m_max")
+        temps = by_day_temps.get(d)
+        tday = sum(temps) / len(temps) if temps else (
+            (tmin + tmax) / 2 if tmin is not None and tmax is not None else None)
+        days[d] = {"code": at("weather_code"), "tmin": tmin, "tmax": tmax, "tday": tday,
+                   "prob": at("precipitation_probability_max"), "mm": at("precipitation_sum"),
+                   "wind": at("wind_speed_10m_max"),
+                   "sunrise": (at("sunrise") or "")[11:16], "sunset": (at("sunset") or "")[11:16]}
+    return {"city": geo["name"], "days": days}
+
+
+def _wx_temp(v) -> str:
+    if v is None:
+        return "—"
+    r = int((float(v) + 0.5) // 1)
+    return "0°" if r == 0 else ("+" if r > 0 else "−") + str(abs(r)) + "°"
+
+
+def _wx_icon(code) -> str:
+    if code == 0:
+        return "☀️"
+    if code == 1:
+        return "🌤️"
+    if code == 2:
+        return "⛅"
+    if code in (45, 48):
+        return "🌫️"
+    if code is not None and (51 <= code <= 57 or 80 <= code <= 82):
+        return "🌦️" if code <= 57 else "🌧️"
+    if code is not None and 61 <= code <= 67:
+        return "🌧️"
+    if code is not None and (71 <= code <= 77 or 85 <= code <= 86):
+        return "🌨️"
+    if code is not None and 95 <= code <= 99:
+        return "⛈️"
+    return "☁️"
+
+
+def _wx_precip(day: dict, full: bool = False) -> str:
+    """Короткая строка про осадки: «без осадков» / «дождь 70%»; full — с миллиметрами."""
+    mm, prob, code = day.get("mm") or 0, day.get("prob") or 0, day.get("code")
+    if mm < 0.1 and prob < 30:
+        return "без осадков"
+    label = _weather_code_label(code)
+    kind = label if code is not None and (51 <= code <= 99) and label not in ("туман",) else "осадки"
+    if full:
+        bits = [f"вероятность {int(prob)}%"] if prob else []
+        if mm >= 0.1:
+            bits.append(f"{mm:.1f} мм".replace(".0 ", " "))
+        return kind + (", " + ", ".join(bits) if bits else "")
+    return f"{kind} {int(prob)}%" if prob >= 30 else f"{kind} {mm:.1f} мм".replace(".0 ", " ")
+
+
+def weather_cal_event(s: dict, day_iso: str, day: dict, city: str) -> dict:
+    vals = {
+        "icon": _wx_icon(day.get("code")),
+        "cond": _weather_code_label(day.get("code")),
+        "temp": _wx_temp(day.get("tday")),
+        "tmin": _wx_temp(day.get("tmin")),
+        "tmax": _wx_temp(day.get("tmax")),
+        "precip": _wx_precip(day),
+        "wind": f"{round(day['wind'])} м/с" if day.get("wind") is not None else "—",
+        "city": city,
+    }
+
+    def render(tpl: str) -> str:
+        out = re.sub(r"\{(\w+)\}", lambda m: vals.get(m.group(1), m.group(0)), tpl)
+        return re.sub(r"\s+", " ", out).strip()
+
+    title = render(s["title"]) or render(WEATHER_CAL_DEFAULTS["title"])
+    notes = [f"{vals['icon']} {vals['cond'].capitalize()}, {city}",
+             f"Температура: {vals['tmin']} … {vals['tmax']}, днём около {vals['temp']}",
+             f"Осадки: {_wx_precip(day, full=True)}"]
+    if day.get("wind") is not None:
+        notes.append(f"Ветер: до {vals['wind']}")
+    if day.get("sunrise") and day.get("sunset"):
+        notes.append(f"Восход {day['sunrise']} · закат {day['sunset']}")
+    notes.append("Добавлено Джарвисом (Open-Meteo)")
+    ev = {"title": title, "notes": "\n".join(notes)}
+    if s["duration"] == 0:
+        ev.update({"start": day_iso, "allDay": True})
+    else:
+        start = datetime.fromisoformat(f"{day_iso} {s['eventTime']}")
+        ev.update({"start": start.strftime("%Y-%m-%d %H:%M"),
+                   "end": (start + timedelta(minutes=s["duration"])).strftime("%Y-%m-%d %H:%M")})
+    return ev
+
+
+def _weather_cal_existing(cal: dict, start_dt: datetime, end_dt: datetime) -> dict:
+    """{uid: {url, etag, fields}} — только наши события в окне."""
+    rng = (start_dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+           end_dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    resp = _apple_report(cal["href"], _apple_calendar_query("VEVENT", time_range=rng))
+    out = {}
+    for href, etag, text in _apple_collect(resp, "VEVENT"):
+        for block in _ics_blocks(text, "VEVENT"):
+            ev = _apple_event_from(block, cal["name"])
+            if (ev.get("id") or "").startswith(WEATHER_CAL_UID_PREFIX):
+                out[ev["id"]] = {"url": urljoin(cal["href"], href), "etag": etag, "fields": ev}
+    return out
+
+
+def _weather_cal_put(url: str, uid: str, fields: dict, etag: str = "") -> None:
+    # TRANSPARENT: погода не должна показывать пользователя «занятым» в это время.
+    ics = _apple_wrap("VEVENT", _apple_event_lines(fields, uid) + ["TRANSP:TRANSPARENT"])
+    headers = {"Content-Type": "text/calendar; charset=utf-8"}
+    if etag:
+        headers["If-Match"] = etag
+    r = _apple_dav("PUT", url, ics, headers=headers)
+    if r.status_code == 412:
+        r = _apple_dav("PUT", url, ics, headers={"Content-Type": "text/calendar; charset=utf-8"})
+    if r.status_code not in (200, 201, 204):
+        raise AppleError(f"iCloud не принял событие ({r.status_code}).")
+
+
+def weather_cal_sync(preview: bool = False, reason: str = "manual") -> dict:
+    """Создаёт/обновляет события погоды. preview=True — только показать, что будет записано."""
+    if not _WEATHER_CAL_LOCK.acquire(blocking=False):
+        return {"ok": False, "error": "Запись уже идёт — подождите минуту."}
+    try:
+        return _weather_cal_sync_locked(preview, reason)
+    finally:
+        _WEATHER_CAL_LOCK.release()
+
+
+def _weather_cal_sync_locked(preview: bool, reason: str) -> dict:
+    s = weather_cal_settings()
+    state = weather_cal_load_state()
+    started = int(time.time() * 1000)
+
+    def fail(msg: str) -> dict:
+        if not preview:
+            state.update({"lastRunAt": started, "lastOk": False, "lastError": msg, "lastReason": reason})
+            weather_cal_save_state(state)
+        return {"ok": False, "error": msg}
+
+    if not s["city"]:
+        return fail("Не указан город: Настройки → Общее → Погода → Город.")
+    try:
+        fc = weather_cal_forecast(s["city"], state)
+    except WeatherCalError as e:
+        return fail(str(e))
+
+    first = today_msk() + timedelta(days=s["startOffset"])
+    wanted, skipped = {}, []
+    for i in range(s["daysAhead"]):
+        d = (first + timedelta(days=i)).isoformat()
+        if d in fc["days"]:
+            wanted[d] = weather_cal_event(s, d, fc["days"][d], fc["city"])
+        else:
+            skipped.append(d)
+    if not wanted:
+        return fail("Open-Meteo не дал прогноз на выбранные даты.")
+    events = [{"date": d, **ev} for d, ev in wanted.items()]
+    if preview:
+        weather_cal_save_state(state)   # кэш координат города
+        return {"ok": True, "preview": True, "city": fc["city"], "events": events, "skipped": skipped}
+
+    added, updated, errors = 0, 0, []
+    try:
+        cal = _study_calendar(s["calendar"])
+        win_from = datetime.combine(first - timedelta(days=1), datetime.min.time(), MSK)
+        win_to = datetime.combine(first + timedelta(days=s["daysAhead"] + 1), datetime.min.time(), MSK)
+        existing = _weather_cal_existing(cal, win_from, win_to)
+        for d, want in wanted.items():
+            uid = WEATHER_CAL_UID_PREFIX + d
+            have = existing.get(uid)
+            try:
+                if not have:
+                    _weather_cal_put(urljoin(cal["href"], uid + ".ics"), uid, want)
+                    added += 1
+                    continue
+                h = have["fields"]
+                same = ((h.get("title") or "").strip() == want["title"].strip()
+                        and (h.get("notes") or "").strip() == want["notes"].strip()
+                        and (h.get("start") or "")[:16] == want["start"][:16]
+                        and bool(h.get("allDay")) == bool(want.get("allDay"))
+                        and (want.get("allDay") or (h.get("end") or "")[:16] == want["end"][:16]))
+                if not same:
+                    _weather_cal_put(have["url"], uid, want, have["etag"])
+                    updated += 1
+            except AppleError as e:
+                errors.append(f"{d}: {e}")
+    except (AppleError, StudyError) as e:
+        return fail(str(e))
+
+    result = {"ok": not errors, "calendar": cal["name"], "city": fc["city"], "added": added,
+              "updated": updated, "total": len(wanted), "skipped": skipped, "errors": errors[:10]}
+    log_entry = {"at": started, "reason": reason, "added": added, "updated": updated,
+                 "errors": len(errors), "from": min(wanted), "to": max(wanted)}
+    state.update({
+        "lastRunAt": started, "lastOk": not errors, "lastReason": reason,
+        "lastError": "; ".join(errors[:3]) if errors else "",
+        "lastResult": {k: result[k] for k in ("added", "updated", "total", "calendar", "city")},
+        "log": ([log_entry] + (state.get("log") or []))[:20],
+    })
+    weather_cal_save_state(state)
+    return result
+
+
+def weather_cal_status() -> dict:
+    s = weather_cal_settings()
+    state = weather_cal_load_state()
+    return {
+        "settings": s,
+        "lastRunAt": state.get("lastRunAt") or 0,
+        "lastOk": state.get("lastOk"),
+        "lastError": state.get("lastError") or "",
+        "lastResult": state.get("lastResult") or {},
+        "log": (state.get("log") or [])[:10],
+        "appleConfigured": bool(apple_creds()),
+    }
+
+
+def weather_cal_tick(app_data: dict, now_str: str, today_iso: str) -> None:
+    """Из минутного цикла: в выбранные дни и время формируем события погоды."""
+    s = weather_cal_settings(app_data)
+    if not s["enabled"] or s["time"] != now_str or today_msk().isoweekday() not in s["days"]:
+        return
+    if _already_fired("weathercal", s["calendar"], today_iso, now_str):
+        return
+    threading.Thread(target=lambda: print(f"[weather-cal] {weather_cal_sync(reason='schedule')}"), daemon=True).start()
+
+
 # ── Текстовый ассистент в Telegram ──────────────────────────────────────────
 # Тот же принцип, что у голосовой кнопки в index (9).html: LLM с tool-calling
 # поверх данных приложения — сама решает, что прочитать и куда отправить
@@ -5223,6 +5573,10 @@ def notifier_loop():
             study_tick(load_app_data(), now_msk().strftime("%H:%M"), today_msk().isoformat())
         except Exception as e:
             print(f"Study tick error: {e}")
+        try:
+            weather_cal_tick(load_app_data(), now_msk().strftime("%H:%M"), today_msk().isoformat())
+        except Exception as e:
+            print(f"Weather calendar tick error: {e}")
         now = datetime.now()
         time.sleep(60 - now.second)
 
@@ -8044,6 +8398,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(200, {"tools": tg_tools.enabled_tools(state), "prompt": tg_tools.prompt_section(state)})
             else:
                 self._json(200, {"tools": [], "prompt": ""})
+        elif route == "/api/weather-cal/status":
+            self._json(200, weather_cal_status())
         elif route == "/api/study/status":
             self._json(200, study_status())
         elif route == "/api/study/debug":
@@ -8221,6 +8577,16 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif route == "/api/student/check":
             try:
                 self._json(200, student_check())
+            except Exception as e:
+                self._json(200, {"ok": False, "error": str(e)})
+        elif route == "/api/weather-cal/sync":
+            length = self._content_length() or 0
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            except Exception:
+                payload = {}
+            try:
+                self._json(200, weather_cal_sync(preview=bool((payload or {}).get("preview")), reason="manual"))
             except Exception as e:
                 self._json(200, {"ok": False, "error": str(e)})
         elif route == "/api/study/sync":
