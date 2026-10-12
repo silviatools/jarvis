@@ -183,6 +183,7 @@ SPA_ROUTES = {
     "/mybody", "/budget", "/supplements", "/meals", "/weather",
     "/house", "/cars", "/holidays", "/settings", "/planner", "/health",
     "/misc", "/wishlist", "/cards", "/gym", "/music", "/knowledge", "/quiz",
+    "/study",
 }
 
 # Deep-link routes that get their OWN <link rel="manifest"> (and Apple home-
@@ -4278,6 +4279,12 @@ ASSISTANT_DATA_DOMAINS = {
             "programs": app.get("gymPrograms", []), "days": app.get("gymDays", []),
             "exercises": app.get("gymExercises", []), "sessions": app.get("gymSessions", [])[-40:],
         }),
+    "study": ("Учёба: предметы (столбцы канбана, с заметкой note о предмете/преподавателе) и задания в них (status: todo|doing|done, due YYYY-MM-DD, kind: hw|test|exam|project|lab|read|other, important, subtasks)",
+        lambda app: {
+            "subjects": app.get("studySubjects", []),
+            "tasks": [t for t in app.get("studyTasks", [])
+                      if t.get("status") != "done" or (t.get("doneAt") or 0) > time.time() * 1000 - 30 * 86400000],
+        }),
     "wishlist": ("Хотелки",
         lambda app: {"categories": app.get("wishlistCategories", []), "items": app.get("wishlistItems", [])}),
     "planner": ("Планировщик: события, друзья-участники, личные планы, праздники/дни рождения",
@@ -4355,6 +4362,7 @@ ASSISTANT_NAV_TARGETS = {
     "planner_camping": ("Планировщик — Кемпинг", "/planner"),
     "misc_home": ("Прочее", "/misc"),
     "wishlist": ("Хотелки", "/wishlist"),
+    "study": ("Учёба", "/study"),
     "cards": ("Карты лояльности", "/cards"),
     "gym": ("GYM", "/gym"),
     "music": ("Музыка", "/music"),
@@ -4469,6 +4477,15 @@ WRITE_REGISTRY = {
         "cascade_orphan": [{"collection": "wishlistItems", "field": "categoryId"}],
     },
     "wishlistItems": {"label": "Хотелка", "create_defaults": lambda: {"bought": False}},
+    "studySubjects": {
+        "label": "Предмет в «Учёбе» (столбец канбана: name, emoji, color, order, note — заметка о предмете/преподавателе)",
+        "create_defaults": lambda: {"emoji": "📘", "color": "#6366f1", "order": 0, "note": ""},
+        "cascade_delete": [{"collection": "studyTasks", "field": "subjectId"}],
+    },
+    "studyTasks": {
+        "label": "Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note)",
+        "create_defaults": lambda: {"status": "todo", "kind": "hw", "due": "", "important": False, "subtasks": [], "note": "", "doneAt": 0},
+    },
     "plannerFriends": {
         "label": "Друг-участник планировщика",
         "create_defaults": lambda: {},
