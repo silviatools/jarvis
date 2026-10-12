@@ -1285,6 +1285,69 @@
   .st-subj-emoji { padding: 0; }
   .st-date { width: auto; }
   .st-subj-note:focus { border-color: #f59e0b; }
+
+  /* Учёба: на широком экране доска — почти на всю страницу (как «Дела → Задачи»),
+     столбцы тянутся, пока помещаются, дальше — горизонтальный скролл. */
+  @media (min-width: 640px) {
+    .st-board { margin: 0 -24px; padding: 4px 24px 24px; scroll-padding: 0 24px; }
+  }
+  @media (min-width: 768px) {
+    .st-board { scroll-snap-type: none; scrollbar-width: thin; }
+    .st-board::-webkit-scrollbar { display: block; height: 8px; }
+    .st-board::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; }
+    .st-col { flex: 1 0 288px; }
+    .st-col-body { max-height: calc(100dvh - 330px); overflow-y: auto; }
+    .st-col-add { flex: 0 0 110px; align-self: flex-start; min-height: 120px; }
+    .st-agenda { max-width: 760px; }
+  }
+
+  .st-atts { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
+  .st-att {
+    position: relative; aspect-ratio: 1; border-radius: 12px; overflow: hidden; cursor: pointer;
+    background: color-mix(in srgb, var(--c) 8%, var(--surface)); border: 1px solid var(--border);
+    animation: stCardIn .3s cubic-bezier(.2,.9,.3,1.2) both;
+  }
+  .st-att img, .st-att video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+  .st-att-play {
+    position: absolute; inset: 0; margin: auto; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; background: rgba(0,0,0,.55); color: #fff; font-size: 11px; padding-left: 2px;
+  }
+  .st-att-file { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 6px; }
+  .st-att-ext { font-size: 11px; font-weight: 800; color: #fff; background: var(--c); padding: 3px 6px; border-radius: 6px; letter-spacing: .03em; }
+  .st-att-name { font-size: 10.5px; color: var(--text-muted); text-align: center; line-height: 1.2; word-break: break-all;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .st-att-del {
+    position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .st-att-loading { display: flex; align-items: center; justify-content: center; }
+  .st-spin { width: 22px; height: 22px; border-radius: 50%; border: 2.5px solid color-mix(in srgb, var(--c) 25%, transparent); border-top-color: var(--c); animation: stSpin .8s linear infinite; }
+  .st-att-add {
+    aspect-ratio: 1; border-radius: 12px; border: 1.5px dashed color-mix(in srgb, var(--c) 40%, var(--border-strong));
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; font-weight: 500;
+    color: color-mix(in srgb, var(--c) 70%, var(--text)); transition: background .2s, transform .15s;
+  }
+  .st-att-add:active { transform: scale(.95); background: color-mix(in srgb, var(--c) 10%, transparent); }
+  .st-viewer { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.92); display: flex; flex-direction: column; animation: fadeIn .2s ease both; }
+  .st-viewer-bar { display: flex; align-items: center; gap: 14px; padding: 14px 16px; color: #fff; font-size: 14px; padding-top: max(14px, env(safe-area-inset-top)); }
+  .st-viewer-bar span { flex: 1; min-width: 0; opacity: .85; }
+  .st-viewer-bar a, .st-viewer-bar button { color: #fff; opacity: .85; }
+  .st-viewer-body { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 0 12px 24px; }
+  .st-viewer-body img, .st-viewer-body video { max-width: 100%; max-height: 100%; border-radius: 10px; animation: stNumIn .3s cubic-bezier(.2,.9,.3,1.1) both; }
+
+  .st-settings-toggle {
+    margin-top: 18px; display: flex; align-items: center; gap: 8px; padding: 11px 12px; border-radius: 12px; width: 100%;
+    background: var(--surface); border: 1px solid var(--border); font-size: 14px; font-weight: 500; color: var(--text);
+  }
+  .st-settings-sum { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+  .st-settings-chev { color: var(--text-muted); transition: transform .25s; display: flex; }
+  .st-settings-toggle.open .st-settings-chev { transform: rotate(180deg); }
+  .st-settings-toggle.open { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom-color: transparent; }
+  .st-settings-body {
+    border: 1px solid var(--border); border-top: none; border-radius: 0 0 12px 12px; padding: 0 12px 12px; background: var(--surface);
+    animation: fadeIn .25s ease both;
+  }
+  .st-settings-body label:first-child { margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -2957,7 +3020,7 @@ function App() {
       ) : tab === 'budget' ? (
         <BudgetView data={data} setData={setData} onDirtyChange={setBudgetPlansDirty} />
       ) : (
-        <main className="max-w-3xl mx-auto px-4 sm:px-6 pt-6 md:pt-8">
+        <main className={`${tab === 'misc' && miscTab === 'study' ? 'max-w-none' : 'max-w-3xl'} mx-auto px-4 sm:px-6 pt-6 md:pt-8`}>
           {tab === 'home' && <HomeView data={data} setData={setData} setTab={setTab} setHouseTab={setHouseTab} setMealTab={setMealTab} />}
           {tab === 'supplements' && <SupplementsView data={data} setData={setData} />}
           {tab === 'meals' && <MealsView data={data} setData={setData} mealTab={mealTab} setMealTab={setMealTab} />}
@@ -13195,8 +13258,8 @@ const WRITE_REGISTRY = {
     cascadeDelete: [{ collection: 'studyTasks', field: 'subjectId' }],
   },
   studyTasks: {
-    label: 'Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note)',
-    createDefaults: () => ({ status: 'todo', kind: 'hw', due: '', important: false, subtasks: [], note: '', doneAt: 0 }),
+    label: 'Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note; attachments — файлы, только читать)',
+    createDefaults: () => ({ status: 'todo', kind: 'hw', due: '', important: false, subtasks: [], attachments: [], note: '', doneAt: 0 }),
   },
   plannerFriends: {
     label: 'Друг-участник планировщика',
@@ -36577,6 +36640,7 @@ const newStudyTask = (subjectId, patch = {}) => ({
   due: '',
   important: false,
   subtasks: [],
+  attachments: [],
   note: '',
   doneAt: 0,
   createdAt: Date.now(),
@@ -36689,13 +36753,15 @@ function StudyView({ data, setData }) {
   };
 
   const deleteTask = (task) => {
-    if (!confirm(`Удалить «${task.title || 'задачу'}»?`)) return;
+    if (!confirm(`Удалить «${task.title || 'задачу'}»?`)) return false;
+    studyDeleteAttachments(task.attachments);
     setData(d => ({
       ...d,
       studyTasks: (d.studyTasks || []).filter(t => t.id !== task.id),
       deletedIds: withDeletedId(d, 'studyTasks', task.id),
     }));
     setEditing(null);
+    return true;
   };
 
   // Онбординг: можно отметить сразу несколько предметов и создать доску разом.
@@ -37045,7 +37111,7 @@ function StudyCard({ task, color, onOpen, onStatus, onToggleSub }) {
             {task.important && !isDone && <span className="st-imp">★</span>}
             {task.title || 'Без названия'}
           </div>
-          {(kind || due || subs.length > 0 || task.note) && (
+          {(kind || due || subs.length > 0 || task.note || (task.attachments || []).length > 0) && (
             <div className="st-meta">
               {kind && task.kind !== 'hw' && <span className="st-kind">{kind.emoji} {kind.label}</span>}
               {due && <span className={`st-due st-due-${isDone ? 'later' : due.tone}`}>{due.text}</span>}
@@ -37058,6 +37124,7 @@ function StudyCard({ task, color, onOpen, onStatus, onToggleSub }) {
                   {subsDone}/{subs.length}
                 </button>
               )}
+              {(task.attachments || []).length > 0 && <span className="st-note-dot">📎 {task.attachments.length}</span>}
               {task.note && <span className="st-note-dot" title={task.note}>✎</span>}
             </div>
           )}
@@ -37131,11 +37198,99 @@ function StudyAgenda({ tasks, subjects, onOpen, onStatus }) {
   );
 }
 
+// Вложения задания: фото (сжимаются, лежат в /api/photos), видео и
+// документы (как есть, в /api/files; видео отдаётся с Range). В задании —
+// только ссылки { id, store, filename, name, kind, size }, сами файлы на
+// сервере, поэтому синк между устройствами их не гоняет.
+const STUDY_FILE_EXT = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'rtf', 'csv', 'zip', 'png', 'jpg', 'jpeg', 'webp', 'heic', 'gif', 'mp4', 'mov', 'm4v', 'webm'];
+const STUDY_VIDEO_EXT = ['mp4', 'mov', 'm4v', 'webm'];
+const studyAttUrl = (a) => `/api/${a.store === 'photos' ? 'photos' : 'files'}/${a.filename}`;
+const studyAttExt = (a) => ((a.name || a.filename || '').split('.').pop() || '').toLowerCase();
+const studyFileSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} МБ` : `${Math.max(1, Math.round(n / 1024))} КБ`);
+const studyDeleteAttachments = (list) => (list || []).forEach(a =>
+  (a.store === 'photos' ? deletePhoto(a.filename) : deleteFile(a.filename)));
+
+async function studyUploadAttachment(file) {
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const isImage = (file.type || '').startsWith('image/') && ext !== 'gif';
+  const isVideo = (file.type || '').startsWith('video/') || STUDY_VIDEO_EXT.includes(ext);
+  if (isImage) {
+    const filename = await uploadPhoto(file);
+    return { id: crypto.randomUUID(), store: 'photos', filename, name: file.name, kind: 'image', size: file.size, at: Date.now() };
+  }
+  if (!STUDY_FILE_EXT.includes(ext)) throw new Error(`Формат .${ext || '?'} не поддерживается`);
+  const limit = (isVideo ? 150 : 25) * 1048576;
+  if (file.size > limit) throw new Error(`«${file.name}» больше ${isVideo ? 150 : 25} МБ`);
+  const filename = await uploadFile(file);
+  return {
+    id: crypto.randomUUID(), store: 'files', filename, name: file.name,
+    kind: isVideo ? 'video' : (ext === 'gif' ? 'image' : 'file'), size: file.size, at: Date.now(),
+  };
+}
+
+function StudyAttachThumb({ att, onOpen, onRemove }) {
+  const ext = studyAttExt(att);
+  return (
+    <div className="st-att" onClick={() => onOpen(att)}>
+      {att.kind === 'image' && <img src={studyAttUrl(att)} alt="" loading="lazy" />}
+      {att.kind === 'video' && (
+        <>
+          <video src={`${studyAttUrl(att)}#t=0.1`} preload="metadata" muted playsInline />
+          <span className="st-att-play">▶</span>
+        </>
+      )}
+      {att.kind === 'file' && (
+        <div className="st-att-file">
+          <span className="st-att-ext">{ext.toUpperCase().slice(0, 4)}</span>
+          <span className="st-att-name">{att.name}</span>
+        </div>
+      )}
+      {onRemove && (
+        <button className="st-att-del" onClick={e => { e.stopPropagation(); onRemove(att); }}><Icon name="x" size={12} /></button>
+      )}
+    </div>
+  );
+}
+
+// Просмотр вложения поверх всего: фото/видео прямо тут, документы — в новой
+// вкладке (браузер сам откроет PDF или предложит скачать).
+function StudyAttachViewer({ att, onClose }) {
+  useEffect(() => {
+    const h = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
+  return ReactDOM.createPortal(
+    <div className="st-viewer" onClick={onClose}>
+      <div className="st-viewer-bar" onClick={e => e.stopPropagation()}>
+        <span className="truncate">{att.name}</span>
+        <a href={studyAttUrl(att)} download={att.name} target="_blank" rel="noopener" title="Скачать"><Icon name="download" size={18} /></a>
+        <button onClick={onClose}><Icon name="x" size={20} /></button>
+      </div>
+      <div className="st-viewer-body" onClick={e => e.stopPropagation()}>
+        {att.kind === 'video'
+          ? <video src={studyAttUrl(att)} controls autoPlay playsInline />
+          : <img src={studyAttUrl(att)} alt={att.name} />}
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose }) {
-  const [t, setT] = useState(() => ({ subtasks: [], ...initial }));
+  const [t, setT] = useState(() => ({ subtasks: [], attachments: [], ...initial }));
   const [subText, setSubText] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
+  const [uploading, setUploading] = useState(0);
+  const [viewing, setViewing] = useState(null);
+  const mediaRef = useRef(null);
+  const fileRef = useRef(null);
+  // Загруженное в этом окне: если закрыть без «Сохранить» — подчистим сервер.
+  const freshRef = useRef(new Set());
   const set = (patch) => setT(x => ({ ...x, ...patch }));
   const subj = subjects.find(s => s.id === t.subjectId) || subjects[0];
+  const kind = STUDY_KIND_BY_ID[t.kind] || STUDY_KIND_BY_ID.hw;
+  const atts = t.attachments || [];
   const quickDue = [
     { label: 'Сегодня', v: studyAddDays(0) },
     { label: 'Завтра', v: studyAddDays(1) },
@@ -37148,13 +37303,51 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
     set({ subtasks: [...(t.subtasks || []), { id: crypto.randomUUID(), text, done: false }] });
     setSubText('');
   };
+
+  const onFiles = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    setUploading(n => n + files.length);
+    const errors = [];
+    await Promise.all(files.map(async (f) => {
+      try {
+        const att = await studyUploadAttachment(f);
+        freshRef.current.add(att.filename);
+        setT(x => ({ ...x, attachments: [...(x.attachments || []), att] }));
+      } catch (e) {
+        errors.push(e.message === 'upload failed' ? `«${f.name}» не загрузился` : e.message);
+      } finally {
+        setUploading(n => n - 1);
+      }
+    }));
+    if (errors.length) alert(errors.join('\n'));
+  };
+
+  const removeAtt = (att) => {
+    set({ attachments: atts.filter(a => a.id !== att.id) });
+    // Свежезагруженное удаляем сразу; старое — только при сохранении,
+    // чтобы «Отмена» вернула задание как было.
+    if (freshRef.current.has(att.filename)) {
+      freshRef.current.delete(att.filename);
+      studyDeleteAttachments([att]);
+    }
+  };
+
+  const close = () => {
+    studyDeleteAttachments(atts.filter(a => freshRef.current.has(a.filename)));
+    onClose();
+  };
+
   const save = () => {
-    if (!t.title.trim()) return;
+    if (!t.title.trim() || uploading) return;
+    const keep = new Set(atts.map(a => a.id));
+    studyDeleteAttachments((initial.attachments || []).filter(a => !keep.has(a.id)));
+    freshRef.current.clear();
     onSave({ ...t, title: t.title.trim(), subjectId: subj.id });
   };
 
   return (
-    <Modal title={isNew ? 'Новое задание' : 'Задание'} onClose={onClose}>
+    <Modal title={isNew ? 'Новое задание' : 'Задание'} onClose={viewing ? () => setViewing(null) : close}>
       <div className="st-form" style={{ '--c': subj.color }}>
         <textarea
           className="st-title-input"
@@ -37169,24 +37362,6 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
           {STUDY_STATUSES.map(s => (
             <button key={s.id} className={t.status === s.id ? `on st-ss-${s.id}` : ''} onClick={() => set({ status: s.id })}>
               {s.label}
-            </button>
-          ))}
-        </div>
-
-        <label>Предмет</label>
-        <div className="st-pills">
-          {subjects.map(s => (
-            <button key={s.id} className={`st-pill ${subj.id === s.id ? 'on' : ''}`} style={{ '--c': s.color }} onClick={() => set({ subjectId: s.id })}>
-              {s.emoji || '📘'} {s.name}
-            </button>
-          ))}
-        </div>
-
-        <label>Тип</label>
-        <div className="st-pills">
-          {STUDY_KINDS.map(k => (
-            <button key={k.id} className={`st-pill ${t.kind === k.id ? 'on' : ''}`} onClick={() => set({ kind: k.id })}>
-              {k.emoji} {k.label}
             </button>
           ))}
         </div>
@@ -37221,16 +37396,81 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
           </div>
         </div>
 
+        <label>Вложения {atts.length > 0 && `· ${atts.length}`}</label>
+        <div
+          className="st-atts"
+          onDragOver={e => e.preventDefault()}
+          onDrop={e => { e.preventDefault(); onFiles(e.dataTransfer.files); }}
+        >
+          {atts.map(a => (
+            <StudyAttachThumb
+              key={a.id}
+              att={a}
+              onOpen={(x) => (x.kind === 'file' ? window.open(studyAttUrl(x), '_blank', 'noopener') : setViewing(x))}
+              onRemove={removeAtt}
+            />
+          ))}
+          {Array.from({ length: uploading }).map((_, i) => (
+            <div key={`up-${i}`} className="st-att st-att-loading"><span className="st-spin" /></div>
+          ))}
+          <button className="st-att-add" onClick={() => mediaRef.current && mediaRef.current.click()}>
+            <Icon name="camera" size={18} />Фото/видео
+          </button>
+          <button className="st-att-add" onClick={() => fileRef.current && fileRef.current.click()}>
+            <Icon name="clipboard" size={18} />Файл
+          </button>
+          <input ref={mediaRef} type="file" accept="image/*,video/*" multiple hidden onChange={e => { onFiles(e.target.files); e.target.value = ''; }} />
+          <input ref={fileRef} type="file" multiple hidden onChange={e => { onFiles(e.target.files); e.target.value = ''; }} />
+        </div>
+
         <label>Заметка</label>
         <textarea className="st-note" rows={2} value={t.note || ''} placeholder="Номера задач, ссылка, страницы…" onChange={e => set({ note: e.target.value })} />
 
+        {/* Редко меняемое — свернуто, в заголовке видно текущее значение */}
+        <button className={`st-settings-toggle ${showSettings ? 'open' : ''}`} onClick={() => setShowSettings(v => !v)}>
+          <Icon name="settings" size={16} />
+          <span className="flex-1 text-left">Настройки</span>
+          {!showSettings && <span className="st-settings-sum">{subj.emoji || '📘'} {subj.name} · {kind.emoji} {kind.label}</span>}
+          <span className="st-settings-chev"><Icon name="chevronDown" size={16} /></span>
+        </button>
+        {showSettings && (
+          <div className="st-settings-body">
+            <label>Предмет</label>
+            <div className="st-pills">
+              {subjects.map(s => (
+                <button key={s.id} className={`st-pill ${subj.id === s.id ? 'on' : ''}`} style={{ '--c': s.color }} onClick={() => set({ subjectId: s.id })}>
+                  {s.emoji || '📘'} {s.name}
+                </button>
+              ))}
+            </div>
+            <label>Тип</label>
+            <div className="st-pills">
+              {STUDY_KINDS.map(k => (
+                <button key={k.id} className={`st-pill ${t.kind === k.id ? 'on' : ''}`} onClick={() => set({ kind: k.id })}>
+                  {k.emoji} {k.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="flex gap-2 mt-5">
           {!isNew && (
-            <button className="btn-secondary px-4" onClick={() => onDelete(initial)} title="Удалить"><Icon name="trash" size={18} /></button>
+            <button
+              className="btn-secondary px-4"
+              title="Удалить"
+              onClick={() => {
+                if (!onDelete(initial)) return;
+                studyDeleteAttachments(atts.filter(a => freshRef.current.has(a.filename)));
+              }}
+            ><Icon name="trash" size={18} /></button>
           )}
-          <button className="btn-primary flex-1" disabled={!t.title.trim()} onClick={save}>Сохранить</button>
+          <button className="btn-primary flex-1" disabled={!t.title.trim() || uploading > 0} onClick={save}>
+            {uploading > 0 ? 'Загружаю…' : 'Сохранить'}
+          </button>
         </div>
       </div>
+      {viewing && <StudyAttachViewer att={viewing} onClose={() => setViewing(null)} />}
     </Modal>
   );
 }
@@ -37279,6 +37519,7 @@ function StudySubjectsModal({ data, setData, onClose }) {
   const remove = (s) => {
     const own = tasks.filter(t => t.subjectId === s.id);
     if (!confirm(own.length ? `Удалить «${s.name}» и ${own.length} заданий в нём?` : `Удалить «${s.name}»?`)) return;
+    own.forEach(t => studyDeleteAttachments(t.attachments));
     setData(d => {
       let deleted = withDeletedId(d, 'studySubjects', s.id);
       (d.studyTasks || []).filter(t => t.subjectId === s.id).forEach(t => {

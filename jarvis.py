@@ -294,7 +294,11 @@ MAX_EVENT_SHOPPING_QTY   = 40    # «2 л», «1 пачка» — свободн
 ALLOWED_FILE_EXT = {
     "pdf", "doc", "docx", "xls", "xlsx", "txt", "rtf", "csv",
     "png", "jpg", "jpeg", "webp", "heic", "gif",
+    "ppt", "pptx", "zip",
+    # Видео — вложения к заданиям в «Учёбе»: отдаются с Range (см. _serve_ranged).
+    "mp4", "mov", "m4v", "webm",
 }
+VIDEO_FILE_EXT = {"mp4", "mov", "m4v", "webm"}
 FILE_CONTENT_TYPES = {
     "pdf": "application/pdf", "doc": "application/msword",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -303,6 +307,10 @@ FILE_CONTENT_TYPES = {
     "txt": "text/plain; charset=utf-8", "rtf": "application/rtf", "csv": "text/csv",
     "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
     "webp": "image/webp", "heic": "image/heic", "gif": "image/gif",
+    "ppt": "application/vnd.ms-powerpoint",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "zip": "application/zip",
+    "mp4": "video/mp4", "mov": "video/quicktime", "m4v": "video/x-m4v", "webm": "video/webm",
 }
 
 WELCOME_TEXT = (
@@ -4483,8 +4491,8 @@ WRITE_REGISTRY = {
         "cascade_delete": [{"collection": "studyTasks", "field": "subjectId"}],
     },
     "studyTasks": {
-        "label": "Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note)",
-        "create_defaults": lambda: {"status": "todo", "kind": "hw", "due": "", "important": False, "subtasks": [], "note": "", "doneAt": 0},
+        "label": "Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note; attachments — файлы, только читать)",
+        "create_defaults": lambda: {"status": "todo", "kind": "hw", "due": "", "important": False, "subtasks": [], "attachments": [], "note": "", "doneAt": 0},
     },
     "plannerFriends": {
         "label": "Друг-участник планировщика",
@@ -8485,8 +8493,11 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(400, {"error": "invalid"})
                 return
             file_path = DATA_DIR / "files" / filename
-            if file_path.exists():
-                ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+            if file_path.exists() and ext in VIDEO_FILE_EXT:
+                # Safari не играет видео без 206 на Range-запрос.
+                self._serve_ranged(file_path, FILE_CONTENT_TYPES[ext], "public, max-age=31536000")
+            elif file_path.exists():
                 ct = FILE_CONTENT_TYPES.get(ext, "application/octet-stream")
                 content = file_path.read_bytes()
                 self.send_response(200)
@@ -8647,15 +8658,15 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                         if raw in ALLOWED_FILE_EXT:
                             ext = raw
                         break
-            length = self._content_length()
-            MAX_FILE = 25 * 1024 * 1024  # 25 MB hard cap
-            if length is None:
-                self._json(411, {"error": "Content-Length required"})
+            # Видео с телефона заметно тяжелее документов — им свой потолок.
+            MAX_FILE = (150 if ext in VIDEO_FILE_EXT else 25) * 1024 * 1024
+            body, err = self._read_upload(MAX_FILE)
+            if err == "file too large":
+                self._json(413, {"error": "file too large", "limit": MAX_FILE})
                 return
-            if length > MAX_FILE:
-                self._json(413, {"error": "file too large"})
+            if err:
+                self._json(411 if "length" in err.lower() else 400, {"error": err})
                 return
-            body = self.rfile.read(length)
             if not body:
                 self._json(400, {"error": "empty body"})
                 return
@@ -10224,7 +10235,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(404, {"error": "not found"})
             return
         ext = path.suffix.lstrip(".").lower()
-        ctype = MUSIC_EXT.get(ext, "application/octet-stream")
+        self._serve_ranged(path, MUSIC_EXT.get(ext, "application/octet-stream"), "private, max-age=86400")
+
+    def _serve_ranged(self, path, ctype: str, cache_control: str):
+        """Файл целиком или кусок по заголовку Range (206) — для аудио/видео."""
         size = path.stat().st_size
         start, end = 0, size - 1
         rng = self.headers.get("Range", "")
@@ -10254,7 +10268,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(length))
             if partial:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-            self.send_header("Cache-Control", "private, max-age=86400")
+            self.send_header("Cache-Control", cache_control)
             self._cors()
             self.end_headers()
             if self.command == "HEAD":
