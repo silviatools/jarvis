@@ -299,6 +299,12 @@ ALLOWED_FILE_EXT = {
     "mp4", "mov", "m4v", "webm",
 }
 VIDEO_FILE_EXT = {"mp4", "mov", "m4v", "webm"}
+# Потолок одного файла в /api/files (вложения в «Учёбе», файлы программ):
+# тело пишется на диск потоком, так что память он не ограничивает.
+MAX_UPLOAD_FILE = 500 * 1024 * 1024
+# Бэкап собирается в памяти и уходит в Telegram — крупные файлы в него не
+# кладём, иначе одно видео раздувает архив и съедает RAM.
+BACKUP_MAX_FILE_BYTES = 50 * 1024 * 1024
 FILE_CONTENT_TYPES = {
     "pdf": "application/pdf", "doc": "application/msword",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1117,7 +1123,7 @@ def build_backup_zip() -> bytes:
             d = DATA_DIR / sub
             if d.exists():
                 for f in sorted(d.rglob("*")):
-                    if f.is_file():
+                    if f.is_file() and f.stat().st_size <= BACKUP_MAX_FILE_BYTES:
                         add_file(f, f"data/{sub}/{f.relative_to(d)}")
 
         zf.writestr("README.txt", RESTORE_README)
@@ -8494,19 +8500,11 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 return
             file_path = DATA_DIR / "files" / filename
             ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-            if file_path.exists() and ext in VIDEO_FILE_EXT:
-                # Safari не играет видео без 206 на Range-запрос.
-                self._serve_ranged(file_path, FILE_CONTENT_TYPES[ext], "public, max-age=31536000")
-            elif file_path.exists():
-                ct = FILE_CONTENT_TYPES.get(ext, "application/octet-stream")
-                content = file_path.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", ct)
-                self.send_header("Content-Length", str(len(content)))
-                self.send_header("Cache-Control", "public, max-age=31536000")
-                self._cors()
-                self.end_headers()
-                self.wfile.write(content)
+            if file_path.exists():
+                # Потоком и с Range: Safari не играет видео без 206, а большие
+                # файлы незачем целиком читать в память.
+                self._serve_ranged(file_path, FILE_CONTENT_TYPES.get(ext, "application/octet-stream"),
+                                   "public, max-age=31536000")
             else:
                 self._json(404, {"error": "not found"})
         elif route == "/api/foods":
@@ -8658,22 +8656,18 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                         if raw in ALLOWED_FILE_EXT:
                             ext = raw
                         break
-            # Видео с телефона заметно тяжелее документов — им свой потолок.
-            MAX_FILE = (150 if ext in VIDEO_FILE_EXT else 25) * 1024 * 1024
-            body, err = self._read_upload(MAX_FILE)
+            filename = str(_uuid.uuid4()) + "." + ext
+            files_dir = DATA_DIR / "files"
+            files_dir.mkdir(parents=True, exist_ok=True)
+            # Пишем на диск по кускам, а не держим в памяти: видео и архивы
+            # бывают по сотне мегабайт.
+            err = self._stream_upload_to(files_dir / filename, MAX_UPLOAD_FILE)
             if err == "file too large":
-                self._json(413, {"error": "file too large", "limit": MAX_FILE})
+                self._json(413, {"error": "file too large", "limit": MAX_UPLOAD_FILE})
                 return
             if err:
                 self._json(411 if "length" in err.lower() else 400, {"error": err})
                 return
-            if not body:
-                self._json(400, {"error": "empty body"})
-                return
-            filename = str(_uuid.uuid4()) + "." + ext
-            files_dir = DATA_DIR / "files"
-            files_dir.mkdir(parents=True, exist_ok=True)
-            (files_dir / filename).write_bytes(body)
             self._json(200, {"filename": filename})
         elif self.path.startswith("/api/music"):
             import uuid as _uuid
@@ -10223,6 +10217,72 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         if len(body) != length:
             return None, "incomplete body"
         return body, None
+
+    def _stream_upload_to(self, dest, max_bytes: int):
+        """Тело запроса (Content-Length или chunked) — прямо в файл dest.
+        Возвращает текст ошибки или None; при ошибке недописанный файл удаляется."""
+        tmp = dest.with_name(dest.name + ".part")
+        err = None
+        total = 0
+        try:
+            with tmp.open("wb") as fh:
+                te = (self.headers.get("Transfer-Encoding") or "").lower()
+                if "chunked" in te:
+                    while True:
+                        line = self.rfile.readline(1024).strip()
+                        try:
+                            size = int(line.split(b";", 1)[0], 16)
+                        except ValueError:
+                            err = "broken chunked body"
+                            break
+                        if size == 0:
+                            while self.rfile.readline(1024) not in (b"\r\n", b"\n", b""):
+                                pass
+                            break
+                        total += size
+                        if total > max_bytes:
+                            err = "file too large"
+                            break
+                        left = size
+                        while left > 0:
+                            chunk = self.rfile.read(min(1024 * 1024, left))
+                            if not chunk:
+                                err = "broken chunked body"
+                                break
+                            fh.write(chunk)
+                            left -= len(chunk)
+                        if err:
+                            break
+                        self.rfile.read(2)
+                else:
+                    length = self._content_length()
+                    if length is None:
+                        err = "Content-Length required"
+                    elif length > max_bytes:
+                        err = "file too large"
+                    else:
+                        left = length
+                        while left > 0:
+                            chunk = self.rfile.read(min(1024 * 1024, left))
+                            if not chunk:
+                                err = "incomplete body"
+                                break
+                            fh.write(chunk)
+                            left -= len(chunk)
+                        total = length - left
+            if not err and total == 0:
+                err = "empty body"
+            if err:
+                # Остаток тела не дочитан — соединение дальше не переиспользовать.
+                self.close_connection = True
+                tmp.unlink(missing_ok=True)
+                return err
+            tmp.replace(dest)
+            return None
+        except OSError as e:
+            tmp.unlink(missing_ok=True)
+            self.close_connection = True
+            return f"write failed: {e}"
 
     def _serve_track(self, filename: str):
         """Аудио с поддержкой Range. Safari без 206-ответа трек просто не играет:

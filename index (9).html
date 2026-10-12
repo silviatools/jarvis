@@ -37237,6 +37237,8 @@ function StudyAgenda({ tasks, subjects, onOpen, onStatus }) {
 // сервере, поэтому синк между устройствами их не гоняет.
 const STUDY_FILE_EXT = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'rtf', 'csv', 'zip', 'png', 'jpg', 'jpeg', 'webp', 'heic', 'gif', 'mp4', 'mov', 'm4v', 'webm'];
 const STUDY_VIDEO_EXT = ['mp4', 'mov', 'm4v', 'webm'];
+// Потолок одного вложения — как MAX_UPLOAD_FILE в jarvis.py.
+const STUDY_MAX_FILE = 500 * 1048576;
 const studyAttUrl = (a) => `/api/${a.store === 'photos' ? 'photos' : 'files'}/${a.filename}`;
 const studyAttExt = (a) => ((a.name || a.filename || '').split('.').pop() || '').toLowerCase();
 const studyFileSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} МБ` : `${Math.max(1, Math.round(n / 1024))} КБ`);
@@ -37248,12 +37250,18 @@ async function studyUploadAttachment(file) {
   const isImage = (file.type || '').startsWith('image/') && ext !== 'gif';
   const isVideo = (file.type || '').startsWith('video/') || STUDY_VIDEO_EXT.includes(ext);
   if (isImage) {
-    const filename = await uploadPhoto(file);
-    return { id: crypto.randomUUID(), store: 'photos', filename, name: file.name, kind: 'image', size: file.size, at: Date.now() };
+    try {
+      const filename = await uploadPhoto(file);
+      return { id: crypto.randomUUID(), store: 'photos', filename, name: file.name, kind: 'image', size: file.size, at: Date.now() };
+    } catch {
+      // Не сжалось и не влезло в лимит фото — кладём оригинал как файл.
+      if (!STUDY_FILE_EXT.includes(ext)) throw new Error('upload failed');
+      const filename = await uploadFile(file);
+      return { id: crypto.randomUUID(), store: 'files', filename, name: file.name, kind: 'image', size: file.size, at: Date.now() };
+    }
   }
   if (!STUDY_FILE_EXT.includes(ext)) throw new Error(`Формат .${ext || '?'} не поддерживается`);
-  const limit = (isVideo ? 150 : 25) * 1048576;
-  if (file.size > limit) throw new Error(`«${file.name}» больше ${isVideo ? 150 : 25} МБ`);
+  if (file.size > STUDY_MAX_FILE) throw new Error(`«${file.name}» больше ${STUDY_MAX_FILE / 1048576} МБ`);
   const filename = await uploadFile(file);
   return {
     id: crypto.randomUUID(), store: 'files', filename, name: file.name,
