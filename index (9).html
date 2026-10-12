@@ -1350,7 +1350,7 @@
   .st-settings-body label:first-child { margin-top: 4px; }
 
   /* Учёба: просмотр документов во вьюере вложений */
-  .st-viewer { z-index: 70; }
+  .st-viewer { z-index: 70; background: rgba(0,0,0,.96); }
   .st-viewer-doc { align-items: stretch; padding: 0 12px 16px; }
   .st-doc {
     width: 100%; max-width: 960px; margin: 0 auto; background: #fff; color: #111; border-radius: 12px; overflow: auto;
@@ -1381,6 +1381,28 @@
   .st-doc-note { font-size: 12px; color: #777; padding: 8px 12px; border-top: 1px solid #eee; flex-shrink: 0; }
   .st-doc-msg { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; color: #ddd; font-size: 14px; }
   .st-doc .st-doc-msg { color: #777; padding: 40px; }
+
+  /* Учёба: презентации и аудио во вьюере */
+  .st-doc-slides { position: relative; background: #e5e7eb; }
+  .st-slides-box { padding: 8px; display: flex; flex-direction: column; align-items: center; }
+  .st-slides-box > * { max-width: 100%; }
+  /* pptx-preview задаёт обёртке высоту одного слайда и чёрный фон — в режиме
+     списка это обрезает слайды, растягиваем по содержимому. */
+  .st-slides-box .pptx-preview-wrapper { height: auto !important; background: transparent !important; overflow: visible !important; }
+  .st-slides-box .pptx-preview-slide-wrapper { border-radius: 6px; box-shadow: 0 6px 20px -10px rgba(0,0,0,.35); margin-bottom: 12px !important; }
+  .st-doc-slides .st-doc-msg { position: absolute; inset: 0; }
+  .st-audio { display: flex; flex-direction: column; align-items: center; gap: 18px; width: 100%; max-width: 420px; color: #fff; }
+  .st-audio-disc {
+    position: relative; width: 140px; height: 140px; border-radius: 50%;
+    background: repeating-radial-gradient(circle, #1f1f2e 0 2px, #2a2a3d 2px 4px);
+    animation: stSpin 4s linear infinite; box-shadow: 0 20px 60px -18px #6366f1;
+  }
+  .st-audio-disc span {
+    position: absolute; inset: 0; margin: auto; width: 46px; height: 46px; border-radius: 50%;
+    background: conic-gradient(#6366f1, #ec4899, #f59e0b, #6366f1); box-shadow: 0 0 0 4px #111 inset;
+  }
+  .st-audio-name { font-size: 14px; opacity: .8; text-align: center; word-break: break-word; }
+  .st-audio audio { width: 100%; }
 </style>
 </head>
 <body>
@@ -37235,7 +37257,15 @@ function StudyAgenda({ tasks, subjects, onOpen, onStatus }) {
 // документы (как есть, в /api/files; видео отдаётся с Range). В задании —
 // только ссылки { id, store, filename, name, kind, size }, сами файлы на
 // сервере, поэтому синк между устройствами их не гоняет.
-const STUDY_FILE_EXT = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'rtf', 'csv', 'zip', 'png', 'jpg', 'jpeg', 'webp', 'heic', 'gif', 'mp4', 'mov', 'm4v', 'webm'];
+// Держать в синхроне с ALLOWED_FILE_EXT в jarvis.py.
+const STUDY_FILE_EXT = [
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ods', 'ppt', 'pptx', 'txt', 'rtf', 'csv', 'zip',
+  'png', 'jpg', 'jpeg', 'webp', 'heic', 'heif', 'gif',
+  'mp4', 'mov', 'm4v', 'webm', 'mp3', 'm4a', 'wav', 'ogg', 'aac',
+  'md', 'json', 'xml', 'html', 'css', 'js', 'ts', 'py', 'java', 'c', 'cpp', 'h', 'cs', 'sql',
+];
+const STUDY_AUDIO_EXT = ['mp3', 'm4a', 'wav', 'ogg', 'aac'];
+const STUDY_TEXT_EXT = ['txt', 'md', 'json', 'xml', 'html', 'css', 'js', 'ts', 'py', 'java', 'c', 'cpp', 'h', 'cs', 'sql'];
 const STUDY_VIDEO_EXT = ['mp4', 'mov', 'm4v', 'webm'];
 // Потолок одного вложения — как MAX_UPLOAD_FILE в jarvis.py.
 const STUDY_MAX_FILE = 500 * 1048576;
@@ -37245,9 +37275,26 @@ const studyFileSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} МБ` 
 const studyDeleteAttachments = (list) => (list || []).forEach(a =>
   (a.store === 'photos' ? deletePhoto(a.filename) : deleteFile(a.filename)));
 
+// HEIC с iPhone умеет показывать только Safari — для остальных браузеров
+// перегоняем в JPEG ещё до загрузки (heic2any грузится только в этот момент).
+async function studyHeicToJpeg(file) {
+  try {
+    const bm = await createImageBitmap(file);
+    if (bm.close) bm.close();
+    return file; // браузер сам декодирует (Safari) — дальше обычное сжатие
+  } catch {}
+  const heic2any = await studyLoadLib('heic');
+  const out = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.85 });
+  const blob = Array.isArray(out) ? out[0] : out;
+  return new File([blob], file.name.replace(/\.hei[cf]$/i, '.jpg'), { type: 'image/jpeg' });
+}
+
 async function studyUploadAttachment(file) {
-  const ext = (file.name.split('.').pop() || '').toLowerCase();
-  const isImage = (file.type || '').startsWith('image/') && ext !== 'gif';
+  let ext = (file.name.split('.').pop() || '').toLowerCase();
+  if (ext === 'heic' || ext === 'heif') {
+    try { file = await studyHeicToJpeg(file); ext = (file.name.split('.').pop() || '').toLowerCase(); } catch {}
+  }
+  const isImage = ((file.type || '').startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'].includes(ext)) && ext !== 'gif';
   const isVideo = (file.type || '').startsWith('video/') || STUDY_VIDEO_EXT.includes(ext);
   if (isImage) {
     try {
@@ -37282,7 +37329,7 @@ function StudyAttachThumb({ att, onOpen, onRemove }) {
       )}
       {att.kind === 'file' && (
         <div className="st-att-file">
-          <span className="st-att-ext">{ext.toUpperCase().slice(0, 4)}</span>
+          <span className="st-att-ext">{STUDY_AUDIO_EXT.includes(ext) ? '♪ ' : ''}{ext.toUpperCase().slice(0, 4)}</span>
           <span className="st-att-name">{att.name}</span>
         </div>
       )}
@@ -37301,6 +37348,8 @@ function StudyAttachThumb({ att, onOpen, onRemove }) {
 const STUDY_LIBS = {
   xlsx: { url: 'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js', global: 'XLSX' },
   mammoth: { url: 'https://unpkg.com/mammoth@1.8.0/mammoth.browser.min.js', global: 'mammoth' },
+  pptx: { url: 'https://unpkg.com/pptx-preview@1.0.7/dist/pptx-preview.umd.js', global: 'pptxPreview' },
+  heic: { url: 'https://unpkg.com/heic2any@0.0.4/dist/heic2any.min.js', global: 'heic2any' },
 };
 const studyLibCache = {};
 const studyLoadLib = (key) => {
@@ -37323,11 +37372,105 @@ const studyPreviewKind = (att) => {
   if (att.kind === 'image' || att.kind === 'video') return att.kind;
   const ext = studyAttExt(att);
   if (ext === 'pdf') return 'pdf';
-  if (ext === 'txt') return 'text';
-  if (['xlsx', 'xls', 'csv'].includes(ext)) return 'sheet';
+  if (STUDY_TEXT_EXT.includes(ext)) return 'text';
+  if (ext === 'rtf') return 'rtf';
+  if (['xlsx', 'xls', 'ods', 'csv'].includes(ext)) return 'sheet';
   if (ext === 'docx') return 'doc';
+  if (ext === 'pptx') return 'slides';
+  if (STUDY_AUDIO_EXT.includes(ext)) return 'audio';
   return null;
 };
+
+// RTF → простой текст без тяжёлой библиотеки: выкидываем служебные группы
+// и управляющие слова, \'xx собираем байтами в кодировке документа
+// (\ansicpg1251 у русских файлов), \uN — юникод напрямую.
+const studyRtfToText = (rtf) => {
+  const cpMatch = /\\ansicpg(\d+)/.exec(rtf);
+  let decoder;
+  try { decoder = new TextDecoder(cpMatch ? `windows-${cpMatch[1]}` : 'windows-1252'); } catch { decoder = new TextDecoder('windows-1252'); }
+  const skipGroups = /^(fonttbl|colortbl|stylesheet|info|pict|header|footer|headerl|headerr|footerl|footerr|listtable|listoverridetable|rsidtbl|generator|xmlnstbl|themedata|colorschememapping|latentstyles|datastore|object)$/;
+  let out = '';
+  let bytes = [];
+  const flush = () => { if (bytes.length) { out += decoder.decode(new Uint8Array(bytes)); bytes = []; } };
+  const stack = [];
+  let skip = false;
+  let ucSkip = 0;
+  for (let i = 0; i < rtf.length; i++) {
+    const ch = rtf[i];
+    if (ch === '{') { stack.push(skip); continue; }
+    if (ch === '}') { flush(); skip = stack.length ? stack.pop() : false; continue; }
+    if (ch === '\\') {
+      const next = rtf[i + 1];
+      if (next === "'") {
+        const hex = rtf.substr(i + 2, 2);
+        i += 3;
+        if (ucSkip > 0) { ucSkip--; continue; }
+        if (!skip) bytes.push(parseInt(hex, 16));
+        continue;
+      }
+      if (next === '\\' || next === '{' || next === '}') { flush(); if (!skip) out += next; i++; continue; }
+      if (next === '*') { skip = true; i++; continue; }
+      const m = /^([a-z]+)(-?\d+)? ?/i.exec(rtf.slice(i + 1, i + 40));
+      if (!m) { i++; continue; }
+      i += m[0].length;
+      const word = m[1];
+      flush();
+      if (skipGroups.test(word)) { skip = true; continue; }
+      if (skip) continue;
+      if (word === 'par' || word === 'line' || word === 'row') out += '\n';
+      else if (word === 'tab' || word === 'cell') out += '\t';
+      else if (word === 'u') { let n = parseInt(m[2], 10); if (n < 0) n += 65536; out += String.fromCharCode(n); ucSkip = 1; }
+      continue;
+    }
+    if (ch === '\r' || ch === '\n') continue;
+    flush();
+    if (skip) continue;
+    if (ucSkip > 0) { ucSkip--; continue; }
+    out += ch;
+  }
+  flush();
+  return out.replace(/\n{3,}/g, '\n\n').trim();
+};
+
+// PPTX: слайды рендерит pptx-preview прямо в DOM-контейнер — списком по
+// ширине экрана, листаются обычным скроллом.
+function StudySlidesPreview({ att }) {
+  const boxRef = useRef(null);
+  const [state, setState] = useState('loading');
+  useEffect(() => {
+    let alive = true;
+    let viewer = null;
+    (async () => {
+      try {
+        const [lib, buf] = await Promise.all([
+          studyLoadLib('pptx'),
+          fetch(studyAttUrl(att)).then(r => { if (!r.ok) throw new Error('fetch'); return r.arrayBuffer(); }),
+        ]);
+        if (!alive || !boxRef.current) return;
+        const w = Math.min(boxRef.current.clientWidth - 16, 960);
+        viewer = lib.init(boxRef.current, { width: w, height: Math.round(w * 9 / 16), mode: 'list' });
+        await viewer.preview(buf);
+        // Нестандартный файл библиотека «открывает» без единого слайда.
+        if (alive) setState(viewer.slideCount > 0 ? 'ok' : 'error');
+      } catch {
+        if (alive) setState('error');
+      }
+    })();
+    return () => { alive = false; try { viewer && viewer.destroy(); } catch {} };
+  }, [att.filename]);
+  return (
+    <div className="st-doc st-doc-slides">
+      {state === 'loading' && <div className="st-doc-msg"><span className="st-spin" />Открываю презентацию…</div>}
+      {state === 'error' && (
+        <div className="st-doc-msg">
+          Не получилось показать презентацию.
+          <a href={studyAttUrl(att)} download={att.name} target="_blank" rel="noopener" className="underline">Скачать</a>
+        </div>
+      )}
+      <div ref={boxRef} className={`st-slides-box ${state === 'error' ? 'hidden' : ''}`} />
+    </div>
+  );
+}
 
 function StudyDocPreview({ att, kind }) {
   const [state, setState] = useState({ loading: true });
@@ -37344,6 +37487,11 @@ function StudyDocPreview({ att, kind }) {
           if (alive) setState({ text });
           return;
         }
+        if (kind === 'rtf') {
+          const text = studyRtfToText(await res.text());
+          if (alive) setState({ text: text || 'Документ пустой' });
+          return;
+        }
         if (kind === 'doc') {
           const [mammoth, buf] = await Promise.all([studyLoadLib('mammoth'), res.arrayBuffer()]);
           const out = await mammoth.convertToHtml({ arrayBuffer: buf });
@@ -37352,6 +37500,7 @@ function StudyDocPreview({ att, kind }) {
         }
         if (kind === 'sheet') {
           const isCsv = studyAttExt(att) === 'csv';
+          // CSV читаем текстом (UTF-8), остальное — бинарём.
           const [XLSX, body] = await Promise.all([studyLoadLib('xlsx'), isCsv ? res.text() : res.arrayBuffer()]);
           const wb = isCsv ? XLSX.read(body, { type: 'string' }) : XLSX.read(body, { type: 'array' });
           const sheets = wb.SheetNames.map(name => {
@@ -37421,11 +37570,19 @@ function StudyAttachViewer({ att, onClose }) {
         <a href={studyAttUrl(att)} download={att.name} target="_blank" rel="noopener" title="Скачать"><Icon name="download" size={18} /></a>
         <button onClick={onClose}><Icon name="x" size={20} /></button>
       </div>
-      <div className={`st-viewer-body ${['image', 'video'].includes(kind) ? '' : 'st-viewer-doc'}`} onClick={e => e.stopPropagation()}>
+      <div className={`st-viewer-body ${['image', 'video', 'audio'].includes(kind) ? '' : 'st-viewer-doc'}`} onClick={e => e.stopPropagation()}>
         {kind === 'video' && <video src={studyAttUrl(att)} controls autoPlay playsInline />}
         {kind === 'image' && <img src={studyAttUrl(att)} alt={att.name} />}
         {kind === 'pdf' && <iframe className="st-doc st-doc-pdf" src={studyAttUrl(att)} title={att.name} />}
-        {['text', 'sheet', 'doc'].includes(kind) && <StudyDocPreview att={att} kind={kind} />}
+        {['text', 'rtf', 'sheet', 'doc'].includes(kind) && <StudyDocPreview att={att} kind={kind} />}
+        {kind === 'slides' && <StudySlidesPreview att={att} />}
+        {kind === 'audio' && (
+          <div className="st-audio">
+            <div className="st-audio-disc"><span /></div>
+            <div className="st-audio-name">{att.name}</div>
+            <audio src={studyAttUrl(att)} controls autoPlay />
+          </div>
+        )}
       </div>
     </div>,
     document.body

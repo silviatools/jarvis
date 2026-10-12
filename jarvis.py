@@ -294,7 +294,10 @@ MAX_EVENT_SHOPPING_QTY   = 40    # «2 л», «1 пачка» — свободн
 ALLOWED_FILE_EXT = {
     "pdf", "doc", "docx", "xls", "xlsx", "txt", "rtf", "csv",
     "png", "jpg", "jpeg", "webp", "heic", "gif",
-    "ppt", "pptx", "zip",
+    "ppt", "pptx", "zip", "ods", "heif",
+    # Аудио (записи лекций) и текст/код — у них есть быстрый просмотр в «Учёбе».
+    "mp3", "m4a", "wav", "ogg", "aac",
+    "md", "json", "xml", "html", "css", "js", "ts", "py", "java", "c", "cpp", "h", "cs", "sql",
     # Видео — вложения к заданиям в «Учёбе»: отдаются с Range (см. _serve_ranged).
     "mp4", "mov", "m4v", "webm",
 }
@@ -316,6 +319,11 @@ FILE_CONTENT_TYPES = {
     "ppt": "application/vnd.ms-powerpoint",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "zip": "application/zip",
+    "ods": "application/vnd.oasis.opendocument.spreadsheet", "heif": "image/heif",
+    "mp3": "audio/mpeg", "m4a": "audio/mp4", "wav": "audio/wav", "ogg": "audio/ogg", "aac": "audio/aac",
+    # Текст и код отдаём как plain text: html/js/css иначе браузер исполнил бы
+    # при открытии ссылки — а это чужие файлы, а не страницы сайта.
+    **{e: "text/plain; charset=utf-8" for e in ("md", "json", "xml", "html", "css", "js", "ts", "py", "java", "c", "cpp", "h", "cs", "sql")},
     "mp4": "video/mp4", "mov": "video/quicktime", "m4v": "video/x-m4v", "webm": "video/webm",
 }
 
