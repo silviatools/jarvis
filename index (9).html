@@ -1348,6 +1348,39 @@
     animation: fadeIn .25s ease both;
   }
   .st-settings-body label:first-child { margin-top: 4px; }
+
+  /* Учёба: просмотр документов во вьюере вложений */
+  .st-viewer { z-index: 70; }
+  .st-viewer-doc { align-items: stretch; padding: 0 12px 16px; }
+  .st-doc {
+    width: 100%; max-width: 960px; margin: 0 auto; background: #fff; color: #111; border-radius: 12px; overflow: auto;
+    -webkit-overflow-scrolling: touch; animation: stNumIn .3s cubic-bezier(.2,.9,.3,1.1) both; border: none;
+  }
+  .st-doc-pdf { height: 100%; padding: 0; }
+  .st-doc-pre { margin: 0; padding: 20px; white-space: pre-wrap; word-break: break-word; font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .st-doc-word { padding: 28px 32px; font-size: 15px; line-height: 1.6; }
+  .st-doc-word h1 { font-size: 1.6em; font-weight: 700; margin: .6em 0 .4em; }
+  .st-doc-word h2 { font-size: 1.3em; font-weight: 700; margin: .6em 0 .4em; }
+  .st-doc-word h3 { font-size: 1.1em; font-weight: 600; margin: .5em 0 .3em; }
+  .st-doc-word p { margin: 0 0 .7em; }
+  .st-doc-word ul { list-style: disc; padding-left: 1.4em; margin: 0 0 .7em; }
+  .st-doc-word ol { list-style: decimal; padding-left: 1.4em; margin: 0 0 .7em; }
+  .st-doc-word table { border-collapse: collapse; margin: .5em 0 1em; }
+  .st-doc-word td, .st-doc-word th { border: 1px solid #d4d4d4; padding: 4px 8px; vertical-align: top; }
+  .st-doc-word img { max-width: 100%; height: auto; }
+  .st-doc-word a { color: #2563eb; text-decoration: underline; }
+  .st-doc-sheetwrap { display: flex; flex-direction: column; overflow: hidden; }
+  .st-doc-tabs { display: flex; gap: 4px; padding: 8px; border-bottom: 1px solid #e5e5e5; overflow-x: auto; flex-shrink: 0; background: #fafafa; }
+  .st-doc-tabs button { padding: 5px 12px; border-radius: 8px; font-size: 13px; color: #555; white-space: nowrap; }
+  .st-doc-tabs button.on { background: #111; color: #fff; }
+  .st-doc-sheet { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; }
+  .st-doc-sheet table { border-collapse: collapse; font-size: 13px; }
+  .st-doc-sheet td, .st-doc-sheet th { border: 1px solid #e5e5e5; padding: 5px 9px; white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+  .st-doc-sheet tr:first-child td { background: #f5f5f5; font-weight: 600; position: sticky; top: 0; }
+  .st-doc-sheet tr:nth-child(even) td { background: #fbfbfb; }
+  .st-doc-note { font-size: 12px; color: #777; padding: 8px 12px; border-top: 1px solid #eee; flex-shrink: 0; }
+  .st-doc-msg { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; color: #ddd; font-size: 14px; }
+  .st-doc .st-doc-msg { color: #777; padding: 40px; }
 </style>
 </head>
 <body>
@@ -37252,13 +37285,126 @@ function StudyAttachThumb({ att, onOpen, onRemove }) {
   );
 }
 
-// Просмотр вложения поверх всего: фото/видео прямо тут, документы — в новой
-// вкладке (браузер сам откроет PDF или предложит скачать).
-function StudyAttachViewer({ att, onClose }) {
+// Просмотр вложения поверх всего (в т.ч. поверх попапа задания: z-index
+// выше Modal и портал монтируется позже). Фото/видео — как есть, PDF —
+// встроенным просмотрщиком браузера, TXT/CSV/Excel/Word — рендерим сами.
+// Библиотеки для Excel (SheetJS) и Word (mammoth) грузятся лениво, только
+// когда открывают такой файл, — на загрузку сайта они не влияют.
+const STUDY_LIBS = {
+  xlsx: { url: 'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js', global: 'XLSX' },
+  mammoth: { url: 'https://unpkg.com/mammoth@1.8.0/mammoth.browser.min.js', global: 'mammoth' },
+};
+const studyLibCache = {};
+const studyLoadLib = (key) => {
+  const lib = STUDY_LIBS[key];
+  if (window[lib.global]) return Promise.resolve(window[lib.global]);
+  if (!studyLibCache[key]) {
+    studyLibCache[key] = new Promise((resolve, reject) => {
+      const el = document.createElement('script');
+      el.src = lib.url;
+      el.onload = () => (window[lib.global] ? resolve(window[lib.global]) : reject(new Error('lib')));
+      el.onerror = () => { delete studyLibCache[key]; reject(new Error('lib')); };
+      document.head.appendChild(el);
+    });
+  }
+  return studyLibCache[key];
+};
+const STUDY_SHEET_MAX_ROWS = 2000;
+// Какой просмотрщик нужен вложению; null — только скачать/открыть вкладкой.
+const studyPreviewKind = (att) => {
+  if (att.kind === 'image' || att.kind === 'video') return att.kind;
+  const ext = studyAttExt(att);
+  if (ext === 'pdf') return 'pdf';
+  if (ext === 'txt') return 'text';
+  if (['xlsx', 'xls', 'csv'].includes(ext)) return 'sheet';
+  if (ext === 'docx') return 'doc';
+  return null;
+};
+
+function StudyDocPreview({ att, kind }) {
+  const [state, setState] = useState({ loading: true });
+  const [sheetIdx, setSheetIdx] = useState(0);
   useEffect(() => {
-    const h = (e) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
+    let alive = true;
+    const url = studyAttUrl(att);
+    (async () => {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('fetch');
+        if (kind === 'text') {
+          const text = await res.text();
+          if (alive) setState({ text });
+          return;
+        }
+        if (kind === 'doc') {
+          const [mammoth, buf] = await Promise.all([studyLoadLib('mammoth'), res.arrayBuffer()]);
+          const out = await mammoth.convertToHtml({ arrayBuffer: buf });
+          if (alive) setState({ html: out.value || '<p><i>Документ пустой</i></p>' });
+          return;
+        }
+        if (kind === 'sheet') {
+          const isCsv = studyAttExt(att) === 'csv';
+          const [XLSX, body] = await Promise.all([studyLoadLib('xlsx'), isCsv ? res.text() : res.arrayBuffer()]);
+          const wb = isCsv ? XLSX.read(body, { type: 'string' }) : XLSX.read(body, { type: 'array' });
+          const sheets = wb.SheetNames.map(name => {
+            const ws = wb.Sheets[name];
+            let cut = false;
+            if (ws['!ref']) {
+              const r = XLSX.utils.decode_range(ws['!ref']);
+              if (r.e.r - r.s.r + 1 > STUDY_SHEET_MAX_ROWS) {
+                r.e.r = r.s.r + STUDY_SHEET_MAX_ROWS - 1;
+                ws['!ref'] = XLSX.utils.encode_range(r);
+                cut = true;
+              }
+            }
+            return { name, cut, html: ws['!ref'] ? XLSX.utils.sheet_to_html(ws, { header: '', footer: '' }) : '' };
+          });
+          if (alive) setState({ sheets });
+        }
+      } catch {
+        if (alive) setState({ error: true });
+      }
+    })();
+    return () => { alive = false; };
+  }, [att.filename, kind]);
+
+  if (state.loading) return <div className="st-doc-msg"><span className="st-spin" />Открываю…</div>;
+  if (state.error) {
+    return (
+      <div className="st-doc-msg">
+        Не получилось показать файл.
+        <a href={studyAttUrl(att)} download={att.name} target="_blank" rel="noopener" className="underline">Скачать</a>
+      </div>
+    );
+  }
+  if (state.text !== undefined) return <div className="st-doc"><pre className="st-doc-pre">{state.text}</pre></div>;
+  if (state.html !== undefined) return <div className="st-doc"><div className="st-doc-word" dangerouslySetInnerHTML={{ __html: state.html }} /></div>;
+  const sheet = state.sheets[sheetIdx] || state.sheets[0];
+  return (
+    <div className="st-doc st-doc-sheetwrap">
+      {state.sheets.length > 1 && (
+        <div className="st-doc-tabs">
+          {state.sheets.map((sh, i) => (
+            <button key={sh.name} className={i === sheetIdx ? 'on' : ''} onClick={() => setSheetIdx(i)}>{sh.name}</button>
+          ))}
+        </div>
+      )}
+      <div className="st-doc-sheet">
+        {sheet && sheet.html
+          ? <div dangerouslySetInnerHTML={{ __html: sheet.html }} />
+          : <div className="st-doc-msg">Лист пустой</div>}
+      </div>
+      {sheet && sheet.cut && <div className="st-doc-note">Показаны первые {STUDY_SHEET_MAX_ROWS} строк — целиком в скачанном файле</div>}
+    </div>
+  );
+}
+
+function StudyAttachViewer({ att, onClose }) {
+  const kind = studyPreviewKind(att);
+  useEffect(() => {
+    const h = (e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
+    window.addEventListener('keydown', h, true);
+    return () => window.removeEventListener('keydown', h, true);
   }, [onClose]);
   return ReactDOM.createPortal(
     <div className="st-viewer" onClick={onClose}>
@@ -37267,10 +37413,11 @@ function StudyAttachViewer({ att, onClose }) {
         <a href={studyAttUrl(att)} download={att.name} target="_blank" rel="noopener" title="Скачать"><Icon name="download" size={18} /></a>
         <button onClick={onClose}><Icon name="x" size={20} /></button>
       </div>
-      <div className="st-viewer-body" onClick={e => e.stopPropagation()}>
-        {att.kind === 'video'
-          ? <video src={studyAttUrl(att)} controls autoPlay playsInline />
-          : <img src={studyAttUrl(att)} alt={att.name} />}
+      <div className={`st-viewer-body ${['image', 'video'].includes(kind) ? '' : 'st-viewer-doc'}`} onClick={e => e.stopPropagation()}>
+        {kind === 'video' && <video src={studyAttUrl(att)} controls autoPlay playsInline />}
+        {kind === 'image' && <img src={studyAttUrl(att)} alt={att.name} />}
+        {kind === 'pdf' && <iframe className="st-doc st-doc-pdf" src={studyAttUrl(att)} title={att.name} />}
+        {['text', 'sheet', 'doc'].includes(kind) && <StudyDocPreview att={att} kind={kind} />}
       </div>
     </div>,
     document.body
@@ -37406,7 +37553,7 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
             <StudyAttachThumb
               key={a.id}
               att={a}
-              onOpen={(x) => (x.kind === 'file' ? window.open(studyAttUrl(x), '_blank', 'noopener') : setViewing(x))}
+              onOpen={(x) => (studyPreviewKind(x) ? setViewing(x) : window.open(studyAttUrl(x), '_blank', 'noopener'))}
               onRemove={removeAtt}
             />
           ))}
