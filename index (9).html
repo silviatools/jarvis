@@ -1004,6 +1004,8 @@
   /* ===== Прочее → Учёба (канбан по предметам) ===== */
   .st-root { --st-r: 14px; }
   .st-top { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .st-back { display: none; }
+  .st-search { display: none; }
   .st-pulse {
     display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
   }
@@ -1084,7 +1086,7 @@
     width: 36px; height: 36px; border-radius: 11px; display: flex; align-items: center; justify-content: center; font-size: 19px;
     background: var(--surface); box-shadow: 0 2px 8px -3px var(--c); flex-shrink: 0;
   }
-  .st-col-name { font-weight: 650; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .st-col-name { font-weight: 650; font-size: 15px; line-height: 1.2; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .st-col-sub { font-size: 11.5px; color: var(--text-muted); }
   .st-col-over { color: #dc2626; font-weight: 600; }
   .st-ring { color: var(--text); flex-shrink: 0; }
@@ -1337,7 +1339,53 @@
     .st-col { flex: 1 0 288px; }
     .st-col-body { max-height: calc(100dvh - 330px); overflow-y: auto; }
     .st-col-add { flex: 0 0 110px; align-self: flex-start; min-height: 120px; }
-    .st-agenda { max-width: 760px; }
+  }
+
+  /* Учёба на компьютере: всё собрано по центру, ширина не ограничена —
+     панель, фильтры и предметы по центру, «По срокам» — колонки по срокам,
+     доска — колонки одной ширины, которые центруются, пока их мало. */
+  @media (min-width: 768px) {
+    .st-top { justify-content: center; flex-wrap: wrap; gap: 14px 22px; margin-bottom: 18px; }
+    .st-pulse { flex: 0 0 auto; }
+    .st-back {
+      display: flex; align-items: center; gap: 2px; padding: 8px 12px 8px 8px; border-radius: 11px; font-size: 13px; font-weight: 500;
+      color: var(--text-muted); background: var(--surface); border: 1px solid var(--border); transition: color .2s, transform .15s;
+    }
+    .st-back:hover { color: var(--text); }
+    .st-back:active { transform: scale(.96); }
+    .st-search {
+      display: flex; align-items: center; gap: 8px; width: clamp(200px, 22vw, 320px); padding: 0 10px; height: 36px; border-radius: 11px;
+      background: var(--surface); border: 1px solid var(--border); color: var(--text-subtle); transition: border-color .2s, box-shadow .2s, width .25s;
+    }
+    .st-search:focus-within, .st-search.has { color: var(--text); border-color: var(--border-strong); }
+    .st-search:focus-within { box-shadow: 0 0 0 3px rgba(0,0,0,.05); width: clamp(240px, 28vw, 400px); }
+    .st-search input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; font-size: 13.5px; color: var(--text); padding: 0; }
+    .st-search button { display: flex; color: var(--text-subtle); padding: 2px; }
+    .st-chips { justify-content: center; flex-wrap: wrap; overflow: visible; margin-bottom: 12px; }
+    .st-subjbar { justify-content: center; flex-wrap: wrap; overflow: visible; margin-bottom: 18px; }
+
+    .st-board::before, .st-board::after { content: ''; margin: auto; }   /* центр, пока колонки помещаются; иначе обычная прокрутка */
+    .st-col { flex: 1 1 280px; min-width: 262px; max-width: 440px; }
+    .st-col-head { gap: 8px; padding: 12px 10px 10px; }
+    .st-col-name { font-size: 14px; letter-spacing: -.005em; }
+    .st-col-head .st-note-btn { margin: 0 -4px; }
+
+    .st-agenda { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 460px)); justify-content: center; align-items: start; gap: 18px; max-width: none; }
+    .st-agenda-group {
+      gap: 8px; padding: 12px; border-radius: 18px;
+      background: color-mix(in srgb, var(--surface) 65%, transparent); border: 1px solid var(--border);
+    }
+    .st-agenda-head { margin-bottom: 2px; padding: 0 2px; }
+    .st-ag-over { border-color: #fecaca; background: #fef2f2; }
+    .st-ag-today { border-color: #fed7aa; background: #fff7ed; }
+    .st-agenda-empty { grid-column: 1 / -1; }
+  }
+
+  /* Окно задания на компьютере — две колонки: слева срок, шаги, вложения; справа описание и комментарии */
+  .st-cols { display: block; }
+  @media (min-width: 900px) {
+    .st-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 32px; align-items: start; }
+    .st-colL > label:first-child, .st-colR > label:first-child { margin-top: 18px; }
   }
 
   .st-atts { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
@@ -36563,7 +36611,7 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
 
   return (
     <div className="fade-in">
-      <div className="mb-5 flex items-center justify-between gap-4">
+      <div className={`mb-5 flex items-center justify-between gap-4 ${sub === 'study' ? 'md:hidden' : ''}`}>
         <button
           onClick={() => {
             if (sub === 'english' && engWordBaseDirty
@@ -36601,7 +36649,7 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
       {sub === 'music' && <MusicView data={data} setData={setData} />}
       {sub === 'knowledge' && <KnowledgeView data={data} setData={setData} />}
       {sub === 'quiz' && <QuizView data={data} setData={setData} />}
-      {sub === 'study' && <StudyView data={data} setData={setData} />}
+      {sub === 'study' && <StudyView data={data} setData={setData} onBack={() => setSub('')} />}
     </div>
   );
 }
@@ -36777,17 +36825,32 @@ const studyStreak = (tasks) => {
   return n;
 };
 
-function StudyView({ data, setData }) {
+function StudyView({ data, setData, onBack }) {
   const subjects = useMemo(() => studySortSubjects(data.studySubjects || []), [data.studySubjects]);
   const tasks = data.studyTasks || [];
   const [view, setView] = useState(() => { try { return localStorage.getItem('studyView') || 'board'; } catch { return 'board'; } });
   const [filter, setFilter] = useState(''); // '' | over | today | week | doing
+  const [query, setQuery] = useState('');
+  const searchRef = useRef(null);
   const [editing, setEditing] = useState(null);
   const [manage, setManage] = useState(false);
   const [activeCol, setActiveCol] = useState(0);
   const boardRef = useRef(null);
 
   useEffect(() => { try { localStorage.setItem('studyView', view); } catch {} }, [view]);
+
+  // «/» — быстро в поиск (как на сайтах), пока курсор не в поле ввода.
+  useEffect(() => {
+    const h = (e) => {
+      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+      const tag = ((e.target && e.target.tagName) || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable)) return;
+      e.preventDefault();
+      if (searchRef.current) searchRef.current.focus();
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, []);
 
   // Задачи без живого предмета (предмет удалили на другом устройстве до того,
   // как доехал каскад) не показываем — иначе они висели бы невидимками в счётчиках.
@@ -36810,7 +36873,15 @@ function StudyView({ data, setData }) {
     return { over, today, week, doing, doneWeek, streak: studyStreak(live) };
   }, [live]);
 
+  const q = query.trim().toLowerCase();
+  const subjName = useMemo(() => Object.fromEntries(subjects.map(s => [s.id, s.name || ''])), [subjects]);
+  const textMatch = (t) => !q || [
+    t.title, t.note, subjName[t.subjectId],
+    ...(t.subtasks || []).map(x => x.text), ...(t.comments || []).map(x => x.text),
+  ].join(' \n ').toLowerCase().includes(q);
+
   const matches = (t) => {
+    if (!textMatch(t)) return false;
     if (!filter) return true;
     if (t.status === 'done') return false;
     const n = studyDaysLeft(t.due);
@@ -36930,6 +37001,9 @@ function StudyView({ data, setData }) {
     <div className="st-root">
       {/* Шапка: прогресс недели + переключатель вида */}
       <div className="st-top">
+        {onBack && (
+          <button className="st-back" onClick={onBack}><Icon name="chevronLeft" size={16} />Прочее</button>
+        )}
         <div className="st-pulse">
           <div className="st-pulse-num">{stats.doneWeek}</div>
           <div className="st-pulse-cap">сделано<br />за 7 дней</div>
@@ -36940,6 +37014,17 @@ function StudyView({ data, setData }) {
           <button className={view === 'agenda' ? 'on' : ''} onClick={() => setView('agenda')}>По срокам</button>
           <span className="st-seg-thumb" style={{ transform: `translateX(${view === 'board' ? 0 : 100}%)` }} />
         </div>
+        <label className={`st-search ${query ? 'has' : ''}`}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
+          <input
+            ref={searchRef}
+            value={query}
+            placeholder="Поиск по заданиям…  ( / )"
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Escape') { setQuery(''); e.target.blur(); } }}
+          />
+          {query && <button type="button" onClick={() => { setQuery(''); if (searchRef.current) searchRef.current.focus(); }}><Icon name="x" size={14} /></button>}
+        </label>
         <button className="st-icon-btn" onClick={() => setManage(true)} title="Предметы"><Icon name="settings" size={18} /></button>
       </div>
 
@@ -36978,13 +37063,13 @@ function StudyView({ data, setData }) {
 
       {view === 'board' ? (
         <div className="st-board" ref={boardRef} onScroll={onBoardScroll}>
-          {subjects.map(s => (
+          {subjects.filter(s => !q || live.some(t => t.subjectId === s.id && matches(t))).map(s => (
             <StudyColumn
               key={s.id}
               subject={s}
               tasks={live.filter(t => t.subjectId === s.id)}
               matches={matches}
-              filtered={!!filter}
+              filtered={!!filter || !!q}
               onAdd={addTask}
               onOpen={setEditing}
               onStatus={setStatus}
@@ -37740,7 +37825,7 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
   };
 
   return (
-    <Modal title={isNew ? 'Новое задание' : 'Задание'} onClose={viewing ? () => setViewing(null) : close}>
+    <Modal xl title={isNew ? 'Новое задание' : 'Задание'} onClose={viewing ? () => setViewing(null) : close}>
       <div className="st-form" style={{ '--c': subj.color }}>
         <textarea
           className="st-title-input"
@@ -37759,6 +37844,8 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
           ))}
         </div>
 
+        <div className="st-cols">
+        <div className="st-colL">
         <label>Срок</label>
         <div className="st-pills">
           {quickDue.map(q => (
@@ -37816,6 +37903,8 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
           <input ref={fileRef} type="file" multiple hidden onChange={e => { onFiles(e.target.files); e.target.value = ''; }} />
         </div>
 
+        </div>
+        <div className="st-colR">
         <label>Описание задачи</label>
         <textarea className="st-note" rows={2} value={t.note || ''} placeholder="Что именно сделать: номера задач, ссылка, страницы…" onChange={e => set({ note: e.target.value })} />
 
@@ -37869,6 +37958,8 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
             </button>
           </div>
+        </div>
+        </div>
         </div>
 
         {/* Редко меняемое — свернуто, в заголовке видно текущее значение */}
@@ -40596,7 +40687,7 @@ function BarcodeScanModal({ onClose, onDetected }) {
   );
 }
 
-function Modal({ title, children, onClose, wide }) {
+function Modal({ title, children, onClose, wide, xl }) {
   useEffect(() => {
     const handler = (e) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', handler);
@@ -40611,7 +40702,7 @@ function Modal({ title, children, onClose, wide }) {
       <div className="min-h-full flex items-start justify-center p-4 sm:py-10">
         <div
           onClick={e => e.stopPropagation()}
-          className={`bg-[var(--bg)] w-full rounded-2xl my-auto ${wide ? 'max-w-3xl' : 'max-w-lg'}`}
+          className={`bg-[var(--bg)] w-full rounded-2xl my-auto ${xl ? 'max-w-5xl' : wide ? 'max-w-3xl' : 'max-w-lg'}`}
         >
           <div className="bg-[var(--bg)] px-4 py-4 sm:px-6 sm:py-5 flex items-center justify-between border-b border-[var(--border)] rounded-t-2xl">
             <h2 className="font-display text-xl sm:text-2xl">{title}</h2>
