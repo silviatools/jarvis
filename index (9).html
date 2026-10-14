@@ -6608,6 +6608,154 @@ function StudyToggleRow({ icon, title, hint, on, onChange, children }) {
 }
 const STUDY_WEEKDAYS = [[1, 'Пн'], [2, 'Вт'], [3, 'Ср'], [4, 'Чт'], [5, 'Пт'], [6, 'Сб'], [7, 'Вс']];
 
+// Навык «Контроль учебных чатов»: раз в день Джарвис читает выбранные чаты (даже замьюченные) и пишет в бот,
+// если что-то требует внимания. Настройки — data.studyChats (синхронизируются как обычные данные).
+const STUDY_CHATS_DEFAULTS = { enabled: false, time: '20:00', folder: '', chats: [], notifyEmpty: false };
+
+function StudyChatsCard({ data, setData, card, input }) {
+  const cfg = { ...STUDY_CHATS_DEFAULTS, ...(data.studyChats || {}) };
+  const [status, setStatus] = React.useState(null);
+  const [pick, setPick] = React.useState(null);
+  const [q, setQ] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+
+  const update = (patch) => setData(d => ({
+    ...d, studyChats: { ...STUDY_CHATS_DEFAULTS, ...(d.studyChats || {}), ...patch, updatedAt: Date.now() },
+  }));
+  const loadStatus = React.useCallback(() => {
+    fetch('/api/study/chats/status').then(r => r.json()).then(setStatus).catch(() => setStatus({ error: true }));
+  }, []);
+  React.useEffect(loadStatus, [loadStatus]);
+
+  // Папки и чаты тянем из личного Telegram; поиск — с небольшой задержкой.
+  React.useEffect(() => {
+    if (!status || !status.telegramConnected) return undefined;
+    const h = setTimeout(() => {
+      fetch('/api/study/chats/pick?q=' + encodeURIComponent(q.trim())).then(r => r.json()).then(setPick)
+        .catch(() => setPick({ error: 'Не удалось загрузить чаты' }));
+    }, q ? 400 : 0);
+    return () => clearTimeout(h);
+  }, [q, status && status.telegramConnected]);
+
+  const chosen = cfg.chats || [];
+  const addChat = (c) => {
+    if (chosen.some(x => String(x.id) === String(c.id))) return;
+    update({ chats: [...chosen, { id: c.id, title: c.title }] });
+  };
+  const removeChat = (id) => update({ chats: chosen.filter(x => String(x.id) !== String(id)) });
+
+  const scan = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      await new Promise(r => setTimeout(r, 1500));   // настройки сначала долетают до сервера
+      const j = await (await fetch('/api/study/chats/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json();
+      setMsg(j.ok ? { ok: true, text: 'Проверяю — результат придёт в Telegram через 1–2 минуты.' } : { ok: false, text: j.error || 'Ошибка' });
+    } catch (e) {
+      setMsg({ ok: false, text: 'Сервер не ответил: ' + e.message });
+    }
+    setBusy(false);
+    setTimeout(loadStatus, 4000);
+  };
+  const fmt = (ms) => (ms ? new Date(ms).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : 'ещё ни разу');
+  const res = (status && status.lastResult) || {};
+
+  return (
+    <div className={card}>
+      <div className="flex items-start justify-between gap-4 mb-1">
+        <div className="flex-1 min-w-0">
+          <h3 className="font-display text-lg mb-1">Учебные чаты</h3>
+          <p className="text-sm text-[var(--text-muted)]">
+            Раз в день Джарвис читает выбранные чаты — даже замьюченные — и пишет в бот, только если что-то требует вашего внимания:
+            вопросы вам, упоминания, «ищут вас», новые задания, переносы и сроки. Ответьте на его сообщение — продолжите с этим контекстом.
+          </p>
+        </div>
+        <StudySwitch on={!!cfg.enabled} onChange={v => update({ enabled: v })} label="Проверять учебные чаты" />
+      </div>
+
+      {status && !status.telegramConnected && !status.error && (
+        <div className="text-sm text-amber-600 mt-3">Личный Telegram не подключён — Настройки → Телеграм.</div>
+      )}
+
+      <div className="mt-4">
+        <div className="text-xs text-[var(--text-subtle)] mb-1.5">Выбранные чаты</div>
+        <div className="flex flex-wrap gap-1.5" data-testid="study-chats-chosen">
+          {chosen.length === 0 && <span className="text-sm text-[var(--text-subtle)]">Пока не выбрано — найдите чаты ниже{cfg.folder ? ' или используйте папку' : ''}.</span>}
+          {chosen.map(c => (
+            <span key={c.id} className="inline-flex items-center gap-1.5 border border-[var(--border)] rounded-full pl-3 pr-1.5 py-1 text-sm">
+              {c.title}
+              <button className="w-5 h-5 rounded-full hover:bg-red-50 text-[var(--text-muted)]" title="Убрать" onClick={() => removeChat(c.id)}>×</button>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {status && status.telegramConnected && (
+        <div className="grid sm:grid-cols-2 gap-3 mt-4">
+          <label className="block">
+            <div className="text-xs text-[var(--text-subtle)] mb-1">Папка Telegram целиком</div>
+            <select className={input} value={cfg.folder} onChange={e => update({ folder: e.target.value })}>
+              <option value="">— без папки —</option>
+              {((pick && pick.folders) || []).map(f => <option key={f.id} value={f.title}>{f.title} · {f.chats} чатов</option>)}
+              {cfg.folder && !((pick && pick.folders) || []).some(f => f.title === cfg.folder) && <option value={cfg.folder}>{cfg.folder}</option>}
+            </select>
+          </label>
+          <label className="block">
+            <div className="text-xs text-[var(--text-subtle)] mb-1">Найти чат</div>
+            <input className={input} value={q} placeholder="Название группы или @username" onChange={e => setQ(e.target.value)} />
+          </label>
+        </div>
+      )}
+      {pick && pick.error && <div className="text-xs text-amber-600 mt-2">{pick.error}</div>}
+      {pick && pick.dialogs && pick.dialogs.length > 0 && (
+        <div className="mt-2 max-h-48 overflow-y-auto rounded-xl border border-[var(--border)] divide-y divide-[var(--border)]">
+          {pick.dialogs.map(d => {
+            const on = chosen.some(x => String(x.id) === String(d.id));
+            return (
+              <button key={d.id} disabled={on} onClick={() => addChat(d)}
+                className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-[var(--bg)] disabled:opacity-50">
+                <span className="flex-1 min-w-0 truncate">{d.title}</span>
+                {d.muted && <span className="text-[11px] text-[var(--text-subtle)]">без звука</span>}
+                <span className="text-[var(--text-muted)]">{on ? '✓' : '+'}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-3 mt-4">
+        <label className="block">
+          <div className="text-xs text-[var(--text-subtle)] mb-1">Во сколько проверять</div>
+          <MskTimeInput value={cfg.time} onChange={v => update({ time: v })} className={input} />
+        </label>
+        <div className="flex items-end">
+          <label className="flex items-center gap-2 text-sm normal-case tracking-normal text-[var(--text)] cursor-pointer pb-2">
+            <input type="checkbox" checked={!!cfg.notifyEmpty} onChange={e => update({ notifyEmpty: e.target.checked })} />
+            Писать, даже если ничего нет
+          </label>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 mt-4">
+        <button onClick={scan} disabled={busy || (!chosen.length && !cfg.folder)} className="btn-secondary text-sm px-4 py-2">
+          {busy ? 'Запускаю…' : 'Проверить сейчас'}
+        </button>
+        <span className="text-xs text-[var(--text-subtle)]">
+          Последняя проверка: {fmt(status && status.lastRunAt)}
+          {res.messages != null && ` · чатов ${res.chats}, новых сообщений ${res.messages}, важных ${res.items}`}
+        </span>
+      </div>
+      {msg && <div className={`mt-2 text-sm ${msg.ok ? 'text-green-600' : 'text-amber-600'}`}>{msg.text}</div>}
+      {status && status.lastError && <div className="mt-2 text-sm text-amber-600">{status.lastError}</div>}
+      {status && status.lastResult && (status.lastResult.errors || []).map((e, i) => <div key={i} className="text-xs text-amber-600">{e}</div>)}
+      <p className="text-[11px] text-[var(--text-subtle)] mt-3">
+        Первая проверка смотрит последние сутки, дальше — всё новое с прошлой проверки. Уведомления приходят в чат с ботом, где включена категория «Учёба».
+        Включить или выключить навык целиком можно в Настройки → Телеграм → «Навыки ассистента».
+      </p>
+    </div>
+  );
+}
+
 function StudySettings({ data, setData }) {
   const cfg = { ...STUDY_DEFAULTS, ...(data.studySchedule || {}) };
   const [status, setStatus] = React.useState({ loading: true });
@@ -6822,6 +6970,8 @@ function StudySettings({ data, setData }) {
           </div>
         )}
       </div>
+
+      <StudyChatsCard data={data} setData={setData} card={card} input={input} />
 
       <div className={card}>
         <div className="flex items-center justify-between gap-3 mb-2">
@@ -37957,6 +38107,22 @@ function StudyTaskModal({ initial, subjects, isNew, rea, onMapSubject, parent, c
     { label: 'Пт', v: studyNextWeekday(5) },
     { label: '+неделя', v: studyAddDays(7) },
   ];
+  // «Собрать информацию по задаче»: сервер берёт задачу из этого запроса (черновик, даже если ещё не сохранён)
+  // и присылает отчёт в Telegram.
+  const [brief, setBrief] = useState({ state: '' });
+  const collectBrief = async () => {
+    setBrief({ state: 'sending' });
+    try {
+      const res = await fetch('/api/study/brief', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task: { ...t, subjectName: subj.name } }),
+      });
+      const j = await res.json();
+      setBrief(j.ok ? { state: 'ok' } : { state: 'err', error: j.error || 'Не удалось запустить' });
+    } catch (e) {
+      setBrief({ state: 'err', error: 'Сервер не ответил: ' + e.message });
+    }
+  };
   const addSub = () => {
     const text = subText.trim();
     if (!text) return;
@@ -38270,6 +38436,17 @@ function StudyTaskModal({ initial, subjects, isNew, rea, onMapSubject, parent, c
             </div>
           </div>
         )}
+
+        <div className="mt-4">
+          <button
+            className="btn-secondary w-full text-sm py-2.5"
+            disabled={!t.title.trim() || brief.state === 'sending'}
+            title="Джарвис изучит задачу, найдёт информацию в учебных чатах и пришлёт в Telegram отчёт с планом"
+            onClick={collectBrief}
+          >{brief.state === 'sending' ? 'Запускаю…' : '🔎 Собрать информацию по задаче'}</button>
+          {brief.state === 'ok' && <div className="text-xs text-green-600 mt-1.5">Собираю — отчёт придёт в Telegram через 1–3 минуты. Ответьте на него, чтобы продолжить с этим контекстом.</div>}
+          {brief.state === 'err' && <div className="text-xs text-amber-600 mt-1.5">{brief.error}</div>}
+        </div>
 
         <div className="flex gap-2 mt-5">
           {!isNew && (

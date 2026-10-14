@@ -892,6 +892,51 @@ def get_replies(peer, message_id, limit=100, scan=1500) -> dict:
     return _run(_go(), 120)
 
 
+def scan_chat(peer, since_ts: float, limit: int = 400) -> dict:
+    """Новые сообщения чата с пометками для «нужно ли моё внимание»: упомянули меня (@/имя в тексте
+    или Telegram-упоминание), ответили на моё сообщение. Для фонового контроля учебных чатов:
+    читает независимо от мьюта. → {chat, chat_id, me:{name,username}, messages:[…]}"""
+    limit = max(10, min(int(limit or 400), 1000))
+
+    async def _go():
+        c = await _get_client()
+        ent = await _resolve(c, peer)
+        me = await c.get_me()
+        mine = set()
+        async for m in c.iter_messages(ent, from_user="me", limit=200):
+            mine.add(m.id)
+        username = getattr(ent, "username", None)
+        pub = isinstance(ent, Channel)
+
+        def link(mid):
+            if username:
+                return f"https://t.me/{username}/{mid}"
+            return f"https://t.me/c/{ent.id}/{mid}" if pub else ""
+
+        rows = []
+        async for m in c.iter_messages(ent, limit=limit):
+            if m.date.timestamp() < since_ts:
+                break
+            if getattr(m, "action", None) or not ((m.message or "").strip() or m.media):
+                continue
+            d = _msg_dict(m, me.id)
+            rt = getattr(m.reply_to, "reply_to_msg_id", None) if m.reply_to else None
+            d["mentioned"] = bool(getattr(m, "mentioned", False))
+            d["reply_to_me"] = bool(rt and rt in mine)
+            d["mine"] = bool(m.out)
+            if m.sender_id:
+                d["from_id"] = m.sender_id
+            lk = link(m.id)
+            if lk:
+                d["link"] = lk
+            rows.append(d)
+        rows.reverse()
+        return {"chat": utils.get_display_name(ent), "chat_id": utils.get_peer_id(ent), "messages": rows,
+                "me": {"name": utils.get_display_name(me), "username": getattr(me, "username", "") or ""}}
+
+    return _run(_go(), 120)
+
+
 # ── Действия (всё — с подтверждением) ────────────────────────────────────
 
 def send_message(peer, text, reply_to=None, silent=False, schedule="") -> dict:

@@ -1062,6 +1062,8 @@ def dialog_footer(chat_id, is_new: bool) -> str:
         return ""
     title = html.escape(d["title"])
     if not is_new:
+        if d.pop("resumed", False):
+            return f"\n\n<i>↩ Продолжаем диалог: «{title}» · сообщений: {d['n']}</i>"
         return f"\n\n<i>💬 Диалог: «{title}» · сообщений: {d['n']}</i>"
     out = f"\n\n🆕 <b>Новый диалог:</b> «{title}»"
     if prev:
@@ -1069,6 +1071,63 @@ def dialog_footer(chat_id, is_new: bool) -> str:
                else "вы сбросили его командой /new")
         out += f"\n<i>Прошлый диалог «{html.escape(prev['title'])}» закрыт ({why}) — его контекст я больше не вижу.</i>"
     return out
+
+
+# ── якоря: ответ на сообщение бота возвращает его контекст ───────────────────
+# Отчёты, которые бот присылает сам (сбор информации по задаче, контроль учебных чатов), сохраняют
+# контекст: пока идёт переписка — он в памяти диалога, а если пользователь ответит («Ответить» на
+# сообщение бота) позже, после паузы, контекст восстанавливается по якорю.
+
+ANCHORS_FILE = DATA_DIR / "jarvis_anchors.json"
+_anchor_lock = threading.Lock()
+MAX_ANCHORS = 80
+
+
+def _anchors_load() -> dict:
+    try:
+        return json.loads(ANCHORS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def remember_anchor(chat_id, message_ids, title: str, user_text: str, assistant_text: str):
+    with _anchor_lock:
+        st = _anchors_load()
+        for mid in message_ids:
+            st[f"{chat_id}:{mid}"] = {"title": title, "user": user_text, "assistant": assistant_text, "created": time.time()}
+        if len(st) > MAX_ANCHORS:
+            for k in sorted(st, key=lambda k: st[k].get("created", 0))[:len(st) - MAX_ANCHORS]:
+                del st[k]
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = ANCHORS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, ANCHORS_FILE)
+
+
+def seed_dialog(chat_id, title: str, user_text: str, assistant_text: str, resumed: bool = False):
+    """Начинает диалог с готового обмена репликами: следующее сообщение пользователя продолжает его."""
+    with chat_lock(chat_id):
+        with _convo_guard:
+            hist = _convo.setdefault(chat_id, [])
+            hist[:] = [{"role": "user", "content": user_text}, {"role": "assistant", "content": assistant_text}]
+            _convo_meta.setdefault(chat_id, {"ts": 0.0, "lock": threading.Lock()})["ts"] = time.time()
+            _dialogs[chat_id] = {"title": title, "started": time.time(), "n": 1, "resumed": resumed}
+            _dialog_prev.pop(chat_id, None)
+
+
+def restore_anchor(chat_id, message_id) -> bool:
+    """Ответ пользователя на сообщение бота: если у него есть якорь — вернуть контекст этого отчёта."""
+    with _anchor_lock:
+        a = _anchors_load().get(f"{chat_id}:{message_id}")
+    if not a:
+        return False
+    d = current_dialog(chat_id)
+    if d and d.get("title") == a["title"]:
+        with _convo_guard:
+            if _convo.get(chat_id):
+                return True          # этот диалог и так в памяти
+    seed_dialog(chat_id, a["title"], a["user"], a["assistant"], resumed=True)
+    return True
 
 
 def trim(history: list):

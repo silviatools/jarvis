@@ -94,6 +94,11 @@ except Exception as _e:
     file_tools = None
     print(f"NOTE: file_tools disabled: {_e}")
 try:
+    import study_skills
+except Exception as _e:
+    study_skills = None
+    print(f"NOTE: study_skills disabled: {_e}")
+try:
     import deck_skill
 except Exception as _e:
     deck_skill = None
@@ -1122,7 +1127,8 @@ def build_backup_zip() -> bytes:
             seen_arcnames.add(arcname)
             zf.write(path, arcname=arcname)
 
-        data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json"}
+        data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
+                      "jarvis_study_chats_state.json", "jarvis_anchors.json"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
@@ -5583,6 +5589,7 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
         "один вызов study_attach_file с готовым полным содержимым. Файл, который пользователь только что прислал, "
         "кладётся через use_received_file. После успеха скажи, куда именно положил (предмет → задание → имя файла).\n\n"
         + (deck_skill.prompt_section((app or {}).get("telegramSkills")) if deck_skill else "")
+        + (study_skills.prompt_section((app or {}).get("telegramSkills")) if study_skills else "")
         + (tg_tools.prompt_section((app or {}).get("telegramSkills")) if with_tg else "") +
         "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
         "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
@@ -5615,6 +5622,8 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
             return r
         return deck_skill.execute(name, inp, tg_bot.get_ctx() if tg_bot else None, tg_bot,
                                   (app or {}).get("telegramSkills"), _study_attach)
+    if study_skills and name in study_skills.TOOL_NAMES:
+        return _study_skill_exec(name, inp, app)
     if name == "study_attach_file":
         result = study_attach_file(app, inp)
         if result.get("ok"):
@@ -5719,19 +5728,22 @@ class _AssistantError(Exception):
     pass
 
 
-def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, site_url: str, with_tg: bool = False):
+def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, site_url: str, with_tg: bool = False,
+                           extra_system: str = "", allowed: set = None, max_steps: int = None):
     """Прогоняет tool-use цикл Claude поверх локальной копии истории.
     Возвращает (текст ответа | None, список ссылок navigate). None — агент не
     уложился в отведённые шаги. Ошибки HTTP/сети — как _AssistantError."""
-    system = build_assistant_system_prompt(app, with_tg)
+    system = build_assistant_system_prompt(app, with_tg) + extra_system
     all_tools = ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
         (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
-        (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else [])
+        (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + _study_skill_tools(app)
+    if allowed:   # фоновые задания работают только на чтение: лишних инструментов у модели нет
+        all_tools = [t for t in all_tools if t["name"] in allowed]
     convo = list(history)
     nav_links = []
     carried = ""        # текст уже выданных кусков, если ответ упёрся в лимит токенов
     continuations = 0
-    for _ in range(_ASSISTANT_MAX_STEPS + 4):
+    for _ in range((max_steps or _ASSISTANT_MAX_STEPS) + 4):
         try:
             r = requests.post(
                 ANTHROPIC_MESSAGES_URL,
@@ -5773,7 +5785,8 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
         tool_results = []
         for tu in tool_uses:
             try:
-                output = execute_assistant_tool(tu.get("name"), tu.get("input"), app, site_url, with_tg)
+                output = execute_assistant_tool(tu.get("name"), tu.get("input"), app, site_url, with_tg) \
+                    if not allowed or tu.get("name") in allowed else {"error": "этот инструмент недоступен в фоновом режиме"}
             except Exception as e:
                 output = {"error": str(e)}
             if tu.get("name") == "navigate" and output.get("url"):
@@ -5791,14 +5804,17 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
     return None, nav_links
 
 
-def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, site_url: str, with_tg: bool = False):
+def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, site_url: str, with_tg: bool = False,
+                           extra_system: str = "", allowed: set = None, max_steps: int = None):
     """То же самое поверх OpenAI function calling — другой формат запроса и
     ответа (tool_calls в сообщении assistant, результаты — отдельными
     сообщениями role:"tool"), но те же инструменты и та же семантика."""
-    system = build_assistant_system_prompt(app, with_tg)
+    system = build_assistant_system_prompt(app, with_tg) + extra_system
     all_tools = ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
         (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
-        (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else [])
+        (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + _study_skill_tools(app)
+    if allowed:   # фоновые задания работают только на чтение: лишних инструментов у модели нет
+        all_tools = [t for t in all_tools if t["name"] in allowed]
     tools = [
         {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
         for t in all_tools
@@ -5807,7 +5823,7 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
     nav_links = []
     carried = ""
     continuations = 0
-    for _ in range(_ASSISTANT_MAX_STEPS + 4):
+    for _ in range((max_steps or _ASSISTANT_MAX_STEPS) + 4):
         try:
             r = requests.post(
                 OPENAI_CHAT_URL,
@@ -5847,7 +5863,8 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
             except Exception:
                 inp = {}
             try:
-                output = execute_assistant_tool(fn.get("name"), inp, app, site_url, with_tg)
+                output = execute_assistant_tool(fn.get("name"), inp, app, site_url, with_tg) \
+                    if not allowed or fn.get("name") in allowed else {"error": "этот инструмент недоступен в фоновом режиме"}
             except Exception as e:
                 output = {"error": str(e)}
             if fn.get("name") == "navigate" and output.get("url"):
@@ -6023,7 +6040,405 @@ def _dispatch_user_message(token: str, chat_id, msg: dict):
         return
     if unsupported:
         text = (text + "\n\n" if text else "") + f"[Вложение не прочитано: {unsupported}]"
+    rid = (msg.get("reply_to_message") or {}).get("message_id")
+    if rid:
+        try:   # ответ на отчёт бота (сбор по задаче, учебные чаты) — вернуть контекст этого отчёта
+            tg_bot.restore_anchor(chat_id, rid)
+        except Exception as e:
+            print(f"  anchor restore: {e}")
     handle_assistant_message(token, chat_id, text, images, msg.get("message_id"))
+
+
+# ── Навыки «Учёбы»: сбор информации по задаче и контроль учебных чатов ───────────
+# Логика и описания навыков — study_skills.py; здесь запуск: фоновый агент только на чтение,
+# рассылка отчётов в бот, ежедневный контроль, точки входа. Отчёты бота сохраняют контекст:
+# после отправки диалог засеивается (ответ продолжает его), а якорь по id сообщения
+# восстанавливает контекст, если пользователь ответит позже (см. tg_bot.remember_anchor).
+
+def _study_skill_tools(app) -> list:
+    """Инструменты включённых навыков «Учёбы» для чата."""
+    if not study_skills:
+        return []
+    st = (app or {}).get("telegramSkills")
+    out = []
+    for t in study_skills.TOOLS:
+        sid = study_skills.BRIEF_ID if t["name"] == "study_brief_start" else study_skills.CHATS_ID
+        if study_skills.skill_on(st, sid):
+            out.append(t)
+    return out
+
+
+def _ai_conf(app):
+    """(provider, api_key, model, site_url) ассистента или None, если ключ не назначен."""
+    settings = app.get("settings") or {}
+    preset = resolve_ai_preset(settings, "voiceAssistant")
+    key = ((preset or {}).get("apiKey") or "").strip()
+    if not key:
+        return None
+    provider = "openai" if preset.get("provider") == "openai" else "claude"
+    model = (preset.get("model") or "").strip() or AI_PROVIDER_DEFAULT_MODEL[provider]
+    return provider, key, model, (settings.get("publicUrl") or "").strip()
+
+
+def _llm_text(conf, system: str, user: str, max_tokens: int = 2500, timeout: int = 120) -> str:
+    """Один запрос к модели без инструментов. Ошибки — _AssistantError."""
+    provider, key, model, _ = conf
+    try:
+        if provider == "openai":
+            r = requests.post(OPENAI_CHAT_URL, headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+                              json={"model": model, "max_completion_tokens": max_tokens,
+                                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]},
+                              timeout=timeout)
+        else:
+            r = requests.post(ANTHROPIC_MESSAGES_URL,
+                              headers={"Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"},
+                              json={"model": model, "max_tokens": max_tokens, "system": system,
+                                    "messages": [{"role": "user", "content": user}]}, timeout=timeout)
+    except Exception as e:
+        raise _AssistantError(f"Ошибка связи с ИИ: {e}")
+    if not r.ok:
+        try:
+            err = r.json().get("error", {}).get("message")
+        except Exception:
+            err = None
+        raise _AssistantError(f"Ошибка ИИ: {err or r.status_code}")
+    j = r.json()
+    if provider == "openai":
+        return (((j.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    return "".join(b.get("text", "") for b in (j.get("content") or []) if b.get("type") == "text").strip()
+
+
+def _study_owner_chats(app) -> list:
+    """Чаты бота, на которые разрешено слать личные данные (Telegram-аккаунт владельца): подписчики категории
+    «study», которые являются личным чатом владельца."""
+    chats = recipients_for(app, load_subscribers(), "study")
+    return [c for c in chats if tg_user and tg_user.is_owner_chat(c)]
+
+
+def _attachments_text(snap: dict, per_file: int = 12000, max_files: int = 4) -> str:
+    """Текст вложений задачи (docx, pdf, xlsx, текст…) — чтобы агент не зависел от синхронизации данных."""
+    if not file_tools:
+        return ""
+    parts = []
+    for a in (snap.get("attachments") or [])[:12]:
+        if len(parts) >= max_files:
+            break
+        fname = a.get("filename") or ""
+        if not fname or "/" in fname or ".." in fname or a.get("kind") in ("image", "video"):
+            continue
+        path = DATA_DIR / ("photos" if a.get("store") == "photos" else "files") / fname
+        try:
+            if not path.exists() or path.stat().st_size > 30 * 1024 * 1024:
+                continue
+            r = file_tools.read_file(path.read_bytes(), a.get("name") or fname, per_file)
+            parts.append(f"=== {a.get('name') or fname} ===\n{r['text']}")
+        except Exception:
+            continue
+    return "\n\n".join(parts)
+
+
+def _folder_dialogs(folder: str) -> list:
+    if not (folder and tg_tools):
+        return []
+    try:
+        res = tg_tools.list_dialogs(folder=folder, limit=100, include_muted=True)
+        return [{"id": d["id"], "title": d["title"]} for d in res.get("dialogs", [])]
+    except Exception as e:
+        print(f"  study folder dialogs: {e}")
+        return []
+
+
+_study_brief_running = set()
+
+
+def start_study_brief(task: dict, chat_id=None) -> dict:
+    """Запускает «Сбор информации по задаче» в фоне. Возвращает сразу: {ok} или {ok:False, error}."""
+    if not study_skills:
+        return {"ok": False, "error": "Навык недоступен на сервере."}
+    app = load_app_data()
+    if not study_skills.skill_on(app.get("telegramSkills"), study_skills.BRIEF_ID):
+        return {"ok": False, "error": "Навык «Сбор информации по задаче» выключен: Настройки → Телеграм → Навыки ассистента."}
+    token = get_token()
+    if not token:
+        return {"ok": False, "error": "Не задан токен Telegram-бота — отчёт некуда отправить."}
+    conf = _ai_conf(app)
+    if not conf:
+        return {"ok": False, "error": "Ассистенту не назначен ключ ИИ: Настройки → Ассистент."}
+    owner = _study_owner_chats(app)
+    chats = [chat_id] if chat_id else (owner or recipients_for(app, load_subscribers(), "study"))
+    if not chats:
+        return {"ok": False, "error": "Включите категорию «Учёба» для вашего чата с ботом: Настройки → Маршрутизация."}
+    snap = study_skills.task_snapshot(app, task or {})
+    if not snap["subject"]:
+        snap["subject"] = str((task or {}).get("subjectName") or "")[:120]
+    if not snap["title"]:
+        return {"ok": False, "error": "У задачи нет названия."}
+    key = snap["id"] or snap["title"]
+    if key in _study_brief_running:
+        return {"ok": False, "error": "Отчёт по этой задаче уже собирается — подождите пару минут."}
+    _study_brief_running.add(key)
+    threading.Thread(target=_study_brief_worker, args=(app, snap, conf, token, chats, key), daemon=True).start()
+    return {"ok": True, "started": True}
+
+
+def _study_brief_worker(app, snap, conf, token, chats, key):
+    provider, api_key, model, site_url = conf
+    owner_chats = [c for c in chats if tg_user and tg_user.is_owner_chat(c)]
+    with_tg = bool(owner_chats)
+    chats = owner_chats or chats          # личные переписки — только в личный чат владельца
+    progress = []
+    answer, err = None, ""
+    try:
+        for cid in chats:
+            pm = tg_bot.ProgressMessage(token, cid, "Собираю информацию по задаче", snap["title"],
+                                        [(0, "Смотрю данные и файлы задачи"), (20, "Ищу в учебных чатах"),
+                                         (70, "Составляю план")], expected=150.0)
+            pm.__enter__()
+            progress.append(pm)
+        cfg = study_skills.chats_config(app)
+        targets = study_skills.chat_targets(cfg, _folder_dialogs(cfg["folder"]) if with_tg else [])
+        att = _attachments_text(snap)
+        today = today_msk()
+        user_msg = (
+            f"СЕГОДНЯ: {today.isoformat()}, {WEEKDAYS_RU_NOMINATIVE[today.weekday()]}.\n\n"
+            f"ЗАДАЧА (JSON):\n{json.dumps(snap, ensure_ascii=False, indent=1)}\n\n"
+            + (f"ТЕКСТ ВЛОЖЕНИЙ:\n{att}\n\n" if att else "Вложений с текстом нет.\n\n")
+            + ("УЧЕБНЫЕ ЧАТЫ (id → название):\n" + "\n".join(f"• {t['id']} → {t['title']}" for t in targets) + "\n\n"
+               if targets else "Учебные чаты не выбраны (Настройки → Учёба) — ищи по всем чатам.\n\n")
+            + ("" if with_tg else "ЛИЧНЫЙ TELEGRAM НЕ ПОДКЛЮЧЁН: чаты просмотреть нельзя — скажи об этом в отчёте.\n\n")
+            + "Собери информацию и верни итоговый отчёт по структуре.")
+        loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
+        answer, _ = loop_fn([{"role": "user", "content": user_msg}], api_key, model, app, site_url, with_tg,
+                            extra_system=study_skills.BRIEF_PROMPT, allowed=study_skills.BRIEF_ALLOWED_TOOLS, max_steps=18)
+    except _AssistantError as e:
+        err = str(e)
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+        print(f"  study brief: {err}")
+    finally:
+        for pm in progress:
+            try:
+                pm.__exit__(None, None, None)
+            except Exception:
+                pass
+        _study_brief_running.discard(key)
+    title = f"Задача: {snap['title'][:40]}"
+    for cid in chats:
+        try:
+            if not answer:
+                tg_bot.send_text(token, cid, f"🔎 Не удалось собрать информацию по задаче «{html.escape(snap['title'])}»: "
+                                             f"{html.escape(err or 'агент не уложился в отведённые шаги')}.")
+                continue
+            ids = tg_bot.send_text(token, cid, answer + "\n\n<i>Ответьте на это сообщение — продолжим с этим контекстом.</i>")
+            user_text = f"Собери информацию по задаче «{snap['title']}»."
+            asst_text = (answer + f"\n(служебно: task_id {snap['id']}, предмет «{snap['subject']}»; отчёт отправлен пользователю в Telegram; "
+                         "шаги плана в задачу ещё НЕ добавлены — добавляй подзадачами через update_record только если пользователь согласится)")
+            tg_bot.remember_anchor(cid, ids, title, user_text, asst_text)
+            tg_bot.seed_dialog(cid, title, user_text, asst_text)
+        except Exception as e:
+            print(f"  study brief send: {e}")
+
+
+# ── Контроль учебных чатов ───────────────────────────────────────────────────
+
+_study_scan_lock = threading.Lock()
+RU_MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+
+
+def _chat_lines(messages: list, cap_chars: int) -> str:
+    lines = []
+    for m in messages:
+        flags = []
+        if m.get("mentioned"):
+            flags.append("УПОМЯНУЛИ ВАС")
+        if m.get("reply_to_me"):
+            flags.append("ОТВЕТ НА ВАШЕ СООБЩЕНИЕ")
+        if m.get("mine"):
+            flags.append("это ваше сообщение")
+        text = (m.get("text") or "").replace("\n", " ")[:300]
+        media = f" [{m.get('media')}]" if m.get("media") else ""
+        rt = f" (в ответ на #{m['reply_to']})" if m.get("reply_to") else ""
+        lines.append(f"[{m['id']}] {str(m.get('date') or '')[-5:]} {m.get('from') or '?'}{rt}: {text}{media}"
+                     + (f"  <<{'; '.join(flags)}>>" if flags else ""))
+    out, total = [], 0
+    for ln in reversed(lines):              # если много — оставляем самые свежие
+        total += len(ln) + 1
+        if total > cap_chars:
+            break
+        out.append(ln)
+    return "\n".join(reversed(out))
+
+
+def study_chats_scan(chat_id=None, manual: bool = False) -> dict:
+    """Проверка учебных чатов: читаем новое с прошлой проверки, ИИ отбирает то, что требует внимания,
+    пишем в бот. chat_id — ответить в конкретный чат (запуск из чата). Возвращает итог для интерфейса."""
+    if not study_skills:
+        return {"ok": False, "error": "Навык недоступен на сервере."}
+    if not _study_scan_lock.acquire(blocking=False):
+        return {"ok": False, "error": "Проверка уже идёт."}
+    try:
+        app = load_app_data()
+        if not study_skills.skill_on(app.get("telegramSkills"), study_skills.CHATS_ID):
+            return {"ok": False, "error": "Навык «Контроль учебных чатов» выключен: Настройки → Телеграм → Навыки ассистента."}
+        token, conf = get_token(), _ai_conf(app)
+        cfg = study_skills.chats_config(app)
+        owner = [chat_id] if (chat_id and tg_user and tg_user.is_owner_chat(chat_id)) else _study_owner_chats(app)
+        err = ""
+        if not token:
+            err = "Не задан токен Telegram-бота."
+        elif not conf:
+            err = "Ассистенту не назначен ключ ИИ: Настройки → Ассистент."
+        elif not (tg_user and tg_tools):
+            err = "Личный Telegram недоступен на сервере."
+        elif not owner:
+            err = "Включите категорию «Учёба» для вашего личного чата с ботом: Настройки → Маршрутизация."
+        targets = [] if err else study_skills.chat_targets(cfg, _folder_dialogs(cfg["folder"]))
+        if not err and not targets:
+            err = "Не выбраны учебные чаты: Настройки → Учёба → «Учебные чаты»."
+        if err:
+            study_skills.state_update(lastRunAt=int(time.time() * 1000), lastError=err, lastResult={})
+            return {"ok": False, "error": err}
+
+        state = study_skills.state_load()
+        started = time.time()
+        since = max(float(state.get("lastScanTs") or 0), started - 3 * 86400) or (started - 86400)
+        if not state.get("lastScanTs"):
+            since = started - 86400            # первая проверка — за сутки
+        chats, errors, me = [], [], {}
+        for t in targets:
+            try:
+                d = tg_tools.scan_chat(t["id"], since)
+                me = me or d.get("me") or {}
+                if d["messages"]:
+                    chats.append(d)
+            except Exception as e:
+                errors.append(f"{t['title']}: {e}")
+        total = sum(len(c["messages"]) for c in chats)
+        items = []
+        if total:
+            cap = max(4000, 70000 // max(1, len(chats)))
+            body = "\n\n".join(f"### ЧАТ «{c['chat']}»\n{_chat_lines(c['messages'], cap)}" for c in chats)
+            tasks = [t for t in app.get("studyTasks") or [] if t.get("status") != "done"][:12]
+            prompt = (f"ПОЛЬЗОВАТЕЛЬ: {me.get('name') or '?'}" + (f", @{me['username']}" if me.get("username") else "") + "\n"
+                      + "ЕГО АКТИВНЫЕ ЗАДАЧИ: " + ("; ".join(f"{t.get('title')} (до {t.get('due') or 'без срока'})" for t in tasks) or "нет") + "\n\n"
+                      + body)
+            raw = _llm_text(conf, study_skills.TRIAGE_SYSTEM, prompt, max_tokens=2500)
+            by_chat = {c["chat"]: c for c in chats}
+            for it in study_skills.parse_items(raw):
+                c = by_chat.get(it.get("chat")) or (chats[0] if len(chats) == 1 else None)
+                if c:
+                    it["chat"] = c["chat"]
+                    it["chat_id"] = c["chat_id"]
+                    msg = next((m for m in c["messages"] if str(m["id"]) == str(it.get("message_id"))), None)
+                    if msg and msg.get("link"):
+                        it["link"] = msg["link"]
+                items.append(it)
+        now = now_msk()
+        label = f"{now.day} {RU_MONTHS_GEN[now.month - 1]}, {now.strftime('%H:%M')}"
+        study_skills.state_update(lastScanTs=started, lastRunAt=int(time.time() * 1000), lastError="",
+                                  lastResult={"chats": len(targets), "withNew": len(chats), "messages": total,
+                                              "items": len(items), "errors": errors[:5]})
+        sent = 0
+        for cid in owner:
+            try:
+                if items:
+                    text = study_skills.digest_text(items, label)
+                    ids = tg_bot.send_text(token, cid, text)
+                    title = f"Учебные чаты · {now.day} {RU_MONTHS_GEN[now.month - 1]}"
+                    user_text = "Проверь учебные чаты: что требует моего внимания?"
+                    asst_text = ("Вот что нашёл в учебных чатах:\n" + study_skills.digest_plain(items) +
+                                 "\n(служебно: уведомление отправлено пользователю. Если он попросит ответить в чат — используй tg_send_message "
+                                 "(peer = chat_id, reply_to = message_id) только после его «да».)")
+                    tg_bot.remember_anchor(cid, ids, title, user_text, asst_text)
+                    tg_bot.seed_dialog(cid, title, user_text, asst_text)
+                    sent += 1
+                elif manual or cfg["notifyEmpty"]:
+                    tg_bot.send_text(token, cid, f"📚 <b>Учебные чаты</b>: за период ничего, что требовало бы вашего внимания "
+                                                 f"<i>(чатов: {len(targets)}, новых сообщений: {total})</i>.")
+            except Exception as e:
+                print(f"  study chats send: {e}")
+        return {"ok": True, "chats": len(targets), "messages": total, "items": len(items), "sent": sent, "errors": errors[:5]}
+    except _AssistantError as e:
+        study_skills.state_update(lastRunAt=int(time.time() * 1000), lastError=str(e))
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        print(f"  study chats scan: {type(e).__name__}: {e}")
+        study_skills.state_update(lastRunAt=int(time.time() * 1000), lastError=f"{type(e).__name__}: {e}")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        _study_scan_lock.release()
+
+
+def study_chats_tick(app_data: dict, now_str: str, today_iso: str) -> None:
+    """Из минутного цикла: в выбранное время запускаем ежедневную проверку учебных чатов."""
+    if not study_skills:
+        return
+    cfg = study_skills.chats_config(app_data)
+    if not cfg["enabled"] or cfg["time"] != now_str:
+        return
+    if _already_fired("studychats", "daily", today_iso, now_str):
+        return
+    threading.Thread(target=lambda: print(f"[study chats] {study_chats_scan()}"), daemon=True).start()
+
+
+def study_chats_status() -> dict:
+    st = study_skills.state_load() if study_skills else {}
+    connected = False
+    if tg_tools:
+        try:
+            tg_tools.me_info()
+            connected = True
+        except Exception:
+            connected = False
+    return {"lastRunAt": st.get("lastRunAt") or 0, "lastError": st.get("lastError") or "", "lastResult": st.get("lastResult") or {},
+            "running": _study_scan_lock.locked(), "telegramConnected": connected}
+
+
+def study_chats_pick(query: str = "") -> dict:
+    """Для настроек: папки Telegram и поиск чатов, из которых выбираем учебные."""
+    if not tg_tools:
+        return {"error": "Личный Telegram недоступен на сервере."}
+    try:
+        folders = [{"id": f["id"], "title": f["title"], "chats": f["chats"]} for f in tg_tools.list_folders().get("folders", [])]
+        res = tg_tools.list_dialogs(query=query, limit=40, include_muted=True)
+        dialogs = [{"id": d["id"], "title": d["title"], "type": d.get("type"), "muted": bool(d.get("muted"))} for d in res.get("dialogs", [])]
+        return {"folders": folders, "dialogs": dialogs}
+    except Exception as e:
+        return {"error": f"Telegram: {e}"}
+
+
+def _find_study_task(app: dict, inp: dict):
+    tasks = app.get("studyTasks") or []
+    tid = str(inp.get("task_id") or "").strip()
+    if tid:
+        return next((t for t in tasks if t.get("id") == tid), None)
+    title = str(inp.get("task_title") or "").strip().lower()
+    subj = str(inp.get("subject") or "").strip().lower()
+    if not title:
+        return None
+    sids = {s.get("id") for s in app.get("studySubjects") or [] if subj and subj in str(s.get("name") or "").lower()}
+    cand = [t for t in tasks if title in str(t.get("title") or "").lower() and (not subj or t.get("subjectId") in sids)]
+    open_ = [t for t in cand if t.get("status") != "done"]
+    return (open_ or cand or [None])[0]
+
+
+def _study_skill_exec(name: str, inp: dict, app: dict) -> dict:
+    sid = study_skills.BRIEF_ID if name == "study_brief_start" else study_skills.CHATS_ID
+    if not study_skills.skill_on((app or {}).get("telegramSkills"), sid):
+        return {"error": "Навык выключен в Настройки → Телеграм → Навыки ассистента."}
+    ctx = tg_bot.get_ctx() if tg_bot else None
+    chat_id = getattr(ctx, "chat_id", None)
+    if not chat_id:
+        return {"error": "Отчёт можно прислать только в чат с ботом."}
+    if name == "study_brief_start":
+        task = _find_study_task(app, inp)
+        if not task:
+            return {"error": "Задача не найдена — уточните предмет и название (get_data study)."}
+        r = start_study_brief(task, chat_id)
+        return {"ok": True, "message": "Собираю информацию — отчёт придёт в этот чат через 1–3 минуты. Больше ничего делать не нужно."} \
+            if r.get("ok") else {"error": r.get("error")}
+    threading.Thread(target=lambda: study_chats_scan(chat_id, manual=True), daemon=True).start()
+    return {"ok": True, "message": "Проверяю учебные чаты — результат придёт в этот чат через 1–2 минуты."}
 
 
 # ── update-poller loop ───────────────────────────────────────────────────────
@@ -6608,6 +7023,12 @@ def _tick():
         study_present_tick(app_data_raw, subs, token)
     except Exception as e:
         print(f"[{now_str} MSK] study present reminder error: {e}")
+
+    # ── Учёба: ежедневная проверка учебных чатов ───────────────────────────
+    try:
+        study_chats_tick(app_data_raw, now_str, today_iso)
+    except Exception as e:
+        print(f"[{now_str} MSK] study chats error: {e}")
 
     # ── Kanban tasks: one-off reminder at notifyDate + notifyTime (MSK) ────
     try:
@@ -8946,7 +9367,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif route == "/api/tg/status":
             self._json(200, tg_user.status() if tg_user else {"library": False})
         elif route == "/api/tg/skills":
-            self._json(200, {"skills": (deck_skill.SKILLS if deck_skill else []) + (tg_tools.skills_catalog() if tg_tools else [])})
+            self._json(200, {"skills": (deck_skill.SKILLS if deck_skill else []) + (study_skills.SKILLS if study_skills else []) + (tg_tools.skills_catalog() if tg_tools else [])})
         elif route == "/api/tg/tools":
             # Схемы инструментов и кусок промпта для браузерного ассистента: только
             # если аккаунт подключён и только включённые навыки.
@@ -8959,6 +9380,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, weather_cal_status())
         elif route == "/api/study/status":
             self._json(200, study_status())
+        elif route == "/api/study/chats/pick":
+            self._json(200, study_chats_pick(self._apple_query().get("q", "")))
+        elif route == "/api/study/chats/status":
+            self._json(200, study_chats_status())
         elif route == "/api/study/debug":
             # Сырой ответ сайта по последнему запросу — понять, что пришло вместо расписания.
             body = (f"URL: {_rea_last['url']}\nHTTP: {_rea_last['status']}\n"
@@ -9142,6 +9567,23 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(200, weather_cal_sync(preview=bool((payload or {}).get("preview")), reason="manual"))
             except Exception as e:
                 self._json(200, {"ok": False, "error": str(e)})
+        elif route in ("/api/study/brief", "/api/study/chats/scan"):
+            length = self._content_length() or 0
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            except Exception:
+                payload = {}
+            if route == "/api/study/brief":
+                task = (payload or {}).get("task")
+                self._json(200, start_study_brief(task if isinstance(task, dict) else {}))
+            else:
+                if not study_skills:
+                    self._json(200, {"ok": False, "error": "Навык недоступен на сервере."})
+                elif _study_scan_lock.locked():
+                    self._json(200, {"ok": False, "error": "Проверка уже идёт."})
+                else:
+                    threading.Thread(target=lambda: study_chats_scan(manual=True), daemon=True).start()
+                    self._json(200, {"ok": True, "started": True})
         elif route == "/api/study/sync":
             length = self._content_length() or 0
             try:
