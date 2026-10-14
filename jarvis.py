@@ -5641,9 +5641,14 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
                 output = {"error": str(e)}
             if tu.get("name") == "navigate" and output.get("url"):
                 nav_links.append((output.get("label"), output["url"]))
+            # Картинка из чата (tg_get_file) уходит модели image-блоком внутри результата.
+            img = output.pop("_image", None) if isinstance(output, dict) else None
+            out_json = json.dumps(output, ensure_ascii=False)
             tool_results.append({
                 "type": "tool_result", "tool_use_id": tu.get("id"),
-                "content": json.dumps(output, ensure_ascii=False),
+                "content": out_json if not img else [
+                    {"type": "text", "text": out_json},
+                    {"type": "image", "source": {"type": "base64", "media_type": img["media_type"], "data": img["b64"]}}],
             })
         convo.append({"role": "user", "content": tool_results})
     return None, nav_links
@@ -5696,6 +5701,7 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
             return (carried + part) or "Готово", nav_links
 
         convo.append({"role": "assistant", "content": message.get("content"), "tool_calls": tool_calls})
+        pending_images = []
         for tc in tool_calls:
             fn = tc.get("function") or {}
             try:
@@ -5708,7 +5714,14 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
                 output = {"error": str(e)}
             if fn.get("name") == "navigate" and output.get("url"):
                 nav_links.append((output.get("label"), output["url"]))
+            img = output.pop("_image", None) if isinstance(output, dict) else None
+            if img:
+                pending_images.append(img)
             convo.append({"role": "tool", "tool_call_id": tc.get("id"), "content": json.dumps(output, ensure_ascii=False)})
+        if pending_images:   # у OpenAI картинок в результате инструмента нет — отдельным сообщением после всех tool-ответов
+            convo.append({"role": "user", "content": [{"type": "text", "text": "Изображение из результата инструмента:"}] + [
+                {"type": "image_url", "image_url": {"url": f"data:{i['media_type']};base64,{i['b64']}"}} for i in pending_images]})
+            pending_images = []
     return None, nav_links
 
 
