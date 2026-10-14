@@ -5859,6 +5859,29 @@ def find_openai_key(settings: dict) -> str:
     return os.environ.get("OPENAI_API_KEY", "").strip()
 
 
+def generate_dialog_title(provider: str, api_key: str, model: str, text: str) -> str:
+    """Короткое название диалога по первому сообщению (как в чат-агрегаторах). Любая
+    ошибка — название берётся из начала сообщения."""
+    instruction = ("Придумай короткое название диалога (2–5 слов, на языке сообщения, без кавычек и точки в конце) "
+                   "по первому сообщению пользователя. Ответь только названием.\n\nСообщение:\n" + (text or "")[:1500])
+    try:
+        if provider == "openai":
+            r = requests.post(OPENAI_CHAT_URL, headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+                              json={"model": model, "max_completion_tokens": 300, "messages": [{"role": "user", "content": instruction}]},
+                              timeout=20)
+            raw = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") if r.ok else ""
+        else:
+            r = requests.post(ANTHROPIC_MESSAGES_URL,
+                              headers={"Content-Type": "application/json", "x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                              json={"model": model, "max_tokens": 60, "messages": [{"role": "user", "content": instruction}]},
+                              timeout=20)
+            raw = "".join(b.get("text", "") for b in (r.json().get("content") or []) if b.get("type") == "text") if r.ok else ""
+    except Exception as e:
+        print(f"  dialog title: {e}")
+        raw = ""
+    return tg_bot.clean_title(raw, text)
+
+
 def _user_turn_content(provider: str, text: str, images: list):
     """Сообщение пользователя с картинками в формате провайдера. Без картинок — просто текст."""
     if not images:
@@ -5905,6 +5928,26 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
     except Exception:
         pass
 
+    # Новый диалог — первое сообщение после паузы/сброса: название придумываем по нему,
+    # пока основной ответ готовится (параллельно, чтобы не добавлять ожидания).
+    is_new = not history or tg_bot.current_dialog(chat_id) is None
+    title_box = {}
+    title_thread = None
+    if is_new:
+        title_thread = threading.Thread(
+            target=lambda: title_box.update(t=generate_dialog_title(provider, api_key, model, text)), daemon=True)
+        title_thread.start()
+
+    def dialog_tag() -> str:
+        """Подпись с названием диалога; вызывать, когда ответ точно ушёл в историю."""
+        if is_new:
+            if title_thread:
+                title_thread.join(timeout=12)
+            tg_bot.start_dialog(chat_id, title_box.get("t") or tg_bot.fallback_title(text))
+        else:
+            tg_bot.bump_dialog(chat_id)
+        return tg_bot.dialog_footer(chat_id, is_new)
+
     # В историю идёт чистый текст; картинка нужна только текущему ходу.
     stored_text = text + (" [фото]" if images else "")
     turn = list(history) + [{"role": "user", "content": _user_turn_content(provider, text, images)}]
@@ -5923,10 +5966,12 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
         tg_bot.set_ctx(None)
 
     if answer is None:
-        say("Не разобрался за отведённое число шагов — попробуйте переформулировать.")
+        tag = ""
         if ctx.sent:
             history.append({"role": "user", "content": stored_text})
             history.append({"role": "assistant", "content": "(служебно: в чат отправлено — " + "; ".join(ctx.sent) + ")"})
+            tag = dialog_tag()
+        say("Не разобрался за отведённое число шагов — попробуйте переформулировать." + tag)
         return
 
     history.append({"role": "user", "content": stored_text})
@@ -5938,7 +5983,7 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
     reply = answer
     for label, url in nav_links:
         reply += f'\n\n<a href="{html.escape(url)}">Открыть: {html.escape(label)}</a>'
-    say(reply)
+    say(reply + dialog_tag())
 
 
 def _dispatch_user_message(token: str, chat_id, msg: dict):
@@ -6032,7 +6077,7 @@ def updates_loop():
             text = (msg.get("text") or msg.get("caption") or "").strip()
             if tg_bot and text.split("@")[0] in ("/new", "/reset"):
                 tg_bot.reset(cid)
-                send_message(token, cid, "Контекст диалога сброшен.")
+                send_message(token, cid, "Контекст диалога сброшен. Следующее сообщение начнёт новый диалог.")
                 continue
             # Всё, что не /команда — обращение к ассистенту (get_data/navigate/
             # add_task поверх данных проекта). В отдельном потоке: цикл tool-use

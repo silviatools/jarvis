@@ -922,6 +922,8 @@ PROMPT_SECTION = (
     "голосовые автоматически расшифрованы (пометка «[Голосовое сообщение — расшифровка]»), пересланные помечены "
     "«[Переслано от …]». Просто работай с этим текстом (перескажи, ответь, выдели задачи). Если расшифровка не "
     "получилась — в сообщении будет пометка почему, перескажи её пользователю.\n"
+    "• Название диалога («💬 Диалог: …») под каждым твоим ответом добавляется автоматически — сам его не пиши и не "
+    "упоминай, если не спрашивают. Новый диалог начинается после паузы или команды /new: контекст прошлого ты не видишь.\n"
     "• Ответ любой длины показывается целиком (сам режется на несколько сообщений) — не сокращай ради лимита Telegram.\n"
     "• Контекст диалога сохраняется, пока переписка идёт без пауз дольше 10 минут; после — начинается с чистого листа "
     "(пользователь может сбросить вручную командой /new).\n"
@@ -951,6 +953,7 @@ def history_for(chat_id) -> list:
         hist = _convo.setdefault(chat_id, [])
         if hist and time.time() - meta["ts"] > context_ttl_seconds():
             hist.clear()
+            _end_dialog_locked(chat_id, "pause")
         return hist
 
 
@@ -962,6 +965,77 @@ def touch(chat_id):
 def reset(chat_id):
     with _convo_guard:
         _convo.pop(chat_id, None)
+        _end_dialog_locked(chat_id, "manual")
+
+
+# ── название диалога ─────────────────────────────────────────────────────────
+# Диалог = период непрерывной переписки с общим контекстом. Начинается с первого
+# сообщения после паузы (или /new), название придумывается по этому сообщению.
+# Под каждым ответом показываем название — так видно, в каком контексте ассистент
+# сейчас, и когда старый диалог закрылся и начался новый.
+
+_dialogs = {}        # chat_id -> {"title", "started", "n"}
+_dialog_prev = {}    # chat_id -> {"title", "reason"}: последний закрытый диалог (показываем один раз)
+
+
+def _end_dialog_locked(chat_id, reason: str):
+    d = _dialogs.pop(chat_id, None)
+    if d:
+        _dialog_prev[chat_id] = {"title": d["title"], "reason": reason}
+
+
+def current_dialog(chat_id):
+    with _convo_guard:
+        d = _dialogs.get(chat_id)
+        return dict(d) if d else None
+
+
+def start_dialog(chat_id, title: str):
+    with _convo_guard:
+        _dialogs[chat_id] = {"title": title, "started": time.time(), "n": 1}
+
+
+def bump_dialog(chat_id):
+    with _convo_guard:
+        d = _dialogs.get(chat_id)
+        if d:
+            d["n"] += 1
+
+
+def fallback_title(text: str) -> str:
+    """Название без ИИ: начало первого сообщения без служебных пометок вложений."""
+    t = re.sub(r"\[[^\]]{0,200}\]", " ", text or "")
+    t = re.sub(r"\s+", " ", t).strip(" .,:;-—")
+    if not t:
+        return "Новый диалог"
+    if len(t) <= 44:
+        return t
+    cut = t[:44].rsplit(" ", 1)[0] or t[:44]
+    return cut.rstrip(" .,:;-—") + "…"
+
+
+def clean_title(raw: str, text: str = "") -> str:
+    t = re.sub(r"\s+", " ", (raw or "").strip().splitlines()[0] if (raw or "").strip() else "").strip(" \"'«»“”.:;")
+    return t[:60] if t else fallback_title(text)
+
+
+def dialog_footer(chat_id, is_new: bool) -> str:
+    """HTML-подпись под ответом: название диалога; у первого ответа нового диалога — пометка
+    «Новый диалог» и причина закрытия прошлого."""
+    with _convo_guard:
+        d = _dialogs.get(chat_id)
+        prev = _dialog_prev.pop(chat_id, None) if is_new else None
+    if not d:
+        return ""
+    title = html.escape(d["title"])
+    if not is_new:
+        return f"\n\n<i>💬 Диалог: «{title}» · сообщений: {d['n']}</i>"
+    out = f"\n\n🆕 <b>Новый диалог:</b> «{title}»"
+    if prev:
+        why = (f"пауза больше {int(context_ttl_seconds() // 60)} минут" if prev["reason"] == "pause"
+               else "вы сбросили его командой /new")
+        out += f"\n<i>Прошлый диалог «{html.escape(prev['title'])}» закрыт ({why}) — его контекст я больше не вижу.</i>"
+    return out
 
 
 def trim(history: list):
