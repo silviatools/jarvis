@@ -1263,6 +1263,45 @@
   .st-subdel { color: var(--text-subtle); padding: 4px; }
   .st-note { width: 100%; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; font-size: 14px; background: var(--surface); resize: vertical; }
 
+  /* Учёба: комментарии к заданию */
+  .st-cms { display: flex; flex-direction: column; gap: 8px; }
+  .st-cm {
+    position: relative; padding: 8px 10px 10px 14px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border);
+    animation: stCardIn .3s cubic-bezier(.2,.9,.3,1.2) both; transition: border-color .2s, box-shadow .2s;
+  }
+  .st-cm::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: var(--c); opacity: .8; }
+  .st-cm.editing { border-color: color-mix(in srgb, var(--c) 55%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 14%, transparent); }
+  .st-cm-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 24px; margin-bottom: 2px; }
+  .st-cm-time { font-size: 11.5px; color: var(--text-subtle); letter-spacing: .01em; }
+  .st-cm-acts { display: flex; gap: 2px; margin-right: -4px; }
+  .st-cm-acts button { display: flex; padding: 5px 6px; border-radius: 8px; color: var(--text-subtle); transition: background .15s, color .15s, transform .15s; }
+  .st-cm-acts button:active { transform: scale(.88); background: color-mix(in srgb, var(--c) 14%, transparent); color: var(--text); }
+  .st-cm-acts button.del:active { background: #fee2e2; color: #dc2626; }
+  @media (hover: hover) {
+    .st-cm-acts button:hover { background: color-mix(in srgb, var(--c) 12%, transparent); color: var(--text); }
+    .st-cm-acts button.del:hover { background: #fee2e2; color: #dc2626; }
+  }
+  .st-cm-text { font-size: 14px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--text); }
+  .st-cm-edit { width: 100%; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; font-size: 14px; line-height: 1.45; background: var(--bg); resize: vertical; outline: none; }
+  .st-cm-edit:focus { border-color: color-mix(in srgb, var(--c) 60%, var(--border)); }
+  .st-cm-editbar { display: flex; justify-content: flex-end; gap: 6px; margin-top: 7px; }
+  .st-cm-btn { padding: 6px 13px; border-radius: 9px; font-size: 13px; font-weight: 500; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); transition: transform .15s, opacity .2s; }
+  .st-cm-btn:active { transform: scale(.95); }
+  .st-cm-btn.on { background: var(--c); border-color: var(--c); color: #fff; }
+  .st-cm-btn:disabled { opacity: .4; }
+  .st-cm-new {
+    display: flex; align-items: flex-end; gap: 8px; padding: 5px 5px 5px 13px; border-radius: 16px; background: var(--surface);
+    border: 1.5px solid var(--border); transition: border-color .2s, box-shadow .2s;
+  }
+  .st-cm-new:focus-within { border-color: color-mix(in srgb, var(--c) 60%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 14%, transparent); }
+  .st-cm-new textarea { flex: 1; min-width: 0; border: none; outline: none; background: transparent; resize: none; font-size: 14px; line-height: 1.45; padding: 7px 0; max-height: 140px; }
+  .st-cm-send {
+    flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%; background: var(--c); color: #fff; display: flex; align-items: center;
+    justify-content: center; transition: transform .15s cubic-bezier(.3,1.6,.5,1), opacity .2s;
+  }
+  .st-cm-send:disabled { opacity: .28; }
+  .st-cm-send:not(:disabled):active { transform: scale(.88); }
+
   .st-subj-row { display: flex; align-items: flex-start; gap: 8px; padding: 10px; border-radius: 14px; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--c); }
   .st-subj-emoji { width: 42px; height: 42px; text-align: center; font-size: 20px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); flex-shrink: 0; }
   .st-subj-name { width: 100%; font-size: 15px; font-weight: 600; border: none; outline: none; background: transparent; padding: 2px 0; }
@@ -13313,8 +13352,8 @@ const WRITE_REGISTRY = {
     cascadeDelete: [{ collection: 'studyTasks', field: 'subjectId' }],
   },
   studyTasks: {
-    label: 'Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note; attachments — файлы, только читать)',
-    createDefaults: () => ({ status: 'todo', kind: 'hw', due: '', important: false, subtasks: [], attachments: [], note: '', doneAt: 0 }),
+    label: 'Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note — описание задачи, comments [{id,text,at,editedAt?}] — комментарии пользователя (при правке передавать весь массив); attachments — файлы, только читать)',
+    createDefaults: () => ({ status: 'todo', kind: 'hw', due: '', important: false, subtasks: [], attachments: [], comments: [], note: '', doneAt: 0 }),
   },
   plannerFriends: {
     label: 'Друг-участник планировщика',
@@ -36696,6 +36735,7 @@ const newStudyTask = (subjectId, patch = {}) => ({
   important: false,
   subtasks: [],
   attachments: [],
+  comments: [],
   note: '',
   doneAt: 0,
   createdAt: Date.now(),
@@ -37166,7 +37206,7 @@ function StudyCard({ task, color, onOpen, onStatus, onToggleSub }) {
             {task.important && !isDone && <span className="st-imp">★</span>}
             {task.title || 'Без названия'}
           </div>
-          {(kind || due || subs.length > 0 || task.note || (task.attachments || []).length > 0) && (
+          {(kind || due || subs.length > 0 || task.note || (task.attachments || []).length > 0 || (task.comments || []).length > 0) && (
             <div className="st-meta">
               {kind && task.kind !== 'hw' && <span className="st-kind">{kind.emoji} {kind.label}</span>}
               {due && <span className={`st-due st-due-${isDone ? 'later' : due.tone}`}>{due.text}</span>}
@@ -37180,6 +37220,7 @@ function StudyCard({ task, color, onOpen, onStatus, onToggleSub }) {
                 </button>
               )}
               {(task.attachments || []).length > 0 && <span className="st-note-dot">📎 {task.attachments.length}</span>}
+              {(task.comments || []).length > 0 && <span className="st-note-dot" title="Комментарии">💬 {task.comments.length}</span>}
               {task.note && <span className="st-note-dot" title={task.note}>✎</span>}
             </div>
           )}
@@ -37271,6 +37312,15 @@ const STUDY_VIDEO_EXT = ['mp4', 'mov', 'm4v', 'webm'];
 const STUDY_MAX_FILE = 500 * 1048576;
 const studyAttUrl = (a) => `/api/${a.store === 'photos' ? 'photos' : 'files'}/${a.filename}`;
 const studyAttExt = (a) => ((a.name || a.filename || '').split('.').pop() || '').toLowerCase();
+const studyFmtStamp = (ms) => {
+  const d = new Date(ms), now = new Date(), y = new Date(now);
+  y.setDate(now.getDate() - 1);
+  const time = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === now.toDateString()) return `сегодня, ${time}`;
+  if (d.toDateString() === y.toDateString()) return `вчера, ${time}`;
+  const date = d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) });
+  return `${date}, ${time}`;
+};
 const studyFileSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} МБ` : `${Math.max(1, Math.round(n / 1024))} КБ`);
 const studyDeleteAttachments = (list) => (list || []).forEach(a =>
   (a.store === 'photos' ? deletePhoto(a.filename) : deleteFile(a.filename)));
@@ -37590,8 +37640,12 @@ function StudyAttachViewer({ att, onClose }) {
 }
 
 function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose }) {
-  const [t, setT] = useState(() => ({ subtasks: [], attachments: [], ...initial }));
+  const [t, setT] = useState(() => ({ subtasks: [], attachments: [], comments: [], ...initial }));
   const [subText, setSubText] = useState('');
+  const [cmText, setCmText] = useState('');
+  const [cmEditId, setCmEditId] = useState(null);
+  const [cmEditText, setCmEditText] = useState('');
+  const cmRef = useRef(null);
   const [showSettings, setShowSettings] = useState(false);
   const [uploading, setUploading] = useState(0);
   const [viewing, setViewing] = useState(null);
@@ -37603,6 +37657,7 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
   const subj = subjects.find(s => s.id === t.subjectId) || subjects[0];
   const kind = STUDY_KIND_BY_ID[t.kind] || STUDY_KIND_BY_ID.hw;
   const atts = t.attachments || [];
+  const comments = t.comments || [];
   const quickDue = [
     { label: 'Сегодня', v: studyAddDays(0) },
     { label: 'Завтра', v: studyAddDays(1) },
@@ -37614,6 +37669,26 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
     if (!text) return;
     set({ subtasks: [...(t.subtasks || []), { id: crypto.randomUUID(), text, done: false }] });
     setSubText('');
+  };
+
+  // Комментарии — часть черновика, как шаги: попадают в задание по «Сохранить».
+  const addComment = () => {
+    const text = cmText.trim();
+    if (!text) return;
+    set({ comments: [...comments, { id: crypto.randomUUID(), text, at: Date.now() }] });
+    setCmText('');
+    if (cmRef.current) cmRef.current.style.height = 'auto';
+  };
+  const startEditComment = (c) => { setCmEditId(c.id); setCmEditText(c.text); };
+  const saveEditComment = () => {
+    const text = cmEditText.trim();
+    if (!text) return;
+    set({ comments: comments.map(c => (c.id === cmEditId ? (c.text === text ? c : { ...c, text, editedAt: Date.now() }) : c)) });
+    setCmEditId(null);
+  };
+  const removeComment = (c) => {
+    set({ comments: comments.filter(x => x.id !== c.id) });
+    if (cmEditId === c.id) setCmEditId(null);
   };
 
   const onFiles = async (fileList) => {
@@ -37655,7 +37730,13 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
     const keep = new Set(atts.map(a => a.id));
     studyDeleteAttachments((initial.attachments || []).filter(a => !keep.has(a.id)));
     freshRef.current.clear();
-    onSave({ ...t, title: t.title.trim(), subjectId: subj.id });
+    let list = comments;
+    const editText = cmEditText.trim();
+    if (cmEditId && editText) {
+      list = list.map(c => (c.id === cmEditId && c.text !== editText ? { ...c, text: editText, editedAt: Date.now() } : c));
+    }
+    if (cmText.trim()) list = [...list, { id: crypto.randomUUID(), text: cmText.trim(), at: Date.now() }];
+    onSave({ ...t, comments: list, title: t.title.trim(), subjectId: subj.id });
   };
 
   return (
@@ -37735,8 +37816,60 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
           <input ref={fileRef} type="file" multiple hidden onChange={e => { onFiles(e.target.files); e.target.value = ''; }} />
         </div>
 
-        <label>Заметка</label>
-        <textarea className="st-note" rows={2} value={t.note || ''} placeholder="Номера задач, ссылка, страницы…" onChange={e => set({ note: e.target.value })} />
+        <label>Описание задачи</label>
+        <textarea className="st-note" rows={2} value={t.note || ''} placeholder="Что именно сделать: номера задач, ссылка, страницы…" onChange={e => set({ note: e.target.value })} />
+
+        <label>Комментарии {comments.length > 0 && `· ${comments.length}`}</label>
+        <div className="st-cms">
+          {comments.map(c => (
+            <div key={c.id} className={`st-cm ${cmEditId === c.id ? 'editing' : ''}`}>
+              <div className="st-cm-head">
+                <span className="st-cm-time">{studyFmtStamp(c.at)}{c.editedAt ? ' · изменён' : ''}</span>
+                {cmEditId !== c.id && (
+                  <span className="st-cm-acts">
+                    <button title="Изменить" onClick={() => startEditComment(c)}><Icon name="edit" size={14} /></button>
+                    <button className="del" title="Удалить" onClick={() => removeComment(c)}><Icon name="trash" size={14} /></button>
+                  </span>
+                )}
+              </div>
+              {cmEditId === c.id ? (
+                <>
+                  <textarea
+                    className="st-cm-edit"
+                    autoFocus
+                    rows={3}
+                    value={cmEditText}
+                    onChange={e => setCmEditText(e.target.value)}
+                    onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') saveEditComment(); }}
+                  />
+                  <div className="st-cm-editbar">
+                    <button className="st-cm-btn" onClick={() => setCmEditId(null)}>Отмена</button>
+                    <button className="st-cm-btn on" disabled={!cmEditText.trim()} onClick={saveEditComment}>Готово</button>
+                  </div>
+                </>
+              ) : (
+                <div className="st-cm-text">{c.text}</div>
+              )}
+            </div>
+          ))}
+          <div className="st-cm-new">
+            <textarea
+              ref={cmRef}
+              rows={1}
+              value={cmText}
+              placeholder="Написать комментарий…"
+              onChange={e => {
+                setCmText(e.target.value);
+                e.target.style.height = 'auto';
+                e.target.style.height = `${Math.min(e.target.scrollHeight, 140)}px`;
+              }}
+              onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); addComment(); } }}
+            />
+            <button className="st-cm-send" title="Добавить комментарий" disabled={!cmText.trim()} onClick={addComment}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
+            </button>
+          </div>
+        </div>
 
         {/* Редко меняемое — свернуто, в заголовке видно текущее значение */}
         <button className={`st-settings-toggle ${showSettings ? 'open' : ''}`} onClick={() => setShowSettings(v => !v)}>

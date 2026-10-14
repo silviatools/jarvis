@@ -4307,7 +4307,7 @@ ASSISTANT_DATA_DOMAINS = {
             "programs": app.get("gymPrograms", []), "days": app.get("gymDays", []),
             "exercises": app.get("gymExercises", []), "sessions": app.get("gymSessions", [])[-40:],
         }),
-    "study": ("Учёба: предметы (столбцы канбана, с заметкой note о предмете/преподавателе) и задания в них (status: todo|doing|done, due YYYY-MM-DD, kind: hw|test|exam|project|lab|read|other, important, subtasks)",
+    "study": ("Учёба: предметы (столбцы канбана, с заметкой note о предмете/преподавателе) и задания в них (status: todo|doing|done, due YYYY-MM-DD, kind: hw|test|exam|project|lab|read|other, important, subtasks, note — описание задачи, comments — комментарии пользователя, attachments — вложения)",
         lambda app: {
             "subjects": app.get("studySubjects", []),
             "tasks": [t for t in app.get("studyTasks", [])
@@ -4511,8 +4511,8 @@ WRITE_REGISTRY = {
         "cascade_delete": [{"collection": "studyTasks", "field": "subjectId"}],
     },
     "studyTasks": {
-        "label": "Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note; attachments — файлы: класть через study_attach_file, читать/отдавать через study_get_attachment, не править через update_record)",
-        "create_defaults": lambda: {"status": "todo", "kind": "hw", "due": "", "important": False, "subtasks": [], "attachments": [], "note": "", "doneAt": 0, "createdAt": int(time.time() * 1000)},
+        "label": "Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note — описание задачи, comments [{id,text,at,editedAt?}] — комментарии пользователя (при правке передавать весь массив целиком; at/editedAt — мс), attachments — файлы: класть через study_attach_file, читать/отдавать через study_get_attachment, не править через update_record)",
+        "create_defaults": lambda: {"status": "todo", "kind": "hw", "due": "", "important": False, "subtasks": [], "attachments": [], "comments": [], "note": "", "doneAt": 0, "createdAt": int(time.time() * 1000)},
     },
     "plannerFriends": {
         "label": "Друг-участник планировщика",
