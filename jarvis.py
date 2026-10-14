@@ -1117,7 +1117,7 @@ def build_backup_zip() -> bytes:
             seen_arcnames.add(arcname)
             zf.write(path, arcname=arcname)
 
-        data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json"}
+        data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
@@ -3844,6 +3844,111 @@ def execute_study_tool(name: str, inp: dict) -> dict:
     return {"error": "unknown_tool"}
 
 
+# ── Учёба: напоминание «рассказать результат на паре» ────────────────────────
+# В задании (studyTasks[].present = {date, time, remind, lesson?}) пользователь
+# отмечает, когда будет рассказывать результат: выбрав пару своего предмета из
+# расписания или произвольные дату и время. В это время (или за remind минут до
+# него) в Telegram приходит напоминание. Отправленное помним в файле, чтобы не
+# слать дважды; окно догонки — несколько минут на случай рестарта или сдвига
+# минутного цикла.
+
+STUDY_PRESENT_STATE_FILE = DATA_DIR / "jarvis_study_present_state.json"
+STUDY_PRESENT_WINDOW_MIN = 5
+_STUDY_PRESENT_LOCK = threading.Lock()
+
+
+def _study_present_when(p: dict, now: datetime) -> datetime:
+    """Момент рассказа (МСК) или ValueError, если дата/время кривые."""
+    d = date.fromisoformat(str(p.get("date") or "")[:10])
+    hh, mm = str(p.get("time") or "").split(":")[:2]
+    return datetime(d.year, d.month, d.day, int(hh), int(mm), tzinfo=MSK)
+
+
+def study_present_due(app: dict, now: datetime, sent: dict) -> list:
+    """Какие напоминания пора отправить: [(task, subject, event_dt, remind_min, key)]."""
+    subjects = {x.get("id"): x for x in app.get("studySubjects") or []}
+    due = []
+    for t in app.get("studyTasks") or []:
+        p = t.get("present")
+        if not isinstance(p, dict) or t.get("status") == "done" or t.get("subjectId") not in subjects:
+            continue
+        try:
+            event_dt = _study_present_when(p, now)
+            remind = max(0, min(10080, int(p.get("remind") or 0)))
+        except (ValueError, TypeError):
+            continue
+        fire = event_dt - timedelta(minutes=remind)
+        key = f"{t.get('id')}|{p.get('date')}|{p.get('time')}|{remind}"
+        if key in sent:
+            continue
+        if fire <= now <= fire + timedelta(minutes=STUDY_PRESENT_WINDOW_MIN):
+            due.append((t, subjects[t["subjectId"]], event_dt, remind, key))
+    return due
+
+
+def study_present_text(task: dict, subject: dict, event_dt: datetime, remind: int, now: datetime) -> str:
+    p = task.get("present") or {}
+    if remind <= 0:
+        head = "сейчас"
+    elif remind < 60:
+        head = f"через {remind} мин"
+    elif remind < 1440:
+        head = "через час" if remind == 60 else f"через {remind // 60} ч"
+    else:
+        head = "завтра" if event_dt.date() > now.date() else "сегодня"
+    when = f"{event_dt.strftime('%H:%M')}" if event_dt.date() == now.date() else \
+        f"{event_dt.strftime('%d.%m')} в {event_dt.strftime('%H:%M')}"
+    lines = [f"🎤 <b>Рассказать результат — {head}</b>", "",
+             f"<b>{html.escape(task.get('title') or 'Задание')}</b>",
+             f"{html.escape(subject.get('emoji') or '📘')} {html.escape(subject.get('name') or '')}"]
+    lesson = p.get("lesson") if isinstance(p.get("lesson"), dict) else {}
+    bits = []
+    if lesson.get("pair"):
+        bits.append(f"{html.escape(str(lesson['pair']))} пара")
+    bits.append(when if not lesson.get("end") else f"{when}–{html.escape(str(lesson['end']))}")
+    if lesson.get("room"):
+        bits.append(f"ауд. {html.escape(str(lesson['room']))}")
+    if lesson.get("kind"):
+        bits.append(html.escape(str(lesson["kind"])))
+    lines.append("📍 " + " · ".join(bits))
+    subs_ = task.get("subtasks") or []
+    left = [x for x in subs_ if not x.get("done")]
+    if left:
+        lines.append(f"☑️ Шагов осталось: {len(left)} из {len(subs_)}")
+    note = (task.get("note") or "").strip()
+    if note:
+        lines += ["", f"<i>{html.escape(note[:240])}{'…' if len(note) > 240 else ''}</i>"]
+    return "\n".join(lines)
+
+
+def study_present_tick(app: dict, subs: dict, token: str, now: datetime = None) -> int:
+    """Минутный цикл: шлёт созревшие напоминания. Возвращает, сколько отправлено."""
+    now = now or now_msk()
+    with _STUDY_PRESENT_LOCK:
+        try:
+            sent = json.loads(STUDY_PRESENT_STATE_FILE.read_text(encoding="utf-8")) if STUDY_PRESENT_STATE_FILE.exists() else {}
+        except Exception:
+            sent = {}
+        cutoff = (now - timedelta(days=14)).timestamp()
+        sent = {k: v for k, v in sent.items() if isinstance(v, (int, float)) and v > cutoff}
+        n = 0
+        recipients = recipients_for(app, subs, "study")
+        for task, subject, event_dt, remind, key in study_present_due(app, now, sent):
+            if not recipients:
+                continue
+            text = study_present_text(task, subject, event_dt, remind, now)
+            print(f"[{now.strftime('%H:%M')} MSK] → study present: {task.get('title')} ({len(recipients)} subscriber(s))")
+            for cid in recipients:
+                send_message(token, cid, text)
+            sent[key] = now.timestamp()
+            n += 1
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = STUDY_PRESENT_STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(sent), encoding="utf-8")
+        tmp.replace(STUDY_PRESENT_STATE_FILE)
+        return n
+
+
 # ── Погода → Apple Календарь ────────────────────────────────────────────────
 # В выбранные дни и время сервер берёт прогноз Open-Meteo для города из
 # Настроек (Общее → Погода) и пишет по событию на каждый из ближайших дней в
@@ -4506,12 +4611,12 @@ WRITE_REGISTRY = {
     },
     "wishlistItems": {"label": "Хотелка", "create_defaults": lambda: {"bought": False}},
     "studySubjects": {
-        "label": "Предмет в «Учёбе» (столбец канбана: name, emoji, color, order, note — заметка о предмете/преподавателе)",
+        "label": "Предмет в «Учёбе» (столбец канбана: name, emoji, color, order, note — заметка о предмете/преподавателе, reaSubject — название этого предмета в расписании пар)",
         "create_defaults": lambda: {"emoji": "📘", "color": "#6366f1", "order": 0, "note": ""},
         "cascade_delete": [{"collection": "studyTasks", "field": "subjectId"}],
     },
     "studyTasks": {
-        "label": "Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note — описание задачи, comments [{id,text,at,editedAt?}] — комментарии пользователя (при правке передавать весь массив целиком; at/editedAt — мс), attachments — файлы: класть через study_attach_file, читать/отдавать через study_get_attachment, не править через update_record)",
+        "label": "Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note — описание задачи, comments [{id,text,at,editedAt?}] — комментарии пользователя (при правке передавать весь массив целиком; at/editedAt — мс), present {date YYYY-MM-DD, time HH:MM, remind минут до (0|15|60|1440), lesson?} — когда пользователь будет рассказывать результат на паре (в это время придёт напоминание в Telegram; null — убрать), attachments — файлы: класть через study_attach_file, читать/отдавать через study_get_attachment, не править через update_record)",
         "create_defaults": lambda: {"status": "todo", "kind": "hw", "due": "", "important": False, "subtasks": [], "attachments": [], "comments": [], "note": "", "doneAt": 0, "createdAt": int(time.time() * 1000)},
     },
     "plannerFriends": {
@@ -6419,6 +6524,12 @@ def _tick():
                 send_message(token, cid, text)
     except Exception as e:
         print(f"[{now_str} MSK] debts reminder error: {e}")
+
+    # ── Учёба: «рассказать результат на паре» ──────────────────────────────
+    try:
+        study_present_tick(app_data_raw, subs, token)
+    except Exception as e:
+        print(f"[{now_str} MSK] study present reminder error: {e}")
 
     # ── Kanban tasks: one-off reminder at notifyDate + notifyTime (MSK) ────
     try:

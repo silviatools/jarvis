@@ -1285,6 +1285,29 @@
   }
   .st-cm-text { font-size: 14px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--text); }
   .st-cm-edit { width: 100%; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; font-size: 14px; line-height: 1.45; background: var(--bg); resize: vertical; outline: none; }
+  /* Учёба: «рассказать результат на паре» и связь предметов с расписанием */
+  .st-pres { padding: 12px 0 2px; }
+  .st-pres-head { display: flex; align-items: center; justify-content: space-between; min-height: 24px; margin-bottom: 8px; font-size: 13px; font-weight: 600; }
+  .st-pres-x { display: flex; padding: 4px; border-radius: 8px; color: var(--text-subtle); }
+  .st-pres-x:active { background: color-mix(in srgb, var(--c) 14%, transparent); }
+  .st-pres-chips, .st-pres-row, .st-pres-rem { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .st-pres-row { gap: 8px; }
+  .st-pres-rem { margin-top: 10px; font-size: 12px; color: var(--text-muted); }
+  .st-pres-info { margin-top: 7px; font-size: 12px; color: var(--text-muted); }
+  .st-pres-hint { font-size: 12.5px; color: var(--text-muted); }
+  .st-pres-hint.mt { margin-top: 8px; }
+  .st-pres-map { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; font-size: 12.5px; color: var(--text-muted); }
+  .st-pres-map input, .st-subj-rea input, .st-subj-add.rea input {
+    flex: 1; min-width: 150px; border: 1px solid var(--border); border-radius: 9px; padding: 6px 9px; font-size: 13px; background: var(--bg); outline: none;
+  }
+  .st-pres-map input:focus, .st-subj-rea input:focus, .st-subj-add.rea input:focus { border-color: var(--c, var(--border-strong)); }
+  .st-pres-sep { height: 1px; background: var(--border); margin: 14px 0 4px; }
+  .st-pres-chip { font-size: 11px; font-weight: 500; padding: 2px 7px; border-radius: 7px; white-space: nowrap; background: #fdf2f8; color: #be185d; }
+  .st-subj-rea { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; }
+  .st-subj-rea input { padding: 4px 8px; font-size: 12.5px; }
+  .st-subj-rea button { display: flex; padding: 4px; border-radius: 7px; color: var(--text-subtle); }
+  .st-subj-add.rea { margin-top: 6px; align-items: center; gap: 6px; }
+  .st-subj-add.rea input { font-size: 13px; }
   .st-cm-edit:focus { border-color: color-mix(in srgb, var(--c) 60%, var(--border)); }
   .st-cm-editbar { display: flex; justify-content: flex-end; gap: 6px; margin-top: 7px; }
   .st-cm-btn { padding: 6px 13px; border-radius: 9px; font-size: 13px; font-weight: 500; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); transition: transform .15s, opacity .2s; }
@@ -36737,6 +36760,69 @@ const studyTaskSort = (a, b) => {
   return (a.createdAt || 0) - (b.createdAt || 0);
 };
 
+// ── Связь столбцов доски с предметами расписания (rasp.rea.ru) ──
+// Расписание тянет сервер (/api/study/lessons, кэш на 6 часов); тут — один общий запрос
+// на всё окно «Учёбы» и мягкое сопоставление названий.
+let studyLessonsMemo = null;
+const studyLoadLessons = (force) => {
+  if (!force && studyLessonsMemo && Date.now() - studyLessonsMemo.at < 5 * 60000) return studyLessonsMemo.promise;
+  // Окно не шире 5 недель: дальше сервер каждый раз ходил бы на сайт за неопубликованным.
+  const promise = fetch(`/api/study/lessons?from=${studyAddDays(0)}&to=${studyAddDays(35)}`)
+    .then(r => r.json())
+    .catch(e => ({ error: 'Сервер не ответил: ' + e.message }));
+  studyLessonsMemo = { at: Date.now(), promise };
+  return promise;
+};
+const studyNormName = (s) => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+const studyStems = (s) => studyNormName(s).split(' ').filter(w => w.length >= 3).map(w => w.slice(0, 5));
+const studyMatchScore = (a, b) => {
+  const na = studyNormName(a), nb = studyNormName(b);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+  if (na.includes(nb) || nb.includes(na)) return 0.9;
+  const A = studyStems(a), B = studyStems(b);
+  if (!A.length || !B.length) return 0;
+  const bs = new Set(B), as = new Set(A);
+  const common = A.filter(x => bs.has(x)).length;
+  if (!common) return 0;
+  if (common === Math.min(as.size, bs.size)) return 0.75;   // «Логистика» ⊂ «Управление логистикой»
+  return common / Math.max(as.size, bs.size);
+};
+// Лучший предмет расписания для названия столбца: порог 0.6 и единственный лидер
+// (два одинаково похожих — не угадываем, пусть выберет пользователь).
+const studyBestReaName = (name, names, taken) => {
+  const scored = names.map(n => ({ n, sc: studyMatchScore(name, n) })).filter(x => x.sc >= 0.6).sort((a, b) => b.sc - a.sc);
+  if (!scored.length) return '';
+  if (scored.length > 1 && scored[1].sc === scored[0].sc) return '';
+  if (scored[0].sc < 1 && taken && taken.has(scored[0].n)) return '';
+  return scored[0].n;
+};
+const studyReaNames = (lessons) => {
+  const seen = new Set(), out = [];
+  (lessons || []).forEach(l => { const k = studyNormName(l.subject); if (k && !seen.has(k)) { seen.add(k); out.push(l.subject); } });
+  return out;
+};
+// Ближайшие пары предмета: не прошедшие, без дублей слота.
+const studySubjectLessons = (lessons, reaName) => {
+  const key = studyNormName(reaName);
+  if (!key) return [];
+  const now = new Date();
+  const today = dateToLocalStr(now), hhmm = now.toTimeString().slice(0, 5);
+  const seen = new Set();
+  return (lessons || [])
+    .filter(l => studyNormName(l.subject) === key && (l.date > today || (l.date === today && (l.end || l.start) > hhmm)))
+    .filter(l => { const k = `${l.date}|${l.start}`; if (seen.has(k)) return false; seen.add(k); return true; })
+    .sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start))
+    .slice(0, 8);
+};
+const studyPresentUpcoming = (t) => !!(t && t.present && t.present.date && t.present.date >= studyAddDays(0));
+const studyPresentLabel = (p) => {
+  const d = studyParseISO(p && p.date);
+  if (!d) return '';
+  return `${STUDY_WD[d.getDay()]}, ${d.getDate()} ${STUDY_MON[d.getMonth()]}${p.time ? ` · ${p.time}` : ''}`;
+};
+const STUDY_REMIND = [{ v: 0, label: 'в это время' }, { v: 15, label: 'за 15 мин' }, { v: 60, label: 'за час' }, { v: 1440, label: 'за день' }];
+
 const studySortSubjects = (list) =>
   [...list].sort((a, b) => ((a.order ?? 0) - (b.order ?? 0)) || ((a.createdAt || 0) - (b.createdAt || 0)));
 
@@ -36838,6 +36924,39 @@ function StudyView({ data, setData, onBack }) {
   const boardRef = useRef(null);
 
   useEffect(() => { try { localStorage.setItem('studyView', view); } catch {} }, [view]);
+
+  // Расписание пар: нужно окну задания (пары предмета) и окну предметов (список для связи).
+  // Столбцы, у которых связи ещё нет (reaSubject не задан), связываем сами по названию;
+  // явное «без связи» хранится как пустая строка и больше не трогается.
+  const [rea, setRea] = useState({ loaded: false, lessons: [], names: [], error: '' });
+  const subjectsKey = subjects.map(s => `${s.id}:${s.name}:${s.reaSubject === undefined ? '-' : 'x'}`).join('|');
+  useEffect(() => {
+    let off = false;
+    studyLoadLessons().then(res => {
+      if (off) return;
+      const lessons = (res && res.lessons) || [];
+      const names = studyReaNames(lessons);
+      setRea({ loaded: true, lessons, names, error: (res && res.error) || '' });
+      const todo = subjects.filter(s => s.reaSubject === undefined);
+      if (!names.length || !todo.length) return;
+      const taken = new Set(subjects.map(s => s.reaSubject).filter(Boolean));
+      const patches = {};
+      todo.forEach(s => {
+        const m = studyBestReaName(s.name, names, taken);
+        if (m) { patches[s.id] = m; taken.add(m); }
+      });
+      if (Object.keys(patches).length) {
+        setData(d => ({
+          ...d,
+          studySubjects: (d.studySubjects || []).map(x => (patches[x.id] && x.reaSubject === undefined ? { ...x, reaSubject: patches[x.id] } : x)),
+        }));
+      }
+    });
+    return () => { off = true; };
+  }, [subjectsKey]);
+  const mapSubject = (id, reaSubject) => setData(d => ({
+    ...d, studySubjects: (d.studySubjects || []).map(x => (x.id === id ? { ...x, reaSubject } : x)),
+  }));
 
   // «/» — быстро в поиск (как на сайтах), пока курсор не в поле ввода.
   useEffect(() => {
@@ -36985,7 +37104,7 @@ function StudyView({ data, setData, onBack }) {
             <button className="btn-primary text-sm st-go" onClick={createPicked}>Создать доску · {picked.length}</button>
           )}
         </div>
-        {manage && <StudySubjectsModal data={data} setData={setData} onClose={() => setManage(false)} />}
+        {manage && <StudySubjectsModal data={data} setData={setData} rea={rea} onClose={() => setManage(false)} />}
       </div>
     );
   }
@@ -37095,12 +37214,14 @@ function StudyView({ data, setData, onBack }) {
           initial={editing}
           subjects={subjects}
           isNew={!tasks.some(t => t.id === editing.id)}
+          rea={rea}
+          onMapSubject={mapSubject}
           onSave={saveTask}
           onDelete={deleteTask}
           onClose={() => setEditing(null)}
         />
       )}
-      {manage && <StudySubjectsModal data={data} setData={setData} onClose={() => setManage(false)} />}
+      {manage && <StudySubjectsModal data={data} setData={setData} rea={rea} onClose={() => setManage(false)} />}
     </div>
   );
 }
@@ -37291,10 +37412,11 @@ function StudyCard({ task, color, onOpen, onStatus, onToggleSub }) {
             {task.important && !isDone && <span className="st-imp">★</span>}
             {task.title || 'Без названия'}
           </div>
-          {(kind || due || subs.length > 0 || task.note || (task.attachments || []).length > 0 || (task.comments || []).length > 0) && (
+          {(kind || due || subs.length > 0 || task.note || (task.attachments || []).length > 0 || (task.comments || []).length > 0 || studyPresentUpcoming(task)) && (
             <div className="st-meta">
               {kind && task.kind !== 'hw' && <span className="st-kind">{kind.emoji} {kind.label}</span>}
               {due && <span className={`st-due st-due-${isDone ? 'later' : due.tone}`}>{due.text}</span>}
+              {studyPresentUpcoming(task) && !isDone && <span className="st-pres-chip" title="Рассказать результат на паре">🎤 {studyPresentLabel(task.present)}</span>}
               {subs.length > 0 && (
                 <button
                   className="st-subs"
@@ -37365,6 +37487,7 @@ function StudyAgenda({ tasks, subjects, onOpen, onStatus }) {
                     <div className="st-meta">
                       <span className="st-arow-subj">{s.emoji || '📘'} {s.name}</span>
                       {kind && t.kind !== 'hw' && <span className="st-kind">{kind.emoji} {kind.label}</span>}
+                      {studyPresentUpcoming(t) && <span className="st-pres-chip" title="Рассказать результат на паре">🎤 {studyPresentLabel(t.present)}</span>}
                       {t.subtasks && t.subtasks.length > 0 && <span className="st-kind">{t.subtasks.filter(x => x.done).length}/{t.subtasks.length}</span>}
                     </div>
                   </div>
@@ -37724,7 +37847,7 @@ function StudyAttachViewer({ att, onClose }) {
   );
 }
 
-function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose }) {
+function StudyTaskModal({ initial, subjects, isNew, rea, onMapSubject, onSave, onDelete, onClose }) {
   const [t, setT] = useState(() => ({ subtasks: [], attachments: [], comments: [], ...initial }));
   const [subText, setSubText] = useState('');
   const [cmText, setCmText] = useState('');
@@ -37743,6 +37866,13 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
   const kind = STUDY_KIND_BY_ID[t.kind] || STUDY_KIND_BY_ID.hw;
   const atts = t.attachments || [];
   const comments = t.comments || [];
+  const present = t.present && t.present.date ? t.present : null;
+  const setPresent = (patch) => set({ present: { date: '', time: '', remind: 0, ...(t.present || {}), ...patch } });
+  const reaName = subj.reaSubject || '';
+  const subjLessons = studySubjectLessons(rea && rea.lessons, reaName);
+  const pickLesson = (l) => set({ present: { date: l.date, time: l.start, remind: (t.present && t.present.remind) || 0,
+    lesson: { pair: l.pair || '', start: l.start, end: l.end || '', room: l.room || '', kind: l.kind || '' } } });
+  const customPresent = () => setPresent({ date: t.due || studyAddDays(1), time: '10:00', lesson: null });
   const quickDue = [
     { label: 'Сегодня', v: studyAddDays(0) },
     { label: 'Завтра', v: studyAddDays(1) },
@@ -37821,7 +37951,7 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
       list = list.map(c => (c.id === cmEditId && c.text !== editText ? { ...c, text: editText, editedAt: Date.now() } : c));
     }
     if (cmText.trim()) list = [...list, { id: crypto.randomUUID(), text: cmText.trim(), at: Date.now() }];
-    onSave({ ...t, comments: list, title: t.title.trim(), subjectId: subj.id });
+    onSave({ ...t, comments: list, present: present && present.time ? present : null, title: t.title.trim(), subjectId: subj.id });
   };
 
   return (
@@ -37966,11 +38096,66 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
         <button className={`st-settings-toggle ${showSettings ? 'open' : ''}`} onClick={() => setShowSettings(v => !v)}>
           <Icon name="settings" size={16} />
           <span className="flex-1 text-left">Настройки</span>
-          {!showSettings && <span className="st-settings-sum">{subj.emoji || '📘'} {subj.name} · {kind.emoji} {kind.label}</span>}
+          {!showSettings && <span className="st-settings-sum">{present ? `🎤 ${studyPresentLabel(present)} · ` : ''}{subj.emoji || '📘'} {subj.name} · {kind.emoji} {kind.label}</span>}
           <span className="st-settings-chev"><Icon name="chevronDown" size={16} /></span>
         </button>
         {showSettings && (
           <div className="st-settings-body">
+            <div className="st-pres">
+              <div className="st-pres-head">
+                <span>🎤 Рассказать результат на паре</span>
+                {present && <button className="st-pres-x" title="Убрать" onClick={() => set({ present: null })}><Icon name="x" size={14} /></button>}
+              </div>
+              {!present ? (
+                <>
+                  <div className="st-pres-chips">
+                    {!rea || !rea.loaded
+                      ? <span className="st-pres-hint">Загружаю расписание…</span>
+                      : subjLessons.map(l => (
+                        <button key={`${l.date}|${l.start}`} className="st-pill" title={[l.pair && `${l.pair} пара`, l.kind, l.room && `ауд. ${l.room}`].filter(Boolean).join(' · ')} onClick={() => pickLesson(l)}>
+                          {studyPresentLabel({ date: l.date, time: l.start })}
+                        </button>
+                      ))}
+                    <button className="st-pill" onClick={customPresent}>Другая дата…</button>
+                  </div>
+                  {rea && rea.loaded && rea.error && <div className="st-pres-hint mt">{rea.error.includes('группа') ? 'Расписание не подключено (Настройки → Учёба) — можно выбрать дату вручную.' : rea.error}</div>}
+                  {rea && rea.loaded && !rea.error && !reaName && (
+                    <div className="st-pres-map">
+                      <span>Предмет не связан с расписанием:</span>
+                      <input
+                        list="st-rea-names"
+                        placeholder="выбрать из расписания…"
+                        defaultValue=""
+                        onChange={e => { const v = e.target.value; if (rea.names.includes(v)) onMapSubject(subj.id, v); }}
+                        onBlur={e => { const v = e.target.value.trim(); if (v) onMapSubject(subj.id, v); }}
+                      />
+                      <datalist id="st-rea-names">{rea.names.map(n => <option key={n} value={n} />)}</datalist>
+                    </div>
+                  )}
+                  {rea && rea.loaded && !rea.error && reaName && subjLessons.length === 0 && (
+                    <div className="st-pres-hint mt">Ближайших пар по «{reaName}» в расписании нет — выберите дату вручную.</div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="st-pres-row">
+                    <input type="date" className="st-date" value={present.date} onChange={e => setPresent({ date: e.target.value, lesson: null })} />
+                    <input type="time" className="st-date" value={present.time || ''} onChange={e => setPresent({ time: e.target.value, lesson: null })} />
+                  </div>
+                  {present.lesson && (
+                    <div className="st-pres-info">{[present.lesson.pair && `${present.lesson.pair} пара`, present.lesson.start && present.lesson.end && `${present.lesson.start}–${present.lesson.end}`, present.lesson.room && `ауд. ${present.lesson.room}`, present.lesson.kind].filter(Boolean).join(' · ')}</div>
+                  )}
+                  <div className="st-pres-rem">
+                    <span>Напомнить в Telegram:</span>
+                    {STUDY_REMIND.map(r => (
+                      <button key={r.v} className={`st-pill ${(present.remind || 0) === r.v ? 'on' : ''}`} onClick={() => setPresent({ remind: r.v })}>{r.label}</button>
+                    ))}
+                  </div>
+                  {!present.time && <div className="st-pres-hint mt">Укажите время — иначе напоминание не придёт.</div>}
+                </>
+              )}
+            </div>
+            <div className="st-pres-sep" />
             <label>Предмет</label>
             <div className="st-pills">
               {subjects.map(s => (
@@ -38011,11 +38196,15 @@ function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose })
   );
 }
 
-function StudySubjectsModal({ data, setData, onClose }) {
+function StudySubjectsModal({ data, setData, rea, onClose }) {
   const subjects = studySortSubjects(data.studySubjects || []);
   const tasks = data.studyTasks || [];
   const [name, setName] = useState('');
   const [emoji, setEmoji] = useState('📘');
+  const [reaNew, setReaNew] = useState('');
+  const reaNames = (rea && rea.names) || [];
+  // Подсказка для нового предмета: что в расписании похоже на введённое название.
+  const reaGuess = reaNew ? '' : studyBestReaName(name, reaNames, new Set(subjects.map(s => s.reaSubject).filter(Boolean)));
 
   const update = (id, patch) => setData(d => ({
     ...d, studySubjects: (d.studySubjects || []).map(s => (s.id === id ? { ...s, ...patch } : s)),
@@ -38031,11 +38220,13 @@ function StudySubjectsModal({ data, setData, onClose }) {
         studySubjects: [...list, {
           id: crypto.randomUUID(), name: n, emoji: emoji.trim() || '📘',
           color: STUDY_COLORS[list.length % STUDY_COLORS.length], order: maxOrder + 1, createdAt: Date.now(),
+          ...(reaNew.trim() ? { reaSubject: reaNew.trim() } : {}),   // иначе свяжется само по названию
         }],
       };
     });
     setName('');
     setEmoji('📘');
+    setReaNew('');
   };
   // Перестановка — переписываем order всем подряд: у изменившихся setData
   // поставит свежий updatedAt, и порядок одинаково соберётся на всех устройствах.
@@ -38083,6 +38274,16 @@ function StudySubjectsModal({ data, setData, onClose }) {
                   <button key={c} className={s.color === c ? 'on' : ''} style={{ background: c }} onClick={() => update(s.id, { color: c })} />
                 ))}
               </div>
+              <div className="st-subj-rea" title="Как этот предмет называется в расписании пар — по нему подбираются пары для напоминаний">
+                <span>📅</span>
+                <input
+                  list="st-rea-names-all"
+                  value={s.reaSubject || ''}
+                  placeholder={rea && rea.loaded && !reaNames.length ? 'расписание не подключено' : 'предмет в расписании: не связан'}
+                  onChange={e => update(s.id, { reaSubject: e.target.value })}
+                />
+                {s.reaSubject && <button onClick={() => update(s.id, { reaSubject: '' })} title="Отвязать"><Icon name="x" size={12} /></button>}
+              </div>
               <textarea
                 className="st-subj-note"
                 rows={1}
@@ -38105,6 +38306,17 @@ function StudySubjectsModal({ data, setData, onClose }) {
         <input className="flex-1" value={name} placeholder="Новый предмет" onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} />
         <button className="btn-primary px-4 py-2.5" onClick={add} disabled={!name.trim()}><Icon name="plus" size={18} /></button>
       </div>
+      <div className="st-subj-add rea">
+        <span>📅</span>
+        <input
+          list="st-rea-names-all"
+          value={reaNew}
+          placeholder={reaGuess ? `в расписании, похоже: ${reaGuess}` : 'Предмет в расписании (необязательно)'}
+          onChange={e => { setReaNew(e.target.value); if (!name.trim() && reaNames.includes(e.target.value)) setName(e.target.value); }}
+        />
+        {reaGuess && <button className="st-pill on" onClick={() => setReaNew(reaGuess)}>Связать</button>}
+      </div>
+      <datalist id="st-rea-names-all">{reaNames.map(n => <option key={n} value={n} />)}</datalist>
 
       {STUDY_PRESETS.some(p => !subjects.some(s => s.name === p.name)) && (
         <div className="flex flex-wrap gap-1.5 mt-3">
