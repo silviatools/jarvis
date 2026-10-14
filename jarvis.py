@@ -183,6 +183,7 @@ SPA_ROUTES = {
     "/mybody", "/budget", "/supplements", "/meals", "/weather",
     "/house", "/cars", "/holidays", "/settings", "/planner", "/health",
     "/misc", "/wishlist", "/cards", "/gym", "/music", "/knowledge", "/quiz",
+    "/study",
 }
 
 # Deep-link routes that get their OWN <link rel="manifest"> (and Apple home-
@@ -293,7 +294,20 @@ MAX_EVENT_SHOPPING_QTY   = 40    # «2 л», «1 пачка» — свободн
 ALLOWED_FILE_EXT = {
     "pdf", "doc", "docx", "xls", "xlsx", "txt", "rtf", "csv",
     "png", "jpg", "jpeg", "webp", "heic", "gif",
+    "ppt", "pptx", "zip", "ods", "heif",
+    # Аудио (записи лекций) и текст/код — у них есть быстрый просмотр в «Учёбе».
+    "mp3", "m4a", "wav", "ogg", "aac",
+    "md", "json", "xml", "html", "css", "js", "ts", "py", "java", "c", "cpp", "h", "cs", "sql",
+    # Видео — вложения к заданиям в «Учёбе»: отдаются с Range (см. _serve_ranged).
+    "mp4", "mov", "m4v", "webm",
 }
+VIDEO_FILE_EXT = {"mp4", "mov", "m4v", "webm"}
+# Потолок одного файла в /api/files (вложения в «Учёбе», файлы программ):
+# тело пишется на диск потоком, так что память он не ограничивает.
+MAX_UPLOAD_FILE = 500 * 1024 * 1024
+# Бэкап собирается в памяти и уходит в Telegram — крупные файлы в него не
+# кладём, иначе одно видео раздувает архив и съедает RAM.
+BACKUP_MAX_FILE_BYTES = 50 * 1024 * 1024
 FILE_CONTENT_TYPES = {
     "pdf": "application/pdf", "doc": "application/msword",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -302,6 +316,15 @@ FILE_CONTENT_TYPES = {
     "txt": "text/plain; charset=utf-8", "rtf": "application/rtf", "csv": "text/csv",
     "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
     "webp": "image/webp", "heic": "image/heic", "gif": "image/gif",
+    "ppt": "application/vnd.ms-powerpoint",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "zip": "application/zip",
+    "ods": "application/vnd.oasis.opendocument.spreadsheet", "heif": "image/heif",
+    "mp3": "audio/mpeg", "m4a": "audio/mp4", "wav": "audio/wav", "ogg": "audio/ogg", "aac": "audio/aac",
+    # Текст и код отдаём как plain text: html/js/css иначе браузер исполнил бы
+    # при открытии ссылки — а это чужие файлы, а не страницы сайта.
+    **{e: "text/plain; charset=utf-8" for e in ("md", "json", "xml", "html", "css", "js", "ts", "py", "java", "c", "cpp", "h", "cs", "sql")},
+    "mp4": "video/mp4", "mov": "video/quicktime", "m4v": "video/x-m4v", "webm": "video/webm",
 }
 
 WELCOME_TEXT = (
@@ -1108,7 +1131,7 @@ def build_backup_zip() -> bytes:
             d = DATA_DIR / sub
             if d.exists():
                 for f in sorted(d.rglob("*")):
-                    if f.is_file():
+                    if f.is_file() and f.stat().st_size <= BACKUP_MAX_FILE_BYTES:
                         add_file(f, f"data/{sub}/{f.relative_to(d)}")
 
         zf.writestr("README.txt", RESTORE_README)
@@ -4278,6 +4301,12 @@ ASSISTANT_DATA_DOMAINS = {
             "programs": app.get("gymPrograms", []), "days": app.get("gymDays", []),
             "exercises": app.get("gymExercises", []), "sessions": app.get("gymSessions", [])[-40:],
         }),
+    "study": ("Учёба: предметы (столбцы канбана, с заметкой note о предмете/преподавателе) и задания в них (status: todo|doing|done, due YYYY-MM-DD, kind: hw|test|exam|project|lab|read|other, important, subtasks)",
+        lambda app: {
+            "subjects": app.get("studySubjects", []),
+            "tasks": [t for t in app.get("studyTasks", [])
+                      if t.get("status") != "done" or (t.get("doneAt") or 0) > time.time() * 1000 - 30 * 86400000],
+        }),
     "wishlist": ("Хотелки",
         lambda app: {"categories": app.get("wishlistCategories", []), "items": app.get("wishlistItems", [])}),
     "planner": ("Планировщик: события, друзья-участники, личные планы, праздники/дни рождения",
@@ -4355,6 +4384,7 @@ ASSISTANT_NAV_TARGETS = {
     "planner_camping": ("Планировщик — Кемпинг", "/planner"),
     "misc_home": ("Прочее", "/misc"),
     "wishlist": ("Хотелки", "/wishlist"),
+    "study": ("Учёба", "/study"),
     "cards": ("Карты лояльности", "/cards"),
     "gym": ("GYM", "/gym"),
     "music": ("Музыка", "/music"),
@@ -4469,6 +4499,15 @@ WRITE_REGISTRY = {
         "cascade_orphan": [{"collection": "wishlistItems", "field": "categoryId"}],
     },
     "wishlistItems": {"label": "Хотелка", "create_defaults": lambda: {"bought": False}},
+    "studySubjects": {
+        "label": "Предмет в «Учёбе» (столбец канбана: name, emoji, color, order, note — заметка о предмете/преподавателе)",
+        "create_defaults": lambda: {"emoji": "📘", "color": "#6366f1", "order": 0, "note": ""},
+        "cascade_delete": [{"collection": "studyTasks", "field": "subjectId"}],
+    },
+    "studyTasks": {
+        "label": "Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note; attachments — файлы, только читать)",
+        "create_defaults": lambda: {"status": "todo", "kind": "hw", "due": "", "important": False, "subtasks": [], "attachments": [], "note": "", "doneAt": 0},
+    },
     "plannerFriends": {
         "label": "Друг-участник планировщика",
         "create_defaults": lambda: {},
@@ -8482,17 +8521,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(400, {"error": "invalid"})
                 return
             file_path = DATA_DIR / "files" / filename
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
             if file_path.exists():
-                ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-                ct = FILE_CONTENT_TYPES.get(ext, "application/octet-stream")
-                content = file_path.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", ct)
-                self.send_header("Content-Length", str(len(content)))
-                self.send_header("Cache-Control", "public, max-age=31536000")
-                self._cors()
-                self.end_headers()
-                self.wfile.write(content)
+                # Потоком и с Range: Safari не играет видео без 206, а большие
+                # файлы незачем целиком читать в память.
+                self._serve_ranged(file_path, FILE_CONTENT_TYPES.get(ext, "application/octet-stream"),
+                                   "public, max-age=31536000")
             else:
                 self._json(404, {"error": "not found"})
         elif route == "/api/foods":
@@ -8644,22 +8678,18 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                         if raw in ALLOWED_FILE_EXT:
                             ext = raw
                         break
-            length = self._content_length()
-            MAX_FILE = 25 * 1024 * 1024  # 25 MB hard cap
-            if length is None:
-                self._json(411, {"error": "Content-Length required"})
-                return
-            if length > MAX_FILE:
-                self._json(413, {"error": "file too large"})
-                return
-            body = self.rfile.read(length)
-            if not body:
-                self._json(400, {"error": "empty body"})
-                return
             filename = str(_uuid.uuid4()) + "." + ext
             files_dir = DATA_DIR / "files"
             files_dir.mkdir(parents=True, exist_ok=True)
-            (files_dir / filename).write_bytes(body)
+            # Пишем на диск по кускам, а не держим в памяти: видео и архивы
+            # бывают по сотне мегабайт.
+            err = self._stream_upload_to(files_dir / filename, MAX_UPLOAD_FILE)
+            if err == "file too large":
+                self._json(413, {"error": "file too large", "limit": MAX_UPLOAD_FILE})
+                return
+            if err:
+                self._json(411 if "length" in err.lower() else 400, {"error": err})
+                return
             self._json(200, {"filename": filename})
         elif self.path.startswith("/api/music"):
             import uuid as _uuid
@@ -10210,6 +10240,72 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             return None, "incomplete body"
         return body, None
 
+    def _stream_upload_to(self, dest, max_bytes: int):
+        """Тело запроса (Content-Length или chunked) — прямо в файл dest.
+        Возвращает текст ошибки или None; при ошибке недописанный файл удаляется."""
+        tmp = dest.with_name(dest.name + ".part")
+        err = None
+        total = 0
+        try:
+            with tmp.open("wb") as fh:
+                te = (self.headers.get("Transfer-Encoding") or "").lower()
+                if "chunked" in te:
+                    while True:
+                        line = self.rfile.readline(1024).strip()
+                        try:
+                            size = int(line.split(b";", 1)[0], 16)
+                        except ValueError:
+                            err = "broken chunked body"
+                            break
+                        if size == 0:
+                            while self.rfile.readline(1024) not in (b"\r\n", b"\n", b""):
+                                pass
+                            break
+                        total += size
+                        if total > max_bytes:
+                            err = "file too large"
+                            break
+                        left = size
+                        while left > 0:
+                            chunk = self.rfile.read(min(1024 * 1024, left))
+                            if not chunk:
+                                err = "broken chunked body"
+                                break
+                            fh.write(chunk)
+                            left -= len(chunk)
+                        if err:
+                            break
+                        self.rfile.read(2)
+                else:
+                    length = self._content_length()
+                    if length is None:
+                        err = "Content-Length required"
+                    elif length > max_bytes:
+                        err = "file too large"
+                    else:
+                        left = length
+                        while left > 0:
+                            chunk = self.rfile.read(min(1024 * 1024, left))
+                            if not chunk:
+                                err = "incomplete body"
+                                break
+                            fh.write(chunk)
+                            left -= len(chunk)
+                        total = length - left
+            if not err and total == 0:
+                err = "empty body"
+            if err:
+                # Остаток тела не дочитан — соединение дальше не переиспользовать.
+                self.close_connection = True
+                tmp.unlink(missing_ok=True)
+                return err
+            tmp.replace(dest)
+            return None
+        except OSError as e:
+            tmp.unlink(missing_ok=True)
+            self.close_connection = True
+            return f"write failed: {e}"
+
     def _serve_track(self, filename: str):
         """Аудио с поддержкой Range. Safari без 206-ответа трек просто не играет:
         он всегда начинает с запроса куска, а не файла целиком."""
@@ -10221,7 +10317,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(404, {"error": "not found"})
             return
         ext = path.suffix.lstrip(".").lower()
-        ctype = MUSIC_EXT.get(ext, "application/octet-stream")
+        self._serve_ranged(path, MUSIC_EXT.get(ext, "application/octet-stream"), "private, max-age=86400")
+
+    def _serve_ranged(self, path, ctype: str, cache_control: str):
+        """Файл целиком или кусок по заголовку Range (206) — для аудио/видео."""
         size = path.stat().st_size
         start, end = 0, size - 1
         rng = self.headers.get("Range", "")
@@ -10251,7 +10350,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(length))
             if partial:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-            self.send_header("Cache-Control", "private, max-age=86400")
+            self.send_header("Cache-Control", cache_control)
             self._cors()
             self.end_headers()
             if self.command == "HEAD":

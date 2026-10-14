@@ -1000,6 +1000,409 @@
   @media (prefers-reduced-motion: reduce) {
     .jarvis-orb__core, .jarvis-orb__ring--pulse, .jarvis-orb__scan { animation: none; }
   }
+
+  /* ===== Прочее → Учёба (канбан по предметам) ===== */
+  .st-root { --st-r: 14px; }
+  .st-top { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .st-pulse {
+    display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
+  }
+  .st-pulse-num {
+    font-family: 'Fraunces', serif; font-size: 30px; line-height: 1; font-weight: 600;
+    background: linear-gradient(135deg, #6366f1, #ec4899); -webkit-background-clip: text; background-clip: text; color: transparent;
+    animation: stNumIn .5s cubic-bezier(.2,.9,.3,1.3) both;
+  }
+  .st-pulse-cap { font-size: 11px; line-height: 1.15; color: var(--text-muted); }
+  .st-streak {
+    margin-left: 4px; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; animation: stFlame 2.4s ease-in-out infinite;
+  }
+  @keyframes stFlame { 0%,100% { transform: none; } 50% { transform: translateY(-1px) scale(1.04); } }
+  @keyframes stNumIn { from { transform: scale(.5); opacity: 0; } to { transform: none; opacity: 1; } }
+
+  .st-seg {
+    position: relative; display: grid; grid-template-columns: 1fr 1fr; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 12px; padding: 3px; flex-shrink: 0;
+  }
+  .st-seg button { position: relative; z-index: 1; padding: 6px 12px; font-size: 13px; font-weight: 500; color: var(--text-muted); transition: color .2s; }
+  .st-seg button.on { color: #fff; }
+  .st-seg-thumb {
+    position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 9px; background: var(--text);
+    transition: transform .3s cubic-bezier(.3,.9,.3,1.1);
+  }
+  .st-icon-btn {
+    width: 36px; height: 36px; border-radius: 11px; display: flex; align-items: center; justify-content: center;
+    background: var(--surface); border: 1px solid var(--border); color: var(--text-muted); flex-shrink: 0;
+    transition: transform .3s;
+  }
+  .st-icon-btn:active { transform: rotate(60deg); }
+
+  .st-chips { display: flex; gap: 6px; overflow-x: auto; margin-bottom: 10px; scrollbar-width: none; }
+  .st-chips::-webkit-scrollbar { display: none; }
+  .st-chip {
+    display: flex; align-items: center; gap: 6px; white-space: nowrap; padding: 5px 10px; border-radius: 999px;
+    font-size: 12.5px; font-weight: 500; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted);
+    transition: all .2s; animation: fadeIn .3s ease both;
+  }
+  .st-chip b { font-weight: 700; color: var(--text); }
+  .st-chip-over { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+  .st-chip-over b { color: #b91c1c; }
+  .st-chip-today { color: #c2410c; border-color: #fed7aa; background: #fff7ed; }
+  .st-chip-today b { color: #c2410c; }
+  .st-chip.on { background: var(--text); color: #fff; border-color: var(--text); transform: scale(1.03); }
+  .st-chip.on b { color: #fff; }
+  .st-chip-clear { padding: 5px 8px; border-radius: 999px; color: var(--text-muted); }
+  .st-dot-pulse { width: 7px; height: 7px; border-radius: 50%; background: #ef4444; animation: stDot 1.4s ease-out infinite; }
+  .st-chip.on .st-dot-pulse { background: #fff; }
+  @keyframes stDot { 0% { box-shadow: 0 0 0 0 rgba(239,68,68,.6); } 100% { box-shadow: 0 0 0 7px rgba(239,68,68,0); } }
+
+  .st-subjbar { display: flex; gap: 6px; overflow-x: auto; margin: 0 -4px 10px; padding: 2px 4px; scrollbar-width: none; }
+  .st-subjbar::-webkit-scrollbar { display: none; }
+  .st-subjpill {
+    display: flex; align-items: center; gap: 5px; white-space: nowrap; padding: 5px 10px 5px 8px; border-radius: 10px;
+    font-size: 12.5px; font-weight: 500; color: var(--text-muted); background: transparent; border: 1px solid transparent; transition: all .25s;
+  }
+  .st-subjpill i { font-style: normal; font-size: 11px; font-weight: 700; color: var(--c); }
+  .st-subjpill.on { color: var(--text); background: var(--surface); border-color: color-mix(in srgb, var(--c) 45%, transparent); box-shadow: 0 2px 10px -4px var(--c); }
+
+  .st-board {
+    display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x mandatory; margin: 0 -16px; padding: 4px 16px 24px;
+    scroll-padding: 0 16px; scrollbar-width: none; -webkit-overflow-scrolling: touch; align-items: flex-start;
+  }
+  .st-board::-webkit-scrollbar { display: none; }
+  .st-col {
+    flex: 0 0 min(84vw, 300px); scroll-snap-align: start; background: color-mix(in srgb, var(--c) 6%, var(--surface));
+    border: 1px solid color-mix(in srgb, var(--c) 18%, var(--border)); border-radius: 18px; overflow: hidden;
+    animation: fadeIn .35s ease both;
+  }
+  .st-col-head {
+    display: flex; align-items: center; gap: 10px; padding: 12px 12px 10px;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--c) 16%, transparent), transparent);
+    border-top: 3px solid var(--c);
+  }
+  .st-col-emoji {
+    width: 36px; height: 36px; border-radius: 11px; display: flex; align-items: center; justify-content: center; font-size: 19px;
+    background: var(--surface); box-shadow: 0 2px 8px -3px var(--c); flex-shrink: 0;
+  }
+  .st-col-name { font-weight: 650; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .st-col-sub { font-size: 11.5px; color: var(--text-muted); }
+  .st-col-over { color: #dc2626; font-weight: 600; }
+  .st-ring { color: var(--text); flex-shrink: 0; }
+  .st-note-btn {
+    width: 28px; height: 28px; border-radius: 8px; font-size: 14px; display: flex; align-items: center; justify-content: center;
+    opacity: .35; filter: grayscale(1); transition: all .2s; flex-shrink: 0;
+  }
+  .st-note-btn.has { opacity: 1; filter: none; }
+  .st-note-btn:active { transform: scale(.85) rotate(-12deg); }
+
+  .st-sticky {
+    position: relative; margin: 0 10px 8px; padding: 8px 30px 8px 10px; border-radius: 10px; cursor: pointer;
+    background: #fef9c3; color: #713f12; font-size: 12.5px; line-height: 1.4; border: 1px solid #fde68a;
+    box-shadow: 0 3px 10px -6px rgba(161, 98, 7, .5); transform: rotate(-.4deg); animation: stSticky .35s cubic-bezier(.2,.9,.3,1.3) both;
+  }
+  .st-sticky-text { white-space: pre-wrap; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .st-sticky.expanded .st-sticky-text { -webkit-line-clamp: unset; display: block; }
+  .st-sticky-edit { position: absolute; top: 6px; right: 6px; padding: 3px; border-radius: 6px; color: #a16207; }
+  .st-sticky.editing { padding: 6px; transform: none; cursor: default; }
+  .st-sticky textarea {
+    width: 100%; background: transparent; border: none; outline: none; resize: none; color: #713f12; font-size: 13px; padding: 2px 4px;
+  }
+  .st-sticky textarea::placeholder { color: #ca8a04; opacity: .7; }
+  .st-sticky-hint { font-size: 10.5px; color: #a16207; opacity: .7; padding: 0 4px; }
+  @keyframes stSticky { from { opacity: 0; transform: translateY(-6px) rotate(-3deg) scale(.96); } to { opacity: 1; transform: rotate(-.4deg); } }
+
+  .st-col-body { padding: 2px 10px 10px; display: flex; flex-direction: column; gap: 7px; }
+  .st-col-none { font-size: 12px; color: var(--text-subtle); text-align: center; padding: 10px 0; }
+
+  .st-card, .st-arow {
+    position: relative; overflow: hidden; background: var(--surface); border: 1px solid var(--border); border-radius: var(--st-r);
+    padding: 10px 11px; cursor: pointer; animation: stCardIn .35s cubic-bezier(.2,.9,.3,1.2) both;
+    transition: transform .15s, box-shadow .2s, opacity .3s, border-color .2s;
+  }
+  .st-card:active, .st-arow:active { transform: scale(.98); }
+  @keyframes stCardIn { from { opacity: 0; transform: translateY(8px) scale(.97); } to { opacity: 1; transform: none; } }
+  .st-card-doing { border-color: color-mix(in srgb, var(--c) 55%, transparent); box-shadow: 0 6px 18px -10px var(--c); }
+  .st-card-sheen {
+    position: absolute; left: 0; right: 0; top: 0; height: 2px; overflow: hidden;
+    background: color-mix(in srgb, var(--c) 25%, transparent);
+  }
+  .st-card-sheen::after {
+    content: ''; position: absolute; inset: 0; width: 40%; background: var(--c); animation: stSheen 1.8s ease-in-out infinite;
+  }
+  @keyframes stSheen { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
+  .st-card-done { opacity: .55; background: transparent; }
+  .st-card-done .st-card-title { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--c) 70%, transparent); }
+  .st-card-title { font-size: 14px; line-height: 1.3; font-weight: 500; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .st-imp { color: #f59e0b; margin-right: 4px; display: inline-block; animation: stStar 3s ease-in-out infinite; }
+  @keyframes stStar { 0%,90%,100% { transform: none; } 95% { transform: rotate(20deg) scale(1.25); } }
+
+  .st-status {
+    width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0; margin-top: -1px; position: relative;
+    border: 2px solid color-mix(in srgb, var(--c) 55%, var(--border-strong)); display: flex; align-items: center; justify-content: center;
+    color: #fff; transition: background .25s, border-color .25s;
+  }
+  .st-status::before { content: ''; position: absolute; inset: -9px; } /* шире зона тапа */
+  .st-status-doing { border-color: var(--c); background: conic-gradient(var(--c) 0 50%, transparent 50% 100%); }
+  .st-status-doing::after {
+    content: ''; position: absolute; inset: -5px; border-radius: 50%; border: 1.5px dashed color-mix(in srgb, var(--c) 60%, transparent);
+    animation: stSpin 6s linear infinite;
+  }
+  .st-status-done { background: var(--c); border-color: var(--c); }
+  .st-pop { animation: stPop .4s cubic-bezier(.3,1.6,.5,1); }
+  @keyframes stPop { 0% { transform: scale(.6); } 60% { transform: scale(1.25); } 100% { transform: scale(1); } }
+  @keyframes stSpin { to { transform: rotate(360deg); } }
+
+  .st-spark {
+    position: fixed; width: 7px; height: 7px; border-radius: 50%; pointer-events: none; z-index: 9999;
+    margin: -3.5px 0 0 -3.5px; animation: stSpark .7s cubic-bezier(.1,.8,.3,1) forwards;
+  }
+  @keyframes stSpark {
+    0% { transform: translate(0,0) scale(1); opacity: 1; }
+    100% { transform: translate(var(--dx), var(--dy)) scale(.2); opacity: 0; }
+  }
+
+  .st-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 6px; }
+  .st-kind, .st-due, .st-arow-subj {
+    font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px; white-space: nowrap;
+    background: color-mix(in srgb, var(--c) 10%, var(--bg)); color: var(--text-muted);
+  }
+  .st-due-over { background: #fee2e2; color: #b91c1c; animation: stOver 2s ease-in-out infinite; }
+  .st-due-today { background: #ffedd5; color: #c2410c; }
+  .st-due-soon { background: #fef3c7; color: #a16207; }
+  .st-due-week { background: #e0f2fe; color: #0369a1; }
+  .st-due-later { background: var(--bg); color: var(--text-subtle); }
+  @keyframes stOver { 0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); } 50% { box-shadow: 0 0 0 3px rgba(239,68,68,.15); } }
+  .st-subs { display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: var(--text-muted); }
+  .st-subs-bar { width: 32px; height: 4px; border-radius: 4px; background: var(--border); overflow: hidden; }
+  .st-subs-bar span { display: block; height: 100%; background: var(--c); border-radius: 4px; transition: width .4s cubic-bezier(.2,.8,.2,1); }
+  .st-note-dot { font-size: 11px; color: var(--text-subtle); }
+  .st-sublist { margin-top: 7px; display: flex; flex-direction: column; gap: 2px; animation: fadeIn .2s ease both; }
+  .st-subrow { display: flex; align-items: center; gap: 7px; text-align: left; font-size: 12.5px; padding: 3px 0; }
+  .st-subrow.done { color: var(--text-subtle); text-decoration: line-through; }
+  .st-subbox {
+    width: 16px; height: 16px; border-radius: 5px; border: 1.5px solid var(--border-strong); display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0; color: #fff; transition: all .2s;
+  }
+  .st-subrow.done .st-subbox, .st-subedit-row.done .st-subbox { background: var(--c, var(--text)); border-color: var(--c, var(--text)); }
+  .st-subbox.ghost { border-style: dashed; color: var(--text-subtle); }
+
+  .st-add {
+    display: flex; align-items: center; justify-content: center; gap: 5px; padding: 9px; border-radius: 12px; font-size: 13px; font-weight: 500;
+    color: color-mix(in srgb, var(--c) 75%, var(--text)); border: 1.5px dashed color-mix(in srgb, var(--c) 35%, transparent); transition: background .2s;
+  }
+  .st-add:active { background: color-mix(in srgb, var(--c) 10%, transparent); }
+  .st-quick {
+    display: flex; gap: 6px; background: var(--surface); border: 1.5px solid var(--c); border-radius: 12px; padding: 4px 4px 4px 10px;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--c) 14%, transparent); animation: fadeIn .2s ease both;
+  }
+  .st-quick input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; font-size: 14px; padding: 6px 0; }
+  .st-quick button { width: 32px; border-radius: 9px; background: var(--c); color: #fff; display: flex; align-items: center; justify-content: center; }
+  .st-done { margin-top: 2px; display: flex; flex-direction: column; gap: 6px; }
+  .st-done-toggle { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); padding: 4px 2px; }
+
+  .st-col-add {
+    flex: 0 0 120px; align-self: stretch; min-height: 140px; border-radius: 18px; border: 1.5px dashed var(--border-strong);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--text-muted); font-size: 13px;
+    scroll-snap-align: start;
+  }
+
+  .st-agenda { display: flex; flex-direction: column; gap: 16px; }
+  .st-agenda-head {
+    display: flex; align-items: center; gap: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+    color: var(--text-muted); margin-bottom: 7px;
+  }
+  .st-agenda-head span { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--border); color: var(--text-muted); letter-spacing: 0; }
+  .st-ag-over .st-agenda-head { color: #b91c1c; }
+  .st-ag-today .st-agenda-head { color: #c2410c; }
+  .st-agenda-group { display: flex; flex-direction: column; gap: 6px; }
+  .st-arow { display: flex; align-items: flex-start; gap: 10px; border-left: 3px solid var(--c); }
+  .st-arow > .st-due { margin-top: 1px; }
+  .st-arow-subj { background: color-mix(in srgb, var(--c) 13%, var(--bg)); color: color-mix(in srgb, var(--c) 70%, var(--text)); }
+  .st-agenda-empty, .st-empty { text-align: center; padding: 40px 16px; color: var(--text-muted); font-size: 14px; }
+  .st-empty-emoji { font-size: 54px; animation: stBob 3s ease-in-out infinite; margin-bottom: 8px; }
+  @keyframes stBob { 0%,100% { transform: translateY(0) rotate(-4deg); } 50% { transform: translateY(-8px) rotate(4deg); } }
+  .st-preset {
+    display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border-radius: 12px; font-size: 13.5px; font-weight: 500;
+    background: var(--surface); border: 1px solid var(--border); color: var(--text); animation: stCardIn .4s cubic-bezier(.2,.9,.3,1.2) both;
+    transition: transform .15s;
+  }
+  .st-preset:active { transform: scale(.94); }
+  .st-preset.on { background: var(--c); border-color: var(--c); color: #fff; transform: scale(1.05); box-shadow: 0 6px 16px -8px var(--c); }
+  .st-go { animation: stNumIn .35s cubic-bezier(.2,.9,.3,1.3) both; }
+  .st-preset.small { padding: 5px 9px; font-size: 12px; animation: none; }
+
+  .st-form { display: flex; flex-direction: column; }
+  .st-form label { margin-top: 14px; }
+  .st-title-input {
+    width: 100%; font-size: 18px; font-weight: 500; border: none; outline: none; resize: none; background: transparent; padding: 0;
+    border-bottom: 2px solid var(--c); padding-bottom: 6px;
+  }
+  .st-status-seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 3px; }
+  .st-status-seg button { padding: 8px 4px; border-radius: 9px; font-size: 13px; font-weight: 500; color: var(--text-muted); transition: all .2s; }
+  .st-status-seg button.on { background: var(--text); color: #fff; }
+  .st-status-seg button.st-ss-doing { background: var(--c); }
+  .st-status-seg button.st-ss-done { background: #10b981; }
+  .st-pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .st-pill {
+    padding: 6px 10px; border-radius: 10px; font-size: 13px; background: var(--surface); border: 1px solid var(--border); color: var(--text-muted);
+    transition: all .15s;
+  }
+  .st-pill.on { background: var(--c, var(--text)); border-color: var(--c, var(--text)); color: #fff; transform: scale(1.04); }
+  .st-date { padding: 5px 8px; border-radius: 10px; font-size: 13px; border: 1px solid var(--border); background: var(--surface); }
+  .st-imp-toggle {
+    align-self: flex-start; margin-top: 14px; display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--surface); font-size: 13px; color: var(--text-muted); transition: all .2s;
+  }
+  .st-imp-toggle span { transition: transform .3s cubic-bezier(.3,1.6,.5,1); }
+  .st-imp-toggle.on { background: #fffbeb; border-color: #fcd34d; color: #b45309; }
+  .st-imp-toggle.on span { color: #f59e0b; transform: rotate(72deg) scale(1.3); }
+  .st-subedit { display: flex; flex-direction: column; gap: 4px; }
+  .st-subedit-row { display: flex; align-items: center; gap: 8px; }
+  .st-subedit-row input { flex: 1; min-width: 0; border: none; border-bottom: 1px solid var(--border); background: transparent; padding: 6px 0; font-size: 14px; outline: none; }
+  .st-subedit-row.done input { color: var(--text-subtle); text-decoration: line-through; }
+  .st-subdel { color: var(--text-subtle); padding: 4px; }
+  .st-note { width: 100%; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; font-size: 14px; background: var(--surface); resize: vertical; }
+
+  .st-subj-row { display: flex; align-items: flex-start; gap: 8px; padding: 10px; border-radius: 14px; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--c); }
+  .st-subj-emoji { width: 42px; height: 42px; text-align: center; font-size: 20px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); flex-shrink: 0; }
+  .st-subj-name { width: 100%; font-size: 15px; font-weight: 600; border: none; outline: none; background: transparent; padding: 2px 0; }
+  .st-subj-note { width: 100%; margin-top: 6px; font-size: 12.5px; padding: 5px 8px; border-radius: 8px; border: 1px solid #fde68a; background: #fefce8; color: #713f12; resize: vertical; outline: none; }
+  .st-swatches { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+  .st-swatches button { width: 18px; height: 18px; border-radius: 50%; transition: transform .15s; }
+  .st-swatches button.on { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px currentColor; transform: scale(1.1); color: var(--text); }
+  .st-mini { padding: 4px; color: var(--text-muted); border-radius: 6px; }
+  .st-mini:disabled { opacity: .25; }
+  .st-mini.danger { color: #dc2626; align-self: center; }
+  .st-subj-add { display: flex; gap: 8px; margin-top: 14px; align-items: center; }
+  .st-subj-add > input.flex-1 { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); font-size: 14px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .st-root *, .st-empty * { animation: none !important; }
+  }
+  /* Глобальные input-стили (padding/border/width) — точечно гасим у своих полей */
+  .st-quick input, .st-sticky textarea, .st-title-input, .st-subj-name, .st-subedit-row input { border-radius: 0; }
+  .st-title-input:focus { border-color: var(--c); }
+  .st-subj-emoji { padding: 0; }
+  .st-date { width: auto; }
+  .st-subj-note:focus { border-color: #f59e0b; }
+
+  /* Учёба: на широком экране доска — почти на всю страницу (как «Дела → Задачи»),
+     столбцы тянутся, пока помещаются, дальше — горизонтальный скролл. */
+  @media (min-width: 640px) {
+    .st-board { margin: 0 -24px; padding: 4px 24px 24px; scroll-padding: 0 24px; }
+  }
+  @media (min-width: 768px) {
+    .st-board { scroll-snap-type: none; scrollbar-width: thin; }
+    .st-board::-webkit-scrollbar { display: block; height: 8px; }
+    .st-board::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; }
+    .st-col { flex: 1 0 288px; }
+    .st-col-body { max-height: calc(100dvh - 330px); overflow-y: auto; }
+    .st-col-add { flex: 0 0 110px; align-self: flex-start; min-height: 120px; }
+    .st-agenda { max-width: 760px; }
+  }
+
+  .st-atts { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
+  .st-att {
+    position: relative; aspect-ratio: 1; border-radius: 12px; overflow: hidden; cursor: pointer;
+    background: color-mix(in srgb, var(--c) 8%, var(--surface)); border: 1px solid var(--border);
+    animation: stCardIn .3s cubic-bezier(.2,.9,.3,1.2) both;
+  }
+  .st-att img, .st-att video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+  .st-att-play {
+    position: absolute; inset: 0; margin: auto; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; background: rgba(0,0,0,.55); color: #fff; font-size: 11px; padding-left: 2px;
+  }
+  .st-att-file { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 6px; }
+  .st-att-ext { font-size: 11px; font-weight: 800; color: #fff; background: var(--c); padding: 3px 6px; border-radius: 6px; letter-spacing: .03em; }
+  .st-att-name { font-size: 10.5px; color: var(--text-muted); text-align: center; line-height: 1.2; word-break: break-all;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .st-att-del {
+    position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .st-att-loading { display: flex; align-items: center; justify-content: center; }
+  .st-spin { width: 22px; height: 22px; border-radius: 50%; border: 2.5px solid color-mix(in srgb, var(--c) 25%, transparent); border-top-color: var(--c); animation: stSpin .8s linear infinite; }
+  .st-att-add {
+    aspect-ratio: 1; border-radius: 12px; border: 1.5px dashed color-mix(in srgb, var(--c) 40%, var(--border-strong));
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; font-weight: 500;
+    color: color-mix(in srgb, var(--c) 70%, var(--text)); transition: background .2s, transform .15s;
+  }
+  .st-att-add:active { transform: scale(.95); background: color-mix(in srgb, var(--c) 10%, transparent); }
+  .st-viewer { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.92); display: flex; flex-direction: column; animation: fadeIn .2s ease both; }
+  .st-viewer-bar { display: flex; align-items: center; gap: 14px; padding: 14px 16px; color: #fff; font-size: 14px; padding-top: max(14px, env(safe-area-inset-top)); }
+  .st-viewer-bar span { flex: 1; min-width: 0; opacity: .85; }
+  .st-viewer-bar a, .st-viewer-bar button { color: #fff; opacity: .85; }
+  .st-viewer-body { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 0 12px 24px; }
+  .st-viewer-body img, .st-viewer-body video { max-width: 100%; max-height: 100%; border-radius: 10px; animation: stNumIn .3s cubic-bezier(.2,.9,.3,1.1) both; }
+
+  .st-settings-toggle {
+    margin-top: 18px; display: flex; align-items: center; gap: 8px; padding: 11px 12px; border-radius: 12px; width: 100%;
+    background: var(--surface); border: 1px solid var(--border); font-size: 14px; font-weight: 500; color: var(--text);
+  }
+  .st-settings-sum { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+  .st-settings-chev { color: var(--text-muted); transition: transform .25s; display: flex; }
+  .st-settings-toggle.open .st-settings-chev { transform: rotate(180deg); }
+  .st-settings-toggle.open { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom-color: transparent; }
+  .st-settings-body {
+    border: 1px solid var(--border); border-top: none; border-radius: 0 0 12px 12px; padding: 0 12px 12px; background: var(--surface);
+    animation: fadeIn .25s ease both;
+  }
+  .st-settings-body label:first-child { margin-top: 4px; }
+
+  /* Учёба: просмотр документов во вьюере вложений */
+  .st-viewer { z-index: 70; background: rgba(0,0,0,.96); }
+  .st-viewer-doc { align-items: stretch; padding: 0 12px 16px; }
+  .st-doc {
+    width: 100%; max-width: 960px; margin: 0 auto; background: #fff; color: #111; border-radius: 12px; overflow: auto;
+    -webkit-overflow-scrolling: touch; animation: stNumIn .3s cubic-bezier(.2,.9,.3,1.1) both; border: none;
+  }
+  .st-doc-pdf { height: 100%; padding: 0; }
+  .st-doc-pre { margin: 0; padding: 20px; white-space: pre-wrap; word-break: break-word; font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .st-doc-word { padding: 28px 32px; font-size: 15px; line-height: 1.6; }
+  .st-doc-word h1 { font-size: 1.6em; font-weight: 700; margin: .6em 0 .4em; }
+  .st-doc-word h2 { font-size: 1.3em; font-weight: 700; margin: .6em 0 .4em; }
+  .st-doc-word h3 { font-size: 1.1em; font-weight: 600; margin: .5em 0 .3em; }
+  .st-doc-word p { margin: 0 0 .7em; }
+  .st-doc-word ul { list-style: disc; padding-left: 1.4em; margin: 0 0 .7em; }
+  .st-doc-word ol { list-style: decimal; padding-left: 1.4em; margin: 0 0 .7em; }
+  .st-doc-word table { border-collapse: collapse; margin: .5em 0 1em; }
+  .st-doc-word td, .st-doc-word th { border: 1px solid #d4d4d4; padding: 4px 8px; vertical-align: top; }
+  .st-doc-word img { max-width: 100%; height: auto; }
+  .st-doc-word a { color: #2563eb; text-decoration: underline; }
+  .st-doc-sheetwrap { display: flex; flex-direction: column; overflow: hidden; }
+  .st-doc-tabs { display: flex; gap: 4px; padding: 8px; border-bottom: 1px solid #e5e5e5; overflow-x: auto; flex-shrink: 0; background: #fafafa; }
+  .st-doc-tabs button { padding: 5px 12px; border-radius: 8px; font-size: 13px; color: #555; white-space: nowrap; }
+  .st-doc-tabs button.on { background: #111; color: #fff; }
+  .st-doc-sheet { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; }
+  .st-doc-sheet table { border-collapse: collapse; font-size: 13px; }
+  .st-doc-sheet td, .st-doc-sheet th { border: 1px solid #e5e5e5; padding: 5px 9px; white-space: nowrap; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+  .st-doc-sheet tr:first-child td { background: #f5f5f5; font-weight: 600; position: sticky; top: 0; }
+  .st-doc-sheet tr:nth-child(even) td { background: #fbfbfb; }
+  .st-doc-note { font-size: 12px; color: #777; padding: 8px 12px; border-top: 1px solid #eee; flex-shrink: 0; }
+  .st-doc-msg { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; color: #ddd; font-size: 14px; }
+  .st-doc .st-doc-msg { color: #777; padding: 40px; }
+
+  /* Учёба: презентации и аудио во вьюере */
+  .st-doc-slides { position: relative; background: #e5e7eb; }
+  .st-slides-box { padding: 8px; display: flex; flex-direction: column; align-items: center; }
+  .st-slides-box > * { max-width: 100%; }
+  /* pptx-preview задаёт обёртке высоту одного слайда и чёрный фон — в режиме
+     списка это обрезает слайды, растягиваем по содержимому. */
+  .st-slides-box .pptx-preview-wrapper { height: auto !important; background: transparent !important; overflow: visible !important; }
+  .st-slides-box .pptx-preview-slide-wrapper { border-radius: 6px; box-shadow: 0 6px 20px -10px rgba(0,0,0,.35); margin-bottom: 12px !important; }
+  .st-doc-slides .st-doc-msg { position: absolute; inset: 0; }
+  .st-audio { display: flex; flex-direction: column; align-items: center; gap: 18px; width: 100%; max-width: 420px; color: #fff; }
+  .st-audio-disc {
+    position: relative; width: 140px; height: 140px; border-radius: 50%;
+    background: repeating-radial-gradient(circle, #1f1f2e 0 2px, #2a2a3d 2px 4px);
+    animation: stSpin 4s linear infinite; box-shadow: 0 20px 60px -18px #6366f1;
+  }
+  .st-audio-disc span {
+    position: absolute; inset: 0; margin: auto; width: 46px; height: 46px; border-radius: 50%;
+    background: conic-gradient(#6366f1, #ec4899, #f59e0b, #6366f1); box-shadow: 0 0 0 4px #111 inset;
+  }
+  .st-audio-name { font-size: 14px; opacity: .8; text-align: center; word-break: break-word; }
+  .st-audio audio { width: 100%; }
 </style>
 </head>
 <body>
@@ -1356,6 +1759,12 @@ const DEFAULT_DATA = () => ({
   // Прочее → Карты: карты лояльности. code+format — то, из чего рисуется
   // штрихкод на экране; фото карты хранится отдельным файлом в /api/photos.
   loyaltyCards: [],
+  // Прочее → Учёба: канбан, где столбец — предмет (studySubjects, у предмета
+  // есть order и заметка note), а карточка — задание с состоянием
+  // todo/doing/done (studyTasks.subjectId → studySubjects.id). Обычные
+  // id-массивы — LWW по updatedAt и тумбстоны, как у всех.
+  studySubjects: [],
+  studyTasks: [],
   // GYM: программа → тренировочные дни → упражнения, плюс журнал проведённых
   // тренировок с подходами внутри. Все четыре — обычные id-массивы, поэтому
   // синхронизация и тумбстоны работают тем же кодом, что и везде.
@@ -2132,6 +2541,7 @@ const Icon = ({ name, size = 22 }) => {
     externalLink: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>,
     tag: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.6 2.6a2 2 0 0 0-1.4-.6H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.2 8.2a2 2 0 0 0 2.8 0l7.2-7.2a2 2 0 0 0 0-2.8Z"/><circle cx="7" cy="7" r="1.2"/></svg>,
     quiz: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18M9 9v12"/><path d="M14.5 13.5a1.6 1.6 0 1 1 2.2 1.5c-.5.2-.8.6-.8 1.1v.4"/><path d="M15.9 19.2h.01"/></svg>,
+    graduationCap: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.42 10.92a1 1 0 0 0-.02-1.84L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.83l8.57 3.91a2 2 0 0 0 1.66 0z"/><path d="M22 10v6"/><path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5"/></svg>,
     clipboard: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>,
   };
   return icons[name] || null;
@@ -2300,6 +2710,7 @@ const PATH_TAB_MAP = {
   '/music': 'misc',
   '/knowledge': 'misc',
   '/quiz': 'misc',
+  '/study': 'misc',
   '/cars': 'misc',
   '/settings': 'misc',
   '/misc': 'misc',
@@ -2311,8 +2722,8 @@ const TAB_PATH_MAP = Object.fromEntries(Object.entries(PATH_TAB_MAP).map(([p, t]
 const PLANNER_SUB_BY_PATH = { '/holidays': 'holidays' };
 const PLANNER_PATH_BY_SUB = { holidays: '/holidays' };
 
-const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/music': 'music', '/knowledge': 'knowledge', '/quiz': 'quiz', '/cars': 'cars', '/settings': 'settings' };
-const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', music: '/music', knowledge: '/knowledge', quiz: '/quiz', cars: '/cars', settings: '/settings' };
+const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/music': 'music', '/knowledge': 'knowledge', '/quiz': 'quiz', '/study': 'study', '/cars': 'cars', '/settings': 'settings' };
+const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', music: '/music', knowledge: '/knowledge', quiz: '/quiz', study: '/study', cars: '/cars', settings: '/settings' };
 
 // Routes that get their own Add-to-Home-Screen shortcut manifest (mirrors
 // SHORTCUT_MANIFESTS in jarvis.py). The server only sets the right
@@ -2664,7 +3075,7 @@ function App() {
       ) : tab === 'budget' ? (
         <BudgetView data={data} setData={setData} onDirtyChange={setBudgetPlansDirty} />
       ) : (
-        <main className="max-w-3xl mx-auto px-4 sm:px-6 pt-6 md:pt-8">
+        <main className={`${tab === 'misc' && miscTab === 'study' ? 'max-w-none' : 'max-w-3xl'} mx-auto px-4 sm:px-6 pt-6 md:pt-8`}>
           {tab === 'home' && <HomeView data={data} setData={setData} setTab={setTab} setHouseTab={setHouseTab} setMealTab={setMealTab} />}
           {tab === 'supplements' && <SupplementsView data={data} setData={setData} />}
           {tab === 'meals' && <MealsView data={data} setData={setData} mealTab={mealTab} setMealTab={setMealTab} />}
@@ -12644,6 +13055,7 @@ const VOICE_NAV_TARGETS = {
   cards:            { tab: 'misc', miscTab: 'cards', focusable: true },
   gym:              { tab: 'misc', miscTab: 'gym' },
   quiz:             { tab: 'misc', miscTab: 'quiz' },
+  study:            { tab: 'misc', miscTab: 'study' },
   cars:             { tab: 'misc', miscTab: 'cars' },
   english:          { tab: 'misc', miscTab: 'english' },
   settings:         { tab: 'misc', miscTab: 'settings' },
@@ -12657,7 +13069,7 @@ const VOICE_NAV_LABELS = {
   planner_events: 'Планировщик — События', planner_camping: 'Планировщик — Кемпинг',
   misc_home: 'Прочее — главная', wishlist: 'Хотелки', cards: 'Карты лояльности',
   gym: 'GYM', cars: 'Автомобили и обслуживание', english: 'English', settings: 'Настройки',
-  quiz: 'Своя игра',
+  quiz: 'Своя игра', study: 'Учёба (канбан по предметам)',
 };
 
 // Разделы данных, которые ассистент умеет читать инструментом get_data.
@@ -12737,6 +13149,10 @@ const VOICE_DATA_DOMAINS = {
         } : null,
       };
     },
+  },
+  study: {
+    label: 'Учёба: предметы (столбцы канбана, с заметкой note о предмете/преподавателе) и задания в них (status: todo|doing|done, due YYYY-MM-DD, kind: hw|test|exam|project|lab|read|other, important, subtasks)',
+    get: d => ({ subjects: d.studySubjects || [], tasks: (d.studyTasks || []).filter(t => t.status !== 'done' || (t.doneAt || 0) > Date.now() - 30 * 86400000) }),
   },
   wishlist: {
     label: 'Хотелки (списки и вещи в них)',
@@ -12891,6 +13307,15 @@ const WRITE_REGISTRY = {
     cascadeOrphan: [{ collection: 'wishlistItems', field: 'categoryId' }],
   },
   wishlistItems: { label: 'Хотелка', createDefaults: () => ({ bought: false }) },
+  studySubjects: {
+    label: 'Предмет в «Учёбе» (столбец канбана: name, emoji, color, order, note — заметка о предмете/преподавателе)',
+    createDefaults: () => ({ emoji: '📘', color: '#6366f1', order: 0, note: '' }),
+    cascadeDelete: [{ collection: 'studyTasks', field: 'subjectId' }],
+  },
+  studyTasks: {
+    label: 'Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note; attachments — файлы, только читать)',
+    createDefaults: () => ({ status: 'todo', kind: 'hw', due: '', important: false, subtasks: [], attachments: [], note: '', doneAt: 0 }),
+  },
   plannerFriends: {
     label: 'Друг-участник планировщика',
     createDefaults: () => ({}),
@@ -35833,6 +36258,7 @@ const MISC_APPS = [
   { id: 'knowledge', label: 'База данных', icon: 'database',  color: '#0369a1' },
   { id: 'english',  label: 'English',    icon: 'book',       color: '#0f766e' },
   { id: 'quiz',     label: 'Своя игра',  icon: 'quiz',       color: '#b45309' },
+  { id: 'study',    label: 'Учёба',      icon: 'graduationCap', color: '#4f46e5' },
   { id: 'cars',     label: 'Автомобиль', icon: 'car',        color: '#6d28d9' },
   { id: 'settings', label: 'Настройки',  icon: 'settings',   color: '#4b5563' },
 ];
@@ -36136,7 +36562,1336 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
       {sub === 'music' && <MusicView data={data} setData={setData} />}
       {sub === 'knowledge' && <KnowledgeView data={data} setData={setData} />}
       {sub === 'quiz' && <QuizView data={data} setData={setData} />}
+      {sub === 'study' && <StudyView data={data} setData={setData} />}
     </div>
+  );
+}
+
+// ============== УЧЁБА ==============
+// Канбан, где столбец — ПРЕДМЕТ, а не статус: задачи живут в своём предмете,
+// а состояние (Надо → В работе → Готово) — свойство карточки, переключается
+// тапом по кружку. Так доска не «съезжает» при каждом шаге работы, а предмет
+// всегда виден целиком: что горит, что в процессе, что уже сдано.
+// Данные — два обычных id-массива (studySubjects, studyTasks): updatedAt
+// ставит setData, мердж между устройствами — общий LWW по id, удаление —
+// тумбстоны в deletedIds, как у всех остальных коллекций.
+
+const STUDY_COLORS = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316', '#64748b'];
+
+const STUDY_KINDS = [
+  { id: 'hw',      label: 'ДЗ',          emoji: '📝' },
+  { id: 'test',    label: 'Контрольная', emoji: '⚡' },
+  { id: 'exam',    label: 'Экзамен',     emoji: '🎓' },
+  { id: 'project', label: 'Проект',      emoji: '🧩' },
+  { id: 'lab',     label: 'Лаба',        emoji: '🧪' },
+  { id: 'read',    label: 'Читать',      emoji: '📖' },
+  { id: 'other',   label: 'Другое',      emoji: '📌' },
+];
+const STUDY_KIND_BY_ID = Object.fromEntries(STUDY_KINDS.map(k => [k.id, k]));
+
+const STUDY_STATUSES = [
+  { id: 'todo',  label: 'Надо' },
+  { id: 'doing', label: 'В работе' },
+  { id: 'done',  label: 'Готово' },
+];
+const STUDY_NEXT_STATUS = { todo: 'doing', doing: 'done', done: 'todo' };
+
+const STUDY_PRESETS = [
+  { name: 'Математика', emoji: '📐' },
+  { name: 'Русский', emoji: '📚' },
+  { name: 'Английский', emoji: '🇬🇧' },
+  { name: 'Физика', emoji: '⚛️' },
+  { name: 'Химия', emoji: '🧪' },
+  { name: 'История', emoji: '🏛️' },
+  { name: 'Биология', emoji: '🌿' },
+  { name: 'Программирование', emoji: '💻' },
+];
+
+const studyParseISO = (s) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || '');
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+};
+const studyAddDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return dateToLocalStr(d); };
+// Сколько дней до срока: <0 — просрочено, 0 — сегодня, null — без срока.
+const studyDaysLeft = (due) => {
+  const d = studyParseISO(due);
+  if (!d) return null;
+  const t = new Date(); t.setHours(0, 0, 0, 0);
+  return Math.round((d - t) / 86400000);
+};
+const STUDY_WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+const STUDY_MON = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+const studyDueInfo = (due) => {
+  const n = studyDaysLeft(due);
+  if (n === null) return null;
+  const d = studyParseISO(due);
+  if (n < 0) return { tone: 'over', text: n === -1 ? 'вчера' : `−${-n} дн` };
+  if (n === 0) return { tone: 'today', text: 'сегодня' };
+  if (n === 1) return { tone: 'soon', text: 'завтра' };
+  if (n < 7) return { tone: 'week', text: `${STUDY_WD[d.getDay()]}, ${d.getDate()}` };
+  return { tone: 'later', text: `${d.getDate()} ${STUDY_MON[d.getMonth()]}` };
+};
+// Ближайшая пятница (или следующая, если сегодня пятница) — для быстрых сроков.
+const studyNextWeekday = (wd) => {
+  const d = new Date();
+  const add = ((wd - d.getDay() + 7) % 7) || 7;
+  return studyAddDays(add);
+};
+
+// Порядок карточек в столбце: «в работе» наверху, затем по сроку
+// (просроченные первыми, без срока — в конце), важные выше при равном сроке.
+const studyTaskSort = (a, b) => {
+  const sa = a.status === 'doing' ? 0 : 1, sb = b.status === 'doing' ? 0 : 1;
+  if (sa !== sb) return sa - sb;
+  const da = studyDaysLeft(a.due), db = studyDaysLeft(b.due);
+  const ka = da === null ? 1e6 : da, kb = db === null ? 1e6 : db;
+  if (ka !== kb) return ka - kb;
+  if (!!a.important !== !!b.important) return a.important ? -1 : 1;
+  return (a.createdAt || 0) - (b.createdAt || 0);
+};
+
+const studySortSubjects = (list) =>
+  [...list].sort((a, b) => ((a.order ?? 0) - (b.order ?? 0)) || ((a.createdAt || 0) - (b.createdAt || 0)));
+
+// Быстрый ввод: «реферат завтра !» → срок завтра, важная. Слова-сроки
+// вырезаются из названия, тип угадывается по ключевым словам, но слово
+// остаётся — «Контрольная по дробям» так и читается на карточке.
+const studyParseQuick = (raw) => {
+  let title = ` ${raw} `;
+  let due = '';
+  let important = false;
+  const rules = [
+    [/\s(послезавтра)(?=\s)/i, () => studyAddDays(2)],
+    [/\s(завтра)(?=\s)/i, () => studyAddDays(1)],
+    [/\s(сегодня)(?=\s)/i, () => studyAddDays(0)],
+    [/\s(через\s+неделю)(?=\s)/i, () => studyAddDays(7)],
+  ];
+  for (const [re, fn] of rules) {
+    if (re.test(title)) { due = fn(); title = title.replace(re, ' '); break; }
+  }
+  const wdMatch = /\s(?:к|до|в)?\s?(пн|вт|ср|чт|пт|сб|вс)(?=\s)/i.exec(title);
+  if (!due && wdMatch) {
+    due = studyNextWeekday(STUDY_WD.indexOf(wdMatch[1].toLowerCase()));
+    title = title.replace(wdMatch[0], ' ');
+  }
+  if (/!/.test(title)) { important = true; title = title.replace(/!+/g, ' '); }
+  title = title.replace(/\s+/g, ' ').trim();
+  const low = title.toLowerCase();
+  const kind = /экзам|зач[её]т/.test(low) ? 'exam'
+    : /контрольн|\bкр\b|тест|самостоят/.test(low) ? 'test'
+    : /проект|курсов|доклад|реферат|презентац/.test(low) ? 'project'
+    : /лаб/.test(low) ? 'lab'
+    : /прочитать|читать|параграф|глав/.test(low) ? 'read'
+    : 'hw';
+  return { title, due, important, kind };
+};
+
+const newStudyTask = (subjectId, patch = {}) => ({
+  id: crypto.randomUUID(),
+  subjectId,
+  title: '',
+  kind: 'hw',
+  status: 'todo',
+  due: '',
+  important: false,
+  subtasks: [],
+  attachments: [],
+  note: '',
+  doneAt: 0,
+  createdAt: Date.now(),
+  ...patch,
+});
+
+// Салют из кружка статуса при «Готово». Частицы живут в <body> (fixed),
+// поэтому карточка может спокойно уехать в «Готово» прямо под ними.
+const studyBurst = (el, color) => {
+  if (!el || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) return;
+  const r = el.getBoundingClientRect();
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  const palette = [color, '#fbbf24', '#34d399', '#60a5fa', '#f472b6'];
+  for (let i = 0; i < 16; i++) {
+    const p = document.createElement('span');
+    const ang = (Math.PI * 2 * i) / 16 + Math.random() * 0.4;
+    const dist = 28 + Math.random() * 34;
+    p.className = 'st-spark';
+    p.style.left = `${cx}px`;
+    p.style.top = `${cy}px`;
+    p.style.background = palette[i % palette.length];
+    p.style.setProperty('--dx', `${Math.cos(ang) * dist}px`);
+    p.style.setProperty('--dy', `${Math.sin(ang) * dist}px`);
+    if (i % 3 === 0) p.style.borderRadius = '2px';
+    document.body.appendChild(p);
+    setTimeout(() => p.remove(), 750);
+  }
+  try { navigator.vibrate && navigator.vibrate(12); } catch {}
+};
+
+// Серия: сколько дней подряд (до сегодня/вчера включительно) закрыта хотя бы
+// одна задача — маленький мотиватор в шапке.
+const studyStreak = (tasks) => {
+  const days = new Set(tasks.filter(t => t.status === 'done' && t.doneAt).map(t => dateToLocalStr(new Date(t.doneAt))));
+  let n = 0;
+  const d = new Date();
+  if (!days.has(dateToLocalStr(d))) d.setDate(d.getDate() - 1);
+  while (days.has(dateToLocalStr(d))) { n++; d.setDate(d.getDate() - 1); }
+  return n;
+};
+
+function StudyView({ data, setData }) {
+  const subjects = useMemo(() => studySortSubjects(data.studySubjects || []), [data.studySubjects]);
+  const tasks = data.studyTasks || [];
+  const [view, setView] = useState(() => { try { return localStorage.getItem('studyView') || 'board'; } catch { return 'board'; } });
+  const [filter, setFilter] = useState(''); // '' | over | today | week | doing
+  const [editing, setEditing] = useState(null);
+  const [manage, setManage] = useState(false);
+  const [activeCol, setActiveCol] = useState(0);
+  const boardRef = useRef(null);
+
+  useEffect(() => { try { localStorage.setItem('studyView', view); } catch {} }, [view]);
+
+  // Задачи без живого предмета (предмет удалили на другом устройстве до того,
+  // как доехал каскад) не показываем — иначе они висели бы невидимками в счётчиках.
+  const subjectIds = useMemo(() => new Set(subjects.map(s => s.id)), [subjects]);
+  const live = useMemo(() => tasks.filter(t => subjectIds.has(t.subjectId)), [tasks, subjectIds]);
+  const active = live.filter(t => t.status !== 'done');
+
+  const stats = useMemo(() => {
+    let over = 0, today = 0, week = 0, doing = 0;
+    active.forEach(t => {
+      const n = studyDaysLeft(t.due);
+      if (t.status === 'doing') doing++;
+      if (n === null) return;
+      if (n < 0) over++;
+      else if (n === 0) today++;
+      if (n >= 0 && n < 7) week++;
+    });
+    const weekAgo = Date.now() - 7 * 86400000;
+    const doneWeek = live.filter(t => t.status === 'done' && (t.doneAt || 0) >= weekAgo).length;
+    return { over, today, week, doing, doneWeek, streak: studyStreak(live) };
+  }, [live]);
+
+  const matches = (t) => {
+    if (!filter) return true;
+    if (t.status === 'done') return false;
+    const n = studyDaysLeft(t.due);
+    if (filter === 'doing') return t.status === 'doing';
+    if (n === null) return false;
+    if (filter === 'over') return n < 0;
+    if (filter === 'today') return n <= 0;
+    if (filter === 'week') return n < 7;
+    return true;
+  };
+
+  const patchTask = (id, patch) => setData(d => ({
+    ...d,
+    studyTasks: (d.studyTasks || []).map(t => (t.id === id ? { ...t, ...patch } : t)),
+  }));
+
+  const setStatus = (task, status, el) => {
+    if (status === 'done') {
+      const subj = subjects.find(s => s.id === task.subjectId);
+      studyBurst(el, (subj && subj.color) || STUDY_COLORS[0]);
+    }
+    patchTask(task.id, { status, doneAt: status === 'done' ? Date.now() : 0 });
+  };
+
+  const addTask = (task) => setData(d => ({ ...d, studyTasks: [...(d.studyTasks || []), task] }));
+
+  const saveTask = (task) => {
+    setData(d => {
+      const list = d.studyTasks || [];
+      const prev = list.find(t => t.id === task.id);
+      const fixed = { ...task, doneAt: task.status === 'done' ? (prev && prev.status === 'done' ? prev.doneAt : Date.now()) : 0 };
+      return { ...d, studyTasks: prev ? list.map(t => (t.id === task.id ? fixed : t)) : [...list, fixed] };
+    });
+    setEditing(null);
+  };
+
+  const deleteTask = (task) => {
+    if (!confirm(`Удалить «${task.title || 'задачу'}»?`)) return false;
+    studyDeleteAttachments(task.attachments);
+    setData(d => ({
+      ...d,
+      studyTasks: (d.studyTasks || []).filter(t => t.id !== task.id),
+      deletedIds: withDeletedId(d, 'studyTasks', task.id),
+    }));
+    setEditing(null);
+    return true;
+  };
+
+  // Онбординг: можно отметить сразу несколько предметов и создать доску разом.
+  const [picked, setPicked] = useState([]);
+  const createPicked = () => setData(d => {
+    const list = d.studySubjects || [];
+    const maxOrder = list.reduce((m, s) => Math.max(m, s.order ?? 0), -1);
+    const now = Date.now();
+    const fresh = STUDY_PRESETS.filter(p => picked.includes(p.name)).map((p, i) => ({
+      id: crypto.randomUUID(), name: p.name, emoji: p.emoji, note: '',
+      color: STUDY_COLORS[(list.length + i) % STUDY_COLORS.length],
+      order: maxOrder + 1 + i, createdAt: now + i,
+    }));
+    return { ...d, studySubjects: [...list, ...fresh] };
+  });
+
+  // Какой столбец сейчас в кадре — подсвечиваем его в полосе предметов.
+  const onBoardScroll = () => {
+    const el = boardRef.current;
+    if (!el || !el.firstChild) return;
+    const w = el.firstChild.getBoundingClientRect().width + 12;
+    setActiveCol(Math.max(0, Math.min(subjects.length - 1, Math.round(el.scrollLeft / w))));
+  };
+  const scrollToCol = (i) => {
+    const el = boardRef.current;
+    const col = el && el.children[i];
+    if (col) el.scrollTo({ left: col.offsetLeft - el.offsetLeft, behavior: 'smooth' });
+  };
+  const jumpTo = (i) => {
+    if (view !== 'board') { setView('board'); setTimeout(() => scrollToCol(i), 60); return; }
+    scrollToCol(i);
+  };
+
+  if (subjects.length === 0) {
+    return (
+      <div className="st-empty fade-in">
+        <div className="st-empty-emoji">🎓</div>
+        <div className="font-display text-2xl mb-1">Доска учёбы</div>
+        <div className="text-sm text-[var(--text-muted)] mb-5">Каждый предмет — столбец. Добавьте предметы, и раскладывайте по ним задания.</div>
+        <div className="flex flex-wrap gap-2 justify-center mb-4">
+          {STUDY_PRESETS.map((p, i) => (
+            <button
+              key={p.name}
+              className={`st-preset ${picked.includes(p.name) ? 'on' : ''}`}
+              style={{ animationDelay: `${i * 40}ms`, '--c': STUDY_COLORS[i % STUDY_COLORS.length] }}
+              onClick={() => setPicked(x => (x.includes(p.name) ? x.filter(n => n !== p.name) : [...x, p.name]))}
+            >
+              <span>{p.emoji}</span>{p.name}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-2 justify-center">
+          <button className="btn-secondary text-sm" onClick={() => setManage(true)}>Свой предмет</button>
+          {picked.length > 0 && (
+            <button className="btn-primary text-sm st-go" onClick={createPicked}>Создать доску · {picked.length}</button>
+          )}
+        </div>
+        {manage && <StudySubjectsModal data={data} setData={setData} onClose={() => setManage(false)} />}
+      </div>
+    );
+  }
+
+  const chips = [
+    { id: 'over', label: 'Просрочено', n: stats.over, tone: 'over' },
+    { id: 'today', label: 'Сегодня', n: stats.today + stats.over, tone: 'today' },
+    { id: 'week', label: 'Неделя', n: stats.week + stats.over, tone: 'week' },
+    { id: 'doing', label: 'В работе', n: stats.doing, tone: 'doing' },
+  ].filter(c => c.n > 0 || filter === c.id);
+
+  return (
+    <div className="st-root">
+      {/* Шапка: прогресс недели + переключатель вида */}
+      <div className="st-top">
+        <div className="st-pulse">
+          <div className="st-pulse-num">{stats.doneWeek}</div>
+          <div className="st-pulse-cap">сделано<br />за 7 дней</div>
+          {stats.streak >= 2 && <div className="st-streak" title="Дней подряд с закрытой задачей">🔥 {stats.streak}</div>}
+        </div>
+        <div className="st-seg">
+          <button className={view === 'board' ? 'on' : ''} onClick={() => setView('board')}>Доска</button>
+          <button className={view === 'agenda' ? 'on' : ''} onClick={() => setView('agenda')}>По срокам</button>
+          <span className="st-seg-thumb" style={{ transform: `translateX(${view === 'board' ? 0 : 100}%)` }} />
+        </div>
+        <button className="st-icon-btn" onClick={() => setManage(true)} title="Предметы"><Icon name="settings" size={18} /></button>
+      </div>
+
+      {chips.length > 0 && (
+        <div className="st-chips">
+          {chips.map(c => (
+            <button
+              key={c.id}
+              className={`st-chip st-chip-${c.tone} ${filter === c.id ? 'on' : ''}`}
+              onClick={() => setFilter(f => (f === c.id ? '' : c.id))}
+            >
+              {c.tone === 'over' && <span className="st-dot-pulse" />}
+              {c.label}<b>{c.n}</b>
+            </button>
+          ))}
+          {filter && <button className="st-chip-clear" onClick={() => setFilter('')}><Icon name="x" size={14} /></button>}
+        </div>
+      )}
+
+      {/* Полоса предметов: быстрый переход к столбцу */}
+      <div className="st-subjbar">
+        {subjects.map((s, i) => {
+          const n = active.filter(t => t.subjectId === s.id && matches(t)).length;
+          return (
+            <button
+              key={s.id}
+              className={`st-subjpill ${view === 'board' && i === activeCol ? 'on' : ''}`}
+              style={{ '--c': s.color }}
+              onClick={() => jumpTo(i)}
+            >
+              <span>{s.emoji || '📘'}</span>{s.name}{n > 0 && <i>{n}</i>}
+            </button>
+          );
+        })}
+      </div>
+
+      {view === 'board' ? (
+        <div className="st-board" ref={boardRef} onScroll={onBoardScroll}>
+          {subjects.map(s => (
+            <StudyColumn
+              key={s.id}
+              subject={s}
+              tasks={live.filter(t => t.subjectId === s.id)}
+              matches={matches}
+              filtered={!!filter}
+              onAdd={addTask}
+              onOpen={setEditing}
+              onStatus={setStatus}
+              onToggleSub={(t, sid) => patchTask(t.id, { subtasks: (t.subtasks || []).map(x => (x.id === sid ? { ...x, done: !x.done } : x)) })}
+              onNote={(note) => setData(d => ({
+                ...d,
+                studySubjects: (d.studySubjects || []).map(x => (x.id === s.id ? { ...x, note } : x)),
+              }))}
+            />
+          ))}
+          <button className="st-col-add" onClick={() => setManage(true)}>
+            <Icon name="plus" size={20} />
+            Предмет
+          </button>
+        </div>
+      ) : (
+        <StudyAgenda tasks={active.filter(matches)} subjects={subjects} onOpen={setEditing} onStatus={setStatus} />
+      )}
+
+      {editing && (
+        <StudyTaskModal
+          key={editing.id}
+          initial={editing}
+          subjects={subjects}
+          isNew={!tasks.some(t => t.id === editing.id)}
+          onSave={saveTask}
+          onDelete={deleteTask}
+          onClose={() => setEditing(null)}
+        />
+      )}
+      {manage && <StudySubjectsModal data={data} setData={setData} onClose={() => setManage(false)} />}
+    </div>
+  );
+}
+
+function StudyRing({ value, total, color, size = 30 }) {
+  const r = (size - 5) / 2;
+  const c = 2 * Math.PI * r;
+  const pct = total ? value / total : 0;
+  return (
+    <svg width={size} height={size} className="st-ring">
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="currentColor" strokeOpacity=".12" strokeWidth="3.5" />
+      <circle
+        cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth="3.5" strokeLinecap="round"
+        strokeDasharray={c} strokeDashoffset={c * (1 - pct)}
+        transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        style={{ transition: 'stroke-dashoffset .6s cubic-bezier(.2,.8,.2,1)' }}
+      />
+      <text x="50%" y="52%" dominantBaseline="middle" textAnchor="middle" fontSize="9" fontWeight="700" fill="currentColor">
+        {total ? Math.round(pct * 100) : 0}
+      </text>
+    </svg>
+  );
+}
+
+// Заметка предмета — «стикер» под шапкой столбца: что важно помнить про
+// предмет или преподавателя (требования, кабинет, как сдавать). Хранится
+// полем note в самом studySubjects, синкается вместе с предметом.
+function StudySubjectNote({ note, onSave, startEditing }) {
+  const [editing, setEditing] = useState(!!startEditing);
+  const [expanded, setExpanded] = useState(false);
+  const [text, setText] = useState(note || '');
+  const ref = useRef(null);
+  useEffect(() => { if (!editing) setText(note || ''); }, [note, editing]);
+  useEffect(() => {
+    if (editing && ref.current) {
+      ref.current.focus();
+      ref.current.setSelectionRange(ref.current.value.length, ref.current.value.length);
+    }
+  }, [editing]);
+  const commit = () => {
+    setEditing(false);
+    if (text.trim() !== (note || '').trim()) onSave(text.trim());
+  };
+  if (editing) {
+    return (
+      <div className="st-sticky editing">
+        <textarea
+          ref={ref}
+          value={text}
+          rows={Math.min(8, Math.max(3, text.split('\n').length + 1))}
+          placeholder="Например: препод строг к оформлению, сдавать в тетради, кабинет 214…"
+          onChange={e => setText(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => { if (e.key === 'Escape') { setText(note || ''); setEditing(false); } }}
+        />
+        <div className="st-sticky-hint">Сохранится автоматически</div>
+      </div>
+    );
+  }
+  if (!note) return null;
+  return (
+    <div className={`st-sticky ${expanded ? 'expanded' : ''}`} onClick={() => setExpanded(v => !v)}>
+      <div className="st-sticky-text">{note}</div>
+      <button className="st-sticky-edit" onClick={e => { e.stopPropagation(); setEditing(true); }} title="Изменить заметку">
+        <Icon name="edit" size={13} />
+      </button>
+    </div>
+  );
+}
+
+function StudyColumn({ subject, tasks, matches, filtered, onAdd, onOpen, onStatus, onToggleSub, onNote }) {
+  const [noteNew, setNoteNew] = useState(0);
+  const [adding, setAdding] = useState(false);
+  const [text, setText] = useState('');
+  const [showDone, setShowDone] = useState(false);
+  const inputRef = useRef(null);
+  const activeTasks = tasks.filter(t => t.status !== 'done').sort(studyTaskSort);
+  const shown = activeTasks.filter(matches);
+  const done = tasks.filter(t => t.status === 'done').sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
+  const over = activeTasks.filter(t => (studyDaysLeft(t.due) ?? 1) < 0).length;
+
+  useEffect(() => { if (adding && inputRef.current) inputRef.current.focus(); }, [adding]);
+
+  const submit = () => {
+    const q = studyParseQuick(text);
+    if (!q.title) { setAdding(false); return; }
+    onAdd(newStudyTask(subject.id, q));
+    setText(''); // поле остаётся открытым — можно вбивать задания подряд
+  };
+
+  return (
+    <div className="st-col" style={{ '--c': subject.color }}>
+      <div className="st-col-head">
+        <div className="st-col-emoji">{subject.emoji || '📘'}</div>
+        <div className="min-w-0 flex-1">
+          <div className="st-col-name">{subject.name}</div>
+          <div className="st-col-sub">
+            {activeTasks.length ? `${activeTasks.length} в работе` : (done.length ? 'всё сдано 🎉' : 'пусто')}
+            {over > 0 && <span className="st-col-over"> · {over} просроч.</span>}
+          </div>
+        </div>
+        <button
+          className={`st-note-btn ${subject.note ? 'has' : ''}`}
+          title={subject.note ? 'Заметка по предмету' : 'Добавить заметку'}
+          onClick={() => setNoteNew(n => n + 1)}
+        >📌</button>
+        <StudyRing value={done.length} total={done.length + activeTasks.length} color={subject.color} />
+      </div>
+      <StudySubjectNote key={noteNew} startEditing={noteNew > 0} note={subject.note} onSave={onNote} />
+
+      <div className="st-col-body">
+        {shown.map(t => (
+          <StudyCard key={t.id} task={t} color={subject.color} onOpen={() => onOpen(t)} onStatus={onStatus} onToggleSub={onToggleSub} />
+        ))}
+        {filtered && shown.length === 0 && <div className="st-col-none">Ничего по фильтру</div>}
+
+        {!filtered && (adding ? (
+          <div className="st-quick">
+            <input
+              ref={inputRef}
+              value={text}
+              onChange={e => setText(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') submit();
+                if (e.key === 'Escape') { setAdding(false); setText(''); }
+              }}
+              onBlur={() => { if (!text.trim()) setAdding(false); }}
+              placeholder="Задание… «завтра», «пт», «!»"
+            />
+            <button onMouseDown={e => e.preventDefault()} onClick={submit}><Icon name="check" size={16} /></button>
+          </div>
+        ) : (
+          <button className="st-add" onClick={() => setAdding(true)}><Icon name="plus" size={15} />Задание</button>
+        ))}
+
+        {!filtered && done.length > 0 && (
+          <div className="st-done">
+            <button className="st-done-toggle" onClick={() => setShowDone(v => !v)}>
+              <Icon name={showDone ? 'chevronDown' : 'chevronRight'} size={14} />
+              Готово · {done.length}
+            </button>
+            {showDone && done.map(t => (
+              <StudyCard key={t.id} task={t} color={subject.color} onOpen={() => onOpen(t)} onStatus={onStatus} onToggleSub={onToggleSub} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StudyStatusDot({ task, color, onStatus }) {
+  const ref = useRef(null);
+  const [pop, setPop] = useState(0);
+  return (
+    <button
+      ref={ref}
+      key={pop}
+      className={`st-status st-status-${task.status} ${pop ? 'st-pop' : ''}`}
+      style={{ '--c': color }}
+      title={task.status === 'todo' ? 'Начать' : task.status === 'doing' ? 'Готово' : 'Вернуть'}
+      onClick={(e) => {
+        e.stopPropagation();
+        setPop(p => p + 1);
+        onStatus(task, STUDY_NEXT_STATUS[task.status] || 'todo', ref.current);
+      }}
+    >
+      {task.status === 'done' && <Icon name="check" size={13} />}
+    </button>
+  );
+}
+
+function StudyCard({ task, color, onOpen, onStatus, onToggleSub }) {
+  const due = studyDueInfo(task.due);
+  const kind = STUDY_KIND_BY_ID[task.kind];
+  const subs = task.subtasks || [];
+  const subsDone = subs.filter(s => s.done).length;
+  const [open, setOpen] = useState(false);
+  const isDone = task.status === 'done';
+
+  return (
+    <div className={`st-card st-card-${task.status}`} style={{ '--c': color }} onClick={onOpen}>
+      {task.status === 'doing' && <span className="st-card-sheen" />}
+      <div className="flex items-start gap-2.5">
+        <StudyStatusDot task={task} color={color} onStatus={onStatus} />
+        <div className="min-w-0 flex-1">
+          <div className="st-card-title">
+            {task.important && !isDone && <span className="st-imp">★</span>}
+            {task.title || 'Без названия'}
+          </div>
+          {(kind || due || subs.length > 0 || task.note || (task.attachments || []).length > 0) && (
+            <div className="st-meta">
+              {kind && task.kind !== 'hw' && <span className="st-kind">{kind.emoji} {kind.label}</span>}
+              {due && <span className={`st-due st-due-${isDone ? 'later' : due.tone}`}>{due.text}</span>}
+              {subs.length > 0 && (
+                <button
+                  className="st-subs"
+                  onClick={e => { e.stopPropagation(); setOpen(v => !v); }}
+                >
+                  <span className="st-subs-bar"><span style={{ width: `${(subsDone / subs.length) * 100}%` }} /></span>
+                  {subsDone}/{subs.length}
+                </button>
+              )}
+              {(task.attachments || []).length > 0 && <span className="st-note-dot">📎 {task.attachments.length}</span>}
+              {task.note && <span className="st-note-dot" title={task.note}>✎</span>}
+            </div>
+          )}
+          {open && subs.length > 0 && (
+            <div className="st-sublist" onClick={e => e.stopPropagation()}>
+              {subs.map(s => (
+                <button key={s.id} className={`st-subrow ${s.done ? 'done' : ''}`} onClick={() => onToggleSub(task, s.id)}>
+                  <span className="st-subbox">{s.done && <Icon name="check" size={10} />}</span>
+                  {s.text}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Вид «По срокам»: все незакрытые задания всех предметов одной лентой,
+// сгруппированные по горизонту — что сдавать первым видно без скролла доски.
+function StudyAgenda({ tasks, subjects, onOpen, onStatus }) {
+  const byId = Object.fromEntries(subjects.map(s => [s.id, s]));
+  const groups = [
+    { id: 'over', label: 'Просрочено', test: n => n !== null && n < 0 },
+    { id: 'today', label: 'Сегодня', test: n => n === 0 },
+    { id: 'tomorrow', label: 'Завтра', test: n => n === 1 },
+    { id: 'week', label: 'На неделе', test: n => n !== null && n >= 2 && n < 7 },
+    { id: 'later', label: 'Позже', test: n => n !== null && n >= 7 },
+    { id: 'none', label: 'Без срока', test: n => n === null },
+  ];
+  const sorted = [...tasks].sort(studyTaskSort);
+  let idx = 0;
+  if (!sorted.length) {
+    return <div className="st-agenda-empty fade-in"><div className="text-4xl mb-2">🏖️</div>Всё сделано — можно отдыхать</div>;
+  }
+  return (
+    <div className="st-agenda">
+      {groups.map(g => {
+        const list = sorted.filter(t => g.test(studyDaysLeft(t.due)));
+        if (!list.length) return null;
+        return (
+          <div key={g.id} className={`st-agenda-group st-ag-${g.id}`}>
+            <div className="st-agenda-head">{g.label}<span>{list.length}</span></div>
+            {list.map(t => {
+              const s = byId[t.subjectId] || {};
+              const due = studyDueInfo(t.due);
+              const kind = STUDY_KIND_BY_ID[t.kind];
+              return (
+                <div key={t.id} className={`st-arow st-card-${t.status}`} style={{ '--c': s.color, animationDelay: `${Math.min(idx++, 12) * 30}ms` }} onClick={() => onOpen(t)}>
+                  <StudyStatusDot task={t} color={s.color} onStatus={onStatus} />
+                  <div className="min-w-0 flex-1">
+                    <div className="st-card-title">
+                      {t.important && <span className="st-imp">★</span>}
+                      {t.title || 'Без названия'}
+                    </div>
+                    <div className="st-meta">
+                      <span className="st-arow-subj">{s.emoji || '📘'} {s.name}</span>
+                      {kind && t.kind !== 'hw' && <span className="st-kind">{kind.emoji} {kind.label}</span>}
+                      {t.subtasks && t.subtasks.length > 0 && <span className="st-kind">{t.subtasks.filter(x => x.done).length}/{t.subtasks.length}</span>}
+                    </div>
+                  </div>
+                  {due && <span className={`st-due st-due-${due.tone}`}>{due.text}</span>}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Вложения задания: фото (сжимаются, лежат в /api/photos), видео и
+// документы (как есть, в /api/files; видео отдаётся с Range). В задании —
+// только ссылки { id, store, filename, name, kind, size }, сами файлы на
+// сервере, поэтому синк между устройствами их не гоняет.
+// Держать в синхроне с ALLOWED_FILE_EXT в jarvis.py.
+const STUDY_FILE_EXT = [
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ods', 'ppt', 'pptx', 'txt', 'rtf', 'csv', 'zip',
+  'png', 'jpg', 'jpeg', 'webp', 'heic', 'heif', 'gif',
+  'mp4', 'mov', 'm4v', 'webm', 'mp3', 'm4a', 'wav', 'ogg', 'aac',
+  'md', 'json', 'xml', 'html', 'css', 'js', 'ts', 'py', 'java', 'c', 'cpp', 'h', 'cs', 'sql',
+];
+const STUDY_AUDIO_EXT = ['mp3', 'm4a', 'wav', 'ogg', 'aac'];
+const STUDY_TEXT_EXT = ['txt', 'md', 'json', 'xml', 'html', 'css', 'js', 'ts', 'py', 'java', 'c', 'cpp', 'h', 'cs', 'sql'];
+const STUDY_VIDEO_EXT = ['mp4', 'mov', 'm4v', 'webm'];
+// Потолок одного вложения — как MAX_UPLOAD_FILE в jarvis.py.
+const STUDY_MAX_FILE = 500 * 1048576;
+const studyAttUrl = (a) => `/api/${a.store === 'photos' ? 'photos' : 'files'}/${a.filename}`;
+const studyAttExt = (a) => ((a.name || a.filename || '').split('.').pop() || '').toLowerCase();
+const studyFileSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} МБ` : `${Math.max(1, Math.round(n / 1024))} КБ`);
+const studyDeleteAttachments = (list) => (list || []).forEach(a =>
+  (a.store === 'photos' ? deletePhoto(a.filename) : deleteFile(a.filename)));
+
+// HEIC с iPhone умеет показывать только Safari — для остальных браузеров
+// перегоняем в JPEG ещё до загрузки (heic2any грузится только в этот момент).
+async function studyHeicToJpeg(file) {
+  try {
+    const bm = await createImageBitmap(file);
+    if (bm.close) bm.close();
+    return file; // браузер сам декодирует (Safari) — дальше обычное сжатие
+  } catch {}
+  const heic2any = await studyLoadLib('heic');
+  const out = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.85 });
+  const blob = Array.isArray(out) ? out[0] : out;
+  return new File([blob], file.name.replace(/\.hei[cf]$/i, '.jpg'), { type: 'image/jpeg' });
+}
+
+async function studyUploadAttachment(file) {
+  let ext = (file.name.split('.').pop() || '').toLowerCase();
+  if (ext === 'heic' || ext === 'heif') {
+    try { file = await studyHeicToJpeg(file); ext = (file.name.split('.').pop() || '').toLowerCase(); } catch {}
+  }
+  const isImage = ((file.type || '').startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif'].includes(ext)) && ext !== 'gif';
+  const isVideo = (file.type || '').startsWith('video/') || STUDY_VIDEO_EXT.includes(ext);
+  if (isImage) {
+    try {
+      const filename = await uploadPhoto(file);
+      return { id: crypto.randomUUID(), store: 'photos', filename, name: file.name, kind: 'image', size: file.size, at: Date.now() };
+    } catch {
+      // Не сжалось и не влезло в лимит фото — кладём оригинал как файл.
+      if (!STUDY_FILE_EXT.includes(ext)) throw new Error('upload failed');
+      const filename = await uploadFile(file);
+      return { id: crypto.randomUUID(), store: 'files', filename, name: file.name, kind: 'image', size: file.size, at: Date.now() };
+    }
+  }
+  if (!STUDY_FILE_EXT.includes(ext)) throw new Error(`Формат .${ext || '?'} не поддерживается`);
+  if (file.size > STUDY_MAX_FILE) throw new Error(`«${file.name}» больше ${STUDY_MAX_FILE / 1048576} МБ`);
+  const filename = await uploadFile(file);
+  return {
+    id: crypto.randomUUID(), store: 'files', filename, name: file.name,
+    kind: isVideo ? 'video' : (ext === 'gif' ? 'image' : 'file'), size: file.size, at: Date.now(),
+  };
+}
+
+function StudyAttachThumb({ att, onOpen, onRemove }) {
+  const ext = studyAttExt(att);
+  return (
+    <div className="st-att" onClick={() => onOpen(att)}>
+      {att.kind === 'image' && <img src={studyAttUrl(att)} alt="" loading="lazy" />}
+      {att.kind === 'video' && (
+        <>
+          <video src={`${studyAttUrl(att)}#t=0.1`} preload="metadata" muted playsInline />
+          <span className="st-att-play">▶</span>
+        </>
+      )}
+      {att.kind === 'file' && (
+        <div className="st-att-file">
+          <span className="st-att-ext">{STUDY_AUDIO_EXT.includes(ext) ? '♪ ' : ''}{ext.toUpperCase().slice(0, 4)}</span>
+          <span className="st-att-name">{att.name}</span>
+        </div>
+      )}
+      {onRemove && (
+        <button className="st-att-del" onClick={e => { e.stopPropagation(); onRemove(att); }}><Icon name="x" size={12} /></button>
+      )}
+    </div>
+  );
+}
+
+// Просмотр вложения поверх всего (в т.ч. поверх попапа задания: z-index
+// выше Modal и портал монтируется позже). Фото/видео — как есть, PDF —
+// встроенным просмотрщиком браузера, TXT/CSV/Excel/Word — рендерим сами.
+// Библиотеки для Excel (SheetJS) и Word (mammoth) грузятся лениво, только
+// когда открывают такой файл, — на загрузку сайта они не влияют.
+const STUDY_LIBS = {
+  xlsx: { url: 'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js', global: 'XLSX' },
+  mammoth: { url: 'https://unpkg.com/mammoth@1.8.0/mammoth.browser.min.js', global: 'mammoth' },
+  pptx: { url: 'https://unpkg.com/pptx-preview@1.0.7/dist/pptx-preview.umd.js', global: 'pptxPreview' },
+  heic: { url: 'https://unpkg.com/heic2any@0.0.4/dist/heic2any.min.js', global: 'heic2any' },
+};
+const studyLibCache = {};
+const studyLoadLib = (key) => {
+  const lib = STUDY_LIBS[key];
+  if (window[lib.global]) return Promise.resolve(window[lib.global]);
+  if (!studyLibCache[key]) {
+    studyLibCache[key] = new Promise((resolve, reject) => {
+      const el = document.createElement('script');
+      el.src = lib.url;
+      el.onload = () => (window[lib.global] ? resolve(window[lib.global]) : reject(new Error('lib')));
+      el.onerror = () => { delete studyLibCache[key]; reject(new Error('lib')); };
+      document.head.appendChild(el);
+    });
+  }
+  return studyLibCache[key];
+};
+const STUDY_SHEET_MAX_ROWS = 2000;
+// Какой просмотрщик нужен вложению; null — только скачать/открыть вкладкой.
+const studyPreviewKind = (att) => {
+  if (att.kind === 'image' || att.kind === 'video') return att.kind;
+  const ext = studyAttExt(att);
+  if (ext === 'pdf') return 'pdf';
+  if (STUDY_TEXT_EXT.includes(ext)) return 'text';
+  if (ext === 'rtf') return 'rtf';
+  if (['xlsx', 'xls', 'ods', 'csv'].includes(ext)) return 'sheet';
+  if (ext === 'docx') return 'doc';
+  if (ext === 'pptx') return 'slides';
+  if (STUDY_AUDIO_EXT.includes(ext)) return 'audio';
+  return null;
+};
+
+// RTF → простой текст без тяжёлой библиотеки: выкидываем служебные группы
+// и управляющие слова, \'xx собираем байтами в кодировке документа
+// (\ansicpg1251 у русских файлов), \uN — юникод напрямую.
+const studyRtfToText = (rtf) => {
+  const cpMatch = /\\ansicpg(\d+)/.exec(rtf);
+  let decoder;
+  try { decoder = new TextDecoder(cpMatch ? `windows-${cpMatch[1]}` : 'windows-1252'); } catch { decoder = new TextDecoder('windows-1252'); }
+  const skipGroups = /^(fonttbl|colortbl|stylesheet|info|pict|header|footer|headerl|headerr|footerl|footerr|listtable|listoverridetable|rsidtbl|generator|xmlnstbl|themedata|colorschememapping|latentstyles|datastore|object)$/;
+  let out = '';
+  let bytes = [];
+  const flush = () => { if (bytes.length) { out += decoder.decode(new Uint8Array(bytes)); bytes = []; } };
+  const stack = [];
+  let skip = false;
+  let ucSkip = 0;
+  for (let i = 0; i < rtf.length; i++) {
+    const ch = rtf[i];
+    if (ch === '{') { stack.push(skip); continue; }
+    if (ch === '}') { flush(); skip = stack.length ? stack.pop() : false; continue; }
+    if (ch === '\\') {
+      const next = rtf[i + 1];
+      if (next === "'") {
+        const hex = rtf.substr(i + 2, 2);
+        i += 3;
+        if (ucSkip > 0) { ucSkip--; continue; }
+        if (!skip) bytes.push(parseInt(hex, 16));
+        continue;
+      }
+      if (next === '\\' || next === '{' || next === '}') { flush(); if (!skip) out += next; i++; continue; }
+      if (next === '*') { skip = true; i++; continue; }
+      const m = /^([a-z]+)(-?\d+)? ?/i.exec(rtf.slice(i + 1, i + 40));
+      if (!m) { i++; continue; }
+      i += m[0].length;
+      const word = m[1];
+      flush();
+      if (skipGroups.test(word)) { skip = true; continue; }
+      if (skip) continue;
+      if (word === 'par' || word === 'line' || word === 'row') out += '\n';
+      else if (word === 'tab' || word === 'cell') out += '\t';
+      else if (word === 'u') { let n = parseInt(m[2], 10); if (n < 0) n += 65536; out += String.fromCharCode(n); ucSkip = 1; }
+      continue;
+    }
+    if (ch === '\r' || ch === '\n') continue;
+    flush();
+    if (skip) continue;
+    if (ucSkip > 0) { ucSkip--; continue; }
+    out += ch;
+  }
+  flush();
+  return out.replace(/\n{3,}/g, '\n\n').trim();
+};
+
+// PPTX: слайды рендерит pptx-preview прямо в DOM-контейнер — списком по
+// ширине экрана, листаются обычным скроллом.
+function StudySlidesPreview({ att }) {
+  const boxRef = useRef(null);
+  const [state, setState] = useState('loading');
+  useEffect(() => {
+    let alive = true;
+    let viewer = null;
+    (async () => {
+      try {
+        const [lib, buf] = await Promise.all([
+          studyLoadLib('pptx'),
+          fetch(studyAttUrl(att)).then(r => { if (!r.ok) throw new Error('fetch'); return r.arrayBuffer(); }),
+        ]);
+        if (!alive || !boxRef.current) return;
+        const w = Math.min(boxRef.current.clientWidth - 16, 960);
+        viewer = lib.init(boxRef.current, { width: w, height: Math.round(w * 9 / 16), mode: 'list' });
+        await viewer.preview(buf);
+        // Нестандартный файл библиотека «открывает» без единого слайда.
+        if (alive) setState(viewer.slideCount > 0 ? 'ok' : 'error');
+      } catch {
+        if (alive) setState('error');
+      }
+    })();
+    return () => { alive = false; try { viewer && viewer.destroy(); } catch {} };
+  }, [att.filename]);
+  return (
+    <div className="st-doc st-doc-slides">
+      {state === 'loading' && <div className="st-doc-msg"><span className="st-spin" />Открываю презентацию…</div>}
+      {state === 'error' && (
+        <div className="st-doc-msg">
+          Не получилось показать презентацию.
+          <a href={studyAttUrl(att)} download={att.name} target="_blank" rel="noopener" className="underline">Скачать</a>
+        </div>
+      )}
+      <div ref={boxRef} className={`st-slides-box ${state === 'error' ? 'hidden' : ''}`} />
+    </div>
+  );
+}
+
+function StudyDocPreview({ att, kind }) {
+  const [state, setState] = useState({ loading: true });
+  const [sheetIdx, setSheetIdx] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const url = studyAttUrl(att);
+    (async () => {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('fetch');
+        if (kind === 'text') {
+          const text = await res.text();
+          if (alive) setState({ text });
+          return;
+        }
+        if (kind === 'rtf') {
+          const text = studyRtfToText(await res.text());
+          if (alive) setState({ text: text || 'Документ пустой' });
+          return;
+        }
+        if (kind === 'doc') {
+          const [mammoth, buf] = await Promise.all([studyLoadLib('mammoth'), res.arrayBuffer()]);
+          const out = await mammoth.convertToHtml({ arrayBuffer: buf });
+          if (alive) setState({ html: out.value || '<p><i>Документ пустой</i></p>' });
+          return;
+        }
+        if (kind === 'sheet') {
+          const isCsv = studyAttExt(att) === 'csv';
+          // CSV читаем текстом (UTF-8), остальное — бинарём.
+          const [XLSX, body] = await Promise.all([studyLoadLib('xlsx'), isCsv ? res.text() : res.arrayBuffer()]);
+          const wb = isCsv ? XLSX.read(body, { type: 'string' }) : XLSX.read(body, { type: 'array' });
+          const sheets = wb.SheetNames.map(name => {
+            const ws = wb.Sheets[name];
+            let cut = false;
+            if (ws['!ref']) {
+              const r = XLSX.utils.decode_range(ws['!ref']);
+              if (r.e.r - r.s.r + 1 > STUDY_SHEET_MAX_ROWS) {
+                r.e.r = r.s.r + STUDY_SHEET_MAX_ROWS - 1;
+                ws['!ref'] = XLSX.utils.encode_range(r);
+                cut = true;
+              }
+            }
+            return { name, cut, html: ws['!ref'] ? XLSX.utils.sheet_to_html(ws, { header: '', footer: '' }) : '' };
+          });
+          if (alive) setState({ sheets });
+        }
+      } catch {
+        if (alive) setState({ error: true });
+      }
+    })();
+    return () => { alive = false; };
+  }, [att.filename, kind]);
+
+  if (state.loading) return <div className="st-doc-msg"><span className="st-spin" />Открываю…</div>;
+  if (state.error) {
+    return (
+      <div className="st-doc-msg">
+        Не получилось показать файл.
+        <a href={studyAttUrl(att)} download={att.name} target="_blank" rel="noopener" className="underline">Скачать</a>
+      </div>
+    );
+  }
+  if (state.text !== undefined) return <div className="st-doc"><pre className="st-doc-pre">{state.text}</pre></div>;
+  if (state.html !== undefined) return <div className="st-doc"><div className="st-doc-word" dangerouslySetInnerHTML={{ __html: state.html }} /></div>;
+  const sheet = state.sheets[sheetIdx] || state.sheets[0];
+  return (
+    <div className="st-doc st-doc-sheetwrap">
+      {state.sheets.length > 1 && (
+        <div className="st-doc-tabs">
+          {state.sheets.map((sh, i) => (
+            <button key={sh.name} className={i === sheetIdx ? 'on' : ''} onClick={() => setSheetIdx(i)}>{sh.name}</button>
+          ))}
+        </div>
+      )}
+      <div className="st-doc-sheet">
+        {sheet && sheet.html
+          ? <div dangerouslySetInnerHTML={{ __html: sheet.html }} />
+          : <div className="st-doc-msg">Лист пустой</div>}
+      </div>
+      {sheet && sheet.cut && <div className="st-doc-note">Показаны первые {STUDY_SHEET_MAX_ROWS} строк — целиком в скачанном файле</div>}
+    </div>
+  );
+}
+
+function StudyAttachViewer({ att, onClose }) {
+  const kind = studyPreviewKind(att);
+  useEffect(() => {
+    const h = (e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
+    window.addEventListener('keydown', h, true);
+    return () => window.removeEventListener('keydown', h, true);
+  }, [onClose]);
+  return ReactDOM.createPortal(
+    <div className="st-viewer" onClick={onClose}>
+      <div className="st-viewer-bar" onClick={e => e.stopPropagation()}>
+        <span className="truncate">{att.name}</span>
+        <a href={studyAttUrl(att)} download={att.name} target="_blank" rel="noopener" title="Скачать"><Icon name="download" size={18} /></a>
+        <button onClick={onClose}><Icon name="x" size={20} /></button>
+      </div>
+      <div className={`st-viewer-body ${['image', 'video', 'audio'].includes(kind) ? '' : 'st-viewer-doc'}`} onClick={e => e.stopPropagation()}>
+        {kind === 'video' && <video src={studyAttUrl(att)} controls autoPlay playsInline />}
+        {kind === 'image' && <img src={studyAttUrl(att)} alt={att.name} />}
+        {kind === 'pdf' && <iframe className="st-doc st-doc-pdf" src={studyAttUrl(att)} title={att.name} />}
+        {['text', 'rtf', 'sheet', 'doc'].includes(kind) && <StudyDocPreview att={att} kind={kind} />}
+        {kind === 'slides' && <StudySlidesPreview att={att} />}
+        {kind === 'audio' && (
+          <div className="st-audio">
+            <div className="st-audio-disc"><span /></div>
+            <div className="st-audio-name">{att.name}</div>
+            <audio src={studyAttUrl(att)} controls autoPlay />
+          </div>
+        )}
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function StudyTaskModal({ initial, subjects, isNew, onSave, onDelete, onClose }) {
+  const [t, setT] = useState(() => ({ subtasks: [], attachments: [], ...initial }));
+  const [subText, setSubText] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
+  const [uploading, setUploading] = useState(0);
+  const [viewing, setViewing] = useState(null);
+  const mediaRef = useRef(null);
+  const fileRef = useRef(null);
+  // Загруженное в этом окне: если закрыть без «Сохранить» — подчистим сервер.
+  const freshRef = useRef(new Set());
+  const set = (patch) => setT(x => ({ ...x, ...patch }));
+  const subj = subjects.find(s => s.id === t.subjectId) || subjects[0];
+  const kind = STUDY_KIND_BY_ID[t.kind] || STUDY_KIND_BY_ID.hw;
+  const atts = t.attachments || [];
+  const quickDue = [
+    { label: 'Сегодня', v: studyAddDays(0) },
+    { label: 'Завтра', v: studyAddDays(1) },
+    { label: 'Пт', v: studyNextWeekday(5) },
+    { label: '+неделя', v: studyAddDays(7) },
+  ];
+  const addSub = () => {
+    const text = subText.trim();
+    if (!text) return;
+    set({ subtasks: [...(t.subtasks || []), { id: crypto.randomUUID(), text, done: false }] });
+    setSubText('');
+  };
+
+  const onFiles = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    setUploading(n => n + files.length);
+    const errors = [];
+    await Promise.all(files.map(async (f) => {
+      try {
+        const att = await studyUploadAttachment(f);
+        freshRef.current.add(att.filename);
+        setT(x => ({ ...x, attachments: [...(x.attachments || []), att] }));
+      } catch (e) {
+        errors.push(e.message === 'upload failed' ? `«${f.name}» не загрузился` : e.message);
+      } finally {
+        setUploading(n => n - 1);
+      }
+    }));
+    if (errors.length) alert(errors.join('\n'));
+  };
+
+  const removeAtt = (att) => {
+    set({ attachments: atts.filter(a => a.id !== att.id) });
+    // Свежезагруженное удаляем сразу; старое — только при сохранении,
+    // чтобы «Отмена» вернула задание как было.
+    if (freshRef.current.has(att.filename)) {
+      freshRef.current.delete(att.filename);
+      studyDeleteAttachments([att]);
+    }
+  };
+
+  const close = () => {
+    studyDeleteAttachments(atts.filter(a => freshRef.current.has(a.filename)));
+    onClose();
+  };
+
+  const save = () => {
+    if (!t.title.trim() || uploading) return;
+    const keep = new Set(atts.map(a => a.id));
+    studyDeleteAttachments((initial.attachments || []).filter(a => !keep.has(a.id)));
+    freshRef.current.clear();
+    onSave({ ...t, title: t.title.trim(), subjectId: subj.id });
+  };
+
+  return (
+    <Modal title={isNew ? 'Новое задание' : 'Задание'} onClose={viewing ? () => setViewing(null) : close}>
+      <div className="st-form" style={{ '--c': subj.color }}>
+        <textarea
+          className="st-title-input"
+          value={t.title}
+          autoFocus={isNew}
+          rows={2}
+          placeholder="Что нужно сделать?"
+          onChange={e => set({ title: e.target.value })}
+        />
+
+        <div className="st-status-seg">
+          {STUDY_STATUSES.map(s => (
+            <button key={s.id} className={t.status === s.id ? `on st-ss-${s.id}` : ''} onClick={() => set({ status: s.id })}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+
+        <label>Срок</label>
+        <div className="st-pills">
+          {quickDue.map(q => (
+            <button key={q.label} className={`st-pill ${t.due === q.v ? 'on' : ''}`} onClick={() => set({ due: q.v })}>{q.label}</button>
+          ))}
+          <input type="date" className="st-date" value={t.due || ''} onChange={e => set({ due: e.target.value })} />
+          {t.due && <button className="st-pill" onClick={() => set({ due: '' })}>✕</button>}
+        </div>
+
+        <button className={`st-imp-toggle ${t.important ? 'on' : ''}`} onClick={() => set({ important: !t.important })}>
+          <span>★</span> Важное
+        </button>
+
+        <label>Шаги {t.subtasks.length > 0 && `· ${t.subtasks.filter(s => s.done).length}/${t.subtasks.length}`}</label>
+        <div className="st-subedit">
+          {t.subtasks.map(s => (
+            <div key={s.id} className={`st-subedit-row ${s.done ? 'done' : ''}`}>
+              <button className="st-subbox" onClick={() => set({ subtasks: t.subtasks.map(x => (x.id === s.id ? { ...x, done: !x.done } : x)) })}>
+                {s.done && <Icon name="check" size={10} />}
+              </button>
+              <input value={s.text} onChange={e => set({ subtasks: t.subtasks.map(x => (x.id === s.id ? { ...x, text: e.target.value } : x)) })} />
+              <button className="st-subdel" onClick={() => set({ subtasks: t.subtasks.filter(x => x.id !== s.id) })}><Icon name="x" size={14} /></button>
+            </div>
+          ))}
+          <div className="st-subedit-row">
+            <span className="st-subbox ghost"><Icon name="plus" size={10} /></span>
+            <input value={subText} placeholder="Добавить шаг" onChange={e => setSubText(e.target.value)} onKeyDown={e => e.key === 'Enter' && addSub()} onBlur={addSub} />
+          </div>
+        </div>
+
+        <label>Вложения {atts.length > 0 && `· ${atts.length}`}</label>
+        <div
+          className="st-atts"
+          onDragOver={e => e.preventDefault()}
+          onDrop={e => { e.preventDefault(); onFiles(e.dataTransfer.files); }}
+        >
+          {atts.map(a => (
+            <StudyAttachThumb
+              key={a.id}
+              att={a}
+              onOpen={(x) => (studyPreviewKind(x) ? setViewing(x) : window.open(studyAttUrl(x), '_blank', 'noopener'))}
+              onRemove={removeAtt}
+            />
+          ))}
+          {Array.from({ length: uploading }).map((_, i) => (
+            <div key={`up-${i}`} className="st-att st-att-loading"><span className="st-spin" /></div>
+          ))}
+          <button className="st-att-add" onClick={() => mediaRef.current && mediaRef.current.click()}>
+            <Icon name="camera" size={18} />Фото/видео
+          </button>
+          <button className="st-att-add" onClick={() => fileRef.current && fileRef.current.click()}>
+            <Icon name="clipboard" size={18} />Файл
+          </button>
+          <input ref={mediaRef} type="file" accept="image/*,video/*" multiple hidden onChange={e => { onFiles(e.target.files); e.target.value = ''; }} />
+          <input ref={fileRef} type="file" multiple hidden onChange={e => { onFiles(e.target.files); e.target.value = ''; }} />
+        </div>
+
+        <label>Заметка</label>
+        <textarea className="st-note" rows={2} value={t.note || ''} placeholder="Номера задач, ссылка, страницы…" onChange={e => set({ note: e.target.value })} />
+
+        {/* Редко меняемое — свернуто, в заголовке видно текущее значение */}
+        <button className={`st-settings-toggle ${showSettings ? 'open' : ''}`} onClick={() => setShowSettings(v => !v)}>
+          <Icon name="settings" size={16} />
+          <span className="flex-1 text-left">Настройки</span>
+          {!showSettings && <span className="st-settings-sum">{subj.emoji || '📘'} {subj.name} · {kind.emoji} {kind.label}</span>}
+          <span className="st-settings-chev"><Icon name="chevronDown" size={16} /></span>
+        </button>
+        {showSettings && (
+          <div className="st-settings-body">
+            <label>Предмет</label>
+            <div className="st-pills">
+              {subjects.map(s => (
+                <button key={s.id} className={`st-pill ${subj.id === s.id ? 'on' : ''}`} style={{ '--c': s.color }} onClick={() => set({ subjectId: s.id })}>
+                  {s.emoji || '📘'} {s.name}
+                </button>
+              ))}
+            </div>
+            <label>Тип</label>
+            <div className="st-pills">
+              {STUDY_KINDS.map(k => (
+                <button key={k.id} className={`st-pill ${t.kind === k.id ? 'on' : ''}`} onClick={() => set({ kind: k.id })}>
+                  {k.emoji} {k.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-2 mt-5">
+          {!isNew && (
+            <button
+              className="btn-secondary px-4"
+              title="Удалить"
+              onClick={() => {
+                if (!onDelete(initial)) return;
+                studyDeleteAttachments(atts.filter(a => freshRef.current.has(a.filename)));
+              }}
+            ><Icon name="trash" size={18} /></button>
+          )}
+          <button className="btn-primary flex-1" disabled={!t.title.trim() || uploading > 0} onClick={save}>
+            {uploading > 0 ? 'Загружаю…' : 'Сохранить'}
+          </button>
+        </div>
+      </div>
+      {viewing && <StudyAttachViewer att={viewing} onClose={() => setViewing(null)} />}
+    </Modal>
+  );
+}
+
+function StudySubjectsModal({ data, setData, onClose }) {
+  const subjects = studySortSubjects(data.studySubjects || []);
+  const tasks = data.studyTasks || [];
+  const [name, setName] = useState('');
+  const [emoji, setEmoji] = useState('📘');
+
+  const update = (id, patch) => setData(d => ({
+    ...d, studySubjects: (d.studySubjects || []).map(s => (s.id === id ? { ...s, ...patch } : s)),
+  }));
+  const add = () => {
+    const n = name.trim();
+    if (!n) return;
+    setData(d => {
+      const list = d.studySubjects || [];
+      const maxOrder = list.reduce((m, s) => Math.max(m, s.order ?? 0), -1);
+      return {
+        ...d,
+        studySubjects: [...list, {
+          id: crypto.randomUUID(), name: n, emoji: emoji.trim() || '📘',
+          color: STUDY_COLORS[list.length % STUDY_COLORS.length], order: maxOrder + 1, createdAt: Date.now(),
+        }],
+      };
+    });
+    setName('');
+    setEmoji('📘');
+  };
+  // Перестановка — переписываем order всем подряд: у изменившихся setData
+  // поставит свежий updatedAt, и порядок одинаково соберётся на всех устройствах.
+  const move = (idx, dir) => {
+    const j = idx + dir;
+    if (j < 0 || j >= subjects.length) return;
+    const ids = subjects.map(s => s.id);
+    [ids[idx], ids[j]] = [ids[j], ids[idx]];
+    setData(d => ({
+      ...d,
+      studySubjects: (d.studySubjects || []).map(s => {
+        const o = ids.indexOf(s.id);
+        return o >= 0 && s.order !== o ? { ...s, order: o } : s;
+      }),
+    }));
+  };
+  const remove = (s) => {
+    const own = tasks.filter(t => t.subjectId === s.id);
+    if (!confirm(own.length ? `Удалить «${s.name}» и ${own.length} заданий в нём?` : `Удалить «${s.name}»?`)) return;
+    own.forEach(t => studyDeleteAttachments(t.attachments));
+    setData(d => {
+      let deleted = withDeletedId(d, 'studySubjects', s.id);
+      (d.studyTasks || []).filter(t => t.subjectId === s.id).forEach(t => {
+        deleted = withDeletedId({ deletedIds: deleted }, 'studyTasks', t.id);
+      });
+      return {
+        ...d,
+        studySubjects: (d.studySubjects || []).filter(x => x.id !== s.id),
+        studyTasks: (d.studyTasks || []).filter(t => t.subjectId !== s.id),
+        deletedIds: deleted,
+      };
+    });
+  };
+
+  return (
+    <Modal title="Предметы" onClose={onClose}>
+      <div className="space-y-2.5">
+        {subjects.map((s, i) => (
+          <div key={s.id} className="st-subj-row" style={{ '--c': s.color }}>
+            <input className="st-subj-emoji" value={s.emoji || ''} maxLength={4} onChange={e => update(s.id, { emoji: e.target.value })} />
+            <div className="flex-1 min-w-0">
+              <input className="st-subj-name" value={s.name} onChange={e => update(s.id, { name: e.target.value })} />
+              <div className="st-swatches">
+                {STUDY_COLORS.map(c => (
+                  <button key={c} className={s.color === c ? 'on' : ''} style={{ background: c }} onClick={() => update(s.id, { color: c })} />
+                ))}
+              </div>
+              <textarea
+                className="st-subj-note"
+                rows={1}
+                value={s.note || ''}
+                placeholder="📌 Заметка: преподаватель, требования…"
+                onChange={e => update(s.id, { note: e.target.value })}
+              />
+            </div>
+            <div className="flex flex-col">
+              <button className="st-mini" disabled={i === 0} onClick={() => move(i, -1)}><Icon name="chevronLeft" size={14} /></button>
+              <button className="st-mini" disabled={i === subjects.length - 1} onClick={() => move(i, 1)}><Icon name="chevronRight" size={14} /></button>
+            </div>
+            <button className="st-mini danger" onClick={() => remove(s)}><Icon name="trash" size={15} /></button>
+          </div>
+        ))}
+      </div>
+
+      <div className="st-subj-add">
+        <input className="st-subj-emoji" value={emoji} maxLength={4} onChange={e => setEmoji(e.target.value)} />
+        <input className="flex-1" value={name} placeholder="Новый предмет" onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} />
+        <button className="btn-primary px-4 py-2.5" onClick={add} disabled={!name.trim()}><Icon name="plus" size={18} /></button>
+      </div>
+
+      {STUDY_PRESETS.some(p => !subjects.some(s => s.name === p.name)) && (
+        <div className="flex flex-wrap gap-1.5 mt-3">
+          {STUDY_PRESETS.filter(p => !subjects.some(s => s.name === p.name)).map(p => (
+            <button key={p.name} className="st-preset small" onClick={() => { setName(p.name); setEmoji(p.emoji); }}>
+              {p.emoji} {p.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </Modal>
   );
 }
 
