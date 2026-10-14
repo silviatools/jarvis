@@ -5632,6 +5632,9 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
     if name == "study_get_attachment":
         return study_get_attachment(app, inp)
     # Личный Telegram — только в чате владельца (см. tg_user.is_owner_chat).
+    if name in TG_TOOL_NAMES and getattr(_brief_scope, "peers", None) is not None \
+            and not study_skills.peer_allowed(inp.get("peer"), _brief_scope.peers):
+        return {"error": "Сбор информации ищет только в учебных чатах из списка: укажи peer — чат из списка."}
     if name in TG_TOOL_NAMES:
         return execute_tg_tool(name, inp, (app or {}).get("telegramSkills")) if with_tg else {"error": "Личный Telegram в этом чате недоступен."}
     # Apple Календарь и Напоминания живут не в данных приложения, а в iCloud —
@@ -6148,6 +6151,58 @@ def _folder_dialogs(folder: str) -> list:
         return []
 
 
+def _resolve_chat_name(name: str):
+    """Название/@username/ссылка из записи → {id, title} диалога Telegram или None."""
+    q = re.sub(r"^https?://t\.me/", "", name.strip()).lstrip("@").split("/")[0]
+    if not q:
+        return None
+    rows = (tg_tools.list_dialogs(query=q, limit=5, include_muted=True) or {}).get("dialogs", [])
+    if not rows:
+        return None
+    best = next((d for d in rows if str(d.get("title") or "").casefold() == name.strip().casefold()), rows[0])
+    return {"id": best["id"], "title": best["title"]}
+
+
+def study_notes_targets(app, conf) -> tuple:
+    """Учебные чаты из «Базы данных»: ИИ находит в записях названия чатов/папок, они сопоставляются с диалогами Telegram.
+    Результат кэшируется (пока записи не изменились, 12 часов). → (targets, ошибки/ненайденное)."""
+    text = study_skills.knowledge_text(app)
+    if not (text and conf and tg_tools):
+        return [], []
+    h = hashlib.sha1(text.encode("utf-8")).hexdigest()
+    c = study_skills.state_load().get("notesTargets") or {}
+    if c.get("hash") == h and time.time() - float(c.get("at") or 0) < 12 * 3600:
+        return c.get("targets") or [], c.get("unresolved") or []
+    targets, unresolved = [], []
+    try:
+        refs = study_skills.parse_refs(_llm_text(conf, study_skills.NOTES_SYSTEM, text, max_tokens=800))
+        for name in refs["chats"]:
+            try:
+                d = _resolve_chat_name(name)
+            except Exception as e:
+                d = None
+                print(f"  study notes chat {name}: {e}")
+            targets.append(d) if d else unresolved.append(f"Чат «{name}» из базы данных не найден в Telegram")
+        for f in refs["folders"]:
+            ds = _folder_dialogs(f)
+            targets.extend(ds) if ds else unresolved.append(f"Папка «{f}» из базы данных не найдена или пуста")
+    except Exception as e:
+        return [], [f"Не удалось разобрать «Базу данных»: {e}"]
+    study_skills.state_update(notesTargets={"hash": h, "targets": targets, "unresolved": unresolved,
+                                            "at": time.time() if targets else time.time() - 11 * 3600})
+    return targets, unresolved
+
+
+def _study_targets(app, conf, with_tg: bool = True) -> tuple:
+    """Все учебные чаты: из «Базы данных» + выбранные вручную + папка из настроек. → (targets, замечания)."""
+    cfg = study_skills.chats_config(app)
+    if not with_tg:
+        return [], []
+    notes_t, notes = study_notes_targets(app, conf)
+    return study_skills.chat_targets(cfg, _folder_dialogs(cfg["folder"]) + notes_t), notes
+
+
+_brief_scope = threading.local()   # чаты, к которым можно обращаться агенту сбора информации
 _study_brief_running = set()
 
 
@@ -6157,7 +6212,7 @@ def start_study_brief(task: dict, chat_id=None) -> dict:
         return {"ok": False, "error": "Навык недоступен на сервере."}
     app = load_app_data()
     if not study_skills.skill_on(app.get("telegramSkills"), study_skills.BRIEF_ID):
-        return {"ok": False, "error": "Навык «Сбор информации по задаче» выключен: Настройки → Телеграм → Навыки ассистента."}
+        return {"ok": False, "error": "Навык «Сбор информации по задаче» выключен: Настройки → Ассистент → Навыки ассистента."}
     token = get_token()
     if not token:
         return {"ok": False, "error": "Не задан токен Telegram-бота — отчёт некуда отправить."}
@@ -6195,8 +6250,8 @@ def _study_brief_worker(app, snap, conf, token, chats, key):
                                          (70, "Составляю план")], expected=150.0)
             pm.__enter__()
             progress.append(pm)
-        cfg = study_skills.chats_config(app)
-        targets = study_skills.chat_targets(cfg, _folder_dialogs(cfg["folder"]) if with_tg else [])
+        targets, _ = _study_targets(app, conf, with_tg)
+        _brief_scope.peers = targets if with_tg else None
         att = _attachments_text(snap)
         today = today_msk()
         user_msg = (
@@ -6204,7 +6259,8 @@ def _study_brief_worker(app, snap, conf, token, chats, key):
             f"ЗАДАЧА (JSON):\n{json.dumps(snap, ensure_ascii=False, indent=1)}\n\n"
             + (f"ТЕКСТ ВЛОЖЕНИЙ:\n{att}\n\n" if att else "Вложений с текстом нет.\n\n")
             + ("УЧЕБНЫЕ ЧАТЫ (id → название):\n" + "\n".join(f"• {t['id']} → {t['title']}" for t in targets) + "\n\n"
-               if targets else "Учебные чаты не выбраны (Настройки → Учёба) — ищи по всем чатам.\n\n")
+               if targets else "Учебные чаты не найдены (их нужно указать в «Базе данных» или в Настройки → Учеба): в Telegram не ищи, "
+                               "работай по данным Джарвиса и скажи в отчёте, что чаты не указаны.\n\n")
             + ("" if with_tg else "ЛИЧНЫЙ TELEGRAM НЕ ПОДКЛЮЧЁН: чаты просмотреть нельзя — скажи об этом в отчёте.\n\n")
             + "Собери информацию и верни итоговый отчёт по структуре.")
         loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
@@ -6221,6 +6277,7 @@ def _study_brief_worker(app, snap, conf, token, chats, key):
                 pm.__exit__(None, None, None)
             except Exception:
                 pass
+        _brief_scope.peers = None
         _study_brief_running.discard(key)
     title = f"Задача: {snap['title'][:40]}"
     for cid in chats:
@@ -6279,7 +6336,7 @@ def study_chats_scan(chat_id=None, manual: bool = False) -> dict:
     try:
         app = load_app_data()
         if not study_skills.skill_on(app.get("telegramSkills"), study_skills.CHATS_ID):
-            return {"ok": False, "error": "Навык «Контроль учебных чатов» выключен: Настройки → Телеграм → Навыки ассистента."}
+            return {"ok": False, "error": "Навык «Контроль учебных чатов» выключен: Настройки → Ассистент → Навыки ассистента."}
         token, conf = get_token(), _ai_conf(app)
         cfg = study_skills.chats_config(app)
         owner = [chat_id] if (chat_id and tg_user and tg_user.is_owner_chat(chat_id)) else _study_owner_chats(app)
@@ -6292,9 +6349,10 @@ def study_chats_scan(chat_id=None, manual: bool = False) -> dict:
             err = "Личный Telegram недоступен на сервере."
         elif not owner:
             err = "Включите категорию «Учёба» для вашего личного чата с ботом: Настройки → Маршрутизация."
-        targets = [] if err else study_skills.chat_targets(cfg, _folder_dialogs(cfg["folder"]))
+        targets, notes = ([], []) if err else _study_targets(app, conf)
         if not err and not targets:
-            err = "Не выбраны учебные чаты: Настройки → Учёба → «Учебные чаты»."
+            err = ("Учебные чаты не найдены: укажите их в разделе «База данных» (запись вроде «Учебные чаты: …») "
+                   "или выберите в Настройки → Учеба → «Учебные чаты».") + (" " + "; ".join(notes) if notes else "")
         if err:
             study_skills.state_update(lastRunAt=int(time.time() * 1000), lastError=err, lastResult={})
             return {"ok": False, "error": err}
@@ -6304,7 +6362,7 @@ def study_chats_scan(chat_id=None, manual: bool = False) -> dict:
         since = max(float(state.get("lastScanTs") or 0), started - 3 * 86400) or (started - 86400)
         if not state.get("lastScanTs"):
             since = started - 86400            # первая проверка — за сутки
-        chats, errors, me = [], [], {}
+        chats, errors, me = [], list(notes), {}
         for t in targets:
             try:
                 d = tg_tools.scan_chat(t["id"], since)
@@ -6390,7 +6448,9 @@ def study_chats_status() -> dict:
             connected = True
         except Exception:
             connected = False
-    return {"lastRunAt": st.get("lastRunAt") or 0, "lastError": st.get("lastError") or "", "lastResult": st.get("lastResult") or {},
+    nt = st.get("notesTargets") or {}
+    return {"autoChats": [t.get("title") for t in nt.get("targets") or []], "autoNotes": nt.get("unresolved") or [],
+            "lastRunAt": st.get("lastRunAt") or 0, "lastError": st.get("lastError") or "", "lastResult": st.get("lastResult") or {},
             "running": _study_scan_lock.locked(), "telegramConnected": connected}
 
 
@@ -6425,7 +6485,7 @@ def _find_study_task(app: dict, inp: dict):
 def _study_skill_exec(name: str, inp: dict, app: dict) -> dict:
     sid = study_skills.BRIEF_ID if name == "study_brief_start" else study_skills.CHATS_ID
     if not study_skills.skill_on((app or {}).get("telegramSkills"), sid):
-        return {"error": "Навык выключен в Настройки → Телеграм → Навыки ассистента."}
+        return {"error": "Навык выключен в Настройки → Ассистент → Навыки ассистента."}
     ctx = tg_bot.get_ctx() if tg_bot else None
     chat_id = getattr(ctx, "chat_id", None)
     if not chat_id:
