@@ -28,6 +28,8 @@ try:
 except ImportError:  # сервер без requests живёт, бот — нет
     requests = None
 
+import file_tools
+
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path(__file__).parent)))
 STATE_FILE = DATA_DIR / "jarvis_tg_bot_state.json"
 
@@ -534,8 +536,14 @@ _KIND_METHOD = {"document": ("sendDocument", "document"), "photo": ("sendPhoto",
                 "voice": ("sendVoice", "voice"), "animation": ("sendAnimation", "animation")}
 
 
-def file_send(ctx, filename=None, content=None, content_base64=None, url=None, kind=None, caption=None):
+def file_send(ctx, filename=None, content=None, content_base64=None, url=None, kind=None, caption=None, sheets=None):
     filename = re.sub(r"[\\/\x00]", "_", (filename or "").strip()) or "file.txt"
+    if not url and not content_base64 and (content or sheets) and file_tools.ext_of(filename) in file_tools.BUILDABLE_EXT:
+        try:   # docx / xlsx / pptx / pdf собираем из markdown-разметки или таблиц
+            built, filename = file_tools.build(filename, content, sheets)
+        except file_tools.FileToolError as e:
+            return {"error": f"не удалось собрать {filename}: {e}"}
+        content, content_base64 = None, base64.b64encode(built).decode()
     if not kind:
         ext = Path(filename).suffix.lower()
         kind = "photo" if (url and ext in _PHOTO_EXT) else "document"
@@ -556,7 +564,7 @@ def file_send(ctx, filename=None, content=None, content_base64=None, url=None, k
             return {"error": "content_base64 не декодируется"}
     elif content is not None:
         data = str(content).encode("utf-8")
-        if data.startswith(b"\xef\xbb\xbf") is False and Path(filename).suffix.lower() == ".csv":
+        if not data.startswith(b"\xef\xbb\xbf") and Path(filename).suffix.lower() in (".csv", ".tsv"):
             data = b"\xef\xbb\xbf" + data   # BOM — чтобы Excel не ломал кириллицу
     else:
         return {"error": "нужен content, content_base64 или url"}
@@ -805,12 +813,18 @@ BOT_TOOLS = [
        "Текущее состояние чеклистов этого чата (что отмечено, что нет) — вызывай, когда спрашивают «что ещё не "
        "куплено» или просят дополнить существующий список.", {}),
     _t("tg_send_file",
-       "Отправить файл в чат. Текстовый файл (txt, md, csv, json, html, py и т.д.) — передай content. Бинарный — "
-       "content_base64. Файл или картинка по ссылке — url. kind: document (по умолчанию), photo, video, audio, "
-       "voice, animation. caption — подпись (допустим HTML). Длинные таблицы, код, документы, выгрузки — файлом, "
-       "а не простынёй текста.",
+       "Отправить файл в чат. Формат определяется расширением filename. Документы собираются из content в "
+       "markdown-разметке: DOCX, PDF (с кириллицей), PPTX (новый слайд — на «# »/«## » заголовке или «---»); "
+       "поддерживаются заголовки #, списки - и 1., таблицы |a|b|, **жирный**, *курсив*, `код`, ```блоки```, "
+       "> цитаты, --- разделитель. XLSX — sheets [{name, rows:[[…]]}] (первая строка — шапка; строка с «=» — формула) "
+       "или content с таблицей/CSV. Текстовые форматы (txt, md, csv, json, html, py…) — content как есть. "
+       "Готовый бинарный файл — content_base64, файл/картинка по ссылке — url. kind: document (по умолчанию), "
+       "photo, video, audio, voice, animation. caption — подпись (допустим HTML). Длинные тексты, таблицы, код, "
+       "выгрузки — файлом, а не простынёй.",
        {"filename": _STR, "content": _STR, "content_base64": _STR, "url": _STR,
-        "kind": {"type": "string", "enum": list(_KIND_METHOD)}, "caption": _STR}, []),
+        "sheets": {"type": "array", "items": {"type": "object", "properties": {
+            "name": _STR, "rows": {"type": "array", "items": {"type": "array", "items": {}}}}}},
+        "kind": {"type": "string", "enum": list(_KIND_METHOD)}, "caption": _STR}, ["filename"]),
     _t("tg_generate_image",
        "Сгенерировать картинку по описанию и отправить в чат (OpenAI). prompt — подробное описание сцены/стиля "
        "(на английском работает точнее, но можно и на русском); size: square, landscape (горизонтальная), "
@@ -847,7 +861,7 @@ _DISPATCH = {
                                                          i.get("check"), i.get("uncheck"), i.get("title")),
     "tg_get_checklists": lambda c, i: checklists_get(c),
     "tg_send_file": lambda c, i: file_send(c, i.get("filename"), i.get("content"), i.get("content_base64"),
-                                           i.get("url"), i.get("kind"), i.get("caption")),
+                                           i.get("url"), i.get("kind"), i.get("caption"), i.get("sheets")),
     "tg_generate_image": lambda c, i: image_generate(c, i.get("prompt"), i.get("size") or "square", i.get("caption")),
     "tg_send_poll": lambda c, i: poll_send(c, i.get("question"), i.get("options"), i.get("multiple"),
                                            i.get("anonymous", True), i.get("quiz_correct_option"), i.get("explanation")),
@@ -892,8 +906,13 @@ PROMPT_SECTION = (
     "• Список покупок / дел / сборов / шагов — ВСЕГДА через tg_send_checklist (кнопки-галочки), а не текстом. "
     "Дополнить или отметить пункты в уже отправленном списке — tg_update_checklist (id из tg_get_checklists, если не помнишь); "
     "«что ещё не куплено» — tg_get_checklists. После отправки чеклиста не пересказывай его пункты в финальном ответе.\n"
-    "• Файл, таблица, выгрузка, код, длинный текст/документ (>~25 строк) — tg_send_file с понятным именем и расширением "
-    "(csv для таблиц, md/txt для текстов, html, json…). Картинка или файл по ссылке — tg_send_file с url.\n"
+    "• Файл, таблица, выгрузка, код, длинный текст/документ (>~25 строк) — tg_send_file с понятным именем и расширением. "
+    "Умеешь создавать DOCX, XLSX, PPTX, PDF, CSV, TXT, MD, JSON, HTML. Просят «Word / Excel / презентацию / PDF» — делай "
+    "именно этот формат (docx / xlsx / pptx / pdf), а не txt. Документ пиши полностью и качественно: заголовки, списки, "
+    "таблицы. Картинка или файл по ссылке — tg_send_file с url.\n"
+    "• Читать умеешь: DOCX, XLSX/XLS, PPTX, PDF (с текстом, не сканы), RTF, ODT/ODS/ODP, ZIP, CSV, TXT, MD, JSON, HTML, "
+    "код и изображения. Присланные файлы приходят тебе текстом «[Файл «имя»]…». Старые .doc/.ppt не читаются — "
+    "попроси пересохранить в docx/pptx.\n"
     "• Картинки ты РИСУЕШЬ САМ: просьбы «нарисуй / сгенерируй картинку, аватар, логотип, открытку» — tg_generate_image "
     "(не предлагай пользователю промпты для сторонних сервисов, а сразу генерируй). Подпись к картинке — caption.\n"
     "• Выбор из вариантов — tg_send_buttons (reply = что придёт тебе при нажатии) или tg_send_poll для голосования. "
@@ -953,10 +972,35 @@ def trim(history: list):
 
 # ── входящие вложения ────────────────────────────────────────────────────────
 
-MAX_DOWNLOAD = 15 * 1024 * 1024
-_TEXT_EXT = {".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html", ".htm", ".yaml", ".yml", ".log", ".ini",
-             ".py", ".js", ".ts", ".sql", ".sh", ".ics", ".srt"}
+MAX_DOWNLOAD = 20 * 1024 * 1024    # потолок getFile у ботов
 MAX_TEXT_FILE_CHARS = 60000
+
+
+_recent_files = {}          # chat_id -> [(ts, имя, bytes)] — присланное, чтобы потом положить в задачу
+RECENT_FILES_TTL = 30 * 60
+RECENT_FILES_KEEP = 5
+
+
+def remember_file(chat_id, name: str, data: bytes):
+    now = time.time()
+    with _convo_guard:
+        lst = [f for f in _recent_files.get(chat_id, []) if now - f[0] < RECENT_FILES_TTL]
+        lst.append((now, name, data))
+        _recent_files[chat_id] = lst[-RECENT_FILES_KEEP:]
+
+
+def recent_file(chat_id, name_hint: str = ""):
+    """Присланный файл по части имени; без подсказки — самый свежий. → (имя, bytes) | None."""
+    now = time.time()
+    with _convo_guard:
+        lst = [f for f in _recent_files.get(chat_id, []) if now - f[0] < RECENT_FILES_TTL]
+    if not lst:
+        return None
+    hint = (name_hint or "").strip().lower()
+    for _, name, data in reversed(lst):
+        if not hint or hint in name.lower() or name.lower() in hint:
+            return name, data
+    return None
 
 
 def download_file(token: str, file_id: str, size_hint: int = 0):
@@ -1013,33 +1057,33 @@ def extract_attachments(token: str, msg: dict, openai_key: str = ""):
     Текстовые файлы вставляются прямо в текст, голосовые/кружки/видео — расшифровкой."""
     text = (msg.get("text") or msg.get("caption") or "").strip()
     images, unsupported = [], None
+    chat_id = (msg.get("chat") or {}).get("id")
     if msg.get("photo"):
         best = max(msg["photo"], key=lambda p: p.get("file_size") or p.get("width", 0) * p.get("height", 0))
         data = download_file(token, best["file_id"], best.get("file_size", 0))
         if data:
             images.append({"media_type": "image/jpeg", "b64": base64.b64encode(data).decode()})
+            remember_file(chat_id, f"photo_{msg.get('message_id', '')}.jpg", data)
         else:
             unsupported = "фото слишком большое"
     doc = msg.get("document")
     if doc:
         name = doc.get("file_name") or "file"
-        ext = Path(name).suffix.lower()
         mime = doc.get("mime_type") or ""
-        if mime in ("image/jpeg", "image/png", "image/webp", "image/gif") and not images:
-            data = download_file(token, doc["file_id"], doc.get("file_size", 0))
-            if data:
-                images.append({"media_type": mime, "b64": base64.b64encode(data).decode()})
-        elif ext in _TEXT_EXT or mime.startswith("text/"):
-            data = download_file(token, doc["file_id"], doc.get("file_size", 0))
-            if data:
-                body = data.decode("utf-8", errors="replace")
-                cut = len(body) > MAX_TEXT_FILE_CHARS
-                text = (text + "\n\n" if text else "") + f"[Файл «{name}»]\n{body[:MAX_TEXT_FILE_CHARS]}" + \
-                       ("\n[…обрезано]" if cut else "")
-            else:
-                unsupported = f"файл «{name}» не удалось скачать (лимит бота — 20 МБ)"
+        data = download_file(token, doc["file_id"], doc.get("file_size", 0))
+        if data is None:
+            unsupported = f"файл «{name}» не удалось скачать (лимит бота — 20 МБ)"
         else:
-            unsupported = f"файлы такого типа («{name}») пока не читаю — только текстовые и изображения"
+            remember_file(chat_id, name, data)   # чтобы можно было положить в задачу «Учёбы»
+            if mime in ("image/jpeg", "image/png", "image/webp", "image/gif") and not images:
+                images.append({"media_type": mime, "b64": base64.b64encode(data).decode()})
+            else:
+                try:
+                    body = file_tools.read_file(data, name, MAX_TEXT_FILE_CHARS)["text"]
+                    note = f"[Файл «{name}»]\n{body or '(файл пуст)'}"
+                except file_tools.FileToolError as e:
+                    note = f"[Файл «{name}» получен ({len(data) // 1024} КБ), но не прочитан: {e}]"
+                text = (text + "\n\n" if text else "") + note
     media = [(k, msg[k]) for k in ("voice", "audio", "video_note", "video") if msg.get(k)]
     if media:
         kind, m = media[0]

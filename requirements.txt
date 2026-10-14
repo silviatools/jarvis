@@ -1,3 +1,9 @@
 requests
 telethon
 segno
+python-docx
+openpyxl
+python-pptx
+pypdf
+xlrd
+fpdf2

@@ -17,6 +17,7 @@ Any Telegram user who messages the bot is auto-subscribed.
 Requirements: pip3 install requests
 """
 
+import base64
 import gzip
 import hashlib
 import html
@@ -87,6 +88,11 @@ except Exception as _e:  # без telethon остальной сервер до�
     def execute_tg_tool(name, inp, state=None):
         return {"error": "Личный Telegram недоступен на сервере."}
     print(f"NOTE: tg_user disabled: {_e}")
+try:
+    import file_tools
+except Exception as _e:
+    file_tools = None
+    print(f"NOTE: file_tools disabled: {_e}")
 try:
     import tg_bot
 except Exception as _e:
@@ -4505,8 +4511,8 @@ WRITE_REGISTRY = {
         "cascade_delete": [{"collection": "studyTasks", "field": "subjectId"}],
     },
     "studyTasks": {
-        "label": "Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note; attachments — файлы, только читать)",
-        "create_defaults": lambda: {"status": "todo", "kind": "hw", "due": "", "important": False, "subtasks": [], "attachments": [], "note": "", "doneAt": 0},
+        "label": "Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note; attachments — файлы: класть через study_attach_file, читать/отдавать через study_get_attachment, не править через update_record)",
+        "create_defaults": lambda: {"status": "todo", "kind": "hw", "due": "", "important": False, "subtasks": [], "attachments": [], "note": "", "doneAt": 0, "createdAt": int(time.time() * 1000)},
     },
     "plannerFriends": {
         "label": "Друг-участник планировщика",
@@ -5067,6 +5073,191 @@ ASSISTANT_TOOLS = [
 ] + APPLE_TOOLS + STUDY_TOOLS
 
 
+# ── Файлы в «Учёбе» ───────────────────────────────────────────────────────────
+# Вложения заданий — файлы в DATA_DIR/files (тот же /api/files, что у сайта) и
+# записи {id, store, filename, name, kind, size, at} в studyTasks[].attachments.
+# Ассистент может собрать файл (docx/xlsx/pptx/pdf/…) или взять присланный в чат
+# и положить его в задание, а также прочитать или прислать вложение обратно.
+
+STUDY_FILE_TOOLS = [
+    {"name": "study_attach_file",
+     "description": "Создать файл и ПОЛОЖИТЬ ЕГО В ЗАДАНИЕ раздела «Учёба» (вложение, видно на сайте в карточке задания). "
+                    "Задание — по task_id (из get_data study) либо по названиям: subject + task_title (допустимы падежи: "
+                    "«менеджменту»). Если задания нет — create_if_missing:true создаст его. Формат — по расширению filename: "
+                    "docx, pdf, pptx из content в markdown (заголовки #, списки, таблицы |a|b|, **жирный**; в pptx новый слайд "
+                    "— на «# »/«## » или «---»); xlsx — sheets [{name, rows}] или content-таблица; txt/md/csv/json/html — "
+                    "content как есть. Файл, который пользователь только что прислал в чат, — use_received_file (часть имени "
+                    "или «last»). send_to_chat:true — заодно прислать копию пользователю в чат.",
+     "input_schema": {"type": "object", "properties": {
+         "task_id": {"type": "string"}, "subject": {"type": "string"}, "task_title": {"type": "string"},
+         "create_if_missing": {"type": "boolean"},
+         "filename": {"type": "string", "description": "имя с расширением, например «Ответы_менеджмент.docx»"},
+         "content": {"type": "string"},
+         "sheets": {"type": "array", "items": {"type": "object", "properties": {
+             "name": {"type": "string"}, "rows": {"type": "array", "items": {"type": "array", "items": {}}}}}},
+         "content_base64": {"type": "string"}, "use_received_file": {"type": "string"},
+         "send_to_chat": {"type": "boolean"}}, "required": []}},
+    {"name": "study_get_attachment",
+     "description": "Вложение задания «Учёбы»: action read — прочитать содержимое (docx, xlsx, pptx, pdf, txt и др.), "
+                    "action send — прислать файл пользователю в чат. Задание — task_id или subject + task_title; "
+                    "вложение — attachment (id или часть имени; если оно единственное — можно не указывать).",
+     "input_schema": {"type": "object", "properties": {
+         "task_id": {"type": "string"}, "subject": {"type": "string"}, "task_title": {"type": "string"},
+         "attachment": {"type": "string"}, "action": {"type": "string", "enum": ["read", "send"]}},
+         "required": ["action"]}},
+]
+STUDY_FILE_TOOL_NAMES = {t["name"] for t in STUDY_FILE_TOOLS}
+
+
+def _fuzzy(query: str, name: str) -> bool:
+    """Мягкое совпадение названий: подстрока в любую сторону или общий корень слова (≥5 букв)."""
+    q, n = (query or "").strip().lower(), (name or "").strip().lower()
+    if not q or not n:
+        return False
+    if q in n or n in q:
+        return True
+    return any(len(w) >= 5 and w[:5] in n for w in re.findall(r"\w+", q))
+
+
+def _study_tasks_brief(app: dict, subject_id: str) -> list:
+    return [{"id": t.get("id"), "title": t.get("title"), "status": t.get("status")}
+            for t in app.get("studyTasks") or [] if t.get("subjectId") == subject_id][:30]
+
+
+def _resolve_study_task(app: dict, inp: dict, create: bool = False):
+    """Находит задание «Учёбы» по id или по предмету+названию. → (task, None) | (None, {error…})."""
+    subjects, tasks = app.get("studySubjects") or [], app.get("studyTasks") or []
+    tid = (inp.get("task_id") or "").strip()
+    if tid:
+        t = next((x for x in tasks if x.get("id") == tid), None)
+        return (t, None) if t else (None, {"error": "task_id не найден — возьми id из get_data(study)"})
+    sname, ttl = (inp.get("subject") or "").strip(), (inp.get("task_title") or "").strip()
+    names = [s_.get("name") for s_ in subjects]
+    if not sname:
+        return None, {"error": "укажи task_id либо subject + task_title", "subjects": names}
+    subj = next((x for x in subjects if (x.get("name") or "").strip().lower() == sname.lower()), None) \
+        or next((x for x in subjects if _fuzzy(sname, x.get("name"))), None)
+    if not subj:
+        return None, {"error": f"предмет «{sname}» не найден", "subjects": names}
+    sub_tasks = [t for t in tasks if t.get("subjectId") == subj.get("id")]
+    if ttl:
+        cand = [t for t in sub_tasks if _fuzzy(ttl, t.get("title"))]
+        cand = [t for t in cand if (t.get("title") or "").strip().lower() == ttl.lower()] or cand
+        if len(cand) > 1:
+            opens = [t for t in cand if t.get("status") != "done"]
+            cand = opens if len(opens) == 1 else cand
+        if len(cand) == 1:
+            return cand[0], None
+        if len(cand) > 1:
+            return None, {"error": "подходит несколько заданий — уточни у пользователя",
+                          "tasks": _study_tasks_brief(app, subj.get("id"))}
+        if create:
+            res = create_record_generic(app, "studyTasks", {"subjectId": subj.get("id"), "title": ttl})
+            return next(t for t in _collection_array(app, "studyTasks") if t.get("id") == res["id"]), None
+    else:
+        opens = [t for t in sub_tasks if t.get("status") != "done"]
+        if len(opens) == 1:
+            return opens[0], None
+    return None, {"error": "задание не найдено или не указано какое — уточни у пользователя "
+                           "(либо create_if_missing:true вместе с task_title)",
+                  "subject": subj.get("name"), "tasks": _study_tasks_brief(app, subj.get("id"))}
+
+
+def study_attach_file(app: dict, inp: dict) -> dict:
+    if not file_tools:
+        return {"error": "модуль файлов недоступен на сервере"}
+    ctx = tg_bot.get_ctx() if tg_bot else None
+    task, err = _resolve_study_task(app, inp, bool(inp.get("create_if_missing")))
+    if err:
+        return err
+    try:
+        hint = inp.get("use_received_file")
+        if hint:
+            hint = "" if str(hint).strip().lower() in ("last", "latest", "true", "1", "последний") else str(hint)
+            got = tg_bot.recent_file(ctx.chat_id, hint) if ctx and tg_bot else None
+            if not got:
+                return {"error": "присланного файла не нашёл (хранятся последние 5 за 30 минут) — попроси прислать заново"}
+            name, data = got
+        elif inp.get("content_base64"):
+            name = re.sub(r"[\\/\x00]", "_", (inp.get("filename") or "").strip())
+            if not name:
+                return {"error": "нужен filename"}
+            try:
+                data = base64.b64decode(inp["content_base64"])
+            except Exception:
+                return {"error": "content_base64 не декодируется"}
+        else:
+            data, name = file_tools.build(inp.get("filename"), inp.get("content"), inp.get("sheets"))
+    except file_tools.FileToolError as e:
+        return {"error": f"не удалось собрать файл: {e}"}
+    ext = file_tools.ext_of(name)
+    if ext not in ALLOWED_FILE_EXT:
+        return {"error": f"формат .{ext or '?'} в «Учёбе» не поддерживается", "allowed": sorted(ALLOWED_FILE_EXT)}
+    if not data or len(data) > MAX_UPLOAD_FILE:
+        return {"error": "файл пустой или больше 500 МБ"}
+    files_dir = DATA_DIR / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
+    stored = f"{uuid.uuid4()}.{ext}"
+    (files_dir / stored).write_bytes(data)
+    att = {"id": str(uuid.uuid4()), "store": "files", "filename": stored, "name": name,
+           "kind": "image" if ext in ("jpg", "jpeg", "png", "webp", "gif") else ("video" if ext in VIDEO_FILE_EXT else "file"),
+           "size": len(data), "at": int(time.time() * 1000)}
+    res = update_record_generic(app, "studyTasks", task["id"], {"attachments": list(task.get("attachments") or []) + [att]})
+    if not res.get("ok"):
+        (files_dir / stored).unlink(missing_ok=True)
+        return res
+    subj = next((x for x in app.get("studySubjects") or [] if x.get("id") == task.get("subjectId")), {})
+    out = {"ok": True, "task": task.get("title"), "subject": subj.get("name"), "file": name, "size": len(data)}
+    if inp.get("send_to_chat") and ctx and tg_bot:
+        sent = tg_bot.file_send(ctx, filename=name, content_base64=base64.b64encode(data).decode(),
+                                caption=f"{task.get('title') or ''} · {subj.get('name') or ''}".strip(" ·"))
+        out["sent_to_chat"] = bool(sent.get("ok"))
+    return out
+
+
+def study_get_attachment(app: dict, inp: dict) -> dict:
+    if not file_tools:
+        return {"error": "модуль файлов недоступен на сервере"}
+    task, err = _resolve_study_task(app, inp, False)
+    if err:
+        return err
+    atts = task.get("attachments") or []
+    if not atts:
+        return {"error": "у задания нет вложений", "task": task.get("title")}
+    sel = (inp.get("attachment") or "").strip().lower()
+    cand = [a for a in atts if sel and (a.get("id") == inp.get("attachment") or sel in (a.get("name") or "").lower())] \
+        if sel else (atts if len(atts) == 1 else [])
+    if len(cand) != 1:
+        return {"error": "укажи attachment — какое вложение нужно",
+                "attachments": [{"id": a.get("id"), "name": a.get("name"), "size": a.get("size")} for a in atts]}
+    att = cand[0]
+    fname = att.get("filename") or ""
+    if not fname or "/" in fname or ".." in fname:
+        return {"error": "некорректное вложение"}
+    path = DATA_DIR / ("photos" if att.get("store") == "photos" else "files") / fname
+    if not path.exists():
+        return {"error": "файл вложения не найден на сервере (мог быть удалён)"}
+    name = att.get("name") or fname
+    ext = file_tools.ext_of(name)
+    if inp.get("action") == "send":
+        ctx = tg_bot.get_ctx() if tg_bot else None
+        if not ctx:
+            return {"error": "отправка доступна только в Telegram-чате"}
+        is_img = ext in ("jpg", "jpeg", "png", "webp") and path.stat().st_size < 9 * 1024 * 1024
+        res = tg_bot.file_send(ctx, filename=name, content_base64=base64.b64encode(path.read_bytes()).decode(),
+                               kind="photo" if is_img else "document")
+        return res if res.get("error") else {"ok": True, "sent": name}
+    if att.get("kind") in ("image", "video") or ext in ("jpg", "jpeg", "png", "webp", "gif", "heic", "mp4", "mov", "mp3", "m4a", "wav"):
+        return {"error": f"«{name}» — изображение/аудио/видео, содержимое я не читаю; могу прислать файл (action send)"}
+    if path.stat().st_size > 50 * 1024 * 1024:
+        return {"error": "файл больше 50 МБ — читать не буду"}
+    try:
+        r = file_tools.read_file(path.read_bytes(), name)
+    except file_tools.FileToolError as e:
+        return {"error": str(e)}
+    return {"ok": True, "name": name, "text": r["text"], "truncated": r["truncated"]}
+
+
 def _weather_code_label(code) -> str:
     """WMO-код погоды → текст. Зеркалит getWeatherInfo в index (9).html."""
     if code == 0:
@@ -5258,6 +5449,12 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
         "9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). "
         "Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары "
         "дублируются в Apple Календарь «Учеба» автоматически — сам их туда не добавляй.\n\n"
+        "10. Файлы в «Учёбе»: study_attach_file(subject, task_title, filename, content/sheets) — создать файл (docx, xlsx, "
+        "pptx, pdf, txt, csv…) и положить его вложением в задание; study_get_attachment(action read|send) — прочитать "
+        "вложение задания или прислать его пользователю. «Сформируй файл … и положи в задачу по предмету X» → сначала "
+        "get_data(study), найди предмет и задание (нет подходящего — спроси, какое; новое — create_if_missing), потом "
+        "один вызов study_attach_file с готовым полным содержимым. Файл, который пользователь только что прислал, "
+        "кладётся через use_received_file. После успеха скажи, куда именно положил (предмет → задание → имя файла).\n\n"
         + (tg_tools.prompt_section((app or {}).get("telegramSkills")) if with_tg else "") +
         "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
         "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
@@ -5282,6 +5479,13 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
     # Возможности бота (чеклисты, файлы, опросы…) — шлют в чат, где идёт диалог.
     if tg_bot and name in tg_bot.TOOL_NAMES:
         return tg_bot.execute_tool(name, inp)
+    if name == "study_attach_file":
+        result = study_attach_file(app, inp)
+        if result.get("ok"):
+            save_app_data(app)
+        return result
+    if name == "study_get_attachment":
+        return study_get_attachment(app, inp)
     # Личный Telegram — только в чате владельца (см. tg_user.is_owner_chat).
     if name in TG_TOOL_NAMES:
         return execute_tg_tool(name, inp, (app or {}).get("telegramSkills")) if with_tg else {"error": "Личный Telegram в этом чате недоступен."}
@@ -5384,7 +5588,7 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
     Возвращает (текст ответа | None, список ссылок navigate). None — агент не
     уложился в отведённые шаги. Ошибки HTTP/сети — как _AssistantError."""
     system = build_assistant_system_prompt(app, with_tg)
-    all_tools = ASSISTANT_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
+    all_tools = ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else [])
     convo = list(history)
     nav_links = []
@@ -5450,7 +5654,7 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
     ответа (tool_calls в сообщении assistant, результаты — отдельными
     сообщениями role:"tool"), но те же инструменты и та же семантика."""
     system = build_assistant_system_prompt(app, with_tg)
-    all_tools = ASSISTANT_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
+    all_tools = ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else [])
     tools = [
         {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
