@@ -10804,6 +10804,9 @@ def main():
 
     os.chdir(DIR)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if deck_skill:   # видно в логах Railway после деплоя: поставился ли LibreOffice для превью презентаций
+        print("Презентации: превью слайдов (LibreOffice + pdftoppm):",
+              "доступно" if deck_skill.db.preview_available() else "НЕ найдено — слайды придут только файлом")
 
     threading.Thread(target=notifier_loop, daemon=True).start()
     threading.Thread(target=updates_loop, daemon=True).start()

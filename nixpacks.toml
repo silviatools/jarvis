@@ -1,0 +1,13 @@
+# Системные пакеты для сборки на Railway (builder = "nixpacks", см. railway.toml).
+# LibreOffice (Impress) + poppler: превью слайдов и PDF для навыка «Презентации»
+# (deck_builder.render_png: soffice → PDF → pdftoppm → PNG).
+# Шрифты: Carlito — метрически совместим с Calibri, Liberation — с Arial/Times, DejaVu — кириллица по умолчанию.
+[phases.setup]
+aptPkgs = [
+  "libreoffice-impress",
+  "poppler-utils",
+  "fontconfig",
+  "fonts-dejavu-core",
+  "fonts-liberation",
+  "fonts-crosextra-carlito",
+]
