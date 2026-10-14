@@ -3844,13 +3844,13 @@ def execute_study_tool(name: str, inp: dict) -> dict:
     return {"error": "unknown_tool"}
 
 
-# ── Учёба: напоминание «рассказать результат на паре» ────────────────────────
-# В задании (studyTasks[].present = {date, time, remind, lesson?}) пользователь
-# отмечает, когда будет рассказывать результат: выбрав пару своего предмета из
-# расписания или произвольные дату и время. В это время (или за remind минут до
-# него) в Telegram приходит напоминание. Отправленное помним в файле, чтобы не
-# слать дважды; окно догонки — несколько минут на случай рестарта или сдвига
-# минутного цикла.
+# ── Учёба: напоминания по заданиям ───────────────────────────────────────────
+# У задания есть срок (due) и необязательные время (dueTime) и напоминание
+# (remind — за сколько минут до срока; null — не напоминать). В это время в
+# Telegram приходит сообщение. Для заданий типа «Ответ на паре» (kind=present)
+# срок — дата и начало пары (lesson), связанная подготовительная задача — parentId.
+# Отправленное помним в файле, чтобы не слать дважды; окно догонки — несколько
+# минут на случай рестарта или сдвига минутного цикла.
 
 STUDY_PRESENT_STATE_FILE = DATA_DIR / "jarvis_study_present_state.json"
 STUDY_PRESENT_WINDOW_MIN = 5
@@ -3864,21 +3864,31 @@ def _study_present_when(p: dict, now: datetime) -> datetime:
     return datetime(d.year, d.month, d.day, int(hh), int(mm), tzinfo=MSK)
 
 
+def _study_reminder_spec(t: dict):
+    """(date, time, remind, lesson) или None. Понимает и старое поле present."""
+    p = t.get("present")
+    if isinstance(p, dict) and p.get("date"):
+        return p.get("date"), p.get("time"), p.get("remind") or 0, p.get("lesson")
+    if t.get("due") and t.get("dueTime") and t.get("remind") is not None:
+        return t["due"], t["dueTime"], t["remind"], t.get("lesson")
+    return None
+
+
 def study_present_due(app: dict, now: datetime, sent: dict) -> list:
     """Какие напоминания пора отправить: [(task, subject, event_dt, remind_min, key)]."""
     subjects = {x.get("id"): x for x in app.get("studySubjects") or []}
     due = []
     for t in app.get("studyTasks") or []:
-        p = t.get("present")
-        if not isinstance(p, dict) or t.get("status") == "done" or t.get("subjectId") not in subjects:
+        spec = _study_reminder_spec(t)
+        if not spec or t.get("status") == "done" or t.get("subjectId") not in subjects:
             continue
         try:
-            event_dt = _study_present_when(p, now)
-            remind = max(0, min(10080, int(p.get("remind") or 0)))
+            event_dt = _study_present_when({"date": spec[0], "time": spec[1]}, now)
+            remind = max(0, min(10080, int(spec[2])))
         except (ValueError, TypeError):
             continue
         fire = event_dt - timedelta(minutes=remind)
-        key = f"{t.get('id')}|{p.get('date')}|{p.get('time')}|{remind}"
+        key = f"{t.get('id')}|{spec[0]}|{spec[1]}|{remind}"
         if key in sent:
             continue
         if fire <= now <= fire + timedelta(minutes=STUDY_PRESENT_WINDOW_MIN):
@@ -3886,8 +3896,9 @@ def study_present_due(app: dict, now: datetime, sent: dict) -> list:
     return due
 
 
-def study_present_text(task: dict, subject: dict, event_dt: datetime, remind: int, now: datetime) -> str:
-    p = task.get("present") or {}
+def study_present_text(task: dict, subject: dict, event_dt: datetime, remind: int, now: datetime, parent: dict = None) -> str:
+    spec = _study_reminder_spec(task)
+    lesson = spec[3] if spec and isinstance(spec[3], dict) else {}
     if remind <= 0:
         head = "сейчас"
     elif remind < 60:
@@ -3898,10 +3909,13 @@ def study_present_text(task: dict, subject: dict, event_dt: datetime, remind: in
         head = "завтра" if event_dt.date() > now.date() else "сегодня"
     when = f"{event_dt.strftime('%H:%M')}" if event_dt.date() == now.date() else \
         f"{event_dt.strftime('%d.%m')} в {event_dt.strftime('%H:%M')}"
-    lines = [f"🎤 <b>Рассказать результат — {head}</b>", "",
+    if task.get("kind") == "present":
+        title = f"🎤 <b>Ответ на паре — {head}</b>"
+    else:
+        title = f"⏰ <b>Напоминание по заданию — {head}</b>"
+    lines = [title, "",
              f"<b>{html.escape(task.get('title') or 'Задание')}</b>",
              f"{html.escape(subject.get('emoji') or '📘')} {html.escape(subject.get('name') or '')}"]
-    lesson = p.get("lesson") if isinstance(p.get("lesson"), dict) else {}
     bits = []
     if lesson.get("pair"):
         bits.append(f"{html.escape(str(lesson['pair']))} пара")
@@ -3911,6 +3925,8 @@ def study_present_text(task: dict, subject: dict, event_dt: datetime, remind: in
     if lesson.get("kind"):
         bits.append(html.escape(str(lesson["kind"])))
     lines.append("📍 " + " · ".join(bits))
+    if parent and parent.get("title"):
+        lines.append(f"↩ Подготовка: {html.escape(parent['title'])}")
     subs_ = task.get("subtasks") or []
     left = [x for x in subs_ if not x.get("done")]
     if left:
@@ -3936,7 +3952,8 @@ def study_present_tick(app: dict, subs: dict, token: str, now: datetime = None) 
         for task, subject, event_dt, remind, key in study_present_due(app, now, sent):
             if not recipients:
                 continue
-            text = study_present_text(task, subject, event_dt, remind, now)
+            parent = next((x for x in app.get("studyTasks") or [] if x.get("id") == task.get("parentId")), None)
+            text = study_present_text(task, subject, event_dt, remind, now, parent)
             print(f"[{now.strftime('%H:%M')} MSK] → study present: {task.get('title')} ({len(recipients)} subscriber(s))")
             for cid in recipients:
                 send_message(token, cid, text)
@@ -4412,7 +4429,7 @@ ASSISTANT_DATA_DOMAINS = {
             "programs": app.get("gymPrograms", []), "days": app.get("gymDays", []),
             "exercises": app.get("gymExercises", []), "sessions": app.get("gymSessions", [])[-40:],
         }),
-    "study": ("Учёба: предметы (столбцы канбана, с заметкой note о предмете/преподавателе) и задания в них (status: todo|doing|done, due YYYY-MM-DD, kind: hw|test|exam|project|lab|read|other, important, subtasks, note — описание задачи, comments — комментарии пользователя, attachments — вложения)",
+    "study": ("Учёба: предметы (столбцы канбана, с заметкой note о предмете/преподавателе) и задания в них (status: todo|doing|done, due YYYY-MM-DD, kind: hw|test|exam|project|lab|read|present|other, important, subtasks, note — описание задачи, comments — комментарии пользователя, attachments — вложения)",
         lambda app: {
             "subjects": app.get("studySubjects", []),
             "tasks": [t for t in app.get("studyTasks", [])
@@ -4616,7 +4633,7 @@ WRITE_REGISTRY = {
         "cascade_delete": [{"collection": "studyTasks", "field": "subjectId"}],
     },
     "studyTasks": {
-        "label": "Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|other, important, subtasks [{id,text,done}], note — описание задачи, comments [{id,text,at,editedAt?}] — комментарии пользователя (при правке передавать весь массив целиком; at/editedAt — мс), present {date YYYY-MM-DD, time HH:MM, remind минут до (0|15|60|1440), lesson?} — когда пользователь будет рассказывать результат на паре (в это время придёт напоминание в Telegram; null — убрать), attachments — файлы: класть через study_attach_file, читать/отдавать через study_get_attachment, не править через update_record)",
+        "label": "Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|present|other (present — «Ответ на паре»), important, subtasks [{id,text,done}], note — описание задачи, comments [{id,text,at,editedAt?}] — комментарии пользователя (при правке передавать весь массив целиком; at/editedAt — мс), dueTime HH:MM — время срока, remind — за сколько минут до срока напомнить в Telegram (0|15|60|1440; null — не напоминать; нужны due и dueTime), lesson — пара из расписания, parentId — id подготовительной задачи (для kind present: задача «Ответ на паре» создаётся связанной с задачей-подготовкой; срок = дата и время пары), attachments — файлы: класть через study_attach_file, читать/отдавать через study_get_attachment, не править через update_record)",
         "create_defaults": lambda: {"status": "todo", "kind": "hw", "due": "", "important": False, "subtasks": [], "attachments": [], "comments": [], "note": "", "doneAt": 0, "createdAt": int(time.time() * 1000)},
     },
     "plannerFriends": {
