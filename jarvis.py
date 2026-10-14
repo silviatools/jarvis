@@ -5469,6 +5469,18 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
     return None, nav_links
 
 
+def find_openai_key(settings: dict) -> str:
+    """Ключ OpenAI для картинок и расшифровки голосовых: набор, назначенный ассистенту
+    (если это OpenAI), иначе любой OpenAI-набор из настроек, иначе OPENAI_API_KEY."""
+    cur = resolve_ai_preset(settings, "voiceAssistant")
+    if cur and cur.get("provider") == "openai" and (cur.get("apiKey") or "").strip():
+        return cur["apiKey"].strip()
+    for pr in _ensure_ai_presets(settings or {}).get("aiPresets") or []:
+        if pr.get("provider") == "openai" and (pr.get("apiKey") or "").strip():
+            return pr["apiKey"].strip()
+    return os.environ.get("OPENAI_API_KEY", "").strip()
+
+
 def _user_turn_content(provider: str, text: str, images: list):
     """Сообщение пользователя с картинками в формате провайдера. Без картинок — просто текст."""
     if not images:
@@ -5520,11 +5532,7 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
     turn = list(history) + [{"role": "user", "content": _user_turn_content(provider, text, images)}]
 
     ctx = tg_bot.Ctx(token, chat_id, message_id)
-    # Картинки рисует OpenAI: берём ключ текущего набора, иначе любой OpenAI-набор из настроек.
-    ctx.openai_key = (api_key if provider == "openai" else next(
-        (p.get("apiKey", "").strip() for p in (_ensure_ai_presets(settings).get("aiPresets") or [])
-         if p.get("provider") == "openai" and p.get("apiKey", "").strip()), "")
-    ) or os.environ.get("OPENAI_API_KEY", "").strip()
+    ctx.openai_key = find_openai_key(settings)   # картинки рисует OpenAI
     tg_bot.set_ctx(ctx)
     with_tg = bool(tg_user) and tg_user.is_owner_chat(chat_id)
     loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
@@ -5561,7 +5569,13 @@ def _dispatch_user_message(token: str, chat_id, msg: dict):
     if not tg_bot:
         return handle_assistant_message(token, chat_id, (msg.get("text") or "").strip())
     try:
-        text, images, unsupported = tg_bot.extract_attachments(token, msg)
+        if any(msg.get(k) for k in ("voice", "audio", "video_note", "video")):
+            try:
+                tg_bot.api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
+            except Exception:
+                pass
+        text, images, unsupported = tg_bot.extract_attachments(
+            token, msg, find_openai_key((load_app_data() or {}).get("settings") or {}))
     except Exception as e:
         print(f"  attachment error: {e}")
         text, images, unsupported = (msg.get("text") or msg.get("caption") or "").strip(), [], "не удалось скачать вложение"

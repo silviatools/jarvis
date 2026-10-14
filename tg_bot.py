@@ -899,8 +899,10 @@ PROMPT_SECTION = (
     "• Выбор из вариантов — tg_send_buttons (reply = что придёт тебе при нажатии) или tg_send_poll для голосования. "
     "Геопозиция — tg_send_location, контакт — tg_send_contact, жребий — tg_send_dice, закрепить важное — tg_pin_message, "
     "быстрое подтверждение без слов — tg_react.\n"
-    "• Пользователь может присылать фото и текстовые файлы — их содержимое придёт тебе в сообщении. Голосовые и видео "
-    "ты не слышишь — попроси написать текстом.\n"
+    "• Пользователь может присылать фото, текстовые файлы, голосовые, кружки и видео — всё приходит тебе текстом: "
+    "голосовые автоматически расшифрованы (пометка «[Голосовое сообщение — расшифровка]»), пересланные помечены "
+    "«[Переслано от …]». Просто работай с этим текстом (перескажи, ответь, выдели задачи). Если расшифровка не "
+    "получилась — в сообщении будет пометка почему, перескажи её пользователю.\n"
     "• Ответ любой длины показывается целиком (сам режется на несколько сообщений) — не сокращай ради лимита Telegram.\n"
     "• Контекст диалога сохраняется, пока переписка идёт без пауз дольше 10 минут; после — начинается с чистого листа "
     "(пользователь может сбросить вручную командой /new).\n"
@@ -967,9 +969,48 @@ def download_file(token: str, file_id: str, size_hint: int = 0):
     return r.content if r.ok else None
 
 
-def extract_attachments(token: str, msg: dict):
+TRANSCRIBE_MODEL = os.environ.get("TRANSCRIBE_MODEL", "gpt-4o-transcribe")
+MAX_AUDIO = 20 * 1024 * 1024    # лимит getFile для ботов; у OpenAI — 25 МБ
+
+
+def transcribe_audio(data: bytes, filename: str, openai_key: str) -> str:
+    """Расшифровка речи через OpenAI. Бросает TgApiError с понятным текстом."""
+    last = None
+    for model in dict.fromkeys([TRANSCRIBE_MODEL, "whisper-1"]):   # если модель недоступна — whisper-1
+        try:
+            r = requests.post("https://api.openai.com/v1/audio/transcriptions",
+                              headers={"Authorization": f"Bearer {openai_key}"},
+                              data={"model": model}, files={"file": (filename, data)}, timeout=180)
+        except Exception as e:
+            raise TgApiError(f"ошибка связи с OpenAI: {e}")
+        if r.ok:
+            return (r.json().get("text") or "").strip()
+        try:
+            last = r.json().get("error", {}).get("message")
+        except Exception:
+            last = None
+        last = last or f"HTTP {r.status_code}"
+        if r.status_code not in (400, 403, 404):
+            break
+    raise TgApiError(last)
+
+
+def _forward_note(msg: dict) -> str:
+    o = msg.get("forward_origin") or {}
+    t = o.get("type")
+    if t == "user":
+        u = o.get("sender_user") or {}
+        who = " ".join(x for x in (u.get("first_name"), u.get("last_name")) if x)
+    elif t == "hidden_user":
+        who = o.get("sender_user_name", "")
+    else:
+        who = (o.get("chat") or {}).get("title", "") if o else ""
+    return f"[Переслано от {who}]" if who else ("[Пересланное сообщение]" if o else "")
+
+
+def extract_attachments(token: str, msg: dict, openai_key: str = ""):
     """Из сообщения → (текст пользователя, [изображения {media_type, b64}], заметка о неподдержанном).
-    Текстовые файлы вставляются прямо в текст."""
+    Текстовые файлы вставляются прямо в текст, голосовые/кружки/видео — расшифровкой."""
     text = (msg.get("text") or msg.get("caption") or "").strip()
     images, unsupported = [], None
     if msg.get("photo"):
@@ -999,6 +1040,27 @@ def extract_attachments(token: str, msg: dict):
                 unsupported = f"файл «{name}» не удалось скачать (лимит бота — 20 МБ)"
         else:
             unsupported = f"файлы такого типа («{name}») пока не читаю — только текстовые и изображения"
-    if msg.get("voice") or msg.get("audio") or msg.get("video_note") or msg.get("video"):
-        unsupported = "голосовые и видео пока не расшифровываю — напишите текстом"
+    media = [(k, msg[k]) for k in ("voice", "audio", "video_note", "video") if msg.get(k)]
+    if media:
+        kind, m = media[0]
+        label = {"voice": "Голосовое сообщение", "audio": "Аудио", "video_note": "Видеокружок", "video": "Видео"}[kind]
+        if not openai_key:
+            unsupported = "для расшифровки голосовых нужен ключ OpenAI (Настройки → Ассистент или OPENAI_API_KEY)"
+        else:
+            data = download_file(token, m["file_id"], m.get("file_size", 0))
+            if not data or len(data) > MAX_AUDIO:
+                unsupported = f"{label.lower()} слишком большое для расшифровки (до 20 МБ)"
+            else:
+                ext = Path(m.get("file_name") or "").suffix or {"voice": ".ogg", "audio": ".mp3"}.get(kind, ".mp4")
+                try:
+                    said = transcribe_audio(data, f"{kind}{ext}", openai_key)
+                except TgApiError as e:
+                    unsupported = f"не удалось расшифровать {label.lower()}: {e}"
+                else:
+                    dur = m.get("duration")
+                    head = f"[{label}{f', {int(dur) // 60}:{int(dur) % 60:02d}' if dur else ''} — расшифровка]"
+                    text = (text + "\n\n" if text else "") + f"{head}\n{said or '(речь не распознана)'}"
+    fwd = _forward_note(msg)
+    if fwd and (text or images):
+        text = f"{fwd}\n{text}" if text else fwd
     return text, images, unsupported
