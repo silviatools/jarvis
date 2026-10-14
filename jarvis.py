@@ -94,6 +94,11 @@ except Exception as _e:
     file_tools = None
     print(f"NOTE: file_tools disabled: {_e}")
 try:
+    import deck_skill
+except Exception as _e:
+    deck_skill = None
+    print(f"NOTE: deck_skill disabled: {_e}")
+try:
     import tg_bot
 except Exception as _e:
     tg_bot = None
@@ -1117,7 +1122,7 @@ def build_backup_zip() -> bytes:
             seen_arcnames.add(arcname)
             zf.write(path, arcname=arcname)
 
-        data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json"}
+        data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
@@ -5577,6 +5582,7 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
         "get_data(study), найди предмет и задание (нет подходящего — спроси, какое; новое — create_if_missing), потом "
         "один вызов study_attach_file с готовым полным содержимым. Файл, который пользователь только что прислал, "
         "кладётся через use_received_file. После успеха скажи, куда именно положил (предмет → задание → имя файла).\n\n"
+        + (deck_skill.prompt_section((app or {}).get("telegramSkills")) if deck_skill else "")
         + (tg_tools.prompt_section((app or {}).get("telegramSkills")) if with_tg else "") +
         "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
         "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
@@ -5601,6 +5607,14 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
     # Возможности бота (чеклисты, файлы, опросы…) — шлют в чат, где идёт диалог.
     if tg_bot and name in tg_bot.TOOL_NAMES:
         return tg_bot.execute_tool(name, inp)
+    if deck_skill and name in deck_skill.TOOL_NAMES:
+        def _study_attach(x):
+            r = study_attach_file(app, x)
+            if r.get("ok"):
+                save_app_data(app)
+            return r
+        return deck_skill.execute(name, inp, tg_bot.get_ctx() if tg_bot else None, tg_bot,
+                                  (app or {}).get("telegramSkills"), _study_attach)
     if name == "study_attach_file":
         result = study_attach_file(app, inp)
         if result.get("ok"):
@@ -5711,6 +5725,7 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
     уложился в отведённые шаги. Ошибки HTTP/сети — как _AssistantError."""
     system = build_assistant_system_prompt(app, with_tg)
     all_tools = ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
+        (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else [])
     convo = list(history)
     nav_links = []
@@ -5782,6 +5797,7 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
     сообщениями role:"tool"), но те же инструменты и та же семантика."""
     system = build_assistant_system_prompt(app, with_tg)
     all_tools = ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
+        (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else [])
     tools = [
         {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
@@ -8930,7 +8946,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif route == "/api/tg/status":
             self._json(200, tg_user.status() if tg_user else {"library": False})
         elif route == "/api/tg/skills":
-            self._json(200, {"skills": tg_tools.skills_catalog() if tg_tools else []})
+            self._json(200, {"skills": (deck_skill.SKILLS if deck_skill else []) + (tg_tools.skills_catalog() if tg_tools else [])})
         elif route == "/api/tg/tools":
             # Схемы инструментов и кусок промпта для браузерного ассистента: только
             # если аккаунт подключён и только включённые навыки.

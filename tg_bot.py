@@ -738,6 +738,39 @@ IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "gpt-image-1")
 _IMAGE_SIZES = {"square": "1024x1024", "landscape": "1536x1024", "portrait": "1024x1536"}
 
 
+def generate_image_bytes(key: str, prompt: str, size: str = "square") -> bytes:
+    """Картинка через OpenAI Images API без отправки (для иллюстраций в презентациях)."""
+    r = requests.post("https://api.openai.com/v1/images/generations",
+                      headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                      json={"model": IMAGE_MODEL, "prompt": prompt[:4000], "n": 1, "size": _IMAGE_SIZES.get(size, "1024x1024")},
+                      timeout=180)
+    if not r.ok:
+        try:
+            err = r.json().get("error", {}).get("message")
+        except Exception:
+            err = None
+        raise TgApiError(err or f"HTTP {r.status_code}")
+    item = r.json()["data"][0]
+    if item.get("b64_json"):
+        return base64.b64decode(item["b64_json"])
+    return requests.get(item["url"], timeout=60).content
+
+
+def send_album(ctx, images: list, caption: str = ""):
+    """Несколько картинок одним альбомом (до 10); подпись — у первой."""
+    media, files = [], {}
+    for i, data in enumerate(images[:10]):
+        item = {"type": "photo", "media": f"attach://p{i}"}
+        if i == 0 and caption:
+            item.update(caption=to_tg_html(caption)[:1024], parse_mode="HTML")
+        media.append(item)
+        files[f"p{i}"] = (f"slide{i + 1}.png", data, "image/png")
+    if len(media) == 1:
+        return api(ctx.token, "sendPhoto", {"chat_id": ctx.chat_id, **{k: v for k, v in media[0].items() if k in ("caption", "parse_mode")}},
+                   files={"photo": files["p0"]})
+    return api(ctx.token, "sendMediaGroup", {"chat_id": ctx.chat_id, "media": media}, files=files)
+
+
 def image_generate(ctx, prompt, size="square", caption=None):
     """Генерирует картинку через OpenAI Images API и отправляет в чат фото."""
     prompt = (prompt or "").strip()

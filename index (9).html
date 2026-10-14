@@ -6305,9 +6305,10 @@ function TelegramSettings({ data, setData }) {
     setData(d => ({ ...d, telegramSkills: { ...(d.telegramSkills || {}), [sk.id]: !skillOn(sk) }, telegramSkillsUpdatedAt: Date.now() }));
     tgToolsLoadedAt = 0; // ассистент подхватит новый набор инструментов
   };
-  const riskLabel = { read: 'чтение', write: 'действия с подтверждением', danger: 'опасно' };
+  const riskLabel = { read: 'чтение', create: 'создаёт файлы', write: 'действия с подтверждением', danger: 'опасно' };
   const riskCls = {
     read: 'bg-[var(--bg)] text-[var(--text-subtle)]',
+    create: 'bg-sky-100 text-sky-800',
     write: 'bg-amber-100 text-amber-800',
     danger: 'bg-red-100 text-red-700',
   };
@@ -6526,8 +6527,8 @@ function TelegramSettings({ data, setData }) {
       <div className={card}>
         <h3 className="font-display text-lg mb-1">Навыки ассистента</h3>
         <p className="text-sm text-[var(--text-muted)] mb-3">
-          Что Джарвис может делать в вашем Telegram. Выключенный навык недоступен ни голосовому ассистенту, ни чату,
-          ни боту. Всё, что что-то меняет, выполняется только после вашего «да».
+          Что умеет Джарвис: от презентаций до работы с вашим Telegram. Выключенный навык недоступен ни голосовому ассистенту, ни чату,
+          ни боту. Всё, что что-то меняет в вашем Telegram, выполняется только после вашего «да».
         </p>
         <div className="divide-y divide-[var(--border)]">
           {skills.map(sk => (
@@ -6559,8 +6560,8 @@ function TelegramSettings({ data, setData }) {
           ))}
         </div>
         <p className="text-[11px] text-[var(--text-subtle)] mt-3">
-          В Telegram-боте ассистент получает эти навыки только в вашем личном чате с ботом (проверяется по id
-          подключённого аккаунта) — другие пользователи бота доступа не получают.
+          Навыки личного Telegram бот получает только в вашем личном чате (проверяется по id подключённого
+          аккаунта) — другие пользователи бота доступа к ним не получают. Остальные навыки (например, «Презентации») работают в любом чате с ботом.
         </p>
       </div>
     </div>
