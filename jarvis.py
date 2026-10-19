@@ -17,6 +17,7 @@ Any Telegram user who messages the bot is auto-subscribed.
 Requirements: pip3 install requests
 """
 
+import base64
 import gzip
 import hashlib
 import html
@@ -76,6 +77,37 @@ except ImportError:
     print("NOTE: 'requests' not installed — Telegram disabled. Run: pip3 install requests\n")
 
 DIR      = Path(__file__).parent
+try:
+    import tg_user
+    import tg_tools
+    from tg_tools import TG_TOOL_NAMES, execute_tg_tool
+except Exception as _e:  # без telethon остальной сервер должен жить
+    tg_user = None
+    tg_tools = None
+    TG_TOOL_NAMES = set()
+    def execute_tg_tool(name, inp, state=None):
+        return {"error": "Личный Telegram недоступен на сервере."}
+    print(f"NOTE: tg_user disabled: {_e}")
+try:
+    import file_tools
+except Exception as _e:
+    file_tools = None
+    print(f"NOTE: file_tools disabled: {_e}")
+try:
+    import study_skills
+except Exception as _e:
+    study_skills = None
+    print(f"NOTE: study_skills disabled: {_e}")
+try:
+    import deck_skill
+except Exception as _e:
+    deck_skill = None
+    print(f"NOTE: deck_skill disabled: {_e}")
+try:
+    import tg_bot
+except Exception as _e:
+    tg_bot = None
+    print(f"NOTE: tg_bot disabled: {_e}")
 HTML_FILE = DIR / "index (9).html"
 
 # Persistent data lives in DATA_DIR (Railway Volume) if set, else next to the script
@@ -167,6 +199,7 @@ SPA_ROUTES = {
     "/mybody", "/budget", "/supplements", "/meals", "/weather",
     "/house", "/cars", "/holidays", "/settings", "/planner", "/health",
     "/misc", "/wishlist", "/cards", "/gym", "/music", "/knowledge", "/quiz",
+    "/study",
 }
 
 # Deep-link routes that get their OWN <link rel="manifest"> (and Apple home-
@@ -175,7 +208,15 @@ SPA_ROUTES = {
 # straight back to it, instead of iOS falling back to the main manifest's
 # start_url "/" (same fix as the per-user /pf/<token>/ finance app below).
 SHORTCUT_MANIFESTS = {
-    "/misc": {"manifest_route": "/misc/manifest.json", "apple_title": "Jarvis: Прочее"},
+    "/misc": {
+        "manifest_route": "/misc/manifest.json",
+        "apple_title": "Jarvis: Прочее",
+        # Свой значок вместо общей «J»: подменяет <link rel="apple-touch-icon">
+        # в _serve_html (iOS берёт значок «Домой» из apple-touch-icon страницы,
+        # а не из манифеста). Иконка вкладки браузера остаётся общей — как и
+        # на клиенте, см. SHORTCUT_MANIFESTS_CLIENT в index (9).html.
+        "icon_180": "/icons/misc-180.png",
+    },
 }
 
 # ── Парольный доступ на весь сайт ───────────────────────────────────────────
@@ -194,6 +235,13 @@ AUTH_PUBLIC_FILES  = {
     # ним и остальной рендер (например, пропадает нижнее меню событий).
     "/planner-split.js",
 }
+# Иконки приложений «Финансы» (/pf/<токен>/) и «Прочее» (/misc): их забирает iOS
+# в момент «На экран Домой» и Android при установке — часто без cookie. Только
+# точные имена: route не нормализуется, и префикс «/icons/» пропустил бы
+# «/icons/../jarvis.py» мимо пароля.
+APP_ICON_FILES = {"finance": (32, 180, 192, 512), "misc": (180, 192, 512)}
+AUTH_PUBLIC_FILES |= {f"/icons/{app}-{size}.png"
+                      for app, sizes in APP_ICON_FILES.items() for size in sizes}
 
 
 def _route_token_prefix_public(route: str, prefix: str) -> bool:
@@ -262,7 +310,20 @@ MAX_EVENT_SHOPPING_QTY   = 40    # «2 л», «1 пачка» — свободн
 ALLOWED_FILE_EXT = {
     "pdf", "doc", "docx", "xls", "xlsx", "txt", "rtf", "csv",
     "png", "jpg", "jpeg", "webp", "heic", "gif",
+    "ppt", "pptx", "zip", "ods", "heif",
+    # Аудио (записи лекций) и текст/код — у них есть быстрый просмотр в «Учёбе».
+    "mp3", "m4a", "wav", "ogg", "aac",
+    "md", "json", "xml", "html", "css", "js", "ts", "py", "java", "c", "cpp", "h", "cs", "sql",
+    # Видео — вложения к заданиям в «Учёбе»: отдаются с Range (см. _serve_ranged).
+    "mp4", "mov", "m4v", "webm",
 }
+VIDEO_FILE_EXT = {"mp4", "mov", "m4v", "webm"}
+# Потолок одного файла в /api/files (вложения в «Учёбе», файлы программ):
+# тело пишется на диск потоком, так что память он не ограничивает.
+MAX_UPLOAD_FILE = 500 * 1024 * 1024
+# Бэкап собирается в памяти и уходит в Telegram — крупные файлы в него не
+# кладём, иначе одно видео раздувает архив и съедает RAM.
+BACKUP_MAX_FILE_BYTES = 50 * 1024 * 1024
 FILE_CONTENT_TYPES = {
     "pdf": "application/pdf", "doc": "application/msword",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -271,6 +332,15 @@ FILE_CONTENT_TYPES = {
     "txt": "text/plain; charset=utf-8", "rtf": "application/rtf", "csv": "text/csv",
     "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
     "webp": "image/webp", "heic": "image/heic", "gif": "image/gif",
+    "ppt": "application/vnd.ms-powerpoint",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "zip": "application/zip",
+    "ods": "application/vnd.oasis.opendocument.spreadsheet", "heif": "image/heif",
+    "mp3": "audio/mpeg", "m4a": "audio/mp4", "wav": "audio/wav", "ogg": "audio/ogg", "aac": "audio/aac",
+    # Текст и код отдаём как plain text: html/js/css иначе браузер исполнил бы
+    # при открытии ссылки — а это чужие файлы, а не страницы сайта.
+    **{e: "text/plain; charset=utf-8" for e in ("md", "json", "xml", "html", "css", "js", "ts", "py", "java", "c", "cpp", "h", "cs", "sql")},
+    "mp4": "video/mp4", "mov": "video/quicktime", "m4v": "video/x-m4v", "webm": "video/webm",
 }
 
 WELCOME_TEXT = (
@@ -334,7 +404,7 @@ def subscriber_name(subs: dict, chat_id) -> str:
 # entry in data.settings.notifyRouting receives NOTHING (default-deny). Anyone
 # who messages the bot is auto-subscribed with zero categories; an owner has
 # to explicitly opt them into each category from Settings → Маршрутизация.
-NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "tasks", "backup", "english", "health"}
+NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "tasks", "backup", "english", "health", "study"}
 
 
 def recipients_for(app_data: dict, subs: dict, category: str) -> list:
@@ -659,12 +729,37 @@ def find_loyalty_card(app_data: dict, card_id: str):
 
 
 # ── diet compliance (Соблюдение) ─────────────────────────────────────────────
+# Питание считается в калориях:
+#   • dietPlans   — план калорий по периодам [{id, kcal, from, to}], to пустое =
+#                   «без конца». На дату действует план с самым поздним from,
+#                   покрывающим её, — новый период перекрывает старый сам.
+#   • dietOptions — варианты ответа опроса [{id, label, color, mode, kcal, delta}]:
+#                   mode "fixed" — ровно kcal, "plan" — план на дату + delta.
+#                   Пока пользователь их не правил (ключа нет) — DEFAULT_DIET_OPTIONS.
+#   • dietLog     — запись за день {date, optionId, label, kcal}: kcal — снимок на
+#                   момент отметки, чтобы правка варианта/плана не переписывала
+#                   прошлое. optionId "custom" — своё значение из Telegram/сайта.
+#   • Старые записи хранят только level (7 уровней ниже) — их калории берутся из
+#     dietLegacyKcal.levels[level] ({mode, kcal, delta}), которую задаёт пользователь.
+# Зеркало этой логики — dietPlanFor/dietOptionKcal/dietResolveEntry в index (9).html.
 
 DIET_LABELS = {
     "much_below": "Ниже", "below": "Чуть ниже", "on_plan": "По плану",
     "above": "Чуть выше", "much_above": "Выше",
     "mini_cheat": "Мини чит мил", "cheat": "Чит мил",
 }
+DIET_CUSTOM_ID = "custom"
+DIET_CUSTOM_LABEL = "Своё значение"
+
+DEFAULT_DIET_OPTIONS = [
+    {"id": "much_below", "label": "Ниже", "color": "#ef4444", "mode": "plan", "delta": -500, "kcal": None},
+    {"id": "below", "label": "Чуть ниже", "color": "#f59e0b", "mode": "plan", "delta": -250, "kcal": None},
+    {"id": "on_plan", "label": "По плану", "color": "#22c55e", "mode": "plan", "delta": 0, "kcal": None},
+    {"id": "above", "label": "Чуть выше", "color": "#f59e0b", "mode": "plan", "delta": 250, "kcal": None},
+    {"id": "much_above", "label": "Выше", "color": "#ef4444", "mode": "plan", "delta": 500, "kcal": None},
+    {"id": "mini_cheat", "label": "Мини чит мил", "color": "#a855f7", "mode": "plan", "delta": 500, "kcal": None},
+    {"id": "cheat", "label": "Чит мил", "color": "#7e22ce", "mode": "plan", "delta": 1000, "kcal": None},
+]
 
 MONTHS_RU_GEN = ["", "января", "февраля", "марта", "апреля", "мая", "июня",
                  "июля", "августа", "сентября", "октября", "ноября", "декабря"]
@@ -677,59 +772,263 @@ def human_date(date_iso: str) -> str:
     except Exception:
         return date_iso
 
-def diet_keyboard(date_iso: str) -> dict:
-    def btn(level):
-        return {"text": DIET_LABELS[level], "callback_data": f"diet:{level}:{date_iso}"}
-    return {"inline_keyboard": [
-        [btn("much_below"), btn("below")],
-        [btn("on_plan")],
-        [btn("above"), btn("much_above")],
-        [btn("mini_cheat"), btn("cheat")],
-    ]}
+
+def _kcal_num(v) -> int | None:
+    if isinstance(v, bool) or v is None:
+        return None
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return None
+    return int(round(n)) if n == n else None  # NaN → None
 
 
-def save_diet_entry(date_iso: str, level: str):
-    """Записать/обновить оценку питания за день прямо в файл БД."""
-    import uuid as _uuid
+def fmt_kcal(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
+
+
+def diet_options(app: dict, include_archived: bool = False) -> list:
+    """Варианты опроса. Архивные (archived) в опрос не попадают, но нужны,
+    чтобы записанные ими дни по-прежнему находили свои калории и цвет."""
+    opts = app.get("dietOptions")
+    if not isinstance(opts, list):
+        return [dict(o) for o in DEFAULT_DIET_OPTIONS]
+    return [o for o in opts if isinstance(o, dict) and o.get("id")
+            and (include_archived or not o.get("archived"))]
+
+
+def diet_plan_for(app: dict, date_iso: str) -> int | None:
+    best, best_key = None, None
+    for p in app.get("dietPlans") or []:
+        if not isinstance(p, dict):
+            continue
+        kcal = _kcal_num(p.get("kcal"))
+        if kcal is None:
+            continue
+        f, t = p.get("from") or "", p.get("to") or ""
+        if (f and date_iso < f) or (t and date_iso > t):
+            continue
+        key = (f, p.get("updatedAt") or 0)
+        if best_key is None or key > best_key:
+            best, best_key = kcal, key
+    return best
+
+
+def diet_option_kcal(opt: dict, plan: int | None) -> int | None:
+    if not isinstance(opt, dict):
+        return None
+    if opt.get("mode") == "plan":
+        return None if plan is None else plan + (_kcal_num(opt.get("delta")) or 0)
+    return _kcal_num(opt.get("kcal"))
+
+
+def diet_entry_kcal(app: dict, e: dict) -> int | None:
+    """Калории записи: снимок → вариант по id → таблица старых уровней."""
+    kcal = _kcal_num(e.get("kcal"))
+    if kcal is None:
+        kcal = _kcal_num(e.get("calories"))  # самый ранний формат {onPlan, calories}
+    if kcal is not None:
+        return kcal
+    date_iso = e.get("date") or ""
+    if e.get("optionId"):
+        opt = next((o for o in diet_options(app, include_archived=True) if o.get("id") == e["optionId"]), None)
+        return diet_option_kcal(opt, diet_plan_for(app, date_iso)) if opt else None
+    level = e.get("level") or ("on_plan" if e.get("onPlan") else None)
+    legacy = ((app.get("dietLegacyKcal") or {}).get("levels") or {}).get(level) if level else None
+    return diet_option_kcal(legacy, diet_plan_for(app, date_iso)) if legacy else None
+
+
+def diet_entry_label(e: dict) -> str:
+    if e.get("label"):
+        return e["label"]
+    level = e.get("level") or ("on_plan" if e.get("onPlan") else "")
+    return DIET_LABELS.get(level, level or "—")
+
+
+def diet_keyboard(app: dict, date_iso: str) -> dict:
+    plan = diet_plan_for(app, date_iso)
+    buttons = []
+    for o in diet_options(app):
+        kcal = diet_option_kcal(o, plan)
+        text = str(o.get("label") or "—") + (f" · {fmt_kcal(kcal)}" if kcal is not None else "")
+        buttons.append({"text": text, "callback_data": f"dieto:{o['id']}:{date_iso}"})
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([{"text": "✏️ Своё значение (ккал)", "callback_data": f"dietc:{date_iso}"}])
+    return {"inline_keyboard": rows}
+
+
+def diet_ask_text(app: dict, date_iso: str) -> str:
+    plan = diet_plan_for(app, date_iso)
+    plan_line = f"\n🎯 План: <b>{fmt_kcal(plan)} ккал</b>" if plan is not None else ""
+    return f"🍽 <b>Как ты кушал сегодня?</b>\n📅 {human_date(date_iso)}{plan_line}"
+
+
+def diet_result_text(app: dict, date_iso: str, label: str, kcal: int | None) -> str:
+    plan = diet_plan_for(app, date_iso)
+    line = f"✅ Записано: <b>{html.escape(label)}</b>"
+    if kcal is not None:
+        line += f" — <b>{fmt_kcal(kcal)} ккал</b>"
+        if plan is not None:
+            diff = kcal - plan
+            sign = "+" if diff > 0 else ("−" if diff < 0 else "±")
+            line += f"\n🎯 План {fmt_kcal(plan)} ккал ({sign}{fmt_kcal(abs(diff))})"
+    return f"🍽 <b>Питание за {human_date(date_iso)}</b>\n\n{line}"
+
+
+def diet_write_entry(app: dict, date_iso: str, option_id: str | None, label: str, kcal: int | None) -> dict:
+    """Апсерт записи за дату в app (без сохранения). level=None явно — иначе
+    слияние дат оставило бы в записи старый уровень."""
+    existing = next((e for e in app.get("dietLog", []) if e.get("date") == date_iso), None)
+    entry = {
+        "id": (existing or {}).get("id") or str(uuid.uuid4()), "date": date_iso,
+        "optionId": option_id, "label": label, "kcal": kcal, "level": None,
+        "updatedAt": int(time.time() * 1000),
+    }
+    log = [e for e in app.get("dietLog", []) if e.get("date") != date_iso]
+    log.append(entry)
+    log.sort(key=lambda e: e.get("date", ""), reverse=True)
+    app["dietLog"] = log
+    return entry
+
+
+def save_diet_option(date_iso: str, option_id: str) -> dict | None:
+    """Записать выбранный вариант (с калориями на сегодня). None — варианта нет."""
     with APP_DATA_LOCK:
         app = load_app_data()
+        opt = next((o for o in diet_options(app, include_archived=True) if o.get("id") == option_id), None)
+        if not opt:
+            return None
+        kcal = diet_option_kcal(opt, diet_plan_for(app, date_iso))
+        entry = diet_write_entry(app, date_iso, option_id, str(opt.get("label") or "—"), kcal)
+        save_app_data(app)
+        return entry
+
+
+def save_diet_custom(date_iso: str, kcal: int) -> dict:
+    with APP_DATA_LOCK:
+        app = load_app_data()
+        entry = diet_write_entry(app, date_iso, DIET_CUSTOM_ID, DIET_CUSTOM_LABEL, kcal)
+        save_app_data(app)
+        return entry
+
+
+def save_diet_legacy_level(date_iso: str, level: str):
+    """Нажатие на кнопку старого опроса (diet:<level>:…), если такого варианта уже нет."""
+    with APP_DATA_LOCK:
+        app = load_app_data()
+        existing = next((e for e in app.get("dietLog", []) if e.get("date") == date_iso), None)
         log = [e for e in app.get("dietLog", []) if e.get("date") != date_iso]
-        log.append({"id": str(_uuid.uuid4()), "date": date_iso, "level": level,
+        log.append({"id": (existing or {}).get("id") or str(uuid.uuid4()), "date": date_iso,
+                    "level": level, "optionId": None, "label": None, "kcal": None,
                     "updatedAt": int(time.time() * 1000)})
         log.sort(key=lambda e: e.get("date", ""), reverse=True)
         app["dietLog"] = log
         save_app_data(app)
 
 
+# «Своё значение»: после кнопки бот ждёт число следующим сообщением из этого
+# чата. Ожидание живёт в памяти (рестарт — просто нажать кнопку ещё раз).
+DIET_CUSTOM_TTL_SEC = 6 * 3600
+_diet_custom_pending: dict = {}
+_diet_custom_lock = threading.Lock()
+
+
+def parse_kcal_text(text: str) -> int | None:
+    s = (text or "").strip().lower().replace(" ", "").replace(" ", "").replace(" ", "")
+    s = re.sub(r"(ккал|kcal|кал|к)\.?$", "", s)
+    return int(s) if re.fullmatch(r"\d{1,5}", s) else None
+
+
 def handle_diet_callback(token: str, cq: dict):
     cq_id = cq.get("id")
     data_str = cq.get("data", "") or ""
-    if not data_str.startswith("diet:"):
-        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
-        return
-    chat_id = ((cq.get("message") or {}).get("chat") or {}).get("id")
-    if not chat_id or not is_routed_recipient(chat_id, "diet"):
-        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": "Недоступно"})
-        return
-    parts = data_str.split(":")
-    level = parts[1] if len(parts) > 1 else ""
-    date_iso = parts[2] if len(parts) > 2 else today_msk().isoformat()
-    if level not in DIET_LABELS:
-        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
-        return
-    save_diet_entry(date_iso, level)
-    label = DIET_LABELS[level]
-    tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": f"✅ Записано: {label}"})
     msg = cq.get("message") or {}
     chat_id = (msg.get("chat") or {}).get("id")
     mid = msg.get("message_id")
-    if chat_id and mid:
-        tg_post(token, "editMessageText", {
-            "chat_id": chat_id, "message_id": mid,
-            "text": f"🍽 <b>Питание за {human_date(date_iso)}</b>\n\n✅ Записано: <b>{label}</b>",
-            "parse_mode": "HTML",
+    if not chat_id or not is_routed_recipient(chat_id, "diet"):
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": "Недоступно"})
+        return
+    kind, _, rest = data_str.partition(":")
+
+    if kind == "dietc":
+        date_iso = rest or today_msk().isoformat()
+        with _diet_custom_lock:
+            _diet_custom_pending[chat_id] = {"date": date_iso, "mid": mid, "ts": time.time()}
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+        plan = diet_plan_for(load_app_data(), date_iso)
+        hint = f" План — {fmt_kcal(plan)}." if plan is not None else ""
+        tg_post(token, "sendMessage", {
+            "chat_id": chat_id, "parse_mode": "HTML",
+            "text": f"✏️ Сколько ккал ты съел за <b>{human_date(date_iso)}</b>?{hint}\nНапиши число, например <code>2350</code>.",
+            "reply_markup": {"force_reply": True, "input_field_placeholder": "ккал"},
         })
-    print(f"  diet callback: {date_iso} → {level}")
+        return
+
+    # dieto:<optionId>:<date> — новый формат; diet:<level>:<date> — кнопки старых опросов.
+    option_id, _, date_iso = rest.partition(":")
+    date_iso = date_iso or today_msk().isoformat()
+    if kind not in ("dieto", "diet") or not option_id:
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id})
+        return
+    entry = save_diet_option(date_iso, option_id)
+    if entry is None and kind == "diet" and option_id in DIET_LABELS:
+        save_diet_legacy_level(date_iso, option_id)
+        entry = {"label": DIET_LABELS[option_id], "kcal": None}
+    if entry is None:
+        tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": "Этого варианта больше нет"})
+        return
+    with _diet_custom_lock:
+        _diet_custom_pending.pop(chat_id, None)
+    label, kcal = entry["label"], entry["kcal"]
+    toast = f"✅ Записано: {label}" + (f" — {fmt_kcal(kcal)} ккал" if kcal is not None else "")
+    tg_post(token, "answerCallbackQuery", {"callback_query_id": cq_id, "text": toast})
+    if mid:
+        tg_post(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": mid, "parse_mode": "HTML",
+            "text": diet_result_text(load_app_data(), date_iso, label, kcal),
+        })
+    print(f"  diet callback: {date_iso} → {option_id} ({kcal} kcal)")
+
+
+def handle_diet_custom_reply(token: str, chat_id, text: str) -> bool:
+    """Число после «Своё значение». True — сообщение обработано здесь и
+    ассистенту его отдавать не надо."""
+    with _diet_custom_lock:
+        pending = _diet_custom_pending.get(chat_id)
+        if pending and time.time() - pending["ts"] > DIET_CUSTOM_TTL_SEC:
+            _diet_custom_pending.pop(chat_id, None)
+            pending = None
+    if not pending:
+        return False
+    if text.strip().lower() in ("отмена", "cancel"):
+        with _diet_custom_lock:
+            _diet_custom_pending.pop(chat_id, None)
+        send_message(token, chat_id, "Ок, не записываю.")
+        return True
+    kcal = parse_kcal_text(text)
+    if kcal is None:
+        # Не число — значит, это уже другой разговор: ожидание снимаем и
+        # отдаём сообщение ассистенту.
+        with _diet_custom_lock:
+            _diet_custom_pending.pop(chat_id, None)
+        return False
+    if not is_routed_recipient(chat_id, "diet"):
+        return False
+    if kcal < 100 or kcal > 15000:
+        send_message(token, chat_id, f"{fmt_kcal(kcal)} ккал — похоже на опечатку. Напиши число ещё раз или «отмена».")
+        return True
+    with _diet_custom_lock:
+        _diet_custom_pending.pop(chat_id, None)
+    date_iso = pending["date"]
+    save_diet_custom(date_iso, kcal)
+    text_out = diet_result_text(load_app_data(), date_iso, DIET_CUSTOM_LABEL, kcal)
+    send_message(token, chat_id, text_out)
+    if pending.get("mid"):
+        tg_post(token, "editMessageText", {
+            "chat_id": chat_id, "message_id": pending["mid"], "parse_mode": "HTML", "text": text_out,
+        })
+    print(f"  diet custom: {date_iso} → {kcal} kcal")
+    return True
 
 
 # ── app data store ─────────────────────────────────────────────────────────────
@@ -828,13 +1127,14 @@ def build_backup_zip() -> bytes:
             seen_arcnames.add(arcname)
             zf.write(path, arcname=arcname)
 
-        data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json"}
+        data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
+                      "jarvis_study_chats_state.json", "jarvis_anchors.json"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
         #    skips data JSONs — when DATA_DIR == DIR they belong under data/ only)
         for p in sorted(DIR.iterdir()):
-            if p.is_file() and p.name not in data_names and p.suffix != ".tmp":
+            if p.is_file() and p.name not in data_names and p.name != "jarvis_tg_user.json" and p.suffix != ".tmp":
                 add_file(p, f"code/{p.name}")
 
         # 2. Core data files
@@ -848,7 +1148,7 @@ def build_backup_zip() -> bytes:
             d = DATA_DIR / sub
             if d.exists():
                 for f in sorted(d.rglob("*")):
-                    if f.is_file():
+                    if f.is_file() and f.stat().st_size <= BACKUP_MAX_FILE_BYTES:
                         add_file(f, f"data/{sub}/{f.relative_to(d)}")
 
         zf.writestr("README.txt", RESTORE_README)
@@ -1136,6 +1436,60 @@ def _merge_date_log_entries(local_arr, server_arr, prefer_local: bool, deleted_f
     return sorted(result, key=lambda e: e.get("date", ""), reverse=True)
 
 
+def _dedupe_statement_rows(rows: list) -> list:
+    """Зеркало dedupeStatementRows() из index (9).html: строки выписки без id
+    сравниваются по смысловому ключу, а не по полной форме объекта."""
+    seen = set()
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        key = json.dumps([r.get("date"), r.get("month"), r.get("amount"), r.get("account"),
+                          r.get("category"), r.get("note") or ""], ensure_ascii=False, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+def _merge_budget_slice(l_slice, s_slice, prefer_local: bool, deleted_ids: dict) -> dict:
+    """Срез бюджета одного пользователя (budgetByUser[uid]) — ПОЗАПИСНО, как
+    mergeBudgetSlice() в index (9).html. Раньше budgetByUser сливался как
+    обычный объект: срез из пришедшего снимка целиком заменял серверный.
+    Из-за этого устаревшая вкладка сайта (в т.ч. «прощальный» sendBeacon при
+    закрытии) возвращала операции ДДС, удалённые или изменённые из мобильного
+    приложения /pf/, и затирала только что добавленные там."""
+    ls = l_slice if isinstance(l_slice, dict) else {}
+    ss = s_slice if isinstance(s_slice, dict) else {}
+    out = {}
+    for sk in set(ls.keys()) | set(ss.keys()):
+        if sk not in ss:
+            out[sk] = ls[sk]
+            continue
+        if sk not in ls:
+            out[sk] = ss[sk]
+            continue
+        lv, sv = ls[sk], ss[sk]
+        if isinstance(lv, list) or isinstance(sv, list):
+            merged = _merge_id_arrays(lv, sv, prefer_local, deleted_ids.get(sk))
+            if sk == "budgetStatementRows":
+                merged = _dedupe_statement_rows(merged)
+            out[sk] = merged
+        elif _is_plain_object(lv) and _is_plain_object(sv):
+            # budgetCashflowSettings пишет приложение /pf/ со штампом updatedAt —
+            # новее побеждает целиком, иначе старая копия затирала выбор счёта.
+            l_ts = lv.get("updatedAt") if isinstance(lv.get("updatedAt"), (int, float)) else None
+            s_ts = sv.get("updatedAt") if isinstance(sv.get("updatedAt"), (int, float)) else None
+            if l_ts is not None or s_ts is not None:
+                out[sk] = sv if (s_ts is not None and (l_ts is None or s_ts > l_ts)) else lv
+            else:
+                out[sk] = {**sv, **lv} if prefer_local else {**lv, **sv}
+        else:
+            out[sk] = lv if prefer_local else sv
+    return out
+
+
 def merge_app_data(local: dict, server: dict, mode: str = "pull") -> dict:
     """Merge app-data dicts. mode='push' → incoming (local) wins; mode='pull' → local wins except bot logs."""
     if not server:
@@ -1166,6 +1520,11 @@ def merge_app_data(local: dict, server: dict, mode: str = "pull") -> dict:
                     l.get("columns") or [], s.get("columns") or [],
                     prefer_local, merged_deleted_ids.get("kanbanColumns"))
                 merged[key] = base
+            elif key == "budgetByUser" and _is_plain_object(l) and _is_plain_object(s):
+                merged[key] = {
+                    uid: _merge_budget_slice(l.get(uid), s.get(uid), prefer_local, merged_deleted_ids)
+                    for uid in set(l.keys()) | set(s.keys())
+                }
             elif key in DATE_LOG_KEYS and (isinstance(l, list) or isinstance(s, list)):
                 merged[key] = _merge_date_log_entries(l, s, prefer_local, merged_deleted_ids.get(key))
             elif isinstance(l, list) or isinstance(s, list):
@@ -1806,9 +2165,15 @@ def _apple_event_lines(fields: dict, uid: str) -> list:
         lines.append(f"LOCATION:{_ics_escape(fields['location'])}")
     if fields.get("notes"):
         lines.append(f"DESCRIPTION:{_ics_escape(fields['notes'])}")
+    if fields.get("url"):
+        # Поле «URL» события: в Календаре на iPhone это отдельная нажимаемая строка.
+        lines.append("URL:" + re.sub(r"\s+", "", str(fields["url"])))
     # Оповещение о событии — только когда пользователь просит напомнить о событии
     # календаря. Это не замена Apple Напоминаний.
-    if fields.get("alarm") or fields.get("alarmMinutesBefore") is not None:
+    if fields.get("alarmsBefore"):
+        for mins in sorted({max(0, int(m)) for m in fields["alarmsBefore"]}):
+            lines += _apple_alarm_lines(title, mins)
+    elif fields.get("alarm") or fields.get("alarmMinutesBefore") is not None:
         mins = fields.get("alarmMinutesBefore")
         if mins is None:
             mins = 0
@@ -2376,6 +2741,1592 @@ def execute_apple_tool(name: str, inp: dict) -> dict:
     return {"error": "unknown_tool"}
 
 
+# ── Учёба: расписание rasp.rea.ru → Apple Календарь ─────────────────────────
+# Сайт РЭУ отдаёт расписание недели HTML-фрагментом /Schedule/ScheduleCard
+# (тот же запрос, что делает его собственный JS). weekNum — сквозной номер
+# недели от начала учебного года; -1 = «текущая», настоящий номер сервер
+# кладёт в скрытый <input id="weekNum">. Браузер не нужен.
+#
+# Пары пишем в отдельный календарь iCloud (по умолчанию «Учеба») с UID вида
+# jarvis-rea-<hash слота>. Синхронизация сверяет календарь с сайтом: новые
+# пары создаёт, изменившиеся (предмет/тип/аудитория/конец) обновляет,
+# исчезнувшие удаляет. Трогает ТОЛЬКО свои события (префикс UID) и только
+# с сегодняшнего дня — прошлое и ручные записи не меняются.
+#
+# Настройки — data.studySchedule (синхронизируются как обычные данные,
+# LWW по updatedAt), состояние последнего прогона — study_state.json.
+
+STUDY_STATE_FILE = DATA_DIR / "study_state.json"
+STUDY_UID_PREFIX = "jarvis-rea-"
+REA_BASE_URL = "https://rasp.rea.ru"
+REA_HTTP_TIMEOUT = 25
+STUDY_DEFAULTS = {
+    "enabled": False,
+    "group": "",
+    "calendar": "Учеба",
+    "days": [1, 3, 5],   # ISO: 1 = пн … 7 = вс
+    "time": "08:00",     # МСК
+    "weeks": 2,          # текущая + следующая
+    "notify": True,
+    "remind": False,     # напоминание из Календаря перед парой
+    "remindBefore": [5], # за сколько минут (можно несколько)
+}
+_STUDY_LOCK = threading.Lock()
+
+
+class StudyError(Exception):
+    pass
+
+
+def study_settings(app: dict = None) -> dict:
+    app = app if app is not None else load_app_data()
+    raw = app.get("studySchedule") if isinstance(app.get("studySchedule"), dict) else {}
+    s = {**STUDY_DEFAULTS, **raw}
+    try:
+        s["weeks"] = max(1, min(4, int(s.get("weeks") or 2)))
+    except Exception:
+        s["weeks"] = 2
+    s["days"] = sorted({int(d) for d in (s.get("days") or []) if str(d).isdigit() and 1 <= int(d) <= 7})
+    s["remind"] = bool(s.get("remind"))
+    mins = set()
+    for m in (s.get("remindBefore") if isinstance(s.get("remindBefore"), list) else [s.get("remindBefore")]):
+        try:
+            if int(m) >= 0:
+                mins.add(min(10080, int(m)))
+        except (TypeError, ValueError):
+            pass
+    s["remindBefore"] = sorted(mins)[:3] or list(STUDY_DEFAULTS["remindBefore"])
+    s["group"] = str(s.get("group") or "").strip()
+    s["calendar"] = str(s.get("calendar") or "").strip() or STUDY_DEFAULTS["calendar"]
+    return s
+
+
+def study_load_state() -> dict:
+    try:
+        if STUDY_STATE_FILE.exists():
+            return json.loads(STUDY_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def study_save_state(state: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STUDY_STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(STUDY_STATE_FILE)
+
+
+# ── rasp.rea.ru: загрузка и разбор ─────────────────────────────────────────
+
+class _MiniNode:
+    __slots__ = ("tag", "attrs", "children", "parent")
+
+    def __init__(self, tag, attrs=None, parent=None):
+        self.tag, self.attrs, self.children, self.parent = tag, dict(attrs or {}), [], parent
+
+    def classes(self) -> set:
+        return set((self.attrs.get("class") or "").split())
+
+    def iter(self, tag=None, cls=None):
+        for ch in self.children:
+            if isinstance(ch, _MiniNode):
+                if (tag is None or ch.tag == tag) and (cls is None or cls in ch.classes()):
+                    yield ch
+                yield from ch.iter(tag, cls)
+
+    def text_lines(self) -> list:
+        """Как innerText: <br> и блочные теги дают перенос строки."""
+        parts = []
+
+        def walk(node):
+            for ch in node.children:
+                if isinstance(ch, str):
+                    parts.append(ch)
+                elif ch.tag == "br":
+                    parts.append("\n")
+                else:
+                    block = ch.tag in _MINI_BLOCK_TAGS
+                    if block:
+                        parts.append("\n")
+                    walk(ch)
+                    if block:
+                        parts.append("\n")
+        walk(self)
+        text = "".join(parts).replace("\xa0", " ")
+        return [re.sub(r"\s+", " ", l).strip() for l in text.split("\n") if l.strip()]
+
+
+_MINI_VOID_TAGS = {"br", "img", "input", "meta", "link", "hr", "col", "source", "wbr", "area", "base"}
+_MINI_BLOCK_TAGS = {"div", "p", "tr", "td", "th", "li", "ul", "ol", "table", "tbody", "thead",
+                    "h1", "h2", "h3", "h4", "h5", "h6", "section", "header", "footer"}
+
+
+def _mini_parse(markup: str) -> _MiniNode:
+    from html.parser import HTMLParser
+
+    root = _MiniNode("#root")
+
+    class P(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.cur = root
+
+        def handle_starttag(self, tag, attrs):
+            node = _MiniNode(tag, attrs, self.cur)
+            self.cur.children.append(node)
+            if tag not in _MINI_VOID_TAGS:
+                self.cur = node
+
+        def handle_startendtag(self, tag, attrs):
+            self.cur.children.append(_MiniNode(tag, attrs, self.cur))
+
+        def handle_endtag(self, tag):
+            node = self.cur
+            while node is not None and node.tag != tag:
+                node = node.parent
+            if node is not None and node.parent is not None:
+                self.cur = node.parent
+
+        def handle_data(self, data):
+            if data:
+                self.cur.children.append(data)
+
+    if "<script" in markup:
+        markup = re.sub(r"(?is)<script\b.*?</script>", "", markup)
+    p = P()
+    p.feed(markup or "")
+    p.close()
+    return root
+
+
+_REA_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/129.0 Safari/537.36")
+_rea_session = {"s": None, "at": 0.0}
+# Последний сырой ответ сайта — для диагностики (/api/study/debug), когда
+# разбор ничего не нашёл: видно, что сайт реально прислал.
+_rea_last = {"url": "", "status": 0, "text": ""}
+
+
+def _rea_get(path: str, params: dict, referer: str, record: bool = True):
+    """GET к rasp.rea.ru в общей сессии: куки с главной страницы получаем один
+    раз (сайт может требовать их для XHR-запросов), прокси — из REA_PROXY."""
+    if requests is None:
+        raise StudyError("На сервере не установлена библиотека requests.")
+    proxy = (os.environ.get("REA_PROXY") or "").strip()
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    try:
+        if _rea_session["s"] is None or time.time() - _rea_session["at"] > 1800:
+            sess = requests.Session()
+            sess.headers.update({"User-Agent": _REA_UA, "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.5"})
+            try:
+                sess.get(referer, timeout=REA_HTTP_TIMEOUT, proxies=proxies,
+                         headers={"Accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
+            except Exception:
+                pass
+            _rea_session.update({"s": sess, "at": time.time()})
+        r = _rea_session["s"].get(
+            f"{REA_BASE_URL}{path}", params=params, timeout=REA_HTTP_TIMEOUT, proxies=proxies,
+            headers={"X-Requested-With": "XMLHttpRequest", "Accept": "text/html, */*; q=0.01",
+                     "Referer": referer})
+    except Exception as e:
+        _rea_session["s"] = None
+        raise StudyError(f"Не достучался до rasp.rea.ru: {e}. Если сайт режет зарубежные IP — "
+                         "задайте REA_PROXY (российский прокси) в переменных окружения.")
+    r.encoding = r.encoding if r.encoding and r.encoding.lower() != "iso-8859-1" else "utf-8"
+    if record:
+        _rea_last.update({"url": r.url, "status": r.status_code, "text": r.text[:200000]})
+    return r
+
+
+def rea_fetch_week(group: str, week_num: int = -1) -> str:
+    r = _rea_get("/Schedule/ScheduleCard",
+                 {"selection": group, "weekNum": week_num, "catfilter": 0},
+                 f"{REA_BASE_URL}/?q={quote(group, safe='')}")
+    if r.status_code != 200:
+        raise StudyError(f"rasp.rea.ru ответил {r.status_code}.")
+    return r.text
+
+
+def _rea_diag(text: str) -> str:
+    """Короткое описание ответа, в котором не нашлось расписания."""
+    raw = text or ""
+    title = re.search(r"(?is)<title>(.*?)</title>", raw)
+    plain = re.sub(r"\s+", " ", re.sub(r"(?is)<(script|style)\b.*?</\1>|<[^>]+>", " ", raw)).strip()
+    bits = [f"{len(raw)} символов"]
+    if title:
+        bits.append(f"title «{title.group(1).strip()[:80]}»")
+    bits.append(f"таблиц: {raw.count('<table')}, slot: {raw.count('slot')}")
+    if plain:
+        bits.append(f"текст: «{plain[:160]}»")
+    return "; ".join(bits)
+
+
+def rea_parse_week(markup: str) -> dict:
+    """{'weekNum': int|None, 'days': ['YYYY-MM-DD', …], 'lessons': [...]}.
+    days — дни, которые сайт показал (даже пустые): по ним понимаем, что
+    неделя загрузилась, и пустой день — это правда «нет пар», а не сбой."""
+    m = re.search(r'id=["\']weekNum["\'][^>]*value=["\'](-?\d+)', markup or "") or \
+        re.search(r'value=["\'](-?\d+)["\'][^>]*id=["\']weekNum["\']', markup or "")
+    week_num = int(m.group(1)) if m else None
+    root = _mini_parse(markup or "")
+    days, lessons = [], []
+    for table in root.iter("table"):
+        # Заголовок дня — th.dayh / h5 «Понедельник, 06.10.2025».
+        dm = None
+        for head in [*table.iter("th", "dayh"), *table.iter("h5"), *table.iter("th")][:6]:
+            dm = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", " ".join(head.text_lines()))
+            if dm:
+                break
+        if not dm:
+            dm = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", " ".join(table.text_lines()[:3]))
+        if not dm:
+            continue
+        day = f"{dm.group(3)}-{dm.group(2)}-{dm.group(1)}"
+        days.append(day)
+        for row in table.iter("tr", "slot"):
+            if "load-empty" in row.classes():
+                continue
+            cells = [c for c in row.children if isinstance(c, _MiniNode) and c.tag == "td"]
+            if not cells:
+                continue
+            head_lines = cells[0].text_lines()
+            times = re.findall(r"\b(\d{1,2}:\d{2})\b", " ".join(head_lines))
+            if len(times) < 2:
+                continue
+            pair = ""
+            for l in head_lines:
+                pm = re.search(r"(\d+)\s*пара", l)
+                if pm:
+                    pair = pm.group(1)
+                    break
+            for idx, task in enumerate(row.iter("a", "task")):
+                lessons.append({"date": day, "pair": pair,
+                                "start": times[0].zfill(5), "end": times[1].zfill(5),
+                                "slot": idx, **_rea_task_fields(task)})
+    return {"weekNum": week_num, "days": days, "lessons": lessons}
+
+
+def _rea_task_fields(task: "_MiniNode") -> dict:
+    """<a class="task">Предмет<br><i>Лекция</i><br>Аудитория…</a> → поля пары.
+    Предмет — первый «голый» текст ссылки, тип — <i>, остальное — аудитория."""
+    lines = task.text_lines()
+    own = [re.sub(r"\s+", " ", c).strip() for c in task.children if isinstance(c, str) and c.strip()]
+    subject = own[0] if own else (lines[0] if lines else "")
+    italic = next(task.iter("i"), None)
+    kind = " ".join(italic.text_lines()) if italic is not None else (lines[1] if len(lines) > 1 else "")
+    rest = [l for l in lines if l not in (subject, kind)]
+    room = " ".join(rest).replace(subject, "").replace(kind, "") if rest else ""
+    room = re.sub(r"\s+", " ", room).replace(", пл. Основная", "").strip(" ,")
+    room = re.sub(r"^Аудитория:\s*", "", room, flags=re.I)
+    strong = next(task.iter("strong"), None)
+    subgroups = strong is not None and "подгрупп" in " ".join(strong.text_lines()).lower()
+    if subgroups:
+        room = re.sub(r"\+?\s*подгрупп\w*", "", room, flags=re.I).strip(" ,")
+    return {"subject": subject or "Пара", "kind": kind, "room": room,
+            "subgroups": subgroups, "elementId": task.attrs.get("data-elementid") or ""}
+
+
+def rea_fetch_subgroup_rooms(group: str, day_iso: str, pair: str) -> str:
+    """У пар с подгруппами аудитории лежат во всплывающем окне —
+    /Schedule/GetDetails?selection=…&date=dd.mm.yyyy&timeSlot=N."""
+    if not pair:
+        return ""
+    d = date.fromisoformat(day_iso)
+    try:
+        r = _rea_get("/Schedule/GetDetails",
+                     {"selection": group, "date": d.strftime("%d.%m.%Y"), "timeSlot": pair},
+                     f"{REA_BASE_URL}/?q={quote(group, safe='')}", record=False)
+        if r.status_code != 200:
+            return ""
+    except StudyError:
+        return ""
+    root = _mini_parse(r.text)
+    rooms = []
+    for block in root.iter("div", "element-info-body"):
+        text = " ".join(block.text_lines())
+        m = re.search(r"Аудитория:\s*(.*?)\s*(?:Площадка:|$)", text, re.I)
+        if m:
+            name = block.attrs.get("data-subgroup") or ""
+            room = re.sub(r"\s+", " ", m.group(1)).strip()
+            rooms.append(f"Подгр. {name}: {room}" if name else room)
+    return " / ".join(rooms)
+
+
+def rea_fetch_weeks(group: str, weeks: int = 2, back: int = 0) -> dict:
+    """Текущая неделя, weeks-1 следующих и back прошлых. {'weeks': [{weekNum, days, lessons, ok}],
+    'lessons': [...], 'requestedFrom'/'requestedUntil': границы запрошенных недель (даже если
+    сайт их не опубликовал)}"""
+    if not group:
+        raise StudyError("Не указана учебная группа (Настройки → Учеба).")
+    # Сайт ищет группу по точному написанию; пробуем как ввели и в нижнем
+    # регистре (так группы записаны в самом расписании: 15.14д-мц01/25м).
+    first, tried = None, []
+    for variant in dict.fromkeys([group, group.lower()]):
+        markup = rea_fetch_week(variant, -1)
+        parsed = rea_parse_week(markup)
+        tried.append(_rea_diag(markup))
+        if parsed["days"]:
+            first, group = parsed, variant
+            break
+    if first is None:
+        raise StudyError(f"rasp.rea.ru не показал расписание для группы «{group}». "
+                         f"Ответ сайта: {tried[-1]}. Подробнее — кнопка «Диагностика».")
+    out = [{**first, "ok": True}]
+    base = first["weekNum"]
+    for i in [*range(-max(0, back), 0), *range(1, weeks)]:
+        if base is None:
+            break
+        try:
+            wk = rea_parse_week(rea_fetch_week(group, base + i))
+            out.append({**wk, "ok": bool(wk["days"])})
+        except StudyError as e:
+            out.append({"weekNum": base + i, "days": [], "lessons": [], "ok": False, "error": str(e)})
+    cur_mon = date.fromisoformat(first["days"][0]) - timedelta(days=date.fromisoformat(first["days"][0]).weekday())
+    lessons = [l for w in out for l in w["lessons"]]
+    for l in lessons:
+        if l.pop("subgroups", False):
+            l["room"] = rea_fetch_subgroup_rooms(group, l["date"], l["pair"]) or l["room"] or "подгруппы"
+    lessons.sort(key=lambda l: (l["date"], l["start"], l["slot"]))
+    return {"weeks": out, "lessons": lessons,
+            "requestedFrom": (cur_mon - timedelta(days=7 * max(0, back))).isoformat(),
+            "requestedUntil": (cur_mon + timedelta(days=7 * max(1, weeks) - 1)).isoformat()}
+
+
+# ── student.rea.ru: вход в личный кабинет и хранение сессии ────────────────
+# Личный кабинет — обычный Bitrix: форма POST /personal/index.php?login=yes
+# (AUTH_FORM=Y, TYPE=AUTH, USER_LOGIN, USER_PASSWORD). Логин и пароль берём из
+# переменных окружения STUDENT_LOGIN / STUDENT_PASSWORD (в данные приложения и
+# в код не кладём). Куки сессии сохраняем в student_session.json, чтобы пережить
+# перезапуск сервера; когда сайт сбрасывает сессию (вместо страницы приходит
+# форма входа) — входим заново и повторяем запрос один раз.
+
+STUDENT_BASE_URL = "https://student.rea.ru"
+STUDENT_SESSION_FILE = DATA_DIR / "student_session.json"
+_STUDENT_LOCK = threading.RLock()
+_student = {"s": None, "loginAt": 0}
+_student_last = {"url": "", "status": 0, "text": ""}
+
+
+class StudentError(Exception):
+    pass
+
+
+def student_creds() -> tuple:
+    login = (os.environ.get("STUDENT_LOGIN") or "").strip()
+    password = os.environ.get("STUDENT_PASSWORD") or ""
+    if not login or not password:
+        raise StudentError("Не заданы STUDENT_LOGIN и STUDENT_PASSWORD (переменные окружения сервера).")
+    return login, password
+
+
+def _student_proxies():
+    proxy = (os.environ.get("STUDENT_PROXY") or os.environ.get("REA_PROXY") or "").strip()
+    return {"http": proxy, "https": proxy} if proxy else None
+
+
+def _student_is_login_page(text: str) -> bool:
+    return bool(re.search(r"""name=["']USER_PASSWORD["']""", text or ""))
+
+
+def _student_form_error(text: str) -> str:
+    """Сообщение Bitrix об ошибке входа (errortext / alert-danger) или про капчу."""
+    if re.search(r"captcha_sid|captcha_word", text or ""):
+        return "сайт требует капчу — зайдите в кабинет в браузере и введите её, затем повторите"
+    root = _mini_parse(text or "")
+    msgs = []
+    for cls in ("errortext", "alert-danger", "alert-error", "has-error"):
+        for node in root.iter(None, cls):
+            line = " ".join(node.text_lines()).strip()
+            if line and line not in msgs:
+                msgs.append(line)
+    return "; ".join(msgs)[:300]
+
+
+def _student_new_session():
+    if requests is None:
+        raise StudentError("На сервере не установлена библиотека requests.")
+    sess = requests.Session()
+    sess.headers.update({"User-Agent": _REA_UA, "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.5"})
+    return sess
+
+
+def _student_save_cookies(sess) -> None:
+    cookies = [{"name": c.name, "value": c.value, "domain": c.domain, "path": c.path,
+                "expires": c.expires, "secure": c.secure} for c in sess.cookies]
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STUDENT_SESSION_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"savedAt": int(time.time() * 1000), "loginAt": _student["loginAt"],
+                               "cookies": cookies}, ensure_ascii=False), encoding="utf-8")
+    try:
+        tmp.chmod(0o600)    # внутри — живая сессия кабинета
+    except OSError:
+        pass
+    tmp.replace(STUDENT_SESSION_FILE)
+
+
+def _student_load_session():
+    """Сессия с куками из файла или None, если сохранённой нет."""
+    try:
+        data = json.loads(STUDENT_SESSION_FILE.read_text(encoding="utf-8"))
+        cookies = data.get("cookies") or []
+    except Exception:
+        return None
+    if not cookies:
+        return None
+    sess = _student_new_session()
+    for c in cookies:
+        sess.cookies.set(c["name"], c["value"], domain=c.get("domain") or "student.rea.ru",
+                         path=c.get("path") or "/", expires=c.get("expires"), secure=bool(c.get("secure")))
+    _student["loginAt"] = int(data.get("loginAt") or 0)
+    return sess
+
+
+def _student_record(r) -> None:
+    _student_last.update({"url": r.url, "status": r.status_code, "text": r.text[:200000]})
+
+
+def _student_request(sess, method: str, path: str, **kw):
+    try:
+        r = sess.request(method, f"{STUDENT_BASE_URL}{path}", timeout=REA_HTTP_TIMEOUT,
+                         proxies=_student_proxies(), **kw)
+    except Exception as e:
+        raise StudentError(f"Не достучался до student.rea.ru: {type(e).__name__}. Если сайт режет "
+                           "зарубежные IP — задайте STUDENT_PROXY (или REA_PROXY) с российским прокси.")
+    r.encoding = r.encoding if r.encoding and r.encoding.lower() != "iso-8859-1" else "utf-8"
+    return r
+
+
+def student_login() -> "requests.Session":
+    """Заходит в кабинет заново (старую сессию выбрасывает) и сохраняет куки."""
+    login, password = student_creds()
+    with _STUDENT_LOCK:
+        sess = _student_new_session()
+        _student_request(sess, "GET", "/personal/")      # куки PHPSESSID / BITRIX_SM_*
+        r = _student_request(
+            sess, "POST", "/personal/index.php?login=yes",
+            data={"AUTH_FORM": "Y", "TYPE": "AUTH", "backurl": "/personal/index.php",
+                  "USER_LOGIN": login, "USER_PASSWORD": password, "USER_REMEMBER": "Y", "Login": "Войти"},
+            headers={"Referer": f"{STUDENT_BASE_URL}/personal/", "Origin": STUDENT_BASE_URL})
+        _student_record(r)
+        if _student_is_login_page(r.text):
+            why = _student_form_error(r.text)
+            raise StudentError("Кабинет не принял вход" + (f": {why.rstrip('.')}" if why else
+                               " (проверьте STUDENT_LOGIN и STUDENT_PASSWORD)") + ".")
+        if r.status_code >= 400:
+            raise StudentError(f"student.rea.ru ответил {r.status_code} при входе.")
+        _student.update({"s": sess, "loginAt": int(time.time() * 1000)})
+        _student_save_cookies(sess)
+        return sess
+
+
+def student_get(path: str, params: dict = None) -> str:
+    """GET страницы кабинета под сохранённой сессией; если сессия слетела — входит заново."""
+    with _STUDENT_LOCK:
+        sess = _student["s"] or _student_load_session()
+        relogged = False
+        if sess is None:
+            sess, relogged = student_login(), True
+        for _ in range(2):
+            r = _student_request(sess, "GET", path, params=params,
+                                 headers={"Referer": f"{STUDENT_BASE_URL}/personal/"})
+            _student_record(r)
+            if not _student_is_login_page(r.text) and r.status_code < 400:
+                _student["s"] = sess
+                _student_save_cookies(sess)     # Bitrix может обновить куки
+                return r.text
+            if relogged:
+                break
+            sess, relogged = student_login(), True
+        if r.status_code >= 400:
+            raise StudentError(f"student.rea.ru ответил {r.status_code} на {path}.")
+        raise StudentError("Сессия кабинета не держится: после входа снова показывается форма входа.")
+
+
+def student_check() -> dict:
+    """Проверка из настроек: вход + открытие /lessons/ (без разбора)."""
+    try:
+        started_logged = bool(_student["s"] or _student_load_session())
+        text = student_get("/lessons/")
+    except StudentError as e:
+        return {"ok": False, "error": str(e)}
+    title = re.search(r"(?is)<title>(.*?)</title>", text)
+    return {"ok": True, "reusedSession": started_logged, "url": _student_last["url"],
+            "title": re.sub(r"\s+", " ", title.group(1)).strip()[:120] if title else "",
+            "diag": _rea_diag(text), "loginAt": _student["loginAt"]}
+
+
+def _student_time(t: str) -> str:
+    return t.zfill(5)
+
+
+def student_parse_week(markup: str) -> dict:
+    """Страница /lessons/ кабинета → {'group', 'days': ['YYYY-MM-DD'…], 'lessons': [...]}.
+    В таблице table_lessons заголовок дня («Вторник, 06.10.2026»), под ним строки пар
+    (span.pairnum: «7 пара 18:55 - 20:25»); занятия — div.lesson__block, а ссылка на
+    вебинар лежит в всплывающем div.lesson_popup («Ссылка: <a>») и в кнопке
+    a.lesson__external-link-lenta."""
+    gm = re.search(r"Расписание для группы:\s*([^\s<]+)", markup or "")
+    root = _mini_parse(markup or "")
+    popups = {}
+    for div in root.iter("div", "lesson_popup"):
+        url = ""
+        for p in div.iter("p"):
+            lines = p.text_lines()
+            if lines and lines[0].startswith("Ссылка"):
+                a = next(p.iter("a"), None)
+                url = (a.attrs.get("href") or "").strip() if a is not None else ""
+                break
+        popups[div.attrs.get("id") or ""] = url
+    days, lessons, day = [], [], ""
+    table = next(root.iter("table", "table_lessons"), None)
+    for row in (table.iter("tr") if table is not None else []):
+        text = " ".join(row.text_lines())
+        pairnum = next(row.iter("span", "pairnum"), None)
+        if pairnum is None:
+            dm = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", text)
+            if dm:
+                day = f"{dm.group(3)}-{dm.group(2)}-{dm.group(1)}"
+                days.append(day)
+            continue
+        pm_lines = pairnum.text_lines()
+        times = re.findall(r"\b(\d{1,2}:\d{2})\b", " ".join(pm_lines))
+        pn = re.search(r"(\d+)\s*пара", " ".join(pm_lines))
+        if not day or len(times) < 2:
+            continue
+        for block in row.iter("div", "lesson__block"):
+            a = next(block.iter("a", "fancybox"), None)
+            span = next(a.iter("span"), None) if a is not None else None
+            lines = span.text_lines() if span is not None else []
+            if not lines:
+                continue
+            ext = next(block.iter("a", "lesson__external-link-lenta"), None)
+            url = popups.get((a.attrs.get("href") or "").lstrip("#")) or \
+                ((ext.attrs.get("href") or "").strip() if ext is not None else "")
+            lessons.append({"date": day, "pair": pn.group(1) if pn else "",
+                            "start": _student_time(times[0]), "end": _student_time(times[1]),
+                            "subject": lines[0], "kind": lines[-1] if len(lines) > 2 else "", "url": url})
+    return {"group": gm.group(1) if gm else "", "days": days, "lessons": lessons}
+
+
+_student_profile = {"group": "", "id": ""}
+
+
+def _student_week_page(wn: int, student_id: str = "") -> str:
+    params = {"wn": wn}
+    if student_id:
+        params["student_id"] = student_id
+    return student_get("/lessons/index.php", params)
+
+
+def _student_find_profile(group: str, markup: str) -> str:
+    """В кабинете может быть несколько профилей студента (data-url="/lessons/?student_id=…").
+    Находит тот, чья страница расписания — для нужной группы."""
+    for m in re.finditer(r"""data-url=["']/lessons/\?student_id=(\d+)["']""", markup):
+        sid = m.group(1)
+        if student_parse_week(_student_week_page(0, sid))["group"].lower() == group.lower():
+            return sid
+    raise StudentError(f"В кабинете нет профиля с группой «{group}».")
+
+
+def student_fetch_links(group: str, weeks: int = 2, back: int = 0) -> dict:
+    """{'lessons': [...], 'days': [...]} со страниц кабинета: текущая неделя (wn=0),
+    weeks-1 следующих и back прошлых."""
+    sid = _student_profile["id"] if _student_profile["group"].lower() == group.lower() else ""
+    first = _student_week_page(0, sid)
+    parsed = student_parse_week(first)
+    if parsed["group"] and parsed["group"].lower() != group.lower():
+        sid = _student_find_profile(group, first)
+        _student_profile.update({"group": group, "id": sid})
+        parsed = student_parse_week(_student_week_page(0, sid))
+    elif parsed["group"]:
+        _student_profile.update({"group": group, "id": sid})
+    out_days, out_lessons = list(parsed["days"]), list(parsed["lessons"])
+    for wn in [*range(-max(0, back), 0), *range(1, weeks)]:
+        wk = student_parse_week(_student_week_page(wn, sid))
+        out_days += wk["days"]
+        out_lessons += wk["lessons"]
+    return {"lessons": out_lessons, "days": sorted(set(out_days))}
+
+
+def _norm_subject(s: str) -> str:
+    return re.sub(r"[\W_]+", "", (s or "").casefold())
+
+
+def attach_lesson_links(lessons: list, student_lessons: list) -> int:
+    """Кладёт l['link'] парам с rasp.rea.ru по (дата, начало). Если в слоте несколько
+    занятий — берёт то, у которого совпал предмет. Возвращает, сколько пар получили ссылку."""
+    by_slot = {}
+    for sl in student_lessons:
+        if sl.get("url"):
+            by_slot.setdefault((sl["date"], sl["start"]), []).append(sl)
+    n = 0
+    for l in lessons:
+        cands = by_slot.get((l["date"], l["start"])) or []
+        if len(cands) > 1:
+            subj = _norm_subject(l.get("subject"))
+            cands = [c for c in cands if _norm_subject(c["subject"]) == subj] or \
+                    [c for c in cands if subj and (subj in _norm_subject(c["subject"]) or _norm_subject(c["subject"]) in subj)]
+        if cands:
+            l["link"] = cands[0]["url"]
+            n += 1
+    return n
+
+
+def student_status() -> dict:
+    return {"configured": bool((os.environ.get("STUDENT_LOGIN") or "").strip() and os.environ.get("STUDENT_PASSWORD")),
+            "hasSession": bool(_student["s"]) or STUDENT_SESSION_FILE.exists(),
+            "loginAt": _student["loginAt"],
+            "proxy": bool(_student_proxies())}
+
+
+# ── Сверка с Apple Календарём ──────────────────────────────────────────────
+
+def study_fetch(group: str, weeks: int = 2, back: int = 0) -> dict:
+    """rea_fetch_weeks + ссылки на занятия из кабинета student.rea.ru (если заданы
+    STUDENT_LOGIN/STUDENT_PASSWORD). Сбой кабинета расписание не ломает: ссылки просто
+    не подставятся, причина — в linksError. linksDays — дни, которые кабинет показал."""
+    fetched = rea_fetch_weeks(group, weeks, back)
+    fetched.update({"linksDays": [], "linksError": ""})
+    if not student_status()["configured"]:
+        return fetched
+    try:
+        sl = student_fetch_links(group, weeks, back)
+        fetched["linksDays"] = sl["days"]
+        fetched["linksCount"] = attach_lesson_links(fetched["lessons"], sl["lessons"])
+    except StudentError as e:
+        fetched["linksError"] = str(e)
+    except Exception as e:      # разбор чужой вёрстки не должен ронять расписание
+        fetched["linksError"] = f"{type(e).__name__}: {e}"
+    return fetched
+
+
+def study_uid(group: str, lesson: dict) -> str:
+    key = f"{group.lower()}|{lesson['date']}|{lesson['start']}|{lesson.get('slot', 0)}"
+    return STUDY_UID_PREFIX + hashlib.sha1(key.encode("utf-8")).hexdigest()[:20]
+
+
+_STUDY_LINK_RE = re.compile(r"Ссылка:\s*(\S+)")
+
+
+def study_event_fields(group: str, lesson: dict, keep_link: str = "", remind: list = None) -> dict:
+    """keep_link — ссылка из уже существующего события: подставляется, когда кабинет
+    не ответил и новой ссылки нет (чтобы не стереть её из описания)."""
+    notes = [lesson.get("kind") or ""]
+    if lesson.get("pair"):
+        notes.append(f"{lesson['pair']} пара · {group}")
+    link = lesson.get("link") or keep_link
+    if link:
+        notes.append(f"Ссылка: {link}")
+    notes.append("Добавлено Джарвисом из rasp.rea.ru")
+    return {
+        "title": lesson.get("subject") or "Пара",
+        "start": f"{lesson['date']} {lesson['start']}",
+        "end": f"{lesson['date']} {lesson['end']}",
+        "location": lesson.get("room") or "",
+        "notes": "\n".join(n for n in notes if n),
+        "url": link,
+        "alarmsBefore": sorted(remind or []),
+    }
+
+
+def _study_calendar(name: str, create: bool = True) -> dict:
+    disc = apple_discover()
+    needle = name.strip().lower()
+    for c in disc["calendars"]:
+        if c["name"].strip().lower() == needle:
+            return c
+    if not create:
+        raise StudyError(f"Календаря «{name}» в iCloud нет.")
+    # Нет такого календаря — заводим сами, как сделал бы пользователь в Календаре.
+    url = disc["home"] + "jarvis-" + uuid.uuid4().hex[:12] + "/"
+    body = ('<?xml version="1.0" encoding="utf-8"?>'
+            '<c:mkcalendar xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">'
+            f'<d:set><d:prop><d:displayname>{html.escape(name)}</d:displayname>'
+            '<c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set>'
+            '</d:prop></d:set></c:mkcalendar>')
+    r = _apple_dav("MKCALENDAR", url, body)
+    if r.status_code not in (200, 201):
+        raise StudyError(f"Календаря «{name}» нет, а создать его iCloud не дал ({r.status_code}). "
+                         "Создайте его вручную в приложении Календарь.")
+    disc = apple_discover(force=True)
+    for c in disc["calendars"]:
+        if c["name"].strip().lower() == needle:
+            return c
+    return {"name": name, "href": url}
+
+
+def _ics_alarm_minutes(text: str) -> list:
+    """За сколько минут до начала сработают оповещения события (по TRIGGER внутри VALARM):
+    -PT5M → 5, PT0S → 0. Абсолютные (VALUE=DATE-TIME) и «после начала» пропускаются."""
+    out = []
+    for line in _ics_unfold(text):
+        if not line.upper().startswith("TRIGGER"):
+            continue
+        m = re.match(r"^-P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$", line.rsplit(":", 1)[-1].strip().upper())
+        if m:
+            d, h, mi, sec = (int(x or 0) for x in m.groups())
+            out.append(d * 1440 + h * 60 + mi + (1 if sec > 0 else 0))
+        elif line.rsplit(":", 1)[-1].strip().upper() in ("PT0S", "P0D", "PT0M"):
+            out.append(0)
+    return sorted(set(out))
+
+
+def _study_existing(cal: dict, start_dt: datetime, end_dt: datetime) -> dict:
+    """{uid: {url, etag, fields}} — только наши события в окне."""
+    rng = (start_dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+           end_dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    resp = _apple_report(cal["href"], _apple_calendar_query("VEVENT", time_range=rng))
+    out = {}
+    for href, etag, text in _apple_collect(resp, "VEVENT"):
+        for block in _ics_blocks(text, "VEVENT"):
+            ev = _apple_event_from(block, cal["name"])
+            if not (ev.get("id") or "").startswith(STUDY_UID_PREFIX):
+                continue
+            out[ev["id"]] = {
+                "url": urljoin(cal["href"], href), "etag": etag,
+                "fields": {"title": ev["title"], "start": ev["start"], "end": ev["end"],
+                           "location": ev["location"], "notes": ev["notes"],
+                           "alarms": _ics_alarm_minutes(text)},
+            }
+    return out
+
+
+def _study_put(url: str, uid: str, fields: dict, etag: str = "") -> None:
+    ics = _apple_wrap("VEVENT", _apple_event_lines(fields, uid))
+    headers = {"Content-Type": "text/calendar; charset=utf-8"}
+    if etag:
+        headers["If-Match"] = etag
+    r = _apple_dav("PUT", url, ics, headers=headers)
+    if r.status_code == 412:   # событие поменяли на телефоне между чтением и записью — перезаписываем
+        r = _apple_dav("PUT", url, ics, headers={"Content-Type": "text/calendar; charset=utf-8"})
+    if r.status_code not in (200, 201, 204):
+        raise AppleError(f"iCloud не принял событие ({r.status_code}).")
+
+
+_STUDY_FIELD_LABELS = {"title": "предмет", "start": "начало", "end": "конец",
+                       "location": "аудитория", "notes": "тип/детали"}
+
+
+def study_sync(preview: bool = False, reason: str = "manual") -> dict:
+    """Сверяет календарь с сайтом. preview=True — только загрузить и показать."""
+    if not _STUDY_LOCK.acquire(blocking=False):
+        return {"ok": False, "error": "Синхронизация уже идёт — подождите минуту."}
+    try:
+        return _study_sync_locked(preview, reason)
+    finally:
+        _STUDY_LOCK.release()
+
+
+def _study_sync_locked(preview: bool, reason: str) -> dict:
+    app = load_app_data()
+    s = study_settings(app)
+    state = study_load_state()
+    started = int(time.time() * 1000)
+    try:
+        fetched = study_fetch(s["group"], s["weeks"])
+    except StudyError as e:
+        state.update({"lastRunAt": started, "lastOk": False, "lastError": str(e), "lastReason": reason})
+        if not preview:
+            study_save_state(state)
+        return {"ok": False, "error": str(e)}
+
+    today = today_msk().isoformat()
+    lessons = [l for l in fetched["lessons"] if l["date"] >= today]
+    # Удалять пары можно только в днях, которые сайт реально показал: если
+    # следующая неделя не загрузилась, её события не трогаем.
+    loaded_days = {d for w in fetched["weeks"] if w["ok"] for d in w["days"]}
+    all_days = sorted(d for w in fetched["weeks"] for d in w["days"])
+    state.update(_study_cache_fields(s["group"], fetched, started, today))
+    state["linksError"] = fetched.get("linksError") or ""
+    if preview:
+        study_save_state(state)
+        return {"ok": True, "preview": True, "lessons": lessons,
+                "weeks": [{"weekNum": w["weekNum"], "days": len(w["days"]), "lessons": len(w["lessons"]),
+                           "ok": w["ok"], "error": w.get("error", "")} for w in fetched["weeks"]]}
+
+    added, updated, removed, errors = [], [], [], []
+    try:
+        cal = _study_calendar(s["calendar"])
+        win_from = datetime.combine(today_msk(), datetime.min.time(), MSK)
+        last_day = max([today] + all_days)
+        win_to = datetime.combine(date.fromisoformat(last_day), datetime.min.time(), MSK) + timedelta(days=1)
+        existing = _study_existing(cal, win_from, win_to)
+
+        wanted = {study_uid(s["group"], l): l for l in lessons}
+        alarms = s["remindBefore"] if s["remind"] else []
+        links_days = set(fetched.get("linksDays") or [])
+
+        for uid, lesson in wanted.items():
+            have = existing.get(uid)
+            # Кабинет не показал этот день (сбой/неопубликовано) — ссылку из календаря не трогаем.
+            keep = ""
+            if have and not lesson.get("link") and lesson["date"] not in links_days:
+                m = _STUDY_LINK_RE.search(have["fields"].get("notes") or "")
+                keep = m.group(1) if m else ""
+            fields = study_event_fields(s["group"], lesson, keep, alarms)
+            try:
+                if not have:
+                    _study_put(urljoin(cal["href"], uid + ".ics"), uid, fields)
+                    added.append(lesson)
+                    continue
+                diff = [k for k in ("title", "start", "end", "location", "notes")
+                        if (have["fields"].get(k) or "").strip() != (fields.get(k) or "").strip()]
+                if sorted(have["fields"].get("alarms") or []) != sorted(alarms):
+                    diff.append("alarms")
+                if diff:
+                    _study_put(have["url"], uid, fields, have["etag"])
+                    updated.append({"lesson": lesson, "before": have["fields"], "changed": diff})
+            except AppleError as e:
+                errors.append(f"{lesson['date']} {lesson['start']} {lesson['subject']}: {e}")
+
+        for uid, have in existing.items():
+            if uid in wanted:
+                continue
+            day = (have["fields"].get("start") or "")[:10]
+            if day < today or day not in loaded_days:
+                continue
+            try:
+                r = _apple_dav("DELETE", have["url"], headers={"If-Match": have["etag"]} if have["etag"] else None)
+                if r.status_code == 412:
+                    r = _apple_dav("DELETE", have["url"])
+                if r.status_code not in (200, 204, 404):
+                    raise AppleError(f"iCloud не удалил событие ({r.status_code}).")
+                removed.append(have["fields"])
+            except AppleError as e:
+                errors.append(f"удаление {have['fields'].get('start')} {have['fields'].get('title')}: {e}")
+    except (AppleError, StudyError) as e:
+        state.update({"lastRunAt": started, "lastOk": False, "lastError": str(e), "lastReason": reason})
+        study_save_state(state)
+        return {"ok": False, "error": str(e)}
+
+    prev_until = state.get("syncedUntil") or ""
+    first_run = not state.get("syncedAt")
+    # «Новая неделя подгрузилась» — не изменение расписания; изменение — это
+    # пара, появившаяся в днях, которые мы уже синхронизировали раньше.
+    added_changes = [l for l in added if prev_until and l["date"] <= prev_until]
+    added_new_days = [l for l in added if not (prev_until and l["date"] <= prev_until)]
+    result = {
+        "ok": not errors,
+        "calendar": cal["name"],
+        "added": len(added), "updated": len(updated), "removed": len(removed),
+        "addedChanges": added_changes, "addedNew": len(added_new_days),
+        "updatedList": updated, "removedList": removed,
+        "errors": errors[:10],
+        "total": len(lessons),
+    }
+    log_entry = {"at": started, "reason": reason, "added": len(added), "updated": len(updated),
+                 "removed": len(removed), "errors": len(errors),
+                 "changes": study_change_lines(result)[:30]}
+    state.update({
+        "lastRunAt": started, "lastOk": not errors,
+        "lastError": "; ".join(errors[:3]) if errors else "",
+        "lastReason": reason,
+        "lastResult": {k: result[k] for k in ("added", "updated", "removed", "addedNew", "total", "calendar")},
+        "syncedAt": started,
+        "syncedUntil": max(prev_until, max(loaded_days) if loaded_days else ""),
+        "log": ([log_entry] + (state.get("log") or []))[:30],
+    })
+    study_save_state(state)
+
+    if s.get("notify"):
+        try:
+            study_notify(app, result, first_run)
+        except Exception as e:
+            print(f"[study] notify error: {e}")
+    return result
+
+
+_WD_SHORT = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+
+
+def _study_day_label(day_iso: str) -> str:
+    try:
+        d = date.fromisoformat(day_iso[:10])
+        return f"{_WD_SHORT[d.weekday()]} {d.strftime('%d.%m')}"
+    except Exception:
+        return day_iso
+
+
+def study_change_lines(result: dict) -> list:
+    lines = []
+    for item in result.get("updatedList") or []:
+        l, before = item["lesson"], item["before"]
+        bits = []
+        for k in item["changed"]:
+            if k == "alarms":
+                continue
+            if k == "notes":
+                old_kind = (before.get("notes") or "").split("\n")[0]
+                if old_kind != (l.get("kind") or ""):
+                    bits.append(f"тип: {old_kind or '—'} → {l.get('kind') or '—'}")
+                continue
+            new_val = {"title": l["subject"], "start": l["start"], "end": l["end"],
+                       "location": l.get("room") or "—"}[k]
+            old_val = before.get(k) or "—"
+            if k in ("start", "end"):
+                old_val = old_val[11:16] or old_val
+            bits.append(f"{_STUDY_FIELD_LABELS[k]}: {old_val} → {new_val}")
+        if bits:
+            lines.append(f"✏️ {_study_day_label(l['date'])} {l['start']} {l['subject']} — " + "; ".join(bits))
+    for l in result.get("addedChanges") or []:
+        room = f" ({l['room']})" if l.get("room") else ""
+        lines.append(f"➕ {_study_day_label(l['date'])} {l['start']}–{l['end']} {l['subject']}{room}")
+    for f in result.get("removedList") or []:
+        st = f.get("start") or ""
+        lines.append(f"❌ {_study_day_label(st)} {st[11:16]} {f.get('title')} — пары больше нет в расписании")
+    return lines
+
+
+def study_notify(app: dict, result: dict, first_run: bool) -> None:
+    token = get_token()
+    if not token:
+        return
+    changes = study_change_lines(result)
+    parts = []
+    if changes:
+        parts.append("📚 <b>Изменения в расписании</b>\n\n" + "\n".join(html.escape(c) for c in changes[:40]))
+    if result.get("addedNew") and (first_run or not changes):
+        parts.append(f"📚 Расписание загружено в календарь «{html.escape(result.get('calendar') or '')}»: "
+                     f"+{result['addedNew']} пар.")
+    if result.get("errors"):
+        parts.append("⚠️ Не всё записалось в календарь:\n" + "\n".join(html.escape(e) for e in result["errors"][:5]))
+    if not parts:
+        return
+    text = "\n\n".join(parts)
+    subs = load_subscribers()
+    for cid in recipients_for(app, subs, "study"):
+        send_message(token, cid, text)
+
+
+def _study_cache_fields(group: str, fetched: dict, fetched_at: int, today: str) -> dict:
+    """Что кладём в study_state.json после загрузки с сайта. days — дни, которые сайт
+    реально показал; requestedFrom/Until — что мы просили (неопубликованная неделя
+    не должна перезапрашиваться при каждом вопросе)."""
+    days = sorted(d for w in fetched["weeks"] for d in w["days"])
+    return {"group": group, "fetchedAt": fetched_at, "lessons": fetched["lessons"], "days": days,
+            "coveredFrom": days[0] if days else today, "coveredUntil": days[-1] if days else today,
+            "requestedFrom": fetched.get("requestedFrom") or (days[0] if days else today),
+            "requestedUntil": fetched.get("requestedUntil") or (days[-1] if days else today)}
+
+
+def _date_ranges(days: list) -> str:
+    """['2026-10-12','2026-10-13','2026-10-20'] → '12.10–13.10, 20.10'."""
+    out, run = [], []
+    for d in days:
+        if run and (date.fromisoformat(d) - date.fromisoformat(run[-1])).days == 1:
+            run.append(d)
+        else:
+            if run:
+                out.append(run)
+            run = [d]
+    if run:
+        out.append(run)
+    fmt = lambda x: date.fromisoformat(x).strftime("%d.%m")
+    return ", ".join(fmt(r[0]) if len(r) == 1 else f"{fmt(r[0])}–{fmt(r[-1])}" for r in out)
+
+
+def study_lessons(date_from: str = None, date_to: str = None) -> dict:
+    """Пары для ассистента: из кэша последней загрузки; если кэш старше 6 ч
+    или не покрывает запрошенные даты (в том числе прошлые) — освежаем с сайта
+    (без записи в календарь)."""
+    s = study_settings()
+    if not s["group"]:
+        return {"error": "Учебная группа не задана — Настройки → Учеба."}
+    today = today_msk().isoformat()
+    d_from = (date_from or today)[:10]
+    d_to = (date_to or (today_msk() + timedelta(days=7)).isoformat())[:10]
+    try:
+        date.fromisoformat(d_from), date.fromisoformat(d_to)
+    except ValueError:
+        return {"error": "Даты должны быть в формате YYYY-MM-DD."}
+    if d_to < d_from:
+        d_from, d_to = d_to, d_from
+    warning = ""
+
+    def need_fetch(st: dict) -> bool:
+        stale = (time.time() * 1000 - (st.get("fetchedAt") or 0)) > 6 * 3600 * 1000
+        return (stale or st.get("group") != s["group"]
+                or d_to > (st.get("requestedUntil") or st.get("coveredUntil") or "")
+                or d_from < (st.get("requestedFrom") or st.get("coveredFrom") or ""))
+
+    state = study_load_state()
+    if need_fetch(state):
+        mon = today_msk() - timedelta(days=today_msk().weekday())
+        need_weeks = max(s["weeks"], min(6, (date.fromisoformat(d_to) - mon).days // 7 + 1))
+        back = max(0, min(8, -((date.fromisoformat(d_from) - mon).days // 7)))
+        with _STUDY_LOCK:
+            # Состояние перечитываем под замком: пока ждали, синхронизация могла
+            # записать свои поля (lastRunAt, log…) — затирать их нельзя. Заодно
+            # не ходим на сайт второй раз, если параллельный вызов уже обновил кэш.
+            state = study_load_state()
+            if need_fetch(state):
+                try:
+                    fetched = study_fetch(s["group"], need_weeks, back)
+                    state.update(_study_cache_fields(s["group"], fetched, int(time.time() * 1000), today))
+                    study_save_state(state)
+                except StudyError as e:
+                    if not state.get("lessons"):
+                        return {"error": str(e)}
+                    warning = f"Сайт сейчас недоступен ({e}); показываю последнюю загрузку."
+    items = [{k: l.get(k) for k in ("date", "pair", "start", "end", "subject", "kind", "room", "link")}
+             for l in state.get("lessons") or [] if d_from <= l["date"] <= d_to]
+    # Дни периода, которых сайт не показал (неделя не опубликована / не загрузилась):
+    # про них нельзя говорить «пар нет».
+    shown = set(state.get("days") or [])
+    missing, d = [], date.fromisoformat(d_from)
+    while d <= date.fromisoformat(d_to) and len(missing) < 400:
+        if d.isoweekday() != 7 and d.isoformat() not in shown:
+            missing.append(d.isoformat())
+        d += timedelta(days=1)
+    note = ""
+    if missing:
+        note = (f"Сайт не показал расписание на: {_date_ranges(missing)} — вероятно, ещё не опубликовано. "
+                "Не утверждай, что пар нет, скажи, что данных пока нет.")
+    elif not items:
+        note = "Пар нет"
+    out = {"group": s["group"], "from": d_from, "to": d_to, "lessons": items,
+           "coveredUntil": state.get("coveredUntil"), "note": note}
+    if warning:
+        out["warning"] = warning
+    return out
+
+
+def study_status() -> dict:
+    s = study_settings()
+    state = study_load_state()
+    today = today_msk().isoformat()
+    upcoming = [l for l in state.get("lessons") or [] if l.get("date", "") >= today][:60]
+    return {
+        "settings": s,
+        "lastRunAt": state.get("lastRunAt") or 0,
+        "lastOk": state.get("lastOk"),
+        "lastError": state.get("lastError") or "",
+        "lastResult": state.get("lastResult") or {},
+        "linksError": state.get("linksError") or "",
+        "syncedAt": state.get("syncedAt") or 0,
+        "fetchedAt": state.get("fetchedAt") or 0,
+        "coveredUntil": state.get("coveredUntil") or "",
+        "log": (state.get("log") or [])[:10],
+        "upcoming": upcoming,
+        "appleConfigured": bool(apple_creds()),
+        "proxy": bool((os.environ.get("REA_PROXY") or "").strip()),
+        "student": student_status(),
+    }
+
+
+def study_tick(app_data: dict, now_str: str, today_iso: str) -> None:
+    """Из минутного цикла: в выбранные дни и время запускаем синхронизацию."""
+    s = study_settings(app_data)
+    if not s["enabled"] or not s["group"] or s.get("time") != now_str:
+        return
+    if today_msk().isoweekday() not in s["days"]:
+        return
+    if _already_fired("study", s["group"], today_iso, now_str):
+        return
+    threading.Thread(target=lambda: print(f"[study] {study_sync(reason='schedule')}"), daemon=True).start()
+
+
+STUDY_TOOLS = [
+    {
+        "name": "study_schedule",
+        "description": ("Расписание пар пользователя в университете (РЭУ, rasp.rea.ru) за период. "
+                        "Подтверждения не требует. Используй на вопросы «какие пары завтра», «во сколько "
+                        "учёба в среду», «где у меня пара». Даты вычисляй сам от СЕГОДНЯ."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "from": {"type": "string", "description": "Начало периода YYYY-MM-DD. По умолчанию сегодня."},
+                "to": {"type": "string", "description": "Конец периода включительно YYYY-MM-DD. По умолчанию +7 дней."},
+            },
+        },
+    },
+]
+STUDY_TOOL_NAMES = {t["name"] for t in STUDY_TOOLS}
+
+
+def execute_study_tool(name: str, inp: dict) -> dict:
+    inp = inp or {}
+    try:
+        if name == "study_schedule":
+            return study_lessons(inp.get("from"), inp.get("to"))
+    except Exception as e:
+        return {"error": f"Не удалось получить расписание: {e}"}
+    return {"error": "unknown_tool"}
+
+
+# ── Учёба: напоминания по заданиям ───────────────────────────────────────────
+# У задания есть срок (due) и необязательные время (dueTime) и напоминание
+# (remind — за сколько минут до срока; null — не напоминать). В это время в
+# Telegram приходит сообщение. Для заданий типа «Ответ на паре» (kind=present)
+# срок — дата и начало пары (lesson), связанная подготовительная задача — parentId.
+# Отправленное помним в файле, чтобы не слать дважды; окно догонки — несколько
+# минут на случай рестарта или сдвига минутного цикла.
+
+STUDY_PRESENT_STATE_FILE = DATA_DIR / "jarvis_study_present_state.json"
+STUDY_PRESENT_WINDOW_MIN = 5
+_STUDY_PRESENT_LOCK = threading.Lock()
+
+
+def _study_present_when(p: dict, now: datetime) -> datetime:
+    """Момент рассказа (МСК) или ValueError, если дата/время кривые."""
+    d = date.fromisoformat(str(p.get("date") or "")[:10])
+    hh, mm = str(p.get("time") or "").split(":")[:2]
+    return datetime(d.year, d.month, d.day, int(hh), int(mm), tzinfo=MSK)
+
+
+def _study_reminder_spec(t: dict):
+    """(date, time, remind, lesson) или None. Понимает и старое поле present."""
+    p = t.get("present")
+    if isinstance(p, dict) and p.get("date"):
+        return p.get("date"), p.get("time"), p.get("remind") or 0, p.get("lesson")
+    if t.get("due") and t.get("dueTime") and t.get("remind") is not None:
+        return t["due"], t["dueTime"], t["remind"], t.get("lesson")
+    return None
+
+
+def study_present_due(app: dict, now: datetime, sent: dict) -> list:
+    """Какие напоминания пора отправить: [(task, subject, event_dt, remind_min, key)]."""
+    subjects = {x.get("id"): x for x in app.get("studySubjects") or []}
+    due = []
+    for t in app.get("studyTasks") or []:
+        spec = _study_reminder_spec(t)
+        if not spec or t.get("status") == "done" or t.get("subjectId") not in subjects:
+            continue
+        try:
+            event_dt = _study_present_when({"date": spec[0], "time": spec[1]}, now)
+            remind = max(0, min(10080, int(spec[2])))
+        except (ValueError, TypeError):
+            continue
+        fire = event_dt - timedelta(minutes=remind)
+        key = f"{t.get('id')}|{spec[0]}|{spec[1]}|{remind}"
+        if key in sent:
+            continue
+        if fire <= now <= fire + timedelta(minutes=STUDY_PRESENT_WINDOW_MIN):
+            due.append((t, subjects[t["subjectId"]], event_dt, remind, key))
+    return due
+
+
+def study_present_text(task: dict, subject: dict, event_dt: datetime, remind: int, now: datetime, parent: dict = None) -> str:
+    spec = _study_reminder_spec(task)
+    lesson = spec[3] if spec and isinstance(spec[3], dict) else {}
+    if remind <= 0:
+        head = "сейчас"
+    elif remind < 60:
+        head = f"через {remind} мин"
+    elif remind < 1440:
+        head = "через час" if remind == 60 else f"через {remind // 60} ч"
+    else:
+        head = "завтра" if event_dt.date() > now.date() else "сегодня"
+    when = f"{event_dt.strftime('%H:%M')}" if event_dt.date() == now.date() else \
+        f"{event_dt.strftime('%d.%m')} в {event_dt.strftime('%H:%M')}"
+    if task.get("kind") == "present":
+        title = f"🎤 <b>Ответ на паре — {head}</b>"
+    else:
+        title = f"⏰ <b>Напоминание по заданию — {head}</b>"
+    lines = [title, "",
+             f"<b>{html.escape(task.get('title') or 'Задание')}</b>",
+             f"{html.escape(subject.get('emoji') or '📘')} {html.escape(subject.get('name') or '')}"]
+    bits = []
+    if lesson.get("pair"):
+        bits.append(f"{html.escape(str(lesson['pair']))} пара")
+    bits.append(when if not lesson.get("end") else f"{when}–{html.escape(str(lesson['end']))}")
+    if lesson.get("room"):
+        bits.append(f"ауд. {html.escape(str(lesson['room']))}")
+    if lesson.get("kind"):
+        bits.append(html.escape(str(lesson["kind"])))
+    lines.append("📍 " + " · ".join(bits))
+    if parent and parent.get("title"):
+        lines.append(f"↩ Подготовка: {html.escape(parent['title'])}")
+    subs_ = task.get("subtasks") or []
+    left = [x for x in subs_ if not x.get("done")]
+    if left:
+        lines.append(f"☑️ Шагов осталось: {len(left)} из {len(subs_)}")
+    note = (task.get("note") or "").strip()
+    if note:
+        lines += ["", f"<i>{html.escape(note[:240])}{'…' if len(note) > 240 else ''}</i>"]
+    return "\n".join(lines)
+
+
+def study_present_tick(app: dict, subs: dict, token: str, now: datetime = None) -> int:
+    """Минутный цикл: шлёт созревшие напоминания. Возвращает, сколько отправлено."""
+    now = now or now_msk()
+    with _STUDY_PRESENT_LOCK:
+        try:
+            sent = json.loads(STUDY_PRESENT_STATE_FILE.read_text(encoding="utf-8")) if STUDY_PRESENT_STATE_FILE.exists() else {}
+        except Exception:
+            sent = {}
+        cutoff = (now - timedelta(days=14)).timestamp()
+        sent = {k: v for k, v in sent.items() if isinstance(v, (int, float)) and v > cutoff}
+        n = 0
+        recipients = recipients_for(app, subs, "study")
+        for task, subject, event_dt, remind, key in study_present_due(app, now, sent):
+            if not recipients:
+                continue
+            parent = next((x for x in app.get("studyTasks") or [] if x.get("id") == task.get("parentId")), None)
+            text = study_present_text(task, subject, event_dt, remind, now, parent)
+            print(f"[{now.strftime('%H:%M')} MSK] → study present: {task.get('title')} ({len(recipients)} subscriber(s))")
+            for cid in recipients:
+                send_message(token, cid, text)
+            sent[key] = now.timestamp()
+            n += 1
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = STUDY_PRESENT_STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(sent), encoding="utf-8")
+        tmp.replace(STUDY_PRESENT_STATE_FILE)
+        return n
+
+
+# ── Погода → Apple Календарь ────────────────────────────────────────────────
+# В выбранные дни и время сервер берёт прогноз Open-Meteo для города из
+# Настроек (Общее → Погода) и пишет по событию на каждый из ближайших дней в
+# выбранный календарь iCloud: название собирается из шаблона (по умолчанию
+# «иконка, основная температура дня, осадки»), подробности — в описании.
+# События с UID jarvis-weather-<дата>: повторный прогон обновляет их, а не
+# дублирует, и не трогает ничего чужого. Время везде московское.
+#
+# Настройки — data.weatherCalendar (синхронизируются как обычные данные),
+# состояние последнего прогона — weather_cal_state.json.
+
+WEATHER_CAL_STATE_FILE = DATA_DIR / "weather_cal_state.json"
+WEATHER_CAL_UID_PREFIX = "jarvis-weather-"
+WEATHER_CAL_DEFAULTS = {
+    "enabled": False,
+    "calendar": "Погода",
+    "days": [7],                       # ISO: когда формировать (7 = воскресенье)
+    "time": "06:00",                   # во сколько формировать, МСК
+    "startOffset": 1,                  # 0 = с сегодня, 1 = с завтра
+    "daysAhead": 7,                    # на сколько дней вперёд (1–16)
+    "eventTime": "06:00",              # во сколько ставить событие, МСК
+    "duration": 15,                    # минут; 0 = событие на весь день
+    "title": "{icon} {temp}, {precip}",
+}
+_WEATHER_CAL_LOCK = threading.Lock()
+
+
+class WeatherCalError(Exception):
+    pass
+
+
+def _wx_hhmm(value, default: str) -> str:
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(value or "").strip())
+    if m and int(m.group(1)) < 24 and int(m.group(2)) < 60:
+        return f"{int(m.group(1)):02d}:{m.group(2)}"
+    return default
+
+
+def _wx_int(value, lo: int, hi: int, default: int) -> int:
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def weather_cal_settings(app: dict = None) -> dict:
+    app = app if app is not None else load_app_data()
+    raw = app.get("weatherCalendar") if isinstance(app.get("weatherCalendar"), dict) else {}
+    d = WEATHER_CAL_DEFAULTS
+    s = {**d, **raw}
+    s["enabled"] = bool(s.get("enabled"))
+    s["days"] = sorted({int(x) for x in (s.get("days") or []) if str(x).isdigit() and 1 <= int(x) <= 7})
+    s["time"] = _wx_hhmm(s.get("time"), d["time"])
+    s["eventTime"] = _wx_hhmm(s.get("eventTime"), d["eventTime"])
+    s["daysAhead"] = _wx_int(s.get("daysAhead"), 1, 16, d["daysAhead"])
+    s["startOffset"] = _wx_int(s.get("startOffset"), 0, 1, d["startOffset"])
+    s["duration"] = _wx_int(s.get("duration"), 0, 1440, d["duration"])
+    s["calendar"] = str(s.get("calendar") or "").strip() or d["calendar"]
+    s["title"] = str(s.get("title") or "").strip()[:200] or d["title"]
+    s["city"] = str((app.get("settings") or {}).get("weatherCity") or "").strip()
+    return s
+
+
+def weather_cal_load_state() -> dict:
+    try:
+        if WEATHER_CAL_STATE_FILE.exists():
+            return json.loads(WEATHER_CAL_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def weather_cal_save_state(state: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = WEATHER_CAL_STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(WEATHER_CAL_STATE_FILE)
+
+
+def weather_cal_forecast(city: str, state: dict) -> dict:
+    """Прогноз Open-Meteo на 16 дней по дням: {city, days: {YYYY-MM-DD: {...}}}.
+    Координаты города кэшируем в state — Nominatim просим только при смене города."""
+    if not requests:
+        raise WeatherCalError("На сервере не установлена библиотека requests.")
+    geo = state.get("geo") or {}
+    try:
+        if geo.get("city") != city:
+            r = requests.get("https://nominatim.openstreetmap.org/search",
+                             params={"q": city, "format": "json", "limit": 1},
+                             headers={"Accept-Language": "ru", "User-Agent": "Jarvis/1.0"}, timeout=10)
+            found = r.json() if r.ok else []
+            if not found:
+                raise WeatherCalError(f"Город «{city}» не найден.")
+            geo = {"city": city, "lat": float(found[0]["lat"]), "lon": float(found[0]["lon"]),
+                   "name": (found[0].get("display_name") or city).split(",")[0].strip()}
+            state["geo"] = geo
+        fc = requests.get("https://api.open-meteo.com/v1/forecast", params={
+            "latitude": geo["lat"], "longitude": geo["lon"],
+            "daily": ("weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,"
+                      "precipitation_probability_max,wind_speed_10m_max,sunrise,sunset"),
+            "hourly": "temperature_2m",
+            "wind_speed_unit": "ms", "timezone": "auto", "forecast_days": 16,
+        }, timeout=15)
+        if not fc.ok:
+            raise WeatherCalError(f"Open-Meteo ответил {fc.status_code}.")
+        w = fc.json()
+    except WeatherCalError:
+        raise
+    except Exception as e:
+        raise WeatherCalError(f"Не удалось загрузить погоду: {e}")
+
+    daily = w.get("daily") or {}
+    hourly = w.get("hourly") or {}
+    by_day_temps: dict = {}
+    for t, v in zip(hourly.get("time") or [], hourly.get("temperature_2m") or []):
+        if v is not None and 9 <= int(t[11:13]) <= 20:   # «основная» температура — дневные часы
+            by_day_temps.setdefault(t[:10], []).append(float(v))
+
+    def col(name):
+        return daily.get(name) or []
+
+    days = {}
+    for i, d in enumerate(col("time")):
+        def at(name):
+            c = col(name)
+            return c[i] if i < len(c) else None
+        tmin, tmax = at("temperature_2m_min"), at("temperature_2m_max")
+        temps = by_day_temps.get(d)
+        tday = sum(temps) / len(temps) if temps else (
+            (tmin + tmax) / 2 if tmin is not None and tmax is not None else None)
+        days[d] = {"code": at("weather_code"), "tmin": tmin, "tmax": tmax, "tday": tday,
+                   "prob": at("precipitation_probability_max"), "mm": at("precipitation_sum"),
+                   "wind": at("wind_speed_10m_max"),
+                   "sunrise": (at("sunrise") or "")[11:16], "sunset": (at("sunset") or "")[11:16]}
+    return {"city": geo["name"], "days": days}
+
+
+def _wx_temp(v) -> str:
+    if v is None:
+        return "—"
+    r = int((float(v) + 0.5) // 1)
+    return "0°" if r == 0 else ("+" if r > 0 else "−") + str(abs(r)) + "°"
+
+
+def _wx_icon(code) -> str:
+    if code == 0:
+        return "☀️"
+    if code == 1:
+        return "🌤️"
+    if code == 2:
+        return "⛅"
+    if code in (45, 48):
+        return "🌫️"
+    if code is not None and (51 <= code <= 57 or 80 <= code <= 82):
+        return "🌦️" if code <= 57 else "🌧️"
+    if code is not None and 61 <= code <= 67:
+        return "🌧️"
+    if code is not None and (71 <= code <= 77 or 85 <= code <= 86):
+        return "🌨️"
+    if code is not None and 95 <= code <= 99:
+        return "⛈️"
+    return "☁️"
+
+
+def _wx_precip(day: dict, full: bool = False) -> str:
+    """Короткая строка про осадки: «без осадков» / «дождь 70%»; full — с миллиметрами."""
+    mm, prob, code = day.get("mm") or 0, day.get("prob") or 0, day.get("code")
+    if mm < 0.1 and prob < 30:
+        return "без осадков"
+    label = _weather_code_label(code)
+    kind = label if code is not None and (51 <= code <= 99) and label not in ("туман",) else "осадки"
+    if full:
+        bits = [f"вероятность {int(prob)}%"] if prob else []
+        if mm >= 0.1:
+            bits.append(f"{mm:.1f} мм".replace(".0 ", " "))
+        return kind + (", " + ", ".join(bits) if bits else "")
+    return f"{kind} {int(prob)}%" if prob >= 30 else f"{kind} {mm:.1f} мм".replace(".0 ", " ")
+
+
+def weather_cal_event(s: dict, day_iso: str, day: dict, city: str) -> dict:
+    vals = {
+        "icon": _wx_icon(day.get("code")),
+        "cond": _weather_code_label(day.get("code")),
+        "temp": _wx_temp(day.get("tday")),
+        "tmin": _wx_temp(day.get("tmin")),
+        "tmax": _wx_temp(day.get("tmax")),
+        "precip": _wx_precip(day),
+        "wind": f"{round(day['wind'])} м/с" if day.get("wind") is not None else "—",
+        "city": city,
+    }
+
+    def render(tpl: str) -> str:
+        out = re.sub(r"\{(\w+)\}", lambda m: vals.get(m.group(1), m.group(0)), tpl)
+        return re.sub(r"\s+", " ", out).strip()
+
+    title = render(s["title"]) or render(WEATHER_CAL_DEFAULTS["title"])
+    notes = [f"{vals['icon']} {vals['cond'].capitalize()}, {city}",
+             f"Температура: {vals['tmin']} … {vals['tmax']}, днём около {vals['temp']}",
+             f"Осадки: {_wx_precip(day, full=True)}"]
+    if day.get("wind") is not None:
+        notes.append(f"Ветер: до {vals['wind']}")
+    if day.get("sunrise") and day.get("sunset"):
+        notes.append(f"Восход {day['sunrise']} · закат {day['sunset']}")
+    notes.append("Добавлено Джарвисом (Open-Meteo)")
+    ev = {"title": title, "notes": "\n".join(notes)}
+    if s["duration"] == 0:
+        ev.update({"start": day_iso, "allDay": True})
+    else:
+        start = datetime.fromisoformat(f"{day_iso} {s['eventTime']}")
+        ev.update({"start": start.strftime("%Y-%m-%d %H:%M"),
+                   "end": (start + timedelta(minutes=s["duration"])).strftime("%Y-%m-%d %H:%M")})
+    return ev
+
+
+def _weather_cal_existing(cal: dict, start_dt: datetime, end_dt: datetime) -> dict:
+    """{uid: {url, etag, fields}} — только наши события в окне."""
+    rng = (start_dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+           end_dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    resp = _apple_report(cal["href"], _apple_calendar_query("VEVENT", time_range=rng))
+    out = {}
+    for href, etag, text in _apple_collect(resp, "VEVENT"):
+        for block in _ics_blocks(text, "VEVENT"):
+            ev = _apple_event_from(block, cal["name"])
+            if (ev.get("id") or "").startswith(WEATHER_CAL_UID_PREFIX):
+                out[ev["id"]] = {"url": urljoin(cal["href"], href), "etag": etag, "fields": ev}
+    return out
+
+
+def _weather_cal_put(url: str, uid: str, fields: dict, etag: str = "") -> None:
+    # TRANSPARENT: погода не должна показывать пользователя «занятым» в это время.
+    ics = _apple_wrap("VEVENT", _apple_event_lines(fields, uid) + ["TRANSP:TRANSPARENT"])
+    headers = {"Content-Type": "text/calendar; charset=utf-8"}
+    if etag:
+        headers["If-Match"] = etag
+    r = _apple_dav("PUT", url, ics, headers=headers)
+    if r.status_code == 412:
+        r = _apple_dav("PUT", url, ics, headers={"Content-Type": "text/calendar; charset=utf-8"})
+    if r.status_code not in (200, 201, 204):
+        raise AppleError(f"iCloud не принял событие ({r.status_code}).")
+
+
+def weather_cal_sync(preview: bool = False, reason: str = "manual") -> dict:
+    """Создаёт/обновляет события погоды. preview=True — только показать, что будет записано."""
+    if not _WEATHER_CAL_LOCK.acquire(blocking=False):
+        return {"ok": False, "error": "Запись уже идёт — подождите минуту."}
+    try:
+        return _weather_cal_sync_locked(preview, reason)
+    finally:
+        _WEATHER_CAL_LOCK.release()
+
+
+def _weather_cal_sync_locked(preview: bool, reason: str) -> dict:
+    s = weather_cal_settings()
+    state = weather_cal_load_state()
+    started = int(time.time() * 1000)
+
+    def fail(msg: str) -> dict:
+        if not preview:
+            state.update({"lastRunAt": started, "lastOk": False, "lastError": msg, "lastReason": reason})
+            weather_cal_save_state(state)
+        return {"ok": False, "error": msg}
+
+    if not s["city"]:
+        return fail("Не указан город: Настройки → Общее → Погода → Город.")
+    try:
+        fc = weather_cal_forecast(s["city"], state)
+    except WeatherCalError as e:
+        return fail(str(e))
+
+    first = today_msk() + timedelta(days=s["startOffset"])
+    wanted, skipped = {}, []
+    for i in range(s["daysAhead"]):
+        d = (first + timedelta(days=i)).isoformat()
+        if d in fc["days"]:
+            wanted[d] = weather_cal_event(s, d, fc["days"][d], fc["city"])
+        else:
+            skipped.append(d)
+    if not wanted:
+        return fail("Open-Meteo не дал прогноз на выбранные даты.")
+    events = [{"date": d, **ev} for d, ev in wanted.items()]
+    if preview:
+        weather_cal_save_state(state)   # кэш координат города
+        return {"ok": True, "preview": True, "city": fc["city"], "events": events, "skipped": skipped}
+
+    added, updated, errors = 0, 0, []
+    try:
+        cal = _study_calendar(s["calendar"])
+        win_from = datetime.combine(first - timedelta(days=1), datetime.min.time(), MSK)
+        win_to = datetime.combine(first + timedelta(days=s["daysAhead"] + 1), datetime.min.time(), MSK)
+        existing = _weather_cal_existing(cal, win_from, win_to)
+        for d, want in wanted.items():
+            uid = WEATHER_CAL_UID_PREFIX + d
+            have = existing.get(uid)
+            try:
+                if not have:
+                    _weather_cal_put(urljoin(cal["href"], uid + ".ics"), uid, want)
+                    added += 1
+                    continue
+                h = have["fields"]
+                same = ((h.get("title") or "").strip() == want["title"].strip()
+                        and (h.get("notes") or "").strip() == want["notes"].strip()
+                        and (h.get("start") or "")[:16] == want["start"][:16]
+                        and bool(h.get("allDay")) == bool(want.get("allDay"))
+                        and (want.get("allDay") or (h.get("end") or "")[:16] == want["end"][:16]))
+                if not same:
+                    _weather_cal_put(have["url"], uid, want, have["etag"])
+                    updated += 1
+            except AppleError as e:
+                errors.append(f"{d}: {e}")
+    except (AppleError, StudyError) as e:
+        return fail(str(e))
+
+    result = {"ok": not errors, "calendar": cal["name"], "city": fc["city"], "added": added,
+              "updated": updated, "total": len(wanted), "skipped": skipped, "errors": errors[:10]}
+    log_entry = {"at": started, "reason": reason, "added": added, "updated": updated,
+                 "errors": len(errors), "from": min(wanted), "to": max(wanted)}
+    state.update({
+        "lastRunAt": started, "lastOk": not errors, "lastReason": reason,
+        "lastError": "; ".join(errors[:3]) if errors else "",
+        "lastResult": {k: result[k] for k in ("added", "updated", "total", "calendar", "city")},
+        "log": ([log_entry] + (state.get("log") or []))[:20],
+    })
+    weather_cal_save_state(state)
+    return result
+
+
+def weather_cal_status() -> dict:
+    s = weather_cal_settings()
+    state = weather_cal_load_state()
+    return {
+        "settings": s,
+        "lastRunAt": state.get("lastRunAt") or 0,
+        "lastOk": state.get("lastOk"),
+        "lastError": state.get("lastError") or "",
+        "lastResult": state.get("lastResult") or {},
+        "log": (state.get("log") or [])[:10],
+        "appleConfigured": bool(apple_creds()),
+    }
+
+
+def weather_cal_tick(app_data: dict, now_str: str, today_iso: str) -> None:
+    """Из минутного цикла: в выбранные дни и время формируем события погоды."""
+    s = weather_cal_settings(app_data)
+    if not s["enabled"] or s["time"] != now_str or today_msk().isoweekday() not in s["days"]:
+        return
+    if _already_fired("weathercal", s["calendar"], today_iso, now_str):
+        return
+    threading.Thread(target=lambda: print(f"[weather-cal] {weather_cal_sync(reason='schedule')}"), daemon=True).start()
+
+
 # ── Текстовый ассистент в Telegram ──────────────────────────────────────────
 # Тот же принцип, что у голосовой кнопки в index (9).html: LLM с tool-calling
 # поверх данных приложения — сама решает, что прочитать и куда отправить
@@ -2489,6 +4440,12 @@ ASSISTANT_DATA_DOMAINS = {
             "programs": app.get("gymPrograms", []), "days": app.get("gymDays", []),
             "exercises": app.get("gymExercises", []), "sessions": app.get("gymSessions", [])[-40:],
         }),
+    "study": ("Учёба: предметы (столбцы канбана, с заметкой note о предмете/преподавателе) и задания в них (status: todo|doing|done, due YYYY-MM-DD, kind: hw|test|exam|project|lab|read|present|other, important, subtasks, note — описание задачи, comments — комментарии пользователя, attachments — вложения)",
+        lambda app: {
+            "subjects": app.get("studySubjects", []),
+            "tasks": [t for t in app.get("studyTasks", [])
+                      if t.get("status") != "done" or (t.get("doneAt") or 0) > time.time() * 1000 - 30 * 86400000],
+        }),
     "wishlist": ("Хотелки",
         lambda app: {"categories": app.get("wishlistCategories", []), "items": app.get("wishlistItems", [])}),
     "planner": ("Планировщик: события, друзья-участники, личные планы, праздники/дни рождения",
@@ -2497,22 +4454,30 @@ ASSISTANT_DATA_DOMAINS = {
             "plans": app.get("plannerPlans", []),
             "holidays": [h for h in app.get("holidays", []) if not h.get("archived")],
         }),
-    "camping": ("Кемпинг: справочник вещей и поездки со сборами",
+    "camping": ("Кемпинг: справочник вещей, места куда съездить и поездки со сборами",
         lambda app: {
             "items": app.get("campingItems", []), "categories": app.get("campingCategories", []),
-            "trips": app.get("campingTrips", []),
+            "trips": app.get("campingTrips", []), "places": app.get("campingPlaces", []),
         }),
-    "meals": ("Питание: вкладки План/Готовка/Контейнеры/Счётчик/Закупка/База продуктов — рационы, планы готовки, контейнеры для взвешивания, остаток порций, БАДы, списки покупок, свои блюда",
+    "meals": ("Питание: вкладки План/Готовка/Контейнеры/Счётчик/Закупка/База продуктов — рационы, планы готовки, контейнеры для взвешивания, остаток порций, БАДы, списки покупок, свои блюда, учёт калорий по дням (план калорий по периодам, отметки опроса)",
         lambda app: {
             "meals": app.get("meals", [])[-30:],  # вкладка «План»
             "cookingPlans": app.get("cookingPlans", [])[-30:],  # вкладка «Готовка» — отдельная сущность от meals
             "containers": app.get("containers", []),  # вкладка «Контейнеры»
             "rationStock": app.get("rationStock", 0),  # вкладка «Счётчик»
             "supplements": app.get("supplements", []),
-            "dietLog": app.get("dietLog", [])[-30:], "shoppingLists": app.get("shoppingLists", []),
+            # Учёт питания в калориях: dietLog — по дню {date, label, kcal, planKcal},
+            # dietPlans — план калорий по периодам, dietOptions — варианты опроса
+            # (mode fixed — kcal, plan — план на дату + delta;
+            # archived — вариант в архиве: в опрос не попадает, история остаётся).
+            "dietLog": diet_log_for_assistant(app), "dietPlans": app.get("dietPlans", []),
+            "dietOptions": diet_options(app, include_archived=True), "shoppingLists": app.get("shoppingLists", []),
             # вкладка «База продуктов» → «Мои блюда»: свои блюда из продуктов
             # статичного справочника (foods_data.py), КБЖУ на 100г — сумма ингредиентов
             "customDishes": app.get("customDishes", []),
+            # вкладка «База продуктов» → «Мои продукты»: свой продукт, Б/Ж/У
+            # вводятся руками, ккал считаются по формуле Атвотера (4Б+9Ж+4У)
+            "customFoods": app.get("customFoods", []),
         }),
     "body": ("Тело: история замеров и веса, режимы (диета/тренировки), целевые значения",
         lambda app: {
@@ -2558,6 +4523,7 @@ ASSISTANT_NAV_TARGETS = {
     "planner_camping": ("Планировщик — Кемпинг", "/planner"),
     "misc_home": ("Прочее", "/misc"),
     "wishlist": ("Хотелки", "/wishlist"),
+    "study": ("Учёба", "/study"),
     "cards": ("Карты лояльности", "/cards"),
     "gym": ("GYM", "/gym"),
     "music": ("Музыка", "/music"),
@@ -2672,6 +4638,15 @@ WRITE_REGISTRY = {
         "cascade_orphan": [{"collection": "wishlistItems", "field": "categoryId"}],
     },
     "wishlistItems": {"label": "Хотелка", "create_defaults": lambda: {"bought": False}},
+    "studySubjects": {
+        "label": "Предмет в «Учёбе» (столбец канбана: name, emoji, color, order, note — заметка о предмете/преподавателе, reaSubject — название этого предмета в расписании пар)",
+        "create_defaults": lambda: {"emoji": "📘", "color": "#6366f1", "order": 0, "note": ""},
+        "cascade_delete": [{"collection": "studyTasks", "field": "subjectId"}],
+    },
+    "studyTasks": {
+        "label": "Задание в «Учёбе» (subjectId, title, status todo|doing|done, due YYYY-MM-DD, kind hw|test|exam|project|lab|read|present|other (present — «Ответ на паре»), important, subtasks [{id,text,done}], note — описание задачи, comments [{id,text,at,editedAt?}] — комментарии пользователя (при правке передавать весь массив целиком; at/editedAt — мс), dueTime HH:MM — время срока, remind — за сколько минут до срока напомнить в Telegram (0|15|60|1440; null — не напоминать; нужны due и dueTime), lesson — пара из расписания, parentId — id подготовительной задачи (для kind present: задача «Ответ на паре» создаётся связанной с задачей-подготовкой; срок = дата и время пары), attachments — файлы: класть через study_attach_file, читать/отдавать через study_get_attachment, не править через update_record)",
+        "create_defaults": lambda: {"status": "todo", "kind": "hw", "due": "", "important": False, "subtasks": [], "attachments": [], "comments": [], "note": "", "doneAt": 0, "createdAt": int(time.time() * 1000)},
+    },
     "plannerFriends": {
         "label": "Друг-участник планировщика",
         "create_defaults": lambda: {},
@@ -2690,6 +4665,7 @@ WRITE_REGISTRY = {
     },
     "campingItems": {"label": "Кемпинг-вещь (справочник)", "create_defaults": lambda: {"isBag": False}},
     "campingTrips": {"label": "Кемпинг-поездка", "create_defaults": lambda: {"packing": {"bags": [], "items": []}}},
+    "campingPlaces": {"label": "Кемпинг-место (куда съездить)", "create_defaults": lambda: {"visited": False, "visitedDate": ""}},
     "meals": {"label": "Рацион (приём пищи)", "create_defaults": lambda: {"breakfast": [], "snack": [], "lunch": [], "dinner": [], "archived": False}},
     "supplements": {"label": "БАД (обычный список)", "create_defaults": lambda: {"form": "Таблетки", "frequency": "daily_morning", "archived": False}},
     "workoutSupplements": {"label": "БАД (тренировочный список)", "create_defaults": lambda: {"form": "Таблетки", "frequency": "daily_morning", "archived": False}},
@@ -2966,11 +4942,36 @@ def cooking_plan_delete_ingredient(app: dict, plan_id: str, ingredient_id: str) 
 
 # ── Дневные логи (dietLog, dailyChecklistLog): один ряд на дату — апсерт
 # заменяет запись за эту дату целиком, а не добавляет новую.
-def log_diet_compliance(app: dict, date: str, level: str) -> dict:
-    log = [e for e in app.get("dietLog", []) if e.get("date") != date]
-    log.append({"id": str(uuid.uuid4()), "date": date, "level": level, "updatedAt": int(time.time() * 1000)})
-    app["dietLog"] = log
-    return {"ok": True}
+def log_diet_compliance(app: dict, date: str, option: str | None = None, kcal=None) -> dict:
+    """option — id или название варианта из dietOptions; kcal без option —
+    «своё значение»; kcal вместе с option — уточнённые калории варианта."""
+    if not date:
+        return {"error": "date_required"}
+    kcal_n = _kcal_num(kcal)
+    if option:
+        needle = str(option).strip().lower()
+        # Сначала активные: архивный вариант находится, только если активного с таким названием нет.
+        candidates = sorted(diet_options(app, include_archived=True), key=lambda o: bool(o.get("archived")))
+        opt = next((o for o in candidates
+                    if o.get("id") == option or str(o.get("label") or "").strip().lower() == needle), None)
+        if not opt:
+            return {"error": "option_not_found", "options": [o.get("label") for o in diet_options(app)]}
+        if kcal_n is None:
+            kcal_n = diet_option_kcal(opt, diet_plan_for(app, date))
+        entry = diet_write_entry(app, date, opt["id"], str(opt.get("label") or "—"), kcal_n)
+    elif kcal_n is not None:
+        entry = diet_write_entry(app, date, DIET_CUSTOM_ID, DIET_CUSTOM_LABEL, kcal_n)
+    else:
+        return {"error": "option_or_kcal_required"}
+    return {"ok": True, "label": entry["label"], "kcal": entry["kcal"], "planKcal": diet_plan_for(app, date)}
+
+
+def diet_log_for_assistant(app: dict, limit: int = 60) -> list:
+    """Последние записи с уже посчитанными калориями и планом на дату."""
+    log = sorted((e for e in app.get("dietLog", []) if isinstance(e, dict) and e.get("date")),
+                 key=lambda e: e["date"])[-limit:]
+    return [{"date": e["date"], "label": diet_entry_label(e), "kcal": diet_entry_kcal(app, e),
+             "planKcal": diet_plan_for(app, e["date"])} for e in log]
 
 
 def log_checklist_answer(app: dict, date: str, field_id: str, option: str) -> dict:
@@ -3125,14 +5126,15 @@ ASSISTANT_TOOLS = [
     },
     {
         "name": "log_diet_compliance",
-        "description": "Отметить соблюдение диеты за конкретный день.",
+        "description": "Отметить питание за конкретный день: вариант опроса (калории возьмутся из его настроек и плана на дату) и/или точное число ккал.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "date": {"type": "string", "description": "YYYY-MM-DD"},
-                "level": {"type": "string", "enum": ["much_below", "below", "on_plan", "above", "much_above", "mini_cheat", "cheat"]},
+                "option": {"type": "string", "description": "id или название варианта из get_data(\"meals\").dietOptions (например «По плану», «Чит мил»)"},
+                "kcal": {"type": "number", "description": "Сколько ккал съедено за день. Без option — записывается как «своё значение»."},
             },
-            "required": ["date", "level"],
+            "required": ["date"],
         },
     },
     {
@@ -3201,7 +5203,192 @@ ASSISTANT_TOOLS = [
             },
         },
     },
-] + APPLE_TOOLS
+] + APPLE_TOOLS + STUDY_TOOLS
+
+
+# ── Файлы в «Учёбе» ───────────────────────────────────────────────────────────
+# Вложения заданий — файлы в DATA_DIR/files (тот же /api/files, что у сайта) и
+# записи {id, store, filename, name, kind, size, at} в studyTasks[].attachments.
+# Ассистент может собрать файл (docx/xlsx/pptx/pdf/…) или взять присланный в чат
+# и положить его в задание, а также прочитать или прислать вложение обратно.
+
+STUDY_FILE_TOOLS = [
+    {"name": "study_attach_file",
+     "description": "Создать файл и ПОЛОЖИТЬ ЕГО В ЗАДАНИЕ раздела «Учёба» (вложение, видно на сайте в карточке задания). "
+                    "Задание — по task_id (из get_data study) либо по названиям: subject + task_title (допустимы падежи: "
+                    "«менеджменту»). Если задания нет — create_if_missing:true создаст его. Формат — по расширению filename: "
+                    "docx, pdf, pptx из content в markdown (заголовки #, списки, таблицы |a|b|, **жирный**; в pptx новый слайд "
+                    "— на «# »/«## » или «---»); xlsx — sheets [{name, rows}] или content-таблица; txt/md/csv/json/html — "
+                    "content как есть. Файл, который пользователь только что прислал в чат, — use_received_file (часть имени "
+                    "или «last»). send_to_chat:true — заодно прислать копию пользователю в чат.",
+     "input_schema": {"type": "object", "properties": {
+         "task_id": {"type": "string"}, "subject": {"type": "string"}, "task_title": {"type": "string"},
+         "create_if_missing": {"type": "boolean"},
+         "filename": {"type": "string", "description": "имя с расширением, например «Ответы_менеджмент.docx»"},
+         "content": {"type": "string"},
+         "sheets": {"type": "array", "items": {"type": "object", "properties": {
+             "name": {"type": "string"}, "rows": {"type": "array", "items": {"type": "array", "items": {}}}}}},
+         "content_base64": {"type": "string"}, "use_received_file": {"type": "string"},
+         "send_to_chat": {"type": "boolean"}}, "required": []}},
+    {"name": "study_get_attachment",
+     "description": "Вложение задания «Учёбы»: action read — прочитать содержимое (docx, xlsx, pptx, pdf, txt и др.), "
+                    "action send — прислать файл пользователю в чат. Задание — task_id или subject + task_title; "
+                    "вложение — attachment (id или часть имени; если оно единственное — можно не указывать).",
+     "input_schema": {"type": "object", "properties": {
+         "task_id": {"type": "string"}, "subject": {"type": "string"}, "task_title": {"type": "string"},
+         "attachment": {"type": "string"}, "action": {"type": "string", "enum": ["read", "send"]}},
+         "required": ["action"]}},
+]
+STUDY_FILE_TOOL_NAMES = {t["name"] for t in STUDY_FILE_TOOLS}
+
+
+def _fuzzy(query: str, name: str) -> bool:
+    """Мягкое совпадение названий: подстрока в любую сторону или общий корень слова (≥5 букв)."""
+    q, n = (query or "").strip().lower(), (name or "").strip().lower()
+    if not q or not n:
+        return False
+    if q in n or n in q:
+        return True
+    return any(len(w) >= 5 and w[:5] in n for w in re.findall(r"\w+", q))
+
+
+def _study_tasks_brief(app: dict, subject_id: str) -> list:
+    return [{"id": t.get("id"), "title": t.get("title"), "status": t.get("status")}
+            for t in app.get("studyTasks") or [] if t.get("subjectId") == subject_id][:30]
+
+
+def _resolve_study_task(app: dict, inp: dict, create: bool = False):
+    """Находит задание «Учёбы» по id или по предмету+названию. → (task, None) | (None, {error…})."""
+    subjects, tasks = app.get("studySubjects") or [], app.get("studyTasks") or []
+    tid = (inp.get("task_id") or "").strip()
+    if tid:
+        t = next((x for x in tasks if x.get("id") == tid), None)
+        return (t, None) if t else (None, {"error": "task_id не найден — возьми id из get_data(study)"})
+    sname, ttl = (inp.get("subject") or "").strip(), (inp.get("task_title") or "").strip()
+    names = [s_.get("name") for s_ in subjects]
+    if not sname:
+        return None, {"error": "укажи task_id либо subject + task_title", "subjects": names}
+    subj = next((x for x in subjects if (x.get("name") or "").strip().lower() == sname.lower()), None) \
+        or next((x for x in subjects if _fuzzy(sname, x.get("name"))), None)
+    if not subj:
+        return None, {"error": f"предмет «{sname}» не найден", "subjects": names}
+    sub_tasks = [t for t in tasks if t.get("subjectId") == subj.get("id")]
+    if ttl:
+        cand = [t for t in sub_tasks if _fuzzy(ttl, t.get("title"))]
+        cand = [t for t in cand if (t.get("title") or "").strip().lower() == ttl.lower()] or cand
+        if len(cand) > 1:
+            opens = [t for t in cand if t.get("status") != "done"]
+            cand = opens if len(opens) == 1 else cand
+        if len(cand) == 1:
+            return cand[0], None
+        if len(cand) > 1:
+            return None, {"error": "подходит несколько заданий — уточни у пользователя",
+                          "tasks": _study_tasks_brief(app, subj.get("id"))}
+        if create:
+            res = create_record_generic(app, "studyTasks", {"subjectId": subj.get("id"), "title": ttl})
+            return next(t for t in _collection_array(app, "studyTasks") if t.get("id") == res["id"]), None
+    else:
+        opens = [t for t in sub_tasks if t.get("status") != "done"]
+        if len(opens) == 1:
+            return opens[0], None
+    return None, {"error": "задание не найдено или не указано какое — уточни у пользователя "
+                           "(либо create_if_missing:true вместе с task_title)",
+                  "subject": subj.get("name"), "tasks": _study_tasks_brief(app, subj.get("id"))}
+
+
+def study_attach_file(app: dict, inp: dict) -> dict:
+    if not file_tools:
+        return {"error": "модуль файлов недоступен на сервере"}
+    ctx = tg_bot.get_ctx() if tg_bot else None
+    task, err = _resolve_study_task(app, inp, bool(inp.get("create_if_missing")))
+    if err:
+        return err
+    try:
+        hint = inp.get("use_received_file")
+        if hint:
+            hint = "" if str(hint).strip().lower() in ("last", "latest", "true", "1", "последний") else str(hint)
+            got = tg_bot.recent_file(ctx.chat_id, hint) if ctx and tg_bot else None
+            if not got:
+                return {"error": "присланного файла не нашёл (хранятся последние 5 за 30 минут) — попроси прислать заново"}
+            name, data = got
+        elif inp.get("content_base64"):
+            name = re.sub(r"[\\/\x00]", "_", (inp.get("filename") or "").strip())
+            if not name:
+                return {"error": "нужен filename"}
+            try:
+                data = base64.b64decode(inp["content_base64"])
+            except Exception:
+                return {"error": "content_base64 не декодируется"}
+        else:
+            data, name = file_tools.build(inp.get("filename"), inp.get("content"), inp.get("sheets"))
+    except file_tools.FileToolError as e:
+        return {"error": f"не удалось собрать файл: {e}"}
+    ext = file_tools.ext_of(name)
+    if ext not in ALLOWED_FILE_EXT:
+        return {"error": f"формат .{ext or '?'} в «Учёбе» не поддерживается", "allowed": sorted(ALLOWED_FILE_EXT)}
+    if not data or len(data) > MAX_UPLOAD_FILE:
+        return {"error": "файл пустой или больше 500 МБ"}
+    files_dir = DATA_DIR / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
+    stored = f"{uuid.uuid4()}.{ext}"
+    (files_dir / stored).write_bytes(data)
+    att = {"id": str(uuid.uuid4()), "store": "files", "filename": stored, "name": name,
+           "kind": "image" if ext in ("jpg", "jpeg", "png", "webp", "gif") else ("video" if ext in VIDEO_FILE_EXT else "file"),
+           "size": len(data), "at": int(time.time() * 1000)}
+    res = update_record_generic(app, "studyTasks", task["id"], {"attachments": list(task.get("attachments") or []) + [att]})
+    if not res.get("ok"):
+        (files_dir / stored).unlink(missing_ok=True)
+        return res
+    subj = next((x for x in app.get("studySubjects") or [] if x.get("id") == task.get("subjectId")), {})
+    out = {"ok": True, "task": task.get("title"), "subject": subj.get("name"), "file": name, "size": len(data)}
+    if inp.get("send_to_chat") and ctx and tg_bot:
+        sent = tg_bot.file_send(ctx, filename=name, content_base64=base64.b64encode(data).decode(),
+                                caption=f"{task.get('title') or ''} · {subj.get('name') or ''}".strip(" ·"))
+        out["sent_to_chat"] = bool(sent.get("ok"))
+    return out
+
+
+def study_get_attachment(app: dict, inp: dict) -> dict:
+    if not file_tools:
+        return {"error": "модуль файлов недоступен на сервере"}
+    task, err = _resolve_study_task(app, inp, False)
+    if err:
+        return err
+    atts = task.get("attachments") or []
+    if not atts:
+        return {"error": "у задания нет вложений", "task": task.get("title")}
+    sel = (inp.get("attachment") or "").strip().lower()
+    cand = [a for a in atts if sel and (a.get("id") == inp.get("attachment") or sel in (a.get("name") or "").lower())] \
+        if sel else (atts if len(atts) == 1 else [])
+    if len(cand) != 1:
+        return {"error": "укажи attachment — какое вложение нужно",
+                "attachments": [{"id": a.get("id"), "name": a.get("name"), "size": a.get("size")} for a in atts]}
+    att = cand[0]
+    fname = att.get("filename") or ""
+    if not fname or "/" in fname or ".." in fname:
+        return {"error": "некорректное вложение"}
+    path = DATA_DIR / ("photos" if att.get("store") == "photos" else "files") / fname
+    if not path.exists():
+        return {"error": "файл вложения не найден на сервере (мог быть удалён)"}
+    name = att.get("name") or fname
+    ext = file_tools.ext_of(name)
+    if inp.get("action") == "send":
+        ctx = tg_bot.get_ctx() if tg_bot else None
+        if not ctx:
+            return {"error": "отправка доступна только в Telegram-чате"}
+        is_img = ext in ("jpg", "jpeg", "png", "webp") and path.stat().st_size < 9 * 1024 * 1024
+        res = tg_bot.file_send(ctx, filename=name, content_base64=base64.b64encode(path.read_bytes()).decode(),
+                               kind="photo" if is_img else "document")
+        return res if res.get("error") else {"ok": True, "sent": name}
+    if att.get("kind") in ("image", "video") or ext in ("jpg", "jpeg", "png", "webp", "gif", "heic", "mp4", "mov", "mp3", "m4a", "wav"):
+        return {"error": f"«{name}» — изображение/аудио/видео, содержимое я не читаю; могу прислать файл (action send)"}
+    if path.stat().st_size > 50 * 1024 * 1024:
+        return {"error": "файл больше 50 МБ — читать не буду"}
+    try:
+        r = file_tools.read_file(path.read_bytes(), name)
+    except file_tools.FileToolError as e:
+        return {"error": str(e)}
+    return {"ok": True, "name": name, "text": r["text"], "truncated": r["truncated"]}
 
 
 def _weather_code_label(code) -> str:
@@ -3339,7 +5526,7 @@ def knowledge_for_prompt(app: dict) -> str:
     return "\n".join(rows)
 
 
-def build_assistant_system_prompt(app: dict = None) -> str:
+def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> str:
     domain_list = "\n".join(f"  • {k} — {label}" for k, (label, _) in ASSISTANT_DATA_DOMAINS.items())
     nav_list = "\n".join(f"  • {k} — {label}" for k, (label, _) in ASSISTANT_NAV_TARGETS.items())
     write_list = "\n".join(
@@ -3358,7 +5545,8 @@ def build_assistant_system_prompt(app: dict = None) -> str:
     weekday_str = WEEKDAYS_RU_NOMINATIVE[today.weekday()]
     return (
         "Ты ассистент приложения Jarvis, отвечаешь в Telegram. "
-        "Отвечай кратко и по-русски, обычным текстом без markdown-разметки и JSON — сообщение уходит как есть.\n\n"
+        "Отвечай кратко и по-русски, без JSON.\n\n"
+        + (tg_bot.PROMPT_SECTION if tg_bot else "Разметку (markdown, HTML) не используй — сообщение уходит как есть.\n\n") +
         f"СЕГОДНЯ: {today.isoformat()}, {weekday_str}. Используй эту дату и день недели как факт — не вычисляй "
         "день недели сам по числу, он уже дан.\n\n"
         f"{about_block}"
@@ -3369,7 +5557,7 @@ def build_assistant_system_prompt(app: dict = None) -> str:
         "4. Канбан-доска «Задачи» (house_tasks) устроена отдельно от прочих разделов — свои инструменты: "
         "kanban_create_task, kanban_update_task, kanban_delete_task, kanban_move_task, kanban_add_comment, "
         "kanban_delete_comment, kanban_add_subtask, kanban_toggle_subtask.\n\n"
-        "5. log_diet_compliance(date, level) / log_checklist_answer(date, fieldId, option) — отметки по дням "
+        "5. log_diet_compliance(date, option, kcal) / log_checklist_answer(date, fieldId, option) — отметки по дням "
         "(один раз на дату — вызов заменяет предыдущую отметку на эту дату, если она была).\n\n"
         "6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — "
         "свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и "
@@ -3391,6 +5579,18 @@ def build_assistant_system_prompt(app: dict = None) -> str:
         "и 3 дня вперёд. Для конкретного дня или диапазона («в субботу», «на следующей неделе») передай date или "
         "date_from/date_to в формате YYYY-MM-DD — вычисли даты сам от СЕГОДНЯ (прогноз доступен на 16 дней "
         "вперёд).\n\n"
+        "9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). "
+        "Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары "
+        "дублируются в Apple Календарь «Учеба» автоматически — сам их туда не добавляй.\n\n"
+        "10. Файлы в «Учёбе»: study_attach_file(subject, task_title, filename, content/sheets) — создать файл (docx, xlsx, "
+        "pptx, pdf, txt, csv…) и положить его вложением в задание; study_get_attachment(action read|send) — прочитать "
+        "вложение задания или прислать его пользователю. «Сформируй файл … и положи в задачу по предмету X» → сначала "
+        "get_data(study), найди предмет и задание (нет подходящего — спроси, какое; новое — create_if_missing), потом "
+        "один вызов study_attach_file с готовым полным содержимым. Файл, который пользователь только что прислал, "
+        "кладётся через use_received_file. После успеха скажи, куда именно положил (предмет → задание → имя файла).\n\n"
+        + (deck_skill.prompt_section((app or {}).get("telegramSkills")) if deck_skill else "")
+        + (study_skills.prompt_section((app or {}).get("telegramSkills")) if study_skills else "")
+        + (tg_tools.prompt_section((app or {}).get("telegramSkills")) if with_tg else "") +
         "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
         "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
         "— вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми "
@@ -3409,12 +5609,40 @@ def build_assistant_system_prompt(app: dict = None) -> str:
     )
 
 
-def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str) -> dict:
+def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_tg: bool = False) -> dict:
     inp = inp or {}
+    # Возможности бота (чеклисты, файлы, опросы…) — шлют в чат, где идёт диалог.
+    if tg_bot and name in tg_bot.TOOL_NAMES:
+        return tg_bot.execute_tool(name, inp)
+    if deck_skill and name in deck_skill.TOOL_NAMES:
+        def _study_attach(x):
+            r = study_attach_file(app, x)
+            if r.get("ok"):
+                save_app_data(app)
+            return r
+        return deck_skill.execute(name, inp, tg_bot.get_ctx() if tg_bot else None, tg_bot,
+                                  (app or {}).get("telegramSkills"), _study_attach)
+    if study_skills and name in study_skills.TOOL_NAMES:
+        return _study_skill_exec(name, inp, app)
+    if name == "study_attach_file":
+        result = study_attach_file(app, inp)
+        if result.get("ok"):
+            save_app_data(app)
+        return result
+    if name == "study_get_attachment":
+        return study_get_attachment(app, inp)
+    # Личный Telegram — только в чате владельца (см. tg_user.is_owner_chat).
+    if name in TG_TOOL_NAMES and getattr(_brief_scope, "peers", None) is not None \
+            and not study_skills.peer_allowed(inp.get("peer"), _brief_scope.peers):
+        return {"error": "Сбор информации ищет только в учебных чатах из списка: укажи peer — чат из списка."}
+    if name in TG_TOOL_NAMES:
+        return execute_tg_tool(name, inp, (app or {}).get("telegramSkills")) if with_tg else {"error": "Личный Telegram в этом чате недоступен."}
     # Apple Календарь и Напоминания живут не в данных приложения, а в iCloud —
     # у них свой исполнитель, общий с браузерным ассистентом.
     if name in APPLE_TOOL_NAMES:
         return execute_apple_tool(name, inp)
+    if name in STUDY_TOOL_NAMES:
+        return execute_study_tool(name, inp)
     if name == "get_weather":
         return get_weather(
             app, inp.get("city") or "",
@@ -3469,7 +5697,7 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str) -> di
         "kanban_delete_comment": lambda: kanban_delete_comment(app, inp.get("taskId"), inp.get("commentId")),
         "kanban_add_subtask": lambda: kanban_add_subtask(app, inp.get("taskId"), inp.get("text")),
         "kanban_toggle_subtask": lambda: kanban_toggle_subtask(app, inp.get("taskId"), inp.get("subtaskId"), inp.get("done")),
-        "log_diet_compliance": lambda: log_diet_compliance(app, inp.get("date"), inp.get("level")),
+        "log_diet_compliance": lambda: log_diet_compliance(app, inp.get("date"), inp.get("option"), inp.get("kcal")),
         "log_checklist_answer": lambda: log_checklist_answer(app, inp.get("date"), inp.get("fieldId"), inp.get("option")),
         "cooking_plan_add_ingredient": lambda: cooking_plan_add_ingredient(app, inp.get("planId"), {
             "name": inp.get("name"), "portions": inp.get("portions"),
@@ -3496,21 +5724,29 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str) -> di
 # провайдера в середине переписки в истории оказался бы чужой формат.
 _assistant_convo: dict = {}
 _ASSISTANT_MAX_TURNS = 16
-_ASSISTANT_MAX_STEPS = 6
+_ASSISTANT_MAX_STEPS = 8
 
 
 class _AssistantError(Exception):
     pass
 
 
-def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, site_url: str):
+def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, site_url: str, with_tg: bool = False,
+                           extra_system: str = "", allowed: set = None, max_steps: int = None):
     """Прогоняет tool-use цикл Claude поверх локальной копии истории.
     Возвращает (текст ответа | None, список ссылок navigate). None — агент не
     уложился в отведённые шаги. Ошибки HTTP/сети — как _AssistantError."""
-    system = build_assistant_system_prompt(app)
+    system = build_assistant_system_prompt(app, with_tg) + extra_system
+    all_tools = ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
+        (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
+        (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + _study_skill_tools(app)
+    if allowed:   # фоновые задания работают только на чтение: лишних инструментов у модели нет
+        all_tools = [t for t in all_tools if t["name"] in allowed]
     convo = list(history)
     nav_links = []
-    for _ in range(_ASSISTANT_MAX_STEPS):
+    carried = ""        # текст уже выданных кусков, если ответ упёрся в лимит токенов
+    continuations = 0
+    for _ in range((max_steps or _ASSISTANT_MAX_STEPS) + 4):
         try:
             r = requests.post(
                 ANTHROPIC_MESSAGES_URL,
@@ -3520,10 +5756,10 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
                     "anthropic-version": "2023-06-01",
                 },
                 json={
-                    "model": model, "max_tokens": 800, "system": system,
-                    "messages": convo, "tools": ASSISTANT_TOOLS,
+                    "model": model, "max_tokens": 8192, "system": system,
+                    "messages": convo, "tools": all_tools,
                 },
-                timeout=30,
+                timeout=60,
             )
         except Exception as e:
             raise _AssistantError(f"Ошибка связи с ИИ: {e}")
@@ -3539,43 +5775,64 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
         tool_uses = [b for b in content if b.get("type") == "tool_use"]
         texts = "\n".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
         if not tool_uses:
-            return texts or "Готово", nav_links
+            # Ответ оборвался по лимиту — просим продолжить; пользователь увидит его целиком.
+            if resp.get("stop_reason") == "max_tokens" and texts and continuations < 4:
+                continuations += 1
+                carried += texts
+                convo.append({"role": "assistant", "content": texts})
+                convo.append({"role": "user", "content": "Продолжи с того места, где оборвался, без повторов."})
+                continue
+            return (carried + texts) or "Готово", nav_links
 
         convo.append({"role": "assistant", "content": content})
         tool_results = []
         for tu in tool_uses:
             try:
-                output = execute_assistant_tool(tu.get("name"), tu.get("input"), app, site_url)
+                output = execute_assistant_tool(tu.get("name"), tu.get("input"), app, site_url, with_tg) \
+                    if not allowed or tu.get("name") in allowed else {"error": "этот инструмент недоступен в фоновом режиме"}
             except Exception as e:
                 output = {"error": str(e)}
             if tu.get("name") == "navigate" and output.get("url"):
                 nav_links.append((output.get("label"), output["url"]))
+            # Картинка из чата (tg_get_file) уходит модели image-блоком внутри результата.
+            img = output.pop("_image", None) if isinstance(output, dict) else None
+            out_json = json.dumps(output, ensure_ascii=False)
             tool_results.append({
                 "type": "tool_result", "tool_use_id": tu.get("id"),
-                "content": json.dumps(output, ensure_ascii=False),
+                "content": out_json if not img else [
+                    {"type": "text", "text": out_json},
+                    {"type": "image", "source": {"type": "base64", "media_type": img["media_type"], "data": img["b64"]}}],
             })
         convo.append({"role": "user", "content": tool_results})
     return None, nav_links
 
 
-def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, site_url: str):
+def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, site_url: str, with_tg: bool = False,
+                           extra_system: str = "", allowed: set = None, max_steps: int = None):
     """То же самое поверх OpenAI function calling — другой формат запроса и
     ответа (tool_calls в сообщении assistant, результаты — отдельными
     сообщениями role:"tool"), но те же инструменты и та же семантика."""
-    system = build_assistant_system_prompt(app)
+    system = build_assistant_system_prompt(app, with_tg) + extra_system
+    all_tools = ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
+        (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
+        (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + _study_skill_tools(app)
+    if allowed:   # фоновые задания работают только на чтение: лишних инструментов у модели нет
+        all_tools = [t for t in all_tools if t["name"] in allowed]
     tools = [
         {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
-        for t in ASSISTANT_TOOLS
+        for t in all_tools
     ]
     convo = [{"role": "system", "content": system}] + list(history)
     nav_links = []
-    for _ in range(_ASSISTANT_MAX_STEPS):
+    carried = ""
+    continuations = 0
+    for _ in range((max_steps or _ASSISTANT_MAX_STEPS) + 4):
         try:
             r = requests.post(
                 OPENAI_CHAT_URL,
                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-                json={"model": model, "max_completion_tokens": 800, "messages": convo, "tools": tools},
-                timeout=30,
+                json={"model": model, "max_completion_tokens": 8192, "messages": convo, "tools": tools},
+                timeout=60,
             )
         except Exception as e:
             raise _AssistantError(f"Ошибка связи с ИИ: {e}")
@@ -3591,9 +5848,17 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
         message = choices[0].get("message") or {}
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
-            return message.get("content") or "Готово", nav_links
+            part = message.get("content") or ""
+            if choices[0].get("finish_reason") == "length" and part and continuations < 4:
+                continuations += 1
+                carried += part
+                convo.append({"role": "assistant", "content": part})
+                convo.append({"role": "user", "content": "Продолжи с того места, где оборвался, без повторов."})
+                continue
+            return (carried + part) or "Готово", nav_links
 
         convo.append({"role": "assistant", "content": message.get("content"), "tool_calls": tool_calls})
+        pending_images = []
         for tc in tool_calls:
             fn = tc.get("function") or {}
             try:
@@ -3601,54 +5866,639 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
             except Exception:
                 inp = {}
             try:
-                output = execute_assistant_tool(fn.get("name"), inp, app, site_url)
+                output = execute_assistant_tool(fn.get("name"), inp, app, site_url, with_tg) \
+                    if not allowed or fn.get("name") in allowed else {"error": "этот инструмент недоступен в фоновом режиме"}
             except Exception as e:
                 output = {"error": str(e)}
             if fn.get("name") == "navigate" and output.get("url"):
                 nav_links.append((output.get("label"), output["url"]))
+            img = output.pop("_image", None) if isinstance(output, dict) else None
+            if img:
+                pending_images.append(img)
             convo.append({"role": "tool", "tool_call_id": tc.get("id"), "content": json.dumps(output, ensure_ascii=False)})
+        if pending_images:   # у OpenAI картинок в результате инструмента нет — отдельным сообщением после всех tool-ответов
+            convo.append({"role": "user", "content": [{"type": "text", "text": "Изображение из результата инструмента:"}] + [
+                {"type": "image_url", "image_url": {"url": f"data:{i['media_type']};base64,{i['b64']}"}} for i in pending_images]})
+            pending_images = []
     return None, nav_links
 
 
-def handle_assistant_message(token: str, chat_id, text: str):
+def find_openai_key(settings: dict) -> str:
+    """Ключ OpenAI для картинок и расшифровки голосовых: набор, назначенный ассистенту
+    (если это OpenAI), иначе любой OpenAI-набор из настроек, иначе OPENAI_API_KEY."""
+    cur = resolve_ai_preset(settings, "voiceAssistant")
+    if cur and cur.get("provider") == "openai" and (cur.get("apiKey") or "").strip():
+        return cur["apiKey"].strip()
+    for pr in _ensure_ai_presets(settings or {}).get("aiPresets") or []:
+        if pr.get("provider") == "openai" and (pr.get("apiKey") or "").strip():
+            return pr["apiKey"].strip()
+    return os.environ.get("OPENAI_API_KEY", "").strip()
+
+
+def generate_dialog_title(provider: str, api_key: str, model: str, text: str) -> str:
+    """Короткое название диалога по первому сообщению (как в чат-агрегаторах). Любая
+    ошибка — название берётся из начала сообщения."""
+    instruction = ("Придумай короткое название диалога (2–5 слов, на языке сообщения, без кавычек и точки в конце) "
+                   "по первому сообщению пользователя. Ответь только названием.\n\nСообщение:\n" + (text or "")[:1500])
+    try:
+        if provider == "openai":
+            r = requests.post(OPENAI_CHAT_URL, headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+                              json={"model": model, "max_completion_tokens": 300, "messages": [{"role": "user", "content": instruction}]},
+                              timeout=20)
+            raw = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") if r.ok else ""
+        else:
+            r = requests.post(ANTHROPIC_MESSAGES_URL,
+                              headers={"Content-Type": "application/json", "x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                              json={"model": model, "max_tokens": 60, "messages": [{"role": "user", "content": instruction}]},
+                              timeout=20)
+            raw = "".join(b.get("text", "") for b in (r.json().get("content") or []) if b.get("type") == "text") if r.ok else ""
+    except Exception as e:
+        print(f"  dialog title: {e}")
+        raw = ""
+    return tg_bot.clean_title(raw, text)
+
+
+def _user_turn_content(provider: str, text: str, images: list):
+    """Сообщение пользователя с картинками в формате провайдера. Без картинок — просто текст."""
+    if not images:
+        return text
+    if provider == "openai":
+        return [{"type": "text", "text": text or "Что на фото?"}] + [
+            {"type": "image_url", "image_url": {"url": f"data:{i['media_type']};base64,{i['b64']}"}} for i in images]
+    return [{"type": "image", "source": {"type": "base64", "media_type": i["media_type"], "data": i["b64"]}}
+            for i in images] + [{"type": "text", "text": text or "Что на фото?"}]
+
+
+def handle_assistant_message(token: str, chat_id, text: str, images: list = None, message_id: int = None):
+    # Сообщения одного чата идут строго по очереди: иначе при быстрой переписке
+    # история диалога перемешивается между потоками.
+    with tg_bot.chat_lock(chat_id):
+        _handle_assistant_message(token, chat_id, text, images or [], message_id)
+
+
+def _handle_assistant_message(token: str, chat_id, text: str, images: list, message_id):
+    def say(msg: str):
+        try:
+            tg_bot.send_text(token, chat_id, msg)
+        except Exception as e:
+            print(f"  assistant reply failed: {e}")
+
     app = load_app_data()
     settings = app.get("settings") or {}
     preset = resolve_ai_preset(settings, "voiceAssistant")
     api_key = (preset or {}).get("apiKey", "").strip()
     if not api_key:
-        send_message(
-            token, chat_id,
-            "Ассистенту не назначен набор ключей ИИ. В приложении: Настройки → Ассистент — "
-            "добавьте набор ключей (Claude или OpenAI) и назначьте его функции «Ассистент».",
-        )
+        say("Ассистенту не назначен набор ключей ИИ. В приложении: Настройки → Ассистент — "
+            "добавьте набор ключей (Claude или OpenAI) и назначьте его функции «Ассистент».")
         return
     provider = "openai" if preset.get("provider") == "openai" else "claude"
     model = (preset.get("model") or "").strip() or AI_PROVIDER_DEFAULT_MODEL[provider]
     site_url = (settings.get("publicUrl") or "").strip()
 
-    history = _assistant_convo.setdefault(chat_id, [])
-    history.append({"role": "user", "content": text})
+    # Контекст живёт, пока переписка непрерывна: пауза дольше TTL (10 минут)
+    # сбрасывает историю — это делает history_for.
+    history = tg_bot.history_for(chat_id)
+    tg_bot.touch(chat_id)
+    try:
+        tg_bot.api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
+    except Exception:
+        pass
 
+    # Новый диалог — первое сообщение после паузы/сброса: название придумываем по нему,
+    # пока основной ответ готовится (параллельно, чтобы не добавлять ожидания).
+    is_new = not history or tg_bot.current_dialog(chat_id) is None
+    title_box = {}
+    title_thread = None
+    if is_new:
+        title_thread = threading.Thread(
+            target=lambda: title_box.update(t=generate_dialog_title(provider, api_key, model, text)), daemon=True)
+        title_thread.start()
+
+    def dialog_tag() -> str:
+        """Подпись с названием диалога; вызывать, когда ответ точно ушёл в историю."""
+        if is_new:
+            if title_thread:
+                title_thread.join(timeout=12)
+            tg_bot.start_dialog(chat_id, title_box.get("t") or tg_bot.fallback_title(text))
+        else:
+            tg_bot.bump_dialog(chat_id)
+        return tg_bot.dialog_footer(chat_id, is_new)
+
+    # В историю идёт чистый текст; картинка нужна только текущему ходу.
+    stored_text = text + (" [фото]" if images else "")
+    turn = list(history) + [{"role": "user", "content": _user_turn_content(provider, text, images)}]
+
+    ctx = tg_bot.Ctx(token, chat_id, message_id)
+    ctx.openai_key = find_openai_key(settings)   # картинки рисует OpenAI
+    tg_bot.set_ctx(ctx)
+    with_tg = bool(tg_user) and tg_user.is_owner_chat(chat_id)
     loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
     try:
-        answer, nav_links = loop_fn(history, api_key, model, app, site_url)
+        answer, nav_links = loop_fn(turn, api_key, model, app, site_url, with_tg)
     except _AssistantError as e:
-        del history[:]
-        send_message(token, chat_id, str(e))
+        say(str(e))
         return
+    finally:
+        tg_bot.set_ctx(None)
 
     if answer is None:
-        del history[:]
-        send_message(token, chat_id, "Не разобрался за отведённое число шагов — попробуйте переформулировать.")
+        tag = ""
+        if ctx.sent:
+            history.append({"role": "user", "content": stored_text})
+            history.append({"role": "assistant", "content": "(служебно: в чат отправлено — " + "; ".join(ctx.sent) + ")"})
+            tag = dialog_tag()
+        say("Не разобрался за отведённое число шагов — попробуйте переформулировать." + tag)
         return
 
-    history.append({"role": "assistant", "content": answer})
-    del history[:-_ASSISTANT_MAX_TURNS]
+    history.append({"role": "user", "content": stored_text})
+    note = ("\n(служебно: в этом ответе ты отправил в чат — " + "; ".join(ctx.sent) + ")") if ctx.sent else ""
+    history.append({"role": "assistant", "content": answer + note})
+    tg_bot.trim(history)
+    tg_bot.touch(chat_id)
 
-    reply = html.escape(answer)
+    reply = answer
     for label, url in nav_links:
         reply += f'\n\n<a href="{html.escape(url)}">Открыть: {html.escape(label)}</a>'
-    send_message(token, chat_id, reply)
+    say(reply + dialog_tag())
+
+
+def _dispatch_user_message(token: str, chat_id, msg: dict):
+    """Текст + вложения (фото, текстовые файлы) → ассистент. Скачивание файлов — в
+    потоке, чтобы не задерживать long-poll."""
+    if not tg_bot:
+        return handle_assistant_message(token, chat_id, (msg.get("text") or "").strip())
+    try:
+        if any(msg.get(k) for k in ("voice", "audio", "video_note", "video")):
+            try:
+                tg_bot.api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
+            except Exception:
+                pass
+        text, images, unsupported = tg_bot.extract_attachments(
+            token, msg, find_openai_key((load_app_data() or {}).get("settings") or {}))
+    except Exception as e:
+        print(f"  attachment error: {e}")
+        text, images, unsupported = (msg.get("text") or msg.get("caption") or "").strip(), [], "не удалось скачать вложение"
+    if unsupported and not text and not images:
+        tg_bot.send_text(token, chat_id, unsupported[0].upper() + unsupported[1:] + ".")
+        return
+    if unsupported:
+        text = (text + "\n\n" if text else "") + f"[Вложение не прочитано: {unsupported}]"
+    rid = (msg.get("reply_to_message") or {}).get("message_id")
+    if rid:
+        try:   # ответ на отчёт бота (сбор по задаче, учебные чаты) — вернуть контекст этого отчёта
+            tg_bot.restore_anchor(chat_id, rid)
+        except Exception as e:
+            print(f"  anchor restore: {e}")
+    handle_assistant_message(token, chat_id, text, images, msg.get("message_id"))
+
+
+# ── Навыки «Учёбы»: сбор информации по задаче и контроль учебных чатов ───────────
+# Логика и описания навыков — study_skills.py; здесь запуск: фоновый агент только на чтение,
+# рассылка отчётов в бот, ежедневный контроль, точки входа. Отчёты бота сохраняют контекст:
+# после отправки диалог засеивается (ответ продолжает его), а якорь по id сообщения
+# восстанавливает контекст, если пользователь ответит позже (см. tg_bot.remember_anchor).
+
+def _study_skill_tools(app) -> list:
+    """Инструменты включённых навыков «Учёбы» для чата."""
+    if not study_skills:
+        return []
+    st = (app or {}).get("telegramSkills")
+    out = []
+    for t in study_skills.TOOLS:
+        sid = study_skills.BRIEF_ID if t["name"] == "study_brief_start" else study_skills.CHATS_ID
+        if study_skills.skill_on(st, sid):
+            out.append(t)
+    return out
+
+
+def _ai_conf(app):
+    """(provider, api_key, model, site_url) ассистента или None, если ключ не назначен."""
+    settings = app.get("settings") or {}
+    preset = resolve_ai_preset(settings, "voiceAssistant")
+    key = ((preset or {}).get("apiKey") or "").strip()
+    if not key:
+        return None
+    provider = "openai" if preset.get("provider") == "openai" else "claude"
+    model = (preset.get("model") or "").strip() or AI_PROVIDER_DEFAULT_MODEL[provider]
+    return provider, key, model, (settings.get("publicUrl") or "").strip()
+
+
+def _llm_text(conf, system: str, user: str, max_tokens: int = 2500, timeout: int = 120) -> str:
+    """Один запрос к модели без инструментов. Ошибки — _AssistantError."""
+    provider, key, model, _ = conf
+    try:
+        if provider == "openai":
+            r = requests.post(OPENAI_CHAT_URL, headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+                              json={"model": model, "max_completion_tokens": max_tokens,
+                                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]},
+                              timeout=timeout)
+        else:
+            r = requests.post(ANTHROPIC_MESSAGES_URL,
+                              headers={"Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"},
+                              json={"model": model, "max_tokens": max_tokens, "system": system,
+                                    "messages": [{"role": "user", "content": user}]}, timeout=timeout)
+    except Exception as e:
+        raise _AssistantError(f"Ошибка связи с ИИ: {e}")
+    if not r.ok:
+        try:
+            err = r.json().get("error", {}).get("message")
+        except Exception:
+            err = None
+        raise _AssistantError(f"Ошибка ИИ: {err or r.status_code}")
+    j = r.json()
+    if provider == "openai":
+        return (((j.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    return "".join(b.get("text", "") for b in (j.get("content") or []) if b.get("type") == "text").strip()
+
+
+def _study_owner_chats(app) -> list:
+    """Чаты бота, на которые разрешено слать личные данные (Telegram-аккаунт владельца): подписчики категории
+    «study», которые являются личным чатом владельца."""
+    chats = recipients_for(app, load_subscribers(), "study")
+    return [c for c in chats if tg_user and tg_user.is_owner_chat(c)]
+
+
+def _attachments_text(snap: dict, per_file: int = 12000, max_files: int = 4) -> str:
+    """Текст вложений задачи (docx, pdf, xlsx, текст…) — чтобы агент не зависел от синхронизации данных."""
+    if not file_tools:
+        return ""
+    parts = []
+    for a in (snap.get("attachments") or [])[:12]:
+        if len(parts) >= max_files:
+            break
+        fname = a.get("filename") or ""
+        if not fname or "/" in fname or ".." in fname or a.get("kind") in ("image", "video"):
+            continue
+        path = DATA_DIR / ("photos" if a.get("store") == "photos" else "files") / fname
+        try:
+            if not path.exists() or path.stat().st_size > 30 * 1024 * 1024:
+                continue
+            r = file_tools.read_file(path.read_bytes(), a.get("name") or fname, per_file)
+            parts.append(f"=== {a.get('name') or fname} ===\n{r['text']}")
+        except Exception:
+            continue
+    return "\n\n".join(parts)
+
+
+def _folder_dialogs(folder: str) -> list:
+    if not (folder and tg_tools):
+        return []
+    try:
+        res = tg_tools.list_dialogs(folder=folder, limit=100, include_muted=True)
+        return [{"id": d["id"], "title": d["title"]} for d in res.get("dialogs", [])]
+    except Exception as e:
+        print(f"  study folder dialogs: {e}")
+        return []
+
+
+def _resolve_chat_name(name: str):
+    """Название/@username/ссылка из записи → {id, title} диалога Telegram или None."""
+    q = re.sub(r"^https?://t\.me/", "", name.strip()).lstrip("@").split("/")[0]
+    if not q:
+        return None
+    rows = (tg_tools.list_dialogs(query=q, limit=5, include_muted=True) or {}).get("dialogs", [])
+    if not rows:
+        return None
+    best = next((d for d in rows if str(d.get("title") or "").casefold() == name.strip().casefold()), rows[0])
+    return {"id": best["id"], "title": best["title"]}
+
+
+def study_notes_targets(app, conf) -> tuple:
+    """Учебные чаты из «Базы данных»: ИИ находит в записях названия чатов/папок, они сопоставляются с диалогами Telegram.
+    Результат кэшируется (пока записи не изменились, 12 часов). → (targets, ошибки/ненайденное)."""
+    text = study_skills.knowledge_text(app)
+    if not (text and conf and tg_tools):
+        return [], []
+    h = hashlib.sha1(text.encode("utf-8")).hexdigest()
+    c = study_skills.state_load().get("notesTargets") or {}
+    if c.get("hash") == h and time.time() - float(c.get("at") or 0) < 12 * 3600:
+        return c.get("targets") or [], c.get("unresolved") or []
+    targets, unresolved = [], []
+    try:
+        refs = study_skills.parse_refs(_llm_text(conf, study_skills.NOTES_SYSTEM, text, max_tokens=800))
+        for name in refs["chats"]:
+            try:
+                d = _resolve_chat_name(name)
+            except Exception as e:
+                d = None
+                print(f"  study notes chat {name}: {e}")
+            targets.append(d) if d else unresolved.append(f"Чат «{name}» из базы данных не найден в Telegram")
+        for f in refs["folders"]:
+            ds = _folder_dialogs(f)
+            targets.extend(ds) if ds else unresolved.append(f"Папка «{f}» из базы данных не найдена или пуста")
+    except Exception as e:
+        return [], [f"Не удалось разобрать «Базу данных»: {e}"]
+    study_skills.state_update(notesTargets={"hash": h, "targets": targets, "unresolved": unresolved,
+                                            "at": time.time() if targets else time.time() - 11 * 3600})
+    return targets, unresolved
+
+
+def _study_targets(app, conf, with_tg: bool = True) -> tuple:
+    """Все учебные чаты: из «Базы данных» + выбранные вручную + папка из настроек. → (targets, замечания)."""
+    cfg = study_skills.chats_config(app)
+    if not with_tg:
+        return [], []
+    notes_t, notes = study_notes_targets(app, conf)
+    return study_skills.chat_targets(cfg, _folder_dialogs(cfg["folder"]) + notes_t), notes
+
+
+_brief_scope = threading.local()   # чаты, к которым можно обращаться агенту сбора информации
+_study_brief_running = set()
+
+
+def start_study_brief(task: dict, chat_id=None) -> dict:
+    """Запускает «Сбор информации по задаче» в фоне. Возвращает сразу: {ok} или {ok:False, error}."""
+    if not study_skills:
+        return {"ok": False, "error": "Навык недоступен на сервере."}
+    app = load_app_data()
+    if not study_skills.skill_on(app.get("telegramSkills"), study_skills.BRIEF_ID):
+        return {"ok": False, "error": "Навык «Сбор информации по задаче» выключен: Настройки → Ассистент → Навыки ассистента."}
+    token = get_token()
+    if not token:
+        return {"ok": False, "error": "Не задан токен Telegram-бота — отчёт некуда отправить."}
+    conf = _ai_conf(app)
+    if not conf:
+        return {"ok": False, "error": "Ассистенту не назначен ключ ИИ: Настройки → Ассистент."}
+    owner = _study_owner_chats(app)
+    chats = [chat_id] if chat_id else (owner or recipients_for(app, load_subscribers(), "study"))
+    if not chats:
+        return {"ok": False, "error": "Включите категорию «Учёба» для вашего чата с ботом: Настройки → Маршрутизация."}
+    snap = study_skills.task_snapshot(app, task or {})
+    if not snap["subject"]:
+        snap["subject"] = str((task or {}).get("subjectName") or "")[:120]
+    if not snap["title"]:
+        return {"ok": False, "error": "У задачи нет названия."}
+    key = snap["id"] or snap["title"]
+    if key in _study_brief_running:
+        return {"ok": False, "error": "Отчёт по этой задаче уже собирается — подождите пару минут."}
+    _study_brief_running.add(key)
+    threading.Thread(target=_study_brief_worker, args=(app, snap, conf, token, chats, key), daemon=True).start()
+    return {"ok": True, "started": True}
+
+
+def _study_brief_worker(app, snap, conf, token, chats, key):
+    provider, api_key, model, site_url = conf
+    owner_chats = [c for c in chats if tg_user and tg_user.is_owner_chat(c)]
+    with_tg = bool(owner_chats)
+    chats = owner_chats or chats          # личные переписки — только в личный чат владельца
+    progress = []
+    answer, err = None, ""
+    try:
+        for cid in chats:
+            pm = tg_bot.ProgressMessage(token, cid, "Собираю информацию по задаче", snap["title"],
+                                        [(0, "Смотрю данные и файлы задачи"), (20, "Ищу в учебных чатах"),
+                                         (70, "Составляю план")], expected=150.0)
+            pm.__enter__()
+            progress.append(pm)
+        targets, _ = _study_targets(app, conf, with_tg)
+        _brief_scope.peers = targets if with_tg else None
+        att = _attachments_text(snap)
+        today = today_msk()
+        user_msg = (
+            f"СЕГОДНЯ: {today.isoformat()}, {WEEKDAYS_RU_NOMINATIVE[today.weekday()]}.\n\n"
+            f"ЗАДАЧА (JSON):\n{json.dumps(snap, ensure_ascii=False, indent=1)}\n\n"
+            + (f"ТЕКСТ ВЛОЖЕНИЙ:\n{att}\n\n" if att else "Вложений с текстом нет.\n\n")
+            + ("УЧЕБНЫЕ ЧАТЫ (id → название):\n" + "\n".join(f"• {t['id']} → {t['title']}" for t in targets) + "\n\n"
+               if targets else "Учебные чаты не найдены (их нужно указать в «Базе данных» или в Настройки → Учеба): в Telegram не ищи, "
+                               "работай по данным Джарвиса и скажи в отчёте, что чаты не указаны.\n\n")
+            + ("" if with_tg else "ЛИЧНЫЙ TELEGRAM НЕ ПОДКЛЮЧЁН: чаты просмотреть нельзя — скажи об этом в отчёте.\n\n")
+            + "Собери информацию и верни итоговый отчёт по структуре.")
+        loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
+        answer, _ = loop_fn([{"role": "user", "content": user_msg}], api_key, model, app, site_url, with_tg,
+                            extra_system=study_skills.BRIEF_PROMPT, allowed=study_skills.BRIEF_ALLOWED_TOOLS, max_steps=18)
+    except _AssistantError as e:
+        err = str(e)
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+        print(f"  study brief: {err}")
+    finally:
+        for pm in progress:
+            try:
+                pm.__exit__(None, None, None)
+            except Exception:
+                pass
+        _brief_scope.peers = None
+        _study_brief_running.discard(key)
+    title = f"Задача: {snap['title'][:40]}"
+    for cid in chats:
+        try:
+            if not answer:
+                tg_bot.send_text(token, cid, f"🔎 Не удалось собрать информацию по задаче «{html.escape(snap['title'])}»: "
+                                             f"{html.escape(err or 'агент не уложился в отведённые шаги')}.")
+                continue
+            ids = tg_bot.send_text(token, cid, answer + "\n\n<i>Ответьте на это сообщение — продолжим с этим контекстом.</i>")
+            user_text = f"Собери информацию по задаче «{snap['title']}»."
+            asst_text = (answer + f"\n(служебно: task_id {snap['id']}, предмет «{snap['subject']}»; отчёт отправлен пользователю в Telegram; "
+                         "шаги плана в задачу ещё НЕ добавлены — добавляй подзадачами через update_record только если пользователь согласится)")
+            tg_bot.remember_anchor(cid, ids, title, user_text, asst_text)
+            tg_bot.seed_dialog(cid, title, user_text, asst_text)
+        except Exception as e:
+            print(f"  study brief send: {e}")
+
+
+# ── Контроль учебных чатов ───────────────────────────────────────────────────
+
+_study_scan_lock = threading.Lock()
+RU_MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+
+
+def _chat_lines(messages: list, cap_chars: int) -> str:
+    lines = []
+    for m in messages:
+        flags = []
+        if m.get("mentioned"):
+            flags.append("УПОМЯНУЛИ ВАС")
+        if m.get("reply_to_me"):
+            flags.append("ОТВЕТ НА ВАШЕ СООБЩЕНИЕ")
+        if m.get("mine"):
+            flags.append("это ваше сообщение")
+        text = (m.get("text") or "").replace("\n", " ")[:300]
+        media = f" [{m.get('media')}]" if m.get("media") else ""
+        rt = f" (в ответ на #{m['reply_to']})" if m.get("reply_to") else ""
+        lines.append(f"[{m['id']}] {str(m.get('date') or '')[-5:]} {m.get('from') or '?'}{rt}: {text}{media}"
+                     + (f"  <<{'; '.join(flags)}>>" if flags else ""))
+    out, total = [], 0
+    for ln in reversed(lines):              # если много — оставляем самые свежие
+        total += len(ln) + 1
+        if total > cap_chars:
+            break
+        out.append(ln)
+    return "\n".join(reversed(out))
+
+
+def study_chats_scan(chat_id=None, manual: bool = False) -> dict:
+    """Проверка учебных чатов: читаем новое с прошлой проверки, ИИ отбирает то, что требует внимания,
+    пишем в бот. chat_id — ответить в конкретный чат (запуск из чата). Возвращает итог для интерфейса."""
+    if not study_skills:
+        return {"ok": False, "error": "Навык недоступен на сервере."}
+    if not _study_scan_lock.acquire(blocking=False):
+        return {"ok": False, "error": "Проверка уже идёт."}
+    try:
+        app = load_app_data()
+        if not study_skills.skill_on(app.get("telegramSkills"), study_skills.CHATS_ID):
+            return {"ok": False, "error": "Навык «Контроль учебных чатов» выключен: Настройки → Ассистент → Навыки ассистента."}
+        token, conf = get_token(), _ai_conf(app)
+        cfg = study_skills.chats_config(app)
+        owner = [chat_id] if (chat_id and tg_user and tg_user.is_owner_chat(chat_id)) else _study_owner_chats(app)
+        err = ""
+        if not token:
+            err = "Не задан токен Telegram-бота."
+        elif not conf:
+            err = "Ассистенту не назначен ключ ИИ: Настройки → Ассистент."
+        elif not (tg_user and tg_tools):
+            err = "Личный Telegram недоступен на сервере."
+        elif not owner:
+            err = "Включите категорию «Учёба» для вашего личного чата с ботом: Настройки → Маршрутизация."
+        targets, notes = ([], []) if err else _study_targets(app, conf)
+        if not err and not targets:
+            err = ("Учебные чаты не найдены: укажите их в разделе «База данных» (запись вроде «Учебные чаты: …») "
+                   "или выберите в Настройки → Учеба → «Учебные чаты».") + (" " + "; ".join(notes) if notes else "")
+        if err:
+            study_skills.state_update(lastRunAt=int(time.time() * 1000), lastError=err, lastResult={})
+            return {"ok": False, "error": err}
+
+        state = study_skills.state_load()
+        started = time.time()
+        since = max(float(state.get("lastScanTs") or 0), started - 3 * 86400) or (started - 86400)
+        if not state.get("lastScanTs"):
+            since = started - 86400            # первая проверка — за сутки
+        chats, errors, me = [], list(notes), {}
+        for t in targets:
+            try:
+                d = tg_tools.scan_chat(t["id"], since)
+                me = me or d.get("me") or {}
+                if d["messages"]:
+                    chats.append(d)
+            except Exception as e:
+                errors.append(f"{t['title']}: {e}")
+        total = sum(len(c["messages"]) for c in chats)
+        items = []
+        if total:
+            cap = max(4000, 70000 // max(1, len(chats)))
+            body = "\n\n".join(f"### ЧАТ «{c['chat']}»\n{_chat_lines(c['messages'], cap)}" for c in chats)
+            tasks = [t for t in app.get("studyTasks") or [] if t.get("status") != "done"][:12]
+            prompt = (f"ПОЛЬЗОВАТЕЛЬ: {me.get('name') or '?'}" + (f", @{me['username']}" if me.get("username") else "") + "\n"
+                      + "ЕГО АКТИВНЫЕ ЗАДАЧИ: " + ("; ".join(f"{t.get('title')} (до {t.get('due') or 'без срока'})" for t in tasks) or "нет") + "\n\n"
+                      + body)
+            raw = _llm_text(conf, study_skills.TRIAGE_SYSTEM, prompt, max_tokens=2500)
+            by_chat = {c["chat"]: c for c in chats}
+            for it in study_skills.parse_items(raw):
+                c = by_chat.get(it.get("chat")) or (chats[0] if len(chats) == 1 else None)
+                if c:
+                    it["chat"] = c["chat"]
+                    it["chat_id"] = c["chat_id"]
+                    msg = next((m for m in c["messages"] if str(m["id"]) == str(it.get("message_id"))), None)
+                    if msg and msg.get("link"):
+                        it["link"] = msg["link"]
+                items.append(it)
+        now = now_msk()
+        label = f"{now.day} {RU_MONTHS_GEN[now.month - 1]}, {now.strftime('%H:%M')}"
+        study_skills.state_update(lastScanTs=started, lastRunAt=int(time.time() * 1000), lastError="",
+                                  lastResult={"chats": len(targets), "withNew": len(chats), "messages": total,
+                                              "items": len(items), "errors": errors[:5]})
+        sent = 0
+        for cid in owner:
+            try:
+                if items:
+                    text = study_skills.digest_text(items, label)
+                    ids = tg_bot.send_text(token, cid, text)
+                    title = f"Учебные чаты · {now.day} {RU_MONTHS_GEN[now.month - 1]}"
+                    user_text = "Проверь учебные чаты: что требует моего внимания?"
+                    asst_text = ("Вот что нашёл в учебных чатах:\n" + study_skills.digest_plain(items) +
+                                 "\n(служебно: уведомление отправлено пользователю. Если он попросит ответить в чат — используй tg_send_message "
+                                 "(peer = chat_id, reply_to = message_id) только после его «да».)")
+                    tg_bot.remember_anchor(cid, ids, title, user_text, asst_text)
+                    tg_bot.seed_dialog(cid, title, user_text, asst_text)
+                    sent += 1
+                elif manual or cfg["notifyEmpty"]:
+                    tg_bot.send_text(token, cid, f"📚 <b>Учебные чаты</b>: за период ничего, что требовало бы вашего внимания "
+                                                 f"<i>(чатов: {len(targets)}, новых сообщений: {total})</i>.")
+            except Exception as e:
+                print(f"  study chats send: {e}")
+        return {"ok": True, "chats": len(targets), "messages": total, "items": len(items), "sent": sent, "errors": errors[:5]}
+    except _AssistantError as e:
+        study_skills.state_update(lastRunAt=int(time.time() * 1000), lastError=str(e))
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        print(f"  study chats scan: {type(e).__name__}: {e}")
+        study_skills.state_update(lastRunAt=int(time.time() * 1000), lastError=f"{type(e).__name__}: {e}")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        _study_scan_lock.release()
+
+
+def study_chats_tick(app_data: dict, now_str: str, today_iso: str) -> None:
+    """Из минутного цикла: в выбранное время запускаем ежедневную проверку учебных чатов."""
+    if not study_skills:
+        return
+    cfg = study_skills.chats_config(app_data)
+    if not cfg["enabled"] or cfg["time"] != now_str:
+        return
+    if _already_fired("studychats", "daily", today_iso, now_str):
+        return
+    threading.Thread(target=lambda: print(f"[study chats] {study_chats_scan()}"), daemon=True).start()
+
+
+def study_chats_status() -> dict:
+    st = study_skills.state_load() if study_skills else {}
+    connected = False
+    if tg_tools:
+        try:
+            tg_tools.me_info()
+            connected = True
+        except Exception:
+            connected = False
+    nt = st.get("notesTargets") or {}
+    return {"autoChats": [t.get("title") for t in nt.get("targets") or []], "autoNotes": nt.get("unresolved") or [],
+            "lastRunAt": st.get("lastRunAt") or 0, "lastError": st.get("lastError") or "", "lastResult": st.get("lastResult") or {},
+            "running": _study_scan_lock.locked(), "telegramConnected": connected}
+
+
+def study_chats_pick(query: str = "") -> dict:
+    """Для настроек: папки Telegram и поиск чатов, из которых выбираем учебные."""
+    if not tg_tools:
+        return {"error": "Личный Telegram недоступен на сервере."}
+    try:
+        folders = [{"id": f["id"], "title": f["title"], "chats": f["chats"]} for f in tg_tools.list_folders().get("folders", [])]
+        res = tg_tools.list_dialogs(query=query, limit=40, include_muted=True)
+        dialogs = [{"id": d["id"], "title": d["title"], "type": d.get("type"), "muted": bool(d.get("muted"))} for d in res.get("dialogs", [])]
+        return {"folders": folders, "dialogs": dialogs}
+    except Exception as e:
+        return {"error": f"Telegram: {e}"}
+
+
+def _find_study_task(app: dict, inp: dict):
+    tasks = app.get("studyTasks") or []
+    tid = str(inp.get("task_id") or "").strip()
+    if tid:
+        return next((t for t in tasks if t.get("id") == tid), None)
+    title = str(inp.get("task_title") or "").strip().lower()
+    subj = str(inp.get("subject") or "").strip().lower()
+    if not title:
+        return None
+    sids = {s.get("id") for s in app.get("studySubjects") or [] if subj and subj in str(s.get("name") or "").lower()}
+    cand = [t for t in tasks if title in str(t.get("title") or "").lower() and (not subj or t.get("subjectId") in sids)]
+    open_ = [t for t in cand if t.get("status") != "done"]
+    return (open_ or cand or [None])[0]
+
+
+def _study_skill_exec(name: str, inp: dict, app: dict) -> dict:
+    sid = study_skills.BRIEF_ID if name == "study_brief_start" else study_skills.CHATS_ID
+    if not study_skills.skill_on((app or {}).get("telegramSkills"), sid):
+        return {"error": "Навык выключен в Настройки → Ассистент → Навыки ассистента."}
+    ctx = tg_bot.get_ctx() if tg_bot else None
+    chat_id = getattr(ctx, "chat_id", None)
+    if not chat_id:
+        return {"error": "Отчёт можно прислать только в чат с ботом."}
+    if name == "study_brief_start":
+        task = _find_study_task(app, inp)
+        if not task:
+            return {"error": "Задача не найдена — уточните предмет и название (get_data study)."}
+        r = start_study_brief(task, chat_id)
+        return {"ok": True, "message": "Собираю информацию — отчёт придёт в этот чат через 1–3 минуты. Больше ничего делать не нужно."} \
+            if r.get("ok") else {"error": r.get("error")}
+    threading.Thread(target=lambda: study_chats_scan(chat_id, manual=True), daemon=True).start()
+    return {"ok": True, "message": "Проверяю учебные чаты — результат придёт в этот чат через 1–2 минуты."}
 
 
 # ── update-poller loop ───────────────────────────────────────────────────────
@@ -3683,10 +6533,17 @@ def updates_loop():
             if cq:
                 data_str = cq.get("data", "") or ""
                 try:
-                    if data_str.startswith("diet:"):
+                    if data_str.startswith(("diet:", "dieto:", "dietc:")):
                         handle_diet_callback(token, cq)
                     elif data_str.startswith("chk:"):
                         handle_checklist_callback(token, cq)
+                    elif tg_bot and data_str.startswith("tcl:"):
+                        tg_bot.handle_checklist_callback(token, cq)
+                    elif tg_bot and data_str.startswith("tqr:"):
+                        tg_bot.handle_quick_callback(
+                            token, cq,
+                            lambda tk, cid_, reply: threading.Thread(
+                                target=handle_assistant_message, args=(tk, cid_, reply), daemon=True).start())
                     else:
                         tg_post(token, "answerCallbackQuery", {"callback_query_id": cq.get("id")})
                 except Exception as e:
@@ -3708,14 +6565,26 @@ def updates_loop():
                 subs["chat_ids"].append(cid)
                 print(f"  New subscriber: {cid}")
                 send_message(token, cid, WELCOME_TEXT)
-            text = (msg.get("text") or "").strip()
+            text = (msg.get("text") or msg.get("caption") or "").strip()
+            if tg_bot and text.split("@")[0] in ("/new", "/reset"):
+                tg_bot.reset(cid)
+                send_message(token, cid, "Контекст диалога сброшен. Следующее сообщение начнёт новый диалог.")
+                continue
             # Всё, что не /команда — обращение к ассистенту (get_data/navigate/
             # add_task поверх данных проекта). В отдельном потоке: цикл tool-use
             # может занять несколько секунд, а держать им long-poll нельзя —
             # это задержит ответы диет-опросникам и остальным подписчикам.
-            if text and not text.startswith("/"):
+            has_media = any(msg.get(k) for k in ("photo", "document", "voice", "audio", "video", "video_note"))
+            if (text or has_media) and not text.startswith("/"):
+                # Ждём «своё значение» калорий после кнопки опроса питания — число
+                # уходит в dietLog, а не ассистенту.
+                try:
+                    if text and not has_media and handle_diet_custom_reply(token, cid, text):
+                        continue
+                except Exception as e:
+                    print(f"  diet custom reply error: {e}")
                 threading.Thread(
-                    target=handle_assistant_message, args=(token, cid, text), daemon=True,
+                    target=_dispatch_user_message, args=(token, cid, msg), daemon=True,
                 ).start()
         if changed:
             save_subscribers(subs)
@@ -3730,6 +6599,15 @@ def notifier_loop():
             _tick()
         except Exception as e:
             print(f"Notifier error: {e}")
+        # Учёба не зависит от Telegram-токена: календарь синхронизируется и без бота.
+        try:
+            study_tick(load_app_data(), now_msk().strftime("%H:%M"), today_msk().isoformat())
+        except Exception as e:
+            print(f"Study tick error: {e}")
+        try:
+            weather_cal_tick(load_app_data(), now_msk().strftime("%H:%M"), today_msk().isoformat())
+        except Exception as e:
+            print(f"Weather calendar tick error: {e}")
         now = datetime.now()
         time.sleep(60 - now.second)
 
@@ -3851,9 +6729,115 @@ def eng_word_sort_date(w: dict, today: date) -> date | None:
     return eng_parse_date(created, today.year)
 
 
+
+def normalize_eng_word_reminder(raw) -> dict:
+    """Normalize engWordReminder; migrate legacy flat days/count/order/dateRange."""
+    def day_default(enabled=False):
+        return {
+            "enabled": bool(enabled),
+            "count": 5,
+            "order": "random",
+            "dateRange": "14",
+            "filter": "all",
+        }
+
+    by_day = {d: day_default(enabled=(1 <= d <= 5)) for d in range(7)}
+    by_day[1]["dateRange"] = "14"
+    by_day[2]["dateRange"] = "all"
+    by_day[3]["dateRange"] = "all"
+    by_day[3]["filter"] = "hard"
+
+    if not isinstance(raw, dict):
+        return {"enabled": False, "time": "09:00", "byDay": by_day, "updatedAt": 0}
+
+    raw_by = raw.get("byDay")
+    if isinstance(raw_by, dict):
+        for d in range(7):
+            src = raw_by.get(d)
+            if src is None:
+                src = raw_by.get(str(d))
+            if not isinstance(src, dict):
+                continue
+            try:
+                count = max(1, min(50, int(src.get("count") or 5)))
+            except Exception:
+                count = 5
+            order = src.get("order") or "random"
+            if order not in ("random", "newest", "oldest"):
+                order = "random"
+            date_range = str(src.get("dateRange") or "14")
+            if date_range not in ("7", "14", "30", "all"):
+                date_range = "14"
+            filt = src.get("filter") or "all"
+            if filt not in ("all", "hard", "not-hard"):
+                filt = "all"
+            by_day[d] = {
+                "enabled": bool(src.get("enabled")),
+                "count": count,
+                "order": order,
+                "dateRange": date_range,
+                "filter": filt,
+            }
+    elif isinstance(raw.get("days"), list):
+        days = []
+        for d in raw.get("days") or []:
+            try:
+                days.append(int(d))
+            except Exception:
+                pass
+        try:
+            count = max(1, min(50, int(raw.get("count") or 5)))
+        except Exception:
+            count = 5
+        order = raw.get("order") or "random"
+        if order not in ("random", "newest", "oldest"):
+            order = "random"
+        date_range = str(raw.get("dateRange") or "14")
+        if date_range not in ("7", "14", "30", "all"):
+            date_range = "14"
+        for d in range(7):
+            by_day[d] = {
+                "enabled": d in days,
+                "count": count,
+                "order": order,
+                "dateRange": date_range,
+                "filter": "all",
+            }
+
+    return {
+        "enabled": bool(raw.get("enabled")),
+        "time": str(raw.get("time") or "09:00").strip() or "09:00",
+        "byDay": by_day,
+        "updatedAt": raw.get("updatedAt") or 0,
+    }
+
+
+def resolve_eng_day_pick(eng_reminder, day_js: int) -> dict | None:
+    """Pick settings for a weekday, or None if master/day is off."""
+    rem = normalize_eng_word_reminder(eng_reminder)
+    if not rem.get("enabled"):
+        return None
+    day = (rem.get("byDay") or {}).get(int(day_js))
+    if not day or not day.get("enabled"):
+        return None
+    return {
+        "count": day.get("count", 5),
+        "order": day.get("order", "random"),
+        "dateRange": day.get("dateRange", "14"),
+        "filter": day.get("filter", "all"),
+        "time": rem.get("time", "09:00"),
+    }
+
+
 def select_eng_words_for_reminder(words: list, reminder: dict, today: date) -> list:
     """Filter/order/limit words the same way FlashcardsTab.startSession does."""
     pool = list(words)
+    filt = reminder.get("filter") or "all"
+    if filt == "hard":
+        pool = [w for w in pool if w.get("hard")]
+    elif filt == "not-hard":
+        pool = [w for w in pool if not w.get("hard")]
+
     date_range = str(reminder.get("dateRange") or "all")
     if date_range != "all":
         try:
@@ -3891,8 +6875,10 @@ def select_eng_words_for_reminder(words: list, reminder: dict, today: date) -> l
 def format_eng_words_message(words: list, reminder: dict, *, test: bool = False) -> str:
     order_labels = {"random": "random", "newest": "newest", "oldest": "oldest"}
     range_labels = {"7": "last 7 days", "14": "last 14 days", "30": "last 30 days", "all": "all time"}
+    filter_labels = {"all": "all words", "hard": "hard only", "not-hard": "not hard"}
     order = order_labels.get(reminder.get("order"), reminder.get("order") or "")
     rng = range_labels.get(str(reminder.get("dateRange")), str(reminder.get("dateRange") or ""))
+    filt = filter_labels.get(reminder.get("filter"), reminder.get("filter") or "all words")
     entries = []
     for w in words:
         en = html.escape(str(w.get("en") or w.get("word") or w.get("english") or "").strip())
@@ -3908,7 +6894,7 @@ def format_eng_words_message(words: list, reminder: dict, *, test: bool = False)
     title = "📚 <b>Words for today</b>" + (" <i>(test)</i>" if test else "")
     lines = [
         title,
-        f"<i>{len(entries)} words · {html.escape(str(order))} · {html.escape(str(rng))}</i>",
+        f"<i>{len(entries)} words · {html.escape(str(order))} · {html.escape(str(rng))} · {html.escape(str(filt))}</i>",
         "",
     ]
     for i, entry in enumerate(entries, 1):
@@ -4092,6 +7078,18 @@ def _tick():
     except Exception as e:
         print(f"[{now_str} MSK] debts reminder error: {e}")
 
+    # ── Учёба: «рассказать результат на паре» ──────────────────────────────
+    try:
+        study_present_tick(app_data_raw, subs, token)
+    except Exception as e:
+        print(f"[{now_str} MSK] study present reminder error: {e}")
+
+    # ── Учёба: ежедневная проверка учебных чатов ───────────────────────────
+    try:
+        study_chats_tick(app_data_raw, now_str, today_iso)
+    except Exception as e:
+        print(f"[{now_str} MSK] study chats error: {e}")
+
     # ── Kanban tasks: one-off reminder at notifyDate + notifyTime (MSK) ────
     try:
         kanban_columns = (app_data_raw.get("kanban") or {}).get("columns") or []
@@ -4150,13 +7148,14 @@ def _tick():
             days = reminder.get("days", [0, 1, 2, 3, 4, 5, 6]) or []
             already = any(e.get("date") == today_iso for e in diet_log)
             if today_js in days and not already:
-                kb = diet_keyboard(today_iso)
+                kb = diet_keyboard(app_data_raw, today_iso)
+                ask_text = diet_ask_text(app_data_raw, today_iso)
                 recipients = recipients_for(app_data_raw, subs, "diet")
                 print(f"[{now_str} MSK] → diet ask ({len(recipients)} subscriber(s))")
                 for cid in recipients:
                     tg_post(token, "sendMessage", {
                         "chat_id": cid,
-                        "text": f"🍽 <b>Как ты кушал сегодня?</b>\n📅 {human_date(today_iso)}",
+                        "text": ask_text,
                         "parse_mode": "HTML",
                         "reply_markup": kb,
                     })
@@ -4166,21 +7165,18 @@ def _tick():
     # ── English daily words: speak-practice vocabulary pick ────────────────
     try:
         eng_reminder = app_data_raw.get("engWordReminder") or {}
-        cfg_time = str(eng_reminder.get("time", "")).strip()
-        if eng_reminder.get("enabled") and cfg_time == now_str:
-            days_raw = eng_reminder.get("days", [1, 2, 3, 4, 5]) or []
-            days = []
-            for d in days_raw:
-                try: days.append(int(d))
-                except Exception: pass
-            if today_js not in days:
-                print(f"[{now_str} MSK] eng words: today ({today_js}) not in days {days}")
+        rem = normalize_eng_word_reminder(eng_reminder)
+        cfg_time = str(rem.get("time", "")).strip()
+        if rem.get("enabled") and cfg_time == now_str:
+            day_pick = resolve_eng_day_pick(rem, today_js)
+            if not day_pick:
+                print(f"[{now_str} MSK] eng words: day {today_js} is off")
             elif _already_fired("eng_words", "daily", today_iso, now_str):
                 print(f"[{now_str} MSK] eng words: already fired this minute")
             else:
-                result = send_eng_words_now(app_data_raw, eng_reminder, test=False)
+                result = send_eng_words_now(app_data_raw, day_pick, test=False)
                 if result.get("ok"):
-                    print(f"[{now_str} MSK] → eng words ({result.get('words')} of {result.get('pool')}) to {result.get('sent')} subscriber(s)")
+                    print(f"[{now_str} MSK] → eng words ({result.get('words')} of {result.get('pool')}) to {result.get('sent')} subscriber(s) [day={today_js} filter={day_pick.get('filter')}]")
                 else:
                     print(f"[{now_str} MSK] eng words: skip — {result.get('error')}")
     except Exception as e:
@@ -4934,6 +7930,70 @@ ADJUSTMENT_ARTICLES = [
      "group_name": "Корректировки", "emoji": "🛠️"},
 ]
 
+# Авто-строка «Спортпит и БАДы» вкладки «По месяцу»: план считается из вкладки
+# «Спортпит» (цена × количество позиций, назначенных на месяц), а факт — как
+# у обычной статьи: ручной/из выписки + операции ДДС. Своих платежей у вкладки
+# нет, поэтому запись через ДДС ничего не задваивает. ДЕРЖАТЬ В СИНХРОНЕ с
+# SUPPLEMENTS_ARTICLE_ID и cashflowArticles() из index (9).html.
+SUPPLEMENTS_ARTICLE_ID = "__supp_total"
+SUPPLEMENTS_LABEL = "Спортпит и БАДы"
+
+
+def _pf_num(value) -> float:
+    """Число из поля, которое сайт мог сохранить и строкой ('1290', '').
+    nan/inf — ноль: иначе ответ API перестал бы быть валидным JSON."""
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        num = float(value if isinstance(value, (int, float)) else str(value).replace(" ", "").replace(",", "."))
+    except (ValueError, OverflowError):
+        return 0.0
+    return num if num - num == 0 else 0.0
+
+
+def _pf_supp_active(sl: dict) -> list:
+    return [s for s in _pf_list(sl, "budgetSupplements")
+            if isinstance(s, dict) and not s.get("archived")]
+
+
+def _pf_supp_in_use(sl: dict) -> bool:
+    """Статья «Спортпит и БАДы» есть, пока вкладкой пользуются (есть активные
+    позиции) или по ней уже записаны операции — чтобы они не остались без
+    статьи. ДЕРЖАТЬ В СИНХРОНЕ с supplementsArticleInUse() из index (9).html."""
+    if _pf_supp_active(sl):
+        return True
+    return any(isinstance(op, dict) and op.get("categoryId") == SUPPLEMENTS_ARTICLE_ID
+               for op in _pf_list(sl, "budgetCashflowOps"))
+
+
+def _pf_supp_plan(sl: dict, month: str) -> float:
+    """План «Спортпит и БАДы» на месяц — как getAutoVal() авто-категории
+    в BudgetMonthlyView (index (9).html)."""
+    by_id = {str(s.get("id")): s for s in _pf_supp_active(sl) if s.get("id")}
+    assign = sl.get("budgetSupplementAssignments")
+    entries = assign.get(month) if isinstance(assign, dict) else None
+    total = 0.0
+    for e in (entries if isinstance(entries, list) else []):
+        if isinstance(e, str):
+            e = {"id": e, "qty": 1}
+        if not isinstance(e, dict):
+            continue
+        item = by_id.get(str(e.get("id") or ""))
+        if item is not None:
+            total += _pf_num(item.get("cost")) * (_pf_num(e.get("qty")) or 1)
+    return total
+
+
+def _pf_rec_active_in(r: dict, month: str) -> bool:
+    """Даёт ли постоянный платёж план в месяце. Архивный платёж с archivedFrom
+    ('YYYY-MM' — первый месяц без плана) учитывается в месяцах до него;
+    archived без archivedFrom — ни в каком. ДЕРЖАТЬ В СИНХРОНЕ с
+    recurringActiveIn() из index (9).html."""
+    if not r.get("archived"):
+        return True
+    frm = str(r.get("archivedFrom") or "")
+    return bool(frm) and month < frm
+
 
 def find_budget_user(app: dict, token: str):
     """(uid, user) пользователя бюджета с активной ссылкой на приложение.
@@ -5021,6 +8081,7 @@ def pf_articles(sl: dict) -> list:
       • источники дохода            → direction=in,  id = <srcId>
       • статьи ручных категорий     → direction=out, id = <itemId>
       • категории «Постоянные»      → direction=out, id = __rec_<catId>
+      • «Спортпит и БАДы»           → direction=out, id = __supp_total
     Накопления и Долги сюда не попадают: их факт считается из платежей на
     своих вкладках, запись через ДДС удвоила бы суммы.
     ДЕРЖАТЬ В СИНХРОНЕ с cashflowArticles() из index (9).html."""
@@ -5061,13 +8122,19 @@ def pf_articles(sl: dict) -> list:
     seen_rec = []
     rec_items_by_cat = {}
     for r in _pf_list(sl, "budgetRecurring"):
-        if not isinstance(r, dict) or r.get("archived"):
+        if not isinstance(r, dict):
+            continue
+        # Архивный платёж с историей (archivedFrom) держит статью категории,
+        # чтобы старые операции ДДС по ней не остались без статьи.
+        if r.get("archived") and not r.get("archivedFrom"):
             continue
         cid = str(r.get("category") or "")
         if not cid:
             continue
         if cid not in seen_rec:
             seen_rec.append(cid)
+        if r.get("archived"):
+            continue
         name = str(r.get("name") or "").strip()
         if name:
             rec_items_by_cat.setdefault(cid, []).append(name)
@@ -5080,6 +8147,17 @@ def pf_articles(sl: dict) -> list:
             "group_name": "Постоянные",
             "emoji": str(c.get("emoji") or "🔄"),
             "items": rec_items_by_cat.get(cid, []),
+        })
+
+    if _pf_supp_in_use(sl):
+        arts.append({
+            "id": SUPPLEMENTS_ARTICLE_ID,
+            "name": SUPPLEMENTS_LABEL,
+            "direction": "out",
+            "group_name": SUPPLEMENTS_LABEL,
+            "emoji": "💊",
+            # Названия позиций вкладки — чтобы статья находилась и по «протеин».
+            "items": [n for n in (str(s.get("name") or "").strip() for s in _pf_supp_active(sl)) if n],
         })
 
     arts.extend({**a, "items": []} for a in ADJUSTMENT_ARTICLES)
@@ -5115,8 +8193,9 @@ def pf_dds_fact_by_category(sl: dict, month: str) -> dict:
 
 
 def pf_budget_rows(sl: dict, month: str) -> list:
-    """План / факт / остаток по статьям месяца — ручные категории и
-    «Постоянные», вкладка «Бюджет» приложения. Те же id и та же формула
+    """План / факт / остаток по статьям месяца — ручные категории,
+    «Постоянные» и «Спортпит и БАДы» (если по нему есть план или факт),
+    вкладка «Бюджет» приложения. Те же id и та же формула
     факта (ручной факт/факт из выписки + факт из ДДС), что и pf_articles()
     и «По месяцу» на сайте. Накопления и Долги сюда не входят — у них не
     «план минус потрачено», а другая механика (цель/остаток долга)."""
@@ -5158,7 +8237,7 @@ def pf_budget_rows(sl: dict, month: str) -> list:
     rec_by_id = {str(c.get("id")): c for c in rec_cats if isinstance(c, dict) and c.get("id")}
     rec_plan_by_cat = {}
     for r in _pf_list(sl, "budgetRecurring"):
-        if not isinstance(r, dict) or r.get("archived"):
+        if not isinstance(r, dict) or not _pf_rec_active_in(r, month):
             continue
         cid = str(r.get("category") or "")
         if not cid:
@@ -5183,6 +8262,20 @@ def pf_budget_rows(sl: dict, month: str) -> list:
             "plan": round(plan, 2),
             "fact": round(fact, 2),
             "remaining": round(plan - fact, 2),
+        })
+
+    supp_plan = _pf_supp_plan(sl, month)
+    supp_fact = (float(fact_vals.get(f"{SUPPLEMENTS_ARTICLE_ID}_{month}") or 0)
+                 + dds_fact.get(SUPPLEMENTS_ARTICLE_ID, 0.0))
+    if supp_plan or supp_fact:
+        rows.append({
+            "id": SUPPLEMENTS_ARTICLE_ID,
+            "name": SUPPLEMENTS_LABEL,
+            "emoji": "💊",
+            "group_name": SUPPLEMENTS_LABEL,
+            "plan": round(supp_plan, 2),
+            "fact": round(supp_fact, 2),
+            "remaining": round(supp_plan - supp_fact, 2),
         })
 
     return rows
@@ -6340,17 +9433,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(400, {"error": "invalid"})
                 return
             file_path = DATA_DIR / "files" / filename
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
             if file_path.exists():
-                ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-                ct = FILE_CONTENT_TYPES.get(ext, "application/octet-stream")
-                content = file_path.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", ct)
-                self.send_header("Content-Length", str(len(content)))
-                self.send_header("Cache-Control", "public, max-age=31536000")
-                self._cors()
-                self.end_headers()
-                self.wfile.write(content)
+                # Потоком и с Range: Safari не играет видео без 206, а большие
+                # файлы незачем целиком читать в память.
+                self._serve_ranged(file_path, FILE_CONTENT_TYPES.get(ext, "application/octet-stream"),
+                                   "public, max-age=31536000")
             else:
                 self._json(404, {"error": "not found"})
         elif route == "/api/foods":
@@ -6361,6 +9449,47 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._serve_track(self.path[len("/api/music/"):].split("?", 1)[0])
         elif route.startswith("/api/apple/"):
             self._apple_get(route)
+        elif route == "/api/tg/status":
+            self._json(200, tg_user.status() if tg_user else {"library": False})
+        elif route == "/api/tg/skills":
+            self._json(200, {"skills": (deck_skill.SKILLS if deck_skill else []) + (study_skills.SKILLS if study_skills else []) + (tg_tools.skills_catalog() if tg_tools else [])})
+        elif route == "/api/tg/tools":
+            # Схемы инструментов и кусок промпта для браузерного ассистента: только
+            # если аккаунт подключён и только включённые навыки.
+            if tg_user and tg_user._load_cfg().get("session"):
+                state = (load_app_data() or {}).get("telegramSkills")
+                self._json(200, {"tools": tg_tools.enabled_tools(state), "prompt": tg_tools.prompt_section(state)})
+            else:
+                self._json(200, {"tools": [], "prompt": ""})
+        elif route == "/api/weather-cal/status":
+            self._json(200, weather_cal_status())
+        elif route == "/api/study/status":
+            self._json(200, study_status())
+        elif route == "/api/study/chats/pick":
+            self._json(200, study_chats_pick(self._apple_query().get("q", "")))
+        elif route == "/api/study/chats/status":
+            self._json(200, study_chats_status())
+        elif route == "/api/study/debug":
+            # Сырой ответ сайта по последнему запросу — понять, что пришло вместо расписания.
+            body = (f"URL: {_rea_last['url']}\nHTTP: {_rea_last['status']}\n"
+                    f"Разбор: {_rea_diag(_rea_last['text'])}\n\n{_rea_last['text']}").encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif route == "/api/student/debug":
+            # Сырая последняя страница кабинета student.rea.ru (после входа) — для отладки разбора.
+            body = (f"URL: {_student_last['url']}\nHTTP: {_student_last['status']}\n"
+                    f"Разбор: {_rea_diag(_student_last['text'])}\n\n{_student_last['text']}").encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif route == "/api/study/lessons":
+            q = self._apple_query()
+            self._json(200, study_lessons(q.get("from"), q.get("to")))
         elif self.path == "/api/data":
             if APP_DATA_FILE.exists():
                 try:
@@ -6465,22 +9594,18 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                         if raw in ALLOWED_FILE_EXT:
                             ext = raw
                         break
-            length = self._content_length()
-            MAX_FILE = 25 * 1024 * 1024  # 25 MB hard cap
-            if length is None:
-                self._json(411, {"error": "Content-Length required"})
-                return
-            if length > MAX_FILE:
-                self._json(413, {"error": "file too large"})
-                return
-            body = self.rfile.read(length)
-            if not body:
-                self._json(400, {"error": "empty body"})
-                return
             filename = str(_uuid.uuid4()) + "." + ext
             files_dir = DATA_DIR / "files"
             files_dir.mkdir(parents=True, exist_ok=True)
-            (files_dir / filename).write_bytes(body)
+            # Пишем на диск по кускам, а не держим в памяти: видео и архивы
+            # бывают по сотне мегабайт.
+            err = self._stream_upload_to(files_dir / filename, MAX_UPLOAD_FILE)
+            if err == "file too large":
+                self._json(413, {"error": "file too large", "limit": MAX_UPLOAD_FILE})
+                return
+            if err:
+                self._json(411 if "length" in err.lower() else 400, {"error": err})
+                return
             self._json(200, {"filename": filename})
         elif self.path.startswith("/api/music"):
             import uuid as _uuid
@@ -6510,6 +9635,50 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {"id": filename, "name": name, "size": len(body)})
         elif route.startswith("/api/apple/"):
             self._apple_post(route)
+        elif route.startswith("/api/tg/"):
+            self._tg_post(route)
+        elif route == "/api/student/check":
+            try:
+                self._json(200, student_check())
+            except Exception as e:
+                self._json(200, {"ok": False, "error": str(e)})
+        elif route == "/api/weather-cal/sync":
+            length = self._content_length() or 0
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            except Exception:
+                payload = {}
+            try:
+                self._json(200, weather_cal_sync(preview=bool((payload or {}).get("preview")), reason="manual"))
+            except Exception as e:
+                self._json(200, {"ok": False, "error": str(e)})
+        elif route in ("/api/study/brief", "/api/study/chats/scan"):
+            length = self._content_length() or 0
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            except Exception:
+                payload = {}
+            if route == "/api/study/brief":
+                task = (payload or {}).get("task")
+                self._json(200, start_study_brief(task if isinstance(task, dict) else {}))
+            else:
+                if not study_skills:
+                    self._json(200, {"ok": False, "error": "Навык недоступен на сервере."})
+                elif _study_scan_lock.locked():
+                    self._json(200, {"ok": False, "error": "Проверка уже идёт."})
+                else:
+                    threading.Thread(target=lambda: study_chats_scan(manual=True), daemon=True).start()
+                    self._json(200, {"ok": True, "started": True})
+        elif route == "/api/study/sync":
+            length = self._content_length() or 0
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            except Exception:
+                payload = {}
+            try:
+                self._json(200, study_sync(preview=bool((payload or {}).get("preview")), reason="manual"))
+            except Exception as e:
+                self._json(200, {"ok": False, "error": str(e)})
         elif self.path == "/api/data":
             length = self._content_length()
             if length is None:
@@ -6615,19 +9784,25 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 app_data = load_app_data()
                 saved = app_data.get("engWordReminder") or {}
                 override = body.get("reminder") if isinstance(body.get("reminder"), dict) else {}
-                reminder = {
-                    "enabled": True,
-                    "time": override.get("time", saved.get("time", "09:00")),
-                    "days": override.get("days", saved.get("days", [1, 2, 3, 4, 5])),
-                    "count": override.get("count", saved.get("count", 5)),
-                    "order": override.get("order", saved.get("order", "random")),
-                    "dateRange": override.get("dateRange", saved.get("dateRange", "7")),
-                }
-                result = send_eng_words_now(app_data, reminder, test=True)
+                # Client may send full normalized reminder; merge over saved.
+                merged = {**saved, **override} if override else saved
+                if "byDay" in override and "byDay" in saved and isinstance(override.get("byDay"), dict):
+                    merged = {**saved, **override, "byDay": override["byDay"]}
+                rem = normalize_eng_word_reminder(merged)
+                rem["enabled"] = True  # test ignores master off
+                try:
+                    day_js = int(body.get("day") if body.get("day") is not None else today_msk().isoweekday() % 7)
+                except Exception:
+                    day_js = today_msk().isoweekday() % 7
+                day_pick = resolve_eng_day_pick(rem, day_js)
+                if not day_pick:
+                    self._json(400, {"error": "that day is turned off — enable it to test"})
+                    return
+                result = send_eng_words_now(app_data, day_pick, test=True)
                 if result.get("ok"):
-                    self._json(200, result)
+                    self._json(200, {**result, "day": day_js})
                 else:
-                    self._json(400, result)
+                    self._json(400, {**result, "day": day_js})
             except Exception as e:
                 self._json(500, {"error": str(e)})
         elif self.path == "/api/backup/send-now":
@@ -7333,9 +10508,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             "background_color": "#f2f2fa",
             "theme_color": "#4338ca",
             "lang": "ru",
+            # Содержимое иконки целиком в безопасной зоне maskable (радиус 40%),
+            # поэтому тот же файл годится и как «any», и как «maskable».
             "icons": [
-                {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
-                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/finance-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/finance-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/finance-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
             ],
         }
         body = json.dumps(manifest, ensure_ascii=False).encode()
@@ -7362,12 +10540,13 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             "scope": "/",
             "display": "standalone",
             "orientation": "portrait",
-            "background_color": "#4F8EF7",
+            "background_color": "#061230",
             "theme_color": "#4F8EF7",
             "lang": "ru",
             "icons": [
-                {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
-                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+                {"src": "/icons/misc-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/misc-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/misc-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
             ],
         }
         body = json.dumps(manifest, ensure_ascii=False).encode()
@@ -7468,7 +10647,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 category_id = str(payload.get("category_id") or "")[:64]
                 article = next((c for c in pf_articles(sl)
                                 if c["id"] == category_id and c["direction"] == direction), None)
-                if article is None:
+                # Статью могли удалить на сайте уже после записи операции —
+                # правка суммы/даты/комментария не должна из-за этого падать,
+                # пока статью и направление не трогают.
+                keeps_old = (category_id and category_id == str(ops[idx].get("categoryId") or "")
+                             and direction == ("in" if ops[idx].get("direction") == "in" else "out"))
+                if article is None and not keeps_old:
                     return 400, {"error": "unknown category"}
                 updated = dict(ops[idx])
                 updated.update({
@@ -7532,33 +10716,23 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             return
 
         def apply(app, uid, sl):
-            ops = _pf_list(sl, "budgetCashflowOps")
-            idx = next((i for i, o in enumerate(ops)
-                        if isinstance(o, dict) and str(o.get("id") or "") == op_id), None)
-            if idx is not None:
-                ops = list(ops)
-                del ops[idx]
-                sl["budgetCashflowOps"] = ops
+            # Ищем по всем трём хранилищам. Удаление обязательно оставляет
+            # tombstone в deletedIds — так же, как удаление на сайте. Без него
+            # открытая вкладка Jarvis со старой копией среза при следующей
+            # синхронизации возвращала операцию обратно в ДДС.
+            for key in ("budgetCashflowOps", "savingsTransactions", "debtTransactions"):
+                arr = _pf_list(sl, key)
+                kept = [o for o in arr
+                        if not (isinstance(o, dict) and str(o.get("id") or "") == op_id)]
+                if len(kept) == len(arr):
+                    continue
+                sl[key] = kept
+                deleted = dict(app.get("deletedIds") or {})
+                coll = dict(deleted.get(key) or {})
+                coll[op_id] = int(time.time() * 1000)
+                deleted[key] = coll
+                app["deletedIds"] = deleted
                 return None
-
-            sav = _pf_list(sl, "savingsTransactions")
-            idx = next((i for i, t in enumerate(sav)
-                        if isinstance(t, dict) and str(t.get("id") or "") == op_id), None)
-            if idx is not None:
-                sav = list(sav)
-                del sav[idx]
-                sl["savingsTransactions"] = sav
-                return None
-
-            debt = _pf_list(sl, "debtTransactions")
-            idx = next((i for i, t in enumerate(debt)
-                        if isinstance(t, dict) and str(t.get("id") or "") == op_id), None)
-            if idx is not None:
-                debt = list(debt)
-                del debt[idx]
-                sl["debtTransactions"] = debt
-                return None
-
             return 404, {"error": "operation not found"}
 
         code, body = pf_write(token, apply)
@@ -7729,6 +10903,14 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                     f'<meta name="apple-mobile-web-app-title" content="{shortcut["apple_title"]}" />'.encode("utf-8"),
                     1,
                 )
+                if shortcut.get("icon_180"):
+                    for old_tag, new_tag in (
+                        (b'<link rel="apple-touch-icon" href="/apple-touch-icon.png" />',
+                         f'<link rel="apple-touch-icon" href="{shortcut["icon_180"]}" />'),
+                        (b'<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />',
+                         f'<link rel="apple-touch-icon" sizes="180x180" href="{shortcut["icon_180"]}" />'),
+                    ):
+                        content = content.replace(old_tag, new_tag.encode("utf-8"), 1)
             # ETag поверх итогового контента (после подмены manifest/title у
             # шорткатов), чтобы у /misc и site-wide "/" не совпадал и оба
             # корректно инвалидировались при правке index (9).html.
@@ -7855,6 +11037,51 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         except Exception as e:
             self._json(500, {"error": str(e)})
 
+    def _tg_post(self, route: str):
+        """Вход в личный Telegram и вызов его инструментов браузерным ассистентом."""
+        length = self._content_length() or 0
+        if length > 256 * 1024:
+            self._json(413, {"error": "body too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except Exception as e:
+            self._json(400, {"error": str(e)})
+            return
+        if not isinstance(payload, dict):
+            payload = {}
+        if tg_user is None:
+            self._json(200, {"ok": False, "error": "Личный Telegram недоступен на сервере (нет telethon)."})
+            return
+        try:
+            if route == "/api/tg/auth/start":
+                self._json(200, tg_user.auth_start(payload.get("apiId"), payload.get("apiHash"), payload.get("phone")))
+            elif route == "/api/tg/auth/qr":
+                self._json(200, tg_user.auth_qr_start(payload.get("apiId"), payload.get("apiHash")))
+            elif route == "/api/tg/auth/qr/poll":
+                self._json(200, tg_user.auth_qr_poll())
+            elif route == "/api/tg/auth/resend":
+                self._json(200, tg_user.auth_resend())
+            elif route == "/api/tg/auth/code":
+                self._json(200, tg_user.auth_code(payload.get("code")))
+            elif route == "/api/tg/auth/password":
+                self._json(200, tg_user.auth_password(payload.get("password")))
+            elif route == "/api/tg/logout":
+                self._json(200, tg_user.logout())
+            elif route == "/api/tg/tool":
+                name = payload.get("name")
+                if name not in TG_TOOL_NAMES:
+                    self._json(400, {"error": "unknown tool"})
+                else:
+                    self._json(200, execute_tg_tool(name, payload.get("input") or {},
+                                                    (load_app_data() or {}).get("telegramSkills")))
+            else:
+                self._json(404, {"error": "not found"})
+        except tg_user.TgError as e:
+            self._json(200, {"ok": False, "error": str(e)})
+        except Exception as e:
+            self._json(500, {"ok": False, "error": str(e)})
+
     def _apple_post(self, route: str):
         query = self._apple_query()
         length = self._content_length() or 0
@@ -7946,6 +11173,72 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             return None, "incomplete body"
         return body, None
 
+    def _stream_upload_to(self, dest, max_bytes: int):
+        """Тело запроса (Content-Length или chunked) — прямо в файл dest.
+        Возвращает текст ошибки или None; при ошибке недописанный файл удаляется."""
+        tmp = dest.with_name(dest.name + ".part")
+        err = None
+        total = 0
+        try:
+            with tmp.open("wb") as fh:
+                te = (self.headers.get("Transfer-Encoding") or "").lower()
+                if "chunked" in te:
+                    while True:
+                        line = self.rfile.readline(1024).strip()
+                        try:
+                            size = int(line.split(b";", 1)[0], 16)
+                        except ValueError:
+                            err = "broken chunked body"
+                            break
+                        if size == 0:
+                            while self.rfile.readline(1024) not in (b"\r\n", b"\n", b""):
+                                pass
+                            break
+                        total += size
+                        if total > max_bytes:
+                            err = "file too large"
+                            break
+                        left = size
+                        while left > 0:
+                            chunk = self.rfile.read(min(1024 * 1024, left))
+                            if not chunk:
+                                err = "broken chunked body"
+                                break
+                            fh.write(chunk)
+                            left -= len(chunk)
+                        if err:
+                            break
+                        self.rfile.read(2)
+                else:
+                    length = self._content_length()
+                    if length is None:
+                        err = "Content-Length required"
+                    elif length > max_bytes:
+                        err = "file too large"
+                    else:
+                        left = length
+                        while left > 0:
+                            chunk = self.rfile.read(min(1024 * 1024, left))
+                            if not chunk:
+                                err = "incomplete body"
+                                break
+                            fh.write(chunk)
+                            left -= len(chunk)
+                        total = length - left
+            if not err and total == 0:
+                err = "empty body"
+            if err:
+                # Остаток тела не дочитан — соединение дальше не переиспользовать.
+                self.close_connection = True
+                tmp.unlink(missing_ok=True)
+                return err
+            tmp.replace(dest)
+            return None
+        except OSError as e:
+            tmp.unlink(missing_ok=True)
+            self.close_connection = True
+            return f"write failed: {e}"
+
     def _serve_track(self, filename: str):
         """Аудио с поддержкой Range. Safari без 206-ответа трек просто не играет:
         он всегда начинает с запроса куска, а не файла целиком."""
@@ -7957,7 +11250,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(404, {"error": "not found"})
             return
         ext = path.suffix.lstrip(".").lower()
-        ctype = MUSIC_EXT.get(ext, "application/octet-stream")
+        self._serve_ranged(path, MUSIC_EXT.get(ext, "application/octet-stream"), "private, max-age=86400")
+
+    def _serve_ranged(self, path, ctype: str, cache_control: str):
+        """Файл целиком или кусок по заголовку Range (206) — для аудио/видео."""
         size = path.stat().st_size
         start, end = 0, size - 1
         rng = self.headers.get("Range", "")
@@ -7987,7 +11283,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(length))
             if partial:
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-            self.send_header("Cache-Control", "private, max-age=86400")
+            self.send_header("Cache-Control", cache_control)
             self._cors()
             self.end_headers()
             if self.command == "HEAD":
@@ -8035,6 +11331,9 @@ def main():
 
     os.chdir(DIR)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if deck_skill:   # видно в логах Railway после деплоя: поставился ли LibreOffice для превью презентаций
+        print("Презентации: превью слайдов (LibreOffice + pdftoppm):",
+              "доступно" if deck_skill.db.preview_available() else "НЕ найдено — слайды придут только файлом")
 
     threading.Thread(target=notifier_loop, daemon=True).start()
     threading.Thread(target=updates_loop, daemon=True).start()

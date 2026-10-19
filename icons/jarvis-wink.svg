@@ -1,0 +1,36 @@
+<!-- Персонаж «Джарвис» (выражение: wink) — талисман приложения, прозрачный фон. Подключать через <img> или как CSS-фон: внутри id градиентов и фильтров, при вставке inline они будут конфликтовать. Исходная иконка ярлыка «Прочее» — misc.svg. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<defs>
+<radialGradient id="halo" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#17C8FF" stop-opacity=".4"/><stop offset="1" stop-color="#1A7BFF" stop-opacity="0"/></radialGradient>
+<linearGradient id="ringA" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#D4FBFF"/><stop offset=".5" stop-color="#58E0FF"/><stop offset="1" stop-color="#2B8CFF"/></linearGradient>
+<linearGradient id="ringB" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#58E0FF"/><stop offset="1" stop-color="#2B8CFF"/></linearGradient>
+<radialGradient id="face" cx="42%" cy="28%" r="90%"><stop offset="0" stop-color="#18467A"/><stop offset=".5" stop-color="#0A2548"/><stop offset="1" stop-color="#030D20"/></radialGradient>
+<radialGradient id="under" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#3FD2FF" stop-opacity=".32"/><stop offset="1" stop-color="#3FD2FF" stop-opacity="0"/></radialGradient>
+<linearGradient id="rim" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#D4FBFF" stop-opacity=".95"/><stop offset=".5" stop-color="#58E0FF" stop-opacity=".4"/><stop offset="1" stop-color="#2B8CFF" stop-opacity=".7"/></linearGradient>
+<linearGradient id="eyeFill" gradientUnits="userSpaceOnUse" x1="0" y1="430" x2="0" y2="540"><stop offset="0" stop-color="#F4FEFF"/><stop offset=".55" stop-color="#A2F2FF"/><stop offset="1" stop-color="#3FD2FF"/></linearGradient>
+<linearGradient id="mouthFill" gradientUnits="userSpaceOnUse" x1="0" y1="550" x2="0" y2="660"><stop offset="0" stop-color="#F4FEFF"/><stop offset="1" stop-color="#5BDDFF"/></linearGradient>
+<clipPath id="faceClip"><circle cx="512" cy="512" r="272"/></clipPath>
+<filter id="innerGlow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="14"/></filter>
+<filter id="soft" x="-20%" y="-50%" width="140%" height="200%"><feGaussianBlur stdDeviation="8"/></filter>
+<filter id="bloom" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur in="SourceGraphic" stdDeviation="13" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<filter id="bloomSoft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur in="SourceGraphic" stdDeviation="9" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+
+
+<circle cx="512" cy="512" r="512" fill="url(#halo)"/>
+<g transform="translate(512 512) scale(1) translate(-512 -512)">
+<g filter="url(#bloomSoft)"><path d="M421.52 149.11A374 374 0 0 1 874.89 602.48" fill="none" stroke="#58E0FF" stroke-opacity=".85" stroke-width="8" stroke-linecap="round"/><path d="M822.06 721.14A374 374 0 0 1 242.97 771.8" fill="none" stroke="#58E0FF" stroke-opacity=".85" stroke-width="8" stroke-linecap="round"/><path d="M165.23 652.1A374 374 0 0 1 384.08 160.55" fill="none" stroke="#58E0FF" stroke-opacity=".85" stroke-width="8" stroke-linecap="round"/><circle cx="853.67" cy="664.12" r="11" fill="#D4FBFF"/><circle cx="198.34" cy="715.69" r="11" fill="#D4FBFF"/><circle cx="402.65" cy="154.34" r="8" fill="#D4FBFF"/></g>
+<g><path d="M860.67 542.5L870.63 543.38M856.68 572.78L866.53 574.51M850.07 602.59L859.73 605.17M840.89 631.71L850.29 635.13M829.21 659.92L838.27 664.14M798.7 712.75L806.89 718.49M780.12 736.98L787.78 743.4M759.49 759.49L766.56 766.56M736.98 780.12L743.4 787.78M712.75 798.7L718.49 806.89M659.92 829.21L664.14 838.27M631.71 840.89L635.13 850.29M602.59 850.07L605.17 859.73M572.78 856.68L574.51 866.53M542.5 860.67L543.38 870.63M481.5 860.67L480.62 870.63M451.22 856.68L449.49 866.53M421.41 850.07L418.83 859.73M392.29 840.89L388.87 850.29M364.08 829.21L359.86 838.27M311.25 798.7L305.51 806.89M287.02 780.12L280.6 787.78M264.51 759.49L257.44 766.56M243.88 736.98L236.22 743.4M225.3 712.75L217.11 718.49M194.79 659.92L185.73 664.14M183.11 631.71L173.71 635.13M173.93 602.59L164.27 605.17M167.32 572.78L157.47 574.51M163.33 542.5L153.37 543.38M163.33 481.5L153.37 480.62M167.32 451.22L157.47 449.49M173.93 421.41L164.27 418.83M183.11 392.29L173.71 388.87M194.79 364.08L185.73 359.86M225.3 311.25L217.11 305.51M243.88 287.02L236.22 280.6M264.51 264.51L257.44 257.44M287.02 243.88L280.6 236.22M311.25 225.3L305.51 217.11M364.08 194.79L359.86 185.73M392.29 183.11L388.87 173.71M421.41 173.93L418.83 164.27M451.22 167.32L449.49 157.47M481.5 163.33L480.62 153.37M542.5 163.33L543.38 153.37M572.78 167.32L574.51 157.47M602.59 173.93L605.17 164.27M631.71 183.11L635.13 173.71M659.92 194.79L664.14 185.73M712.75 225.3L718.49 217.11M736.98 243.88L743.4 236.22M759.49 264.51L766.56 257.44M780.12 287.02L787.78 280.6M798.7 311.25L806.89 305.51M829.21 364.08L838.27 359.86M840.89 392.29L850.29 388.87M850.07 421.41L859.73 418.83M856.68 451.22L866.53 449.49M860.67 481.5L870.63 480.62" fill="none" stroke="#58E0FF" stroke-opacity=".36" stroke-width="3" stroke-linecap="round"/><path d="M857 512L872 512M810.78 684.5L823.77 692M684.5 810.78L692 823.77M512 857L512 872M339.5 810.78L332 823.77M213.22 684.5L200.23 692M167 512L152 512M213.22 339.5L200.23 332M339.5 213.22L332 200.23M512 167L512 152M684.5 213.22L692 200.23M810.78 339.5L823.77 332" fill="none" stroke="#58E0FF" stroke-opacity=".8" stroke-width="5" stroke-linecap="round"/></g>
+<g filter="url(#bloomSoft)">
+<circle cx="512" cy="512" r="322" fill="none" stroke="#58E0FF" stroke-opacity=".14" stroke-width="32"/>
+<path d="M663.17 227.69A322 322 0 0 1 478.34 832.24" fill="none" stroke="url(#ringA)" stroke-width="32" stroke-linecap="round"/>
+<path d="M341.37 785.07A322 322 0 0 1 238.93 341.37" fill="none" stroke="url(#ringB)" stroke-width="32" stroke-linecap="round" stroke-opacity=".85"/>
+<path d="M331.94 245.05A322 322 0 0 1 523.24 190.2" fill="none" stroke="url(#ringA)" stroke-width="32" stroke-linecap="round"/></g>
+<circle cx="512" cy="512" r="292" fill="none" stroke="#58E0FF" stroke-opacity=".5" stroke-width="3"/>
+<circle cx="512" cy="512" r="272" fill="url(#face)"/>
+<g clip-path="url(#faceClip)"><circle cx="512" cy="512" r="274" fill="none" stroke="#58E0FF" stroke-opacity=".55" stroke-width="30" filter="url(#innerGlow)"/><ellipse cx="512" cy="1010" rx="330" ry="250" fill="url(#under)"/></g>
+<circle cx="512" cy="512" r="272" fill="none" stroke="url(#rim)" stroke-width="6"/>
+<path d="M300 380Q430 250 610 296" fill="none" stroke="#fff" stroke-opacity=".16" stroke-width="16" stroke-linecap="round" filter="url(#soft)"/>
+<g filter="url(#bloom)"><path d="M354 470L486 474A66.03 34 1.74 0 1 354 470Z" fill="url(#eyeFill)" stroke="url(#eyeFill)" stroke-width="11" stroke-linejoin="round"/><path d="M550 494Q604 528 658 494" fill="none" stroke="url(#eyeFill)" stroke-width="22" stroke-linecap="round"/><path d="M552 428Q606 396 668 420" fill="none" stroke="#D4FBFF" stroke-width="12" stroke-linecap="round"/><path d="M430 596Q512 648 594 596" fill="none" stroke="url(#mouthFill)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/></g>
+</g>
+</svg>
