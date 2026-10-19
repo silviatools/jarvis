@@ -11443,7 +11443,7 @@ async function extractHealthEventFromDocument(files, settings) {
 
   let parsed;
   try {
-    parsed = await callAI(messages, settings, HEALTH_EXTRACT_SYSTEM_PROMPT, 400, 'healthExtract');
+    parsed = await callAI(messages, settings, HEALTH_EXTRACT_SYSTEM_PROMPT, 8000, 'healthExtract');
   } catch (e) {
     if (e.message === 'no_key') throw new Error('Сначала укажите API-ключ ИИ в Настройках → Ассистент');
     throw new Error(e.message?.includes('JSON') ? 'ИИ вернул нераспознаваемый ответ, попробуйте ещё раз' : (e.message || 'Не удалось распознать документ'));
