@@ -1458,11 +1458,16 @@ function renderFinish(){
 /* ============== UTILS ============== */
 function escapeHtml(s){return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function escapeRe(s){return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
+// Regex for a whole (possibly multi-word) expression: "for the sake of" → for\w*\s+the\w*\s+sake\w*\s+of\w*
+function phraseRe(word, flags){
+  const parts = String(word).replace(/\([^)]*\)/g,' ').trim().split(/\s+/).filter(Boolean);
+  if(!parts.length) return null;
+  return new RegExp('\\b(' + parts.map(p => escapeRe(p) + '\\w*').join('\\s+') + ')', flags||'i');
+}
 function highlight(sentence, word){
   if(!word) return escapeHtml(sentence);
-  const w = word.split(' ')[0];
-  const re = new RegExp('\\b(' + escapeRe(w) + '\\w*)','ig');
-  return escapeHtml(sentence).replace(re, '<b>$1</b>');
+  const re = phraseRe(word, 'ig');
+  return re ? escapeHtml(sentence).replace(re, '<b>$1</b>') : escapeHtml(sentence);
 }
 function speak(text){
   if(!text || !window.speechSynthesis) return;
@@ -2009,17 +2014,19 @@ $('btnGenerate').onclick = async () => {
 
 Rules:
 - Sentence must be natural, B2-C1 level English
-- The target word must appear exactly once in the sentence
+- The target word or expression must appear exactly once in the sentence
+- If the target is a multi-word expression (e.g. "for the sake of", "take care of"), keep all its words together, in this order, with nothing inserted between them (only the verb may change form, e.g. "took care of")
 - Do not add explanations, just the sentence
 - Return ONLY valid JSON array, no markdown, no backticks
+- "form" is the exact text of the target as it appears in your sentence (the whole expression, not just its first word)
 
 Words:
 ${wordList}
 
 Return format (strict JSON array):
 [
-  {"word": "word1", "sentence": "Example sentence with word1."},
-  {"word": "word2", "sentence": "Example sentence with word2."}
+  {"word": "word1", "sentence": "Example sentence with word1.", "form": "word1"},
+  {"word": "for the sake of", "sentence": "She stayed silent for the sake of peace.", "form": "for the sake of"}
 ]`;
 
   try {
@@ -2032,10 +2039,17 @@ Return format (strict JSON array):
     FILL.generated = items.map((item, idx) => {
       const wordObj = batch.find(w => w.en.toLowerCase() === (item.word||'').toLowerCase()) || batch[idx] || batch[0];
       const sentence = item.sentence || '';
-      const baseWord = wordObj.en.split(' ')[0];
-      const re = new RegExp('\\b(' + escapeRe(baseWord) + '\\w*)', 'i');
-      const match = sentence.match(re);
-      const exactForm = match ? match[1] : wordObj.en;
+      // exact phrase as it stands in the sentence: AI's "form" if it really occurs there, else regex over the whole expression
+      const aiForm = String(item.form || '').trim();
+      let exactForm = '';
+      if(aiForm){
+        const at = sentence.toLowerCase().indexOf(aiForm.toLowerCase());
+        if(at >= 0) exactForm = sentence.substr(at, aiForm.length);
+      }
+      if(!exactForm){
+        const match = sentence.match(phraseRe(wordObj.en));
+        exactForm = match ? match[1] : wordObj.en;
+      }
       return { word: wordObj, sentence, exactForm };
     });
 
@@ -2062,20 +2076,27 @@ function renderFillChips(){
   `).join('');
 }
 
+// sentence (escaped) with the target expression replaced by "___"
+function fillBlankSentence(sentence, form){
+  const at = sentence.toLowerCase().indexOf(String(form).toLowerCase());
+  if(at >= 0) return escapeHtml(sentence.slice(0, at)) + '___' + escapeHtml(sentence.slice(at + form.length));
+  const re = phraseRe(form);
+  return re ? escapeHtml(sentence).replace(re, '___') : escapeHtml(sentence);
+}
+
 function renderFillSentences(){
   const main = $('fillMain');
   if(!FILL.generated.length){ main.innerHTML = '<div class="gen-status">No sentences</div>'; return; }
 
   main.innerHTML = FILL.generated.map((item, i) => {
     const {word, sentence} = item;
-    // replace word with input field
-    const re = new RegExp('\\b' + escapeRe(word.en.split(' ')[0]) + '\\w*', 'i');
-    const sentenceWithBlank = sentence.replace(re, `<span style="border-bottom:2px solid var(--accent);display:inline-block;min-width:80px;opacity:0">${word.en}</span>`);
+    // the whole expression (not only its first word) is replaced with a blank
+    const blanked = fillBlankSentence(sentence, item.exactForm || word.en);
 
     return `
       <div class="sentence-card" id="scard-${i}">
         <div class="s-num">№${i+1} · <span class="s-word-reveal" style="filter:blur(5px);cursor:pointer;transition:filter .2s" title="click to reveal">${escapeHtml(word.en)} — ${escapeHtml(word.ru)}</span></div>
-        <div class="s-text" id="stext-${i}">${escapeHtml(sentence).replace(new RegExp('\\b'+escapeRe(word.en.split(' ')[0])+'\\w*','i'), '___')}</div>
+        <div class="s-text" id="stext-${i}">${blanked}</div>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
           <input class="s-input" id="sinp-${i}" type="text" placeholder="type the word..." autocomplete="off" data-idx="${i}" />
           <button class="primary" onclick="checkFill(${i})" style="padding:9px 16px">Check</button>
@@ -2100,8 +2121,8 @@ function checkFill(i){
   if(!item) return;
   const inp = $('sinp-'+i);
   const fb = $('sfb-'+i);
-  const val = inp.value.trim().toLowerCase();
-  const target = (item.exactForm || item.word.en).toLowerCase();
+  const val = inp.value.trim().replace(/\s+/g,' ').toLowerCase();
+  const target = (item.exactForm || item.word.en).replace(/\s+/g,' ').toLowerCase();
 
   // Levenshtein with tolerance
   const dist = levenshtein(val, target);
@@ -2125,7 +2146,9 @@ function checkFill(i){
   } else {
     inp.classList.add('wrong');
     fb.className = 's-feedback show err';
-    fb.textContent = `✗ Wrong. Hint: "${(item.exactForm||item.word.en)[0]}${'_'.repeat((item.exactForm||item.word.en).length-1)}"`;
+    // first letter of every word, the rest hidden
+    const hint = (item.exactForm||item.word.en).split(/\s+/).map(p => p[0] + '_'.repeat(p.length-1)).join(' ');
+    fb.textContent = `✗ Wrong. Hint: "${hint}"`;
   }
 }
 
@@ -2134,7 +2157,7 @@ function revealFill(i){
   if(!item) return;
   const inp = $('sinp-'+i);
   const fb = $('sfb-'+i);
-  inp.value = item.word.en;
+  inp.value = item.exactForm || item.word.en;
   inp.classList.add('correct');
   fb.className = 's-feedback show ok';
   fb.textContent = `Word: "${item.exactForm || item.word.en}"`;
