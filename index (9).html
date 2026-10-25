@@ -177,6 +177,19 @@
   .pb-safe { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
   .bottom-nav { padding-bottom: env(safe-area-inset-bottom, 0); }
 
+  /* Бюджет на телефоне: модалки раздела — шторки снизу (см. ModalSheetContext),
+     а поля ввода не мельче 16px — иначе iOS приближает страницу при фокусе. */
+  @keyframes sheetUp {
+    from { transform: translateY(40px); opacity: 0.6; }
+    to { transform: translateY(0); opacity: 1; }
+  }
+  @media (max-width: 767px) {
+    .modal-sheet { animation: sheetUp 0.28s cubic-bezier(.2, .9, .25, 1) both; }
+    .modal-sheet-body { padding-bottom: max(1rem, calc(env(safe-area-inset-bottom, 0px) + 0.75rem)); }
+    .modal-sheet input:not([type=checkbox]):not([type=radio]), .modal-sheet select, .modal-sheet textarea,
+    .budget-root input:not([type=checkbox]):not([type=radio]), .budget-root select, .budget-root textarea { font-size: 16px; }
+  }
+
   /* iOS Safari визуально «отклеивает» position:fixed элементы от края экрана
      во время инерционного скролла — особенно вместе с backdrop-filter (тут
      на нижней панели и кнопке голоса). Перевод в свой GPU-слой это чинит. */
@@ -18845,6 +18858,97 @@ function HolidayForm({ initial, onSave, onClose }) {
 
 // ============== BUDGET VIEW ==============
 
+// ── Мобильная вёрстка «Бюджета» ─────────────────────────────────────────────
+// Уже 768px (граница md: тут прячется шапка и появляется нижняя навигация)
+// таблицы раздела заменяются карточками, а редкие действия уходят в меню «⋯».
+const BUDGET_MOBILE_QUERY = '(max-width: 767px)';
+const useBudgetMobile = () => {
+  const read = () => !!(typeof window !== 'undefined' && window.matchMedia && window.matchMedia(BUDGET_MOBILE_QUERY).matches);
+  const [mobile, setMobile] = useState(read);
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const mq = window.matchMedia(BUDGET_MOBILE_QUERY);
+    const onChange = () => setMobile(mq.matches);
+    onChange();
+    if (mq.addEventListener) mq.addEventListener('change', onChange); else mq.addListener(onChange);
+    return () => { if (mq.removeEventListener) mq.removeEventListener('change', onChange); else mq.removeListener(onChange); };
+  }, []);
+  return mobile;
+};
+
+// Меню действий на телефоне — шторка со списком кнопок. actions: [{ icon,
+// label, hint?, danger?, warn?, onClick }], пустые элементы пропускаются.
+function BudgetActionSheet({ title = 'Действия', actions, onClose }) {
+  return (
+    <Modal title={title} onClose={onClose}>
+      <div className="-mx-1.5 -my-1 space-y-0.5">
+        {actions.filter(Boolean).map(a => (
+          <button key={a.label} type="button" onClick={() => { onClose(); a.onClick(); }}
+            className={`w-full flex items-center gap-3 px-2 py-2.5 rounded-xl text-left active:bg-black/5 hover:bg-black/5 transition-colors ${a.danger ? 'text-red-500' : a.warn ? 'text-amber-700' : 'text-[var(--text)]'}`}>
+            <span className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border ${a.danger ? 'bg-red-50 border-red-100' : a.warn ? 'bg-amber-50 border-amber-200' : 'bg-[var(--surface)] border-[var(--border)]'}`}>
+              {typeof a.icon === 'string' ? <Icon name={a.icon} size={17} /> : a.icon}
+            </span>
+            <span className="flex-1 min-w-0">
+              <span className="block text-[15px] font-medium">{a.label}</span>
+              {a.hint && <span className="block text-xs text-[var(--text-subtle)] mt-0.5">{a.hint}</span>}
+            </span>
+          </button>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
+// Тонкая полоса «сколько из плана»: красная при перерасходе (over), иначе
+// цвет tone. value/max могут быть нулём — тогда полоса пустая.
+function BudgetBar({ value, max, tone = 'bg-blue-500', over = false, className = '' }) {
+  const pct = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : (value > 0 ? 100 : 0);
+  return (
+    <div className={`h-1.5 rounded-full bg-black/[0.06] overflow-hidden ${className}`}>
+      <div className={`h-full rounded-full transition-all ${over ? 'bg-red-500' : tone}`} style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+// Тост «Готово · Отменить» над нижней навигацией (телефон): быстрые кнопки
+// на карточках срабатывают с одного тапа, поэтому случайный тап можно
+// откатить. Возвращает [show(text, undo?), node].
+function useBudgetUndo() {
+  const [toast, setToast] = useState(null);
+  const timer = useRef(null);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const show = (text, undo) => {
+    clearTimeout(timer.current);
+    setToast({ text, undo, key: Date.now() });
+    timer.current = setTimeout(() => setToast(null), 5000);
+  };
+  const node = toast ? ReactDOM.createPortal(
+    <div key={toast.key} className="md:hidden fixed left-3 right-3 z-40 fade-in"
+      style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 72px)' }}>
+      <div className="flex items-center gap-3 rounded-2xl bg-[var(--text)] text-white pl-4 pr-2 py-2 shadow-xl">
+        <Icon name="check" size={16} />
+        <span className="flex-1 min-w-0 text-sm truncate">{toast.text}</span>
+        {toast.undo && (
+          <button onClick={() => { clearTimeout(timer.current); toast.undo(); setToast(null); }}
+            className="shrink-0 px-3 py-2 rounded-xl text-sm font-semibold bg-white/15 active:bg-white/25">Отменить</button>
+        )}
+      </div>
+    </div>,
+    document.body
+  ) : null;
+  return [show, node];
+}
+
+// Кнопка «⋯» для карточек на телефоне.
+function BudgetMoreButton({ onClick, title = 'Ещё' }) {
+  return (
+    <button type="button" onClick={e => { e.stopPropagation(); onClick(); }} title={title}
+      className="w-9 h-9 -mr-1.5 rounded-xl flex items-center justify-center text-[var(--text-muted)] active:bg-black/5 hover:bg-black/5 shrink-0">
+      <Icon name="moreHorizontal" size={18} />
+    </button>
+  );
+}
+
 const BUDGET_CATS = [
   { id: 'gift',    emoji: '🎁', label: 'Подарки'      },
   { id: 'travel',  emoji: '✈️', label: 'Путешествия'  },
@@ -19607,18 +19711,26 @@ function BudgetView({ data, setData, onDirtyChange }) {
 
   const setActiveUser = (id) => { if (confirmLeavePlans()) setData(d => ({ ...d, activeBudgetUserId: id })); };
 
+  // На телефоне лента вкладок шире экрана — активную докручиваем в зону видимости.
+  const tabsRef = useRef(null);
+  useEffect(() => {
+    const el = tabsRef.current && tabsRef.current.querySelector(`[data-budget-tab="${budgetTab}"]`);
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+  }, [budgetTab]);
+
   return (
-    <main className="w-full mx-auto px-4 sm:px-6 pt-6 md:pt-8 pb-8 fade-in">
+    <ModalSheetContext.Provider value={true}>
+    <main className="budget-root w-full mx-auto px-4 sm:px-6 pt-4 md:pt-8 pb-8 fade-in">
       {/* Шапка и табы — фиксированная ширина, не прыгает при смене таблиц */}
       <div className="max-w-5xl mx-auto">
-        <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-          <div className="min-w-0">
+        <div className="mb-4 md:mb-6 flex flex-wrap items-end justify-between gap-3">
+          <div className="min-w-0 max-md:w-full max-md:flex max-md:items-center max-md:justify-between max-md:gap-3">
             <div className="font-display text-2xl">Бюджет</div>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
+            <div className="md:mt-2 flex flex-wrap items-center gap-2 max-md:flex-nowrap max-md:min-w-0">
               <select
                 value={activeId}
                 onChange={e => setActiveUser(e.target.value)}
-                className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm font-medium focus:outline-none focus:border-[var(--text)] min-w-[10rem]"
+                className="bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm font-medium focus:outline-none focus:border-[var(--text)] min-w-[10rem] max-md:min-w-0 max-md:w-auto max-md:max-w-[11rem] max-md:py-1.5"
                 aria-label="Пользователь бюджета"
               >
                 {users.map(u => (
@@ -19628,23 +19740,24 @@ function BudgetView({ data, setData, onDirtyChange }) {
               <button
                 type="button"
                 onClick={() => { if (confirmLeavePlans()) setShowUsers(true); }}
-                className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors"
+                className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors max-md:p-2 max-md:shrink-0"
                 title="Управление пользователями"
               >
-                Пользователи
+                <span className="max-md:hidden">Пользователи</span>
+                <span className="md:hidden flex"><Icon name="users" size={18} /></span>
               </button>
             </div>
-            <div className="text-xs text-[var(--text-subtle)] mt-1.5">
+            <div className="text-xs text-[var(--text-subtle)] mt-1.5 max-md:hidden">
               Выбор действует на все вкладки раздела
             </div>
           </div>
         </div>
 
-        <div className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-6">
+        <div ref={tabsRef} className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-4 md:mb-6">
           <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1">
             {[['monthly','По месяцу'],['cashflow','ДДС'],['expenses','Накопления'],['recurring','Постоянные'],['supplements','Спортпит'],['debts','Долги'],['plans','Планы']].map(([id, label]) => (
-              <button key={id} onClick={() => switchBudgetTab(id)}
-                className={`px-3 sm:px-4 py-2.5 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${budgetTab === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
+              <button key={id} data-budget-tab={id} onClick={() => switchBudgetTab(id)}
+                className={`px-3 sm:px-4 py-2.5 max-md:py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${budgetTab === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
                 {label}
               </button>
             ))}
@@ -19654,7 +19767,7 @@ function BudgetView({ data, setData, onDirtyChange }) {
 
       {/* Контент: на ПК таблицы могут быть шире шапки, сама шапка не меняется */}
       <div className="max-w-5xl mx-auto md:w-fit md:min-w-[min(100%,64rem)] md:max-w-full">
-        {budgetTab === 'monthly'   && <BudgetMonthlyView   key={activeId} data={scopedData} setData={scopedSetData} />}
+        {budgetTab === 'monthly'   && <BudgetMonthlyView   key={activeId} data={scopedData} setData={scopedSetData} onOpenTab={switchBudgetTab} />}
         {budgetTab === 'cashflow'  && <BudgetCashflowView  key={activeId} data={scopedData} setData={scopedSetData} userId={activeId} />}
         {budgetTab === 'expenses'  && <BudgetExpensesView  key={activeId} data={scopedData} setData={scopedSetData} />}
         {budgetTab === 'recurring' && <BudgetRecurringView key={activeId} data={scopedData} setData={scopedSetData} />}
@@ -19667,6 +19780,7 @@ function BudgetView({ data, setData, onDirtyChange }) {
         <BudgetUsersModal data={data} setData={setData} onClose={() => setShowUsers(false)} />
       )}
     </main>
+    </ModalSheetContext.Provider>
   );
 }
 
@@ -19788,9 +19902,18 @@ function BudgetUsersModal({ data, setData, onClose }) {
   );
 }
 
-function BudgetMonthlyView({ data, setData }) {
+function BudgetMonthlyView({ data, setData, onOpenTab }) {
   const curYear  = new Date().getFullYear();
   const curMonth = `${curYear}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+
+  // Телефон: по умолчанию один месяц карточками (mIdx — индекс месяца в year),
+  // годовая таблица — переключателем «Год».
+  const isMobile = useBudgetMobile();
+  const [mobileView, setMobileView] = useState('month'); // 'month' | 'year'
+  const [mIdx,       setMIdx]       = useState(new Date().getMonth());
+  const [showMenu,   setShowMenu]   = useState(false);
+  const [itemSheet,  setItemSheet]  = useState(null); // { kind: 'item'|'income', item, cat? }
+  const monthMode = isMobile && mobileView === 'month';
 
   const [year,         setYear]         = useState(curYear);
   const [showSettings, setShowSettings] = useState(false);
@@ -20227,16 +20350,14 @@ function BudgetMonthlyView({ data, setData }) {
   };
   // shown — сумма, показанная в ячейке. Если она больше суммы найденных операций,
   // разницу (ручной факт / агрегат выписки без строк) показываем отдельной строкой.
-  const openFactDetails = (title, month, ops, shown) => {
+  const withFactRest = (ops, shown) => {
     const sum = ops.reduce((s, o) => s + (o.amount || 0), 0);
     const rest = Math.round((Number(shown) || 0) - sum);
-    setFactDetails({
-      title, month,
-      ops: rest > 0
-        ? [...ops, { date: '', amount: rest, note: 'Без детализации (ручной факт / итог выписки)', source: 'Ручной ввод' }]
-        : ops,
-    });
+    return rest > 0
+      ? [...ops, { date: '', amount: rest, note: 'Без детализации (ручной факт / итог выписки)', source: 'Ручной ввод' }]
+      : ops;
   };
+  const openFactDetails = (title, month, ops, shown) => setFactDetails({ title, month, ops: withFactRest(ops, shown) });
 
   const onStatementFile = async (e) => {
     const file = e.target.files && e.target.files[0];
@@ -20286,19 +20407,324 @@ function BudgetMonthlyView({ data, setData }) {
     const el = scrollRef.current;
     if (!el) return;
     const curIdx = months.indexOf(curMonth);
-    el.scrollLeft = curIdx > 0 ? curIdx * monthColWidth : 0;
-  }, [year, showFact]);
+    // Столбцы бывают шире monthColWidth (длинные суммы) — берём реальное
+    // смещение заголовка месяца, иначе текущий месяц уезжал под «Статью».
+    const th = curIdx > 0 && el.querySelector(`th[data-month="${curMonth}"]`);
+    const labelTh = el.querySelector('thead th');
+    el.scrollLeft = th && labelTh
+      ? Math.max(0, th.offsetLeft - labelTh.offsetWidth)
+      : (curIdx > 0 ? curIdx * monthColWidth : 0);
+  }, [year, showFact, mobileView]);
 
   // ── CSS helpers ───────────────────────────────────────────────────────────
   const planHeaderCls = "px-1 py-1.5 text-center text-xs font-semibold tracking-wide border-b border-l-2 border-[var(--border)] w-[62px] bg-blue-50 text-blue-600";
   const factHeaderCls = "px-1 py-1.5 text-center text-xs font-medium tracking-wide border-b border-[var(--border)] w-[54px] bg-gray-50 text-gray-400";
   const planDivCls    = "border-l-2 border-[var(--border)]";
+  // Ширина колонки «Статья»: на телефоне уже, чтобы влезало больше месяцев.
+  const labelColW = isMobile ? 132 : 180;
+
+  // ── Телефон: один месяц карточками ───────────────────────────────────────
+  const MONTH_FULL = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+  const selMonth = months[mIdx];
+  const shiftMonth = (dir) => {
+    const n = mIdx + dir;
+    if (n < 0) { setYear(y => y - 1); setMIdx(11); }
+    else if (n > 11) { setYear(y => y + 1); setMIdx(0); }
+    else setMIdx(n);
+  };
+  const goCurrent = () => { setYear(curYear); setMIdx(new Date().getMonth()); };
+
+  // Свайп влево/вправо по карточкам листает месяцы.
+  const swipeRef = useRef(null);
+  const onSwipeStart = (e) => { const t = e.touches[0]; swipeRef.current = { x: t.clientX, y: t.clientY }; };
+  const onSwipeEnd = (e) => {
+    const s = swipeRef.current; swipeRef.current = null;
+    if (!s || !e.changedTouches[0]) return;
+    const dx = e.changedTouches[0].clientX - s.x, dy = e.changedTouches[0].clientY - s.y;
+    if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.8) shiftMonth(dx < 0 ? 1 : -1);
+  };
+
+  const signedRub = (v) => `${v >= 0 ? '+' : '−'}${formatRub(Math.abs(v))}`;
+  const AUTO_TONE = { emerald: 'bg-emerald-500', violet: 'bg-violet-500', rose: 'bg-rose-500', orange: 'bg-orange-500' };
+  // Подсказка в шторке статьи: откуда берётся автоматический план.
+  const AUTO_HINT = {
+    __recurring:   ['План — сумма постоянных платежей этой категории (с учётом пропущенных месяцев).', 'recurring', 'Постоянные'],
+    __savings:     ['План — сколько отложить в этом месяце: остаток цели ÷ оставшиеся месяцы.', 'expenses', 'Накопления'],
+    __debts:       ['План — платёж по графику долга, факт — отмеченные платежи.', 'debts', 'Долги'],
+    __supplements: ['План — позиции, распределённые на этот месяц.', 'supplements', 'Спортпит'],
+  };
+
+  // Сумма «факт / план» справа в строке; без факта за месяц — только план.
+  const moneyPair = (fact, plan, { income = false, showFactCol = true, strong = false } = {}) => {
+    const over = !income && plan > 0 && fact > plan;
+    const factCls = over ? 'text-red-500' : fact > 0 ? (income ? 'text-emerald-700' : 'text-amber-700') : 'text-[var(--text-subtle)]';
+    if (!showFactCol) {
+      return <span className={`tabular-nums whitespace-nowrap ${strong ? 'font-semibold' : 'font-medium'} ${plan > 0 ? (income ? 'text-emerald-600' : 'text-blue-600') : 'text-[var(--text-subtle)]'}`}>{plan > 0 ? formatRub(plan) : '—'}</span>;
+    }
+    return (
+      <span className="tabular-nums whitespace-nowrap text-right">
+        <span className={`${strong ? 'font-semibold' : 'font-medium'} ${factCls}`}>{formatRub(fact)}</span>
+        <span className="text-[var(--text-subtle)]"> / {plan > 0 ? formatRub(plan) : '—'}</span>
+      </span>
+    );
+  };
+
+  const renderMobileMonth = () => {
+    const m = selMonth;
+    const incP = incomeSrcTotal(m), incF = incomeFactTotal(m);
+    const expP = grandTotal(m), expF = grandFactTotal(m);
+    const hasFact = incF > 0 || expF > 0;
+    const restP = incP - expP, restF = incF - expF;
+    const expOver = expP > 0 && expF > expP;
+    const monthOverlaps = factOverlaps.filter(o => o.month === m);
+    const adjRows = [
+      { id: ADJUSTMENT_EXPENSE_ID, label: 'Корректировка расход', direction: 'out', v: ddsFact.expense[`${ADJUSTMENT_EXPENSE_ID}_${m}`] || 0 },
+      { id: ADJUSTMENT_INCOME_ID,  label: 'Корректировка доход',  direction: 'in',  v: ddsFact.income[`${ADJUSTMENT_INCOME_ID}_${m}`] || 0 },
+    ].filter(r => r.v > 0);
+
+    const tiles = [
+      incomeSources.length > 0 && { label: 'Приход', fact: incF, plan: incP, cls: 'text-emerald-600', fmt: formatRub },
+      { label: 'Расходы', fact: expF, plan: expP, cls: expOver ? 'text-red-500' : 'text-[var(--text)]', fmt: formatRub },
+      incomeSources.length > 0 && { label: 'Остаток', fact: restF, plan: restP,
+        cls: (hasFact ? restF : restP) >= 0 ? 'text-emerald-600' : 'text-red-500', fmt: signedRub },
+    ].filter(Boolean);
+
+    const incomeOpen = !collapsedCats.has('__income');
+    const catBlocks = allCats.map(cat => {
+      const items = (cat.items || []).filter(it => !cat.isAuto || getItemVal(it, m) > 0 || getItemFact(it, m) > 0);
+      if (cat.isAuto && !items.length) return null;
+      const t = catTotal(cat, m), ft = catFactTotal(cat, m);
+      const open = !collapsedCats.has(cat.id);
+      const tone = cat.isAuto ? (AUTO_TONE[cat.autoColor] || 'bg-blue-500') : 'bg-blue-500';
+      return (
+        <div key={cat.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+          <button onClick={() => toggleCatCollapse(cat.id)} className="w-full px-4 py-3 text-left active:bg-black/[0.03]">
+            <div className="flex items-center gap-2">
+              {cat.emoji && <span className="text-lg leading-none shrink-0">{cat.emoji}</span>}
+              <span className="font-semibold text-[15px] truncate">{cat.label}</span>
+              {cat.isAuto && <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-black/5 text-[var(--text-subtle)] shrink-0">авто</span>}
+              <span className="flex-1" />
+              <span className="text-sm">{moneyPair(ft, t, { showFactCol: hasFact, strong: true })}</span>
+              <span className="text-[var(--text-subtle)] shrink-0" style={{ transform: open ? 'none' : 'rotate(-90deg)', transition: 'transform 0.15s ease' }}>
+                <Icon name="chevronDown" size={14} />
+              </span>
+            </div>
+            {hasFact && (t > 0 || ft > 0) && <BudgetBar value={ft} max={t} over={t > 0 && ft > t} tone={tone} className="mt-2.5" />}
+          </button>
+          {open && (
+            <div className="border-t border-[var(--border)] divide-y divide-[var(--border)]">
+              {items.map(item => {
+                const v = getItemVal(item, m), fv = getItemFact(item, m);
+                return (
+                  <button key={item.id} onClick={() => setItemSheet({ kind: 'item', item, cat })}
+                    className="w-full flex items-center gap-3 px-4 py-2.5 text-left active:bg-black/[0.03]">
+                    <span className="w-5 text-center leading-none shrink-0 text-[var(--text-subtle)]">{(!cat.isAuto && item.emoji) || '·'}</span>
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm truncate">{item.label}</span>
+                      {hasFact && v > 0 && <BudgetBar value={fv} max={v} over={fv > v} tone={tone} className="mt-1.5 !h-1" />}
+                    </span>
+                    <span className="text-[13px]">{moneyPair(fv, v, { showFactCol: hasFact })}</span>
+                  </button>
+                );
+              })}
+              {!items.length && (
+                <div className="px-4 py-3 text-xs text-[var(--text-subtle)]">В категории нет статей — добавьте их в настройках ⚙</div>
+              )}
+              {ft > 0 && (
+                <button onClick={() => openFactDetails(cat.label, m, getCategoryFactOps(cat, m), ft)}
+                  className="w-full px-4 py-2.5 text-left text-xs text-[var(--text-muted)] active:bg-black/[0.03] flex items-center justify-between">
+                  <span>Все операции категории</span><Icon name="chevronRight" size={14} />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    });
+
+    return (
+      <div className="space-y-3" onTouchStart={onSwipeStart} onTouchEnd={onSwipeEnd}>
+        {/* Сводка месяца */}
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+          <div className={`grid gap-3 ${tiles.length === 3 ? 'grid-cols-3' : 'grid-cols-1'}`}>
+            {tiles.map(tl => (
+              <div key={tl.label} className="min-w-0">
+                <div className="text-[11px] uppercase tracking-wide text-[var(--text-subtle)]">{tl.label}</div>
+                <div className={`font-display text-[19px] leading-tight mt-1 truncate tabular-nums ${tl.cls}`}>
+                  {tl.fmt(hasFact ? tl.fact : tl.plan)}
+                </div>
+                <div className="text-[11px] text-[var(--text-subtle)] mt-0.5 truncate">
+                  {hasFact ? `план ${tl.fmt(tl.plan)}` : 'план'}
+                </div>
+              </div>
+            ))}
+          </div>
+          {expP > 0 && hasFact && (
+            <div className="mt-4">
+              <BudgetBar value={expF} max={expP} over={expOver} />
+              <div className="mt-1.5 flex justify-between gap-2 text-xs text-[var(--text-subtle)]">
+                <span>Потрачено {Math.round((expF / expP) * 100)}% плана</span>
+                <span className={expOver ? 'text-red-500 font-medium' : ''}>
+                  {expOver ? `перерасход ${formatRub(expF - expP)} ₽` : `осталось ${formatRub(expP - expF)} ₽`}
+                </span>
+              </div>
+            </div>
+          )}
+          {!hasFact && m < curMonth && (
+            <div className="mt-3 text-xs text-[var(--text-subtle)]">Факта за этот месяц нет</div>
+          )}
+        </div>
+
+        {monthOverlaps.length > 0 && (
+          <button onClick={() => setShowOverlaps(true)}
+            className="w-full flex items-center gap-2.5 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-left text-amber-800">
+            <Icon name="copy" size={16} />
+            <span className="flex-1 text-sm">Факт может быть задвоен: {monthOverlaps.length} {pluralRu(monthOverlaps.length, ['статья', 'статьи', 'статей'])}</span>
+            <Icon name="chevronRight" size={16} />
+          </button>
+        )}
+
+        {/* Приход */}
+        {incomeSources.length > 0 && (
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+            <button onClick={() => toggleCatCollapse('__income')} className="w-full px-4 py-3 text-left active:bg-black/[0.03]">
+              <div className="flex items-center gap-2">
+                <span className="text-lg leading-none">💰</span>
+                <span className="font-semibold text-[15px] text-emerald-700">Приход</span>
+                <span className="flex-1" />
+                <span className="text-sm">{moneyPair(incF, incP, { income: true, showFactCol: hasFact, strong: true })}</span>
+                <span className="text-[var(--text-subtle)]" style={{ transform: incomeOpen ? 'none' : 'rotate(-90deg)', transition: 'transform 0.15s ease' }}>
+                  <Icon name="chevronDown" size={14} />
+                </span>
+              </div>
+              {hasFact && incP > 0 && <BudgetBar value={incF} max={incP} tone="bg-emerald-500" className="mt-2.5" />}
+            </button>
+            {incomeOpen && (
+              <div className="border-t border-[var(--border)] divide-y divide-[var(--border)]">
+                {incomeSources.map(src => {
+                  const v = getIncomeVal(src.id, m), fv = getIncomeFactVal(src.id, m);
+                  return (
+                    <button key={src.id} onClick={() => setItemSheet({ kind: 'income', item: src })}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 text-left active:bg-black/[0.03]">
+                      <span className="w-5 text-center leading-none shrink-0 text-[var(--text-subtle)]">·</span>
+                      <span className="flex-1 min-w-0 text-sm truncate">{src.label}</span>
+                      <span className="text-[13px]">{moneyPair(fv, v, { income: true, showFactCol: hasFact })}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {catBlocks}
+
+        {adjRows.length > 0 && (
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+            <div className="px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)]">🛠️ Корректировки</div>
+            {adjRows.map(r => (
+              <button key={r.id} onClick={() => openFactDetails(r.label, m, opsFromCashflow(r.id, r.direction, m))}
+                className="w-full flex items-center justify-between px-4 py-2.5 text-sm text-left active:bg-black/[0.03]">
+                <span className="text-[var(--text-muted)]">{r.label}</span>
+                <span className={`font-medium tabular-nums ${r.direction === 'in' ? 'text-emerald-700' : ''}`}>{formatRub(r.v)} ₽</span>
+              </button>
+            ))}
+            <div className="px-4 pb-3 text-[11px] text-[var(--text-subtle)]">Правка баланса счёта — не входит в итоги месяца.</div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const mobileHeader = (
+    <div className="mb-3">
+      <div className="flex items-center gap-2">
+        <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-0.5">
+          {[['month', 'Месяц'], ['year', 'Год']].map(([id, label]) => (
+            <button key={id} onClick={() => setMobileView(id)}
+              className={`px-4 py-1.5 rounded-[10px] text-sm font-medium transition-all ${mobileView === id ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="flex-1" />
+        <button onClick={() => setShowSettings(true)} title="Статьи бюджета"
+          className="w-10 h-10 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] flex items-center justify-center active:bg-black/5">
+          <Icon name="settings" size={18} />
+        </button>
+        <button onClick={() => setShowMenu(true)} title="Ещё"
+          className="relative w-10 h-10 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] flex items-center justify-center active:bg-black/5">
+          <Icon name="moreHorizontal" size={18} />
+          {factOverlaps.length > 0 && <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-500" />}
+        </button>
+      </div>
+      <div className="mt-3 flex items-center bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-1">
+        <button onClick={() => (monthMode ? shiftMonth(-1) : setYear(y => y - 1))} aria-label="Назад"
+          className="w-11 h-11 rounded-xl flex items-center justify-center text-[var(--text-muted)] active:bg-black/5">
+          <Icon name="chevronLeft" size={20} />
+        </button>
+        <button onClick={goCurrent} className="flex-1 min-w-0 text-center py-0.5">
+          <div className="font-display text-xl leading-tight">{monthMode ? MONTH_FULL[mIdx] : year}</div>
+          <div className="text-[11px] text-[var(--text-subtle)] mt-0.5">
+            {monthMode
+              ? (selMonth === curMonth ? `${year} · текущий месяц` : `${year} · к текущему месяцу`)
+              : (year === curYear ? 'текущий год' : 'к текущему году')}
+          </div>
+        </button>
+        <button onClick={() => (monthMode ? shiftMonth(1) : setYear(y => y + 1))} aria-label="Вперёд"
+          className="w-11 h-11 rounded-xl flex items-center justify-center text-[var(--text-muted)] active:bg-black/5">
+          <Icon name="chevronRight" size={20} />
+        </button>
+      </div>
+      {importError && <div className="text-xs text-red-500 mt-2">{importError}</div>}
+    </div>
+  );
+
+  const menuActions = [
+    { icon: 'copy', label: 'Копировать план месяца', hint: 'Перенести план из другого месяца', onClick: () => setShowCopyMonth(true) },
+    { icon: 'upload', label: 'Загрузить выписку MoneyOK', hint: 'CSV — заполнит факт по статьям', onClick: () => fileInputRef.current && fileInputRef.current.click() },
+    (data.budgetStatementRows || []).length > 0 && { icon: 'edit', label: 'Маппинг выписки', hint: 'Какая категория выписки в какую статью',
+      onClick: () => setImportState({ rows: data.budgetStatementRows, fileName: data.budgetStatementFileName || 'выписка.csv', editMode: true }) },
+    factOverlaps.length > 0 && { icon: 'copy', warn: true, label: `Задвоения факта: ${factOverlaps.length}`, hint: 'Выписка и ДДС заданы за один месяц', onClick: () => setShowOverlaps(true) },
+    mobileView === 'year' && { icon: 'barChart', label: showFact ? 'Скрыть столбцы «Факт»' : 'Показать столбцы «Факт»', onClick: () => setShowFact(v => !v) },
+    { icon: 'download', label: 'Выгрузка JSON', hint: 'Все месяцы и статьи раздела', onClick: exportAllBudget },
+  ];
+
+  // Данные для шторки статьи (телефон): план можно править у ручных статей
+  // и источников дохода, у автостатей — подсказка, откуда берётся план.
+  const sheetData = (() => {
+    if (!itemSheet) return null;
+    const m = selMonth;
+    if (itemSheet.kind === 'income') {
+      const src = itemSheet.item;
+      const fv = getIncomeFactVal(src.id, m);
+      return {
+        title: `💰 ${src.label}`, income: true, editable: true,
+        plan: getIncomeVal(src.id, m), fact: fv, ops: withFactRest(getIncomeFactOps(src.id, m), fv),
+        onSavePlan: (n) => commitIncomeEdit(src.id, m, String(n)),
+      };
+    }
+    const { item, cat } = itemSheet;
+    const fv = getItemFact(item, m);
+    const hint = cat && AUTO_HINT[cat.id];
+    return {
+      title: `${(!item.isAuto && item.emoji) || cat?.emoji || ''} ${item.label}`.trim(),
+      editable: !item.isAuto,
+      plan: getItemVal(item, m), fact: fv, ops: withFactRest(getItemFactOps(item, m), fv),
+      autoHint: item.isAuto ? (hint ? hint[0] : 'План считается автоматически.') : '',
+      autoTab: hint ? hint[1] : '', autoTabLabel: hint ? hint[2] : '',
+      onSavePlan: (n) => commitEdit(item.id, m, String(n)),
+    };
+  })();
 
 
 
   return (
     <div>
+      <input ref={fileInputRef} type="file" accept=".csv,text/csv,text/plain" className="hidden" onChange={onStatementFile} />
+      {isMobile && mobileHeader}
       {/* Toolbar */}
+      {!isMobile && (
       <div className="flex items-center gap-2 sm:gap-3 mb-4 flex-wrap">
         <div className="flex items-center gap-0 bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden">
           <button onClick={() => setYear(y => y - 1)}
@@ -20365,7 +20791,6 @@ function BudgetMonthlyView({ data, setData }) {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Выгрузка
         </button>
-        <input ref={fileInputRef} type="file" accept=".csv,text/csv,text/plain" className="hidden" onChange={onStatementFile} />
         {year !== curYear && (
           <button onClick={() => setYear(curYear)}
             className="px-3 py-1.5 rounded-xl text-xs border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">
@@ -20376,6 +20801,7 @@ function BudgetMonthlyView({ data, setData }) {
           <span className="text-xs text-red-500">{importError}</span>
         )}
       </div>
+      )}
 
       {!allCats.length && !incomeSources.length ? (
         <div className="text-center py-16 text-[var(--text-subtle)]">
@@ -20386,15 +20812,15 @@ function BudgetMonthlyView({ data, setData }) {
             <Icon name="settings" size={16} />Настроить статьи
           </button>
         </div>
-      ) : (
+      ) : monthMode ? renderMobileMonth() : (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
           <div className="overflow-x-auto" ref={scrollRef}>
             {curColStyle && <style>{curColStyle}</style>}
-            <table className="budget-monthly-table text-sm border-collapse" style={{minWidth:`${180 + months.length * monthColWidth}px`}}>
+            <table className="budget-monthly-table text-sm border-collapse" style={{minWidth:`${labelColW + months.length * monthColWidth}px`}}>
               <thead>
                 <tr>
-                  <th className="sticky left-0 z-20 bg-[var(--bg)] px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] border-b border-r border-[var(--border)]"
-                    style={{minWidth:'180px'}}>
+                  <th className="sticky left-0 z-20 bg-[var(--bg)] px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] border-b border-r border-[var(--border)] max-md:px-3"
+                    style={{minWidth:`${labelColW}px`}}>
                     Статья
                   </th>
                   {months.map((m, i) => (
@@ -20424,7 +20850,7 @@ function BudgetMonthlyView({ data, setData }) {
                 {incomeSources.length > 0 && (
                   <React.Fragment>
                     <tr className="bg-emerald-50">
-                      <td className="sticky left-0 z-10 bg-emerald-50 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs">
+                      <td className="sticky left-0 z-10 bg-emerald-50 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs max-md:px-3">
                         <span className="mr-1.5">💰</span>
                         <span className="uppercase tracking-wide text-emerald-700">Приход</span>
                       </td>
@@ -20452,7 +20878,7 @@ function BudgetMonthlyView({ data, setData }) {
                     </tr>
                     {incomeSources.map(src => (
                       <tr key={src.id} className="border-b border-[var(--border)] transition-colors hover:bg-emerald-50/30 bg-white">
-                        <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
+                        <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8 max-md:pl-4 max-md:pr-2">
                           <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{src.label}</span>
                         </td>
                         {months.map(m => {
@@ -20508,7 +20934,7 @@ function BudgetMonthlyView({ data, setData }) {
                     <React.Fragment key={cat.id}>
                       {/* Category total row */}
                       <tr className="bg-gray-100">
-                        <td className="sticky left-0 z-10 bg-gray-100 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs">
+                        <td className="sticky left-0 z-10 bg-gray-100 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs max-md:px-3">
                           <button onClick={() => toggleCatCollapse(cat.id)}
                             className="w-full flex items-center gap-1 text-left hover:opacity-70 transition-opacity"
                             title={isExpanded ? 'Свернуть' : 'Развернуть'}>
@@ -20546,7 +20972,7 @@ function BudgetMonthlyView({ data, setData }) {
                       {/* Item rows */}
                       {isExpanded && (cat.items || []).map((item, ii) => (
                         <tr key={item.id} className={"border-b border-[var(--border)] transition-colors hover:bg-blue-50/20 bg-white"}>
-                          <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
+                          <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8 max-md:pl-4 max-md:pr-2">
                             {!isAutoCat && item.emoji && <span className="mr-1">{item.emoji}</span>}
                             <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{item.label}</span>
                           </td>
@@ -20670,14 +21096,16 @@ function BudgetMonthlyView({ data, setData }) {
           Не входят в «Итого расходы»/«Приход»/«Остаток» выше — это не реальная
           трата/доход, а правка баланса (например, после сверки с выпиской).
           Баланс самого счёта на вкладке «ДДС» они двигают как любая обычная
-          операция — просто отдельно от «настоящих» план/факт статей. */}
+          операция — просто отдельно от «настоящих» план/факт статей.
+          На телефоне в режиме «Месяц» они показаны карточкой внутри месяца. */}
+      {!monthMode && (
       <div className="mt-4 bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="text-sm border-collapse" style={{minWidth:`${180 + months.length * monthColWidth}px`}}>
+          <table className="text-sm border-collapse" style={{minWidth:`${labelColW + months.length * monthColWidth}px`}}>
             <thead>
               <tr>
-                <th className="sticky left-0 z-10 bg-[var(--bg)] px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] border-b border-r border-[var(--border)]"
-                  style={{minWidth:'180px'}}>
+                <th className="sticky left-0 z-10 bg-[var(--bg)] px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)] border-b border-r border-[var(--border)] max-md:px-3"
+                  style={{minWidth:`${labelColW}px`}}>
                   🛠️ Корректировки
                 </th>
                 {months.map((m, i) => (
@@ -20722,6 +21150,19 @@ function BudgetMonthlyView({ data, setData }) {
           Технические статьи для правки баланса счёта — не входят в «Итого расходы», «Приход» и «Остаток» выше, но учитываются в балансе счёта на вкладке «ДДС».
         </div>
       </div>
+      )}
+
+      {showMenu && <BudgetActionSheet title="По месяцу" actions={menuActions} onClose={() => setShowMenu(false)} />}
+
+      {sheetData && (
+        <BudgetMonthItemSheet
+          key={`${itemSheet.kind}_${itemSheet.item.id}_${selMonth}`}
+          {...sheetData}
+          monthLabel={formatMonthFull(selMonth)}
+          onOpenTab={onOpenTab}
+          onClose={() => setItemSheet(null)}
+        />
+      )}
 
       {showSettings && (
         <BudgetPlanSettingsModal data={data} setData={setData} autoCategories={autoCategories} allCatsOrdered={allCats} onClose={() => setShowSettings(false)} />
@@ -20835,13 +21276,7 @@ function FactDetailsModal({ title, month, ops, onClose }) {
                             'июль','август','сентябрь','октябрь','ноябрь','декабрь'];
   const m = /^(\d{4})-(\d{2})$/.exec(month || '');
   const monthLabel = m ? `${MONTH_NAMES_FULL[Number(m[2]) - 1] || ''} ${m[1]}` : (month || '');
-  const fmtDate = (s) => {
-    if (!s) return '—';
-    const [y, mo, dd] = String(s).split('-');
-    return (dd && mo) ? `${dd}.${mo}` : s;
-  };
-  const sorted = [...(ops || [])].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-  const total = sorted.reduce((s, o) => s + (o.amount || 0), 0);
+  const total = (ops || []).reduce((s, o) => s + (o.amount || 0), 0);
 
   return (
     <Modal title={title} onClose={onClose}>
@@ -20850,25 +21285,108 @@ function FactDetailsModal({ title, month, ops, onClose }) {
           <span className="capitalize">{monthLabel}</span>
           <span className="font-display text-lg text-[var(--text)]">{formatRub(total)} ₽</span>
         </div>
-        {!sorted.length ? (
-          <div className="text-center py-8 text-[var(--text-subtle)] text-sm">Операции не найдены</div>
-        ) : (
-          <div className="space-y-2 max-h-[60vh] overflow-y-auto">
-            {sorted.map((op, i) => (
-              <div key={i} className="flex items-start justify-between gap-3 border border-[var(--border)] rounded-xl px-3 py-2.5 bg-[var(--bg)]">
-                <div className="min-w-0">
-                  <div className="text-sm font-medium truncate">{op.note || 'Без комментария'}</div>
-                  <div className="text-xs text-[var(--text-subtle)] mt-0.5">
-                    {fmtDate(op.date)}
-                    {op.itemLabel && <span> · {op.itemLabel}</span>}
-                    {op.source && <span> · {op.source}</span>}
-                  </div>
-                </div>
-                <div className="font-medium text-sm whitespace-nowrap flex-shrink-0">{formatRub(op.amount)} ₽</div>
-              </div>
-            ))}
+        <FactOpsList ops={ops} />
+      </div>
+    </Modal>
+  );
+}
+
+// Список операций, из которых сложился факт (FactDetailsModal и шторка
+// статьи на телефоне). scroll — ограничить высоту своим скроллом.
+function FactOpsList({ ops, scroll = true }) {
+  const fmtDate = (s) => {
+    if (!s) return '—';
+    const [y, mo, dd] = String(s).split('-');
+    return (dd && mo) ? `${dd}.${mo}` : s;
+  };
+  const sorted = [...(ops || [])].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  if (!sorted.length) return <div className="text-center py-8 text-[var(--text-subtle)] text-sm">Операции не найдены</div>;
+  return (
+    <div className={`space-y-2 ${scroll ? 'max-h-[60vh] overflow-y-auto' : ''}`}>
+      {sorted.map((op, i) => (
+        <div key={i} className="flex items-start justify-between gap-3 border border-[var(--border)] rounded-xl px-3 py-2.5 bg-[var(--bg)]">
+          <div className="min-w-0">
+            <div className="text-sm font-medium truncate">{op.note || 'Без комментария'}</div>
+            <div className="text-xs text-[var(--text-subtle)] mt-0.5">
+              {fmtDate(op.date)}
+              {op.itemLabel && <span> · {op.itemLabel}</span>}
+              {op.source && <span> · {op.source}</span>}
+            </div>
+          </div>
+          <div className="font-medium text-sm whitespace-nowrap flex-shrink-0">{formatRub(op.amount)} ₽</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Телефон, «По месяцу» → тап по статье: план и факт за месяц, правка плана
+// (ручные статьи и источники дохода) и операции факта.
+function BudgetMonthItemSheet({ title, monthLabel, plan, fact, ops, income, editable, autoHint, autoTab, autoTabLabel, onOpenTab, onSavePlan, onClose }) {
+  const [val, setVal] = useState(plan > 0 ? String(plan) : '');
+  const num = parseInt(String(val).replace(/\s/g, ''), 10);
+  const next = isNaN(num) || num < 0 ? 0 : num;
+  const changed = editable && next !== (plan || 0);
+  const over = !income && plan > 0 && fact > plan;
+  const save = () => { if (!changed) return; onSavePlan(next); onClose(); };
+  const opsTotal = (ops || []).length;
+
+  return (
+    <Modal title={title} onClose={onClose}>
+      <div className="space-y-4">
+        <div className="text-sm text-[var(--text-muted)] -mt-1">{monthLabel}</div>
+        <div className="grid grid-cols-2 gap-2.5">
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-3.5 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-[var(--text-subtle)]">План</div>
+            <div className={`font-display text-2xl mt-0.5 tabular-nums ${plan > 0 ? (income ? 'text-emerald-600' : 'text-blue-600') : 'text-[var(--text-subtle)]'}`}>{formatRub(plan)} ₽</div>
+          </div>
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-3.5 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-[var(--text-subtle)]">Факт</div>
+            <div className={`font-display text-2xl mt-0.5 tabular-nums ${over ? 'text-red-500' : fact > 0 ? (income ? 'text-emerald-700' : 'text-amber-700') : 'text-[var(--text-subtle)]'}`}>{formatRub(fact)} ₽</div>
+          </div>
+        </div>
+        {plan > 0 && (
+          <div>
+            <BudgetBar value={fact} max={plan} over={over} tone={income ? 'bg-emerald-500' : 'bg-blue-500'} />
+            <div className={`mt-1.5 text-xs ${over ? 'text-red-500 font-medium' : 'text-[var(--text-subtle)]'}`}>
+              {over ? `Перерасход ${formatRub(fact - plan)} ₽`
+                : income ? (fact >= plan ? 'План выполнен' : `До плана ещё ${formatRub(plan - fact)} ₽`)
+                : `Осталось ${formatRub(plan - fact)} ₽ из плана`}
+            </div>
           </div>
         )}
+
+        {editable ? (
+          <div>
+            <label>План на месяц, ₽</label>
+            <div className="flex gap-2">
+              <input type="number" inputMode="numeric" min="0" value={val} placeholder="0"
+                onChange={e => setVal(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') save(); }}
+                className="flex-1 min-w-0" />
+              <button onClick={save} disabled={!changed}
+                className="btn-primary !px-5 shrink-0 disabled:opacity-40 disabled:cursor-not-allowed">Сохранить</button>
+            </div>
+          </div>
+        ) : autoHint ? (
+          <div className="rounded-xl bg-[var(--surface)] border border-[var(--border)] px-3.5 py-3 text-sm text-[var(--text-muted)]">
+            {autoHint}
+            {autoTab && onOpenTab && (
+              <button onClick={() => { onClose(); onOpenTab(autoTab); }}
+                className="mt-2 flex items-center gap-1 text-[var(--text)] font-medium">
+                Открыть «{autoTabLabel}» <Icon name="chevronRight" size={14} />
+              </button>
+            )}
+          </div>
+        ) : null}
+
+        <div>
+          <div className="text-xs uppercase tracking-wide font-medium text-[var(--text-subtle)] mb-2">
+            Операции факта{opsTotal ? ` · ${opsTotal}` : ''}
+          </div>
+          {opsTotal ? <FactOpsList ops={ops} scroll={false} />
+            : <div className="text-sm text-[var(--text-subtle)] py-2">За этот месяц операций нет</div>}
+        </div>
       </div>
     </Modal>
   );
@@ -20953,12 +21471,13 @@ function BudgetCashflowView({ data, setData, userId }) {
   };
 
   const deleteOp = (id) => {
-    if (!confirm('Удалить операцию?')) return;
+    if (!confirm('Удалить операцию?')) return false;
     setData(d => ({
       ...d,
       budgetCashflowOps: (d.budgetCashflowOps || []).filter(o => o.id !== id),
       deletedIds: withDeletedId(d, 'budgetCashflowOps', id),
     }));
+    return true;
   };
 
   // Один запрос на подтверждение на всю пачку — иначе удаление десятка
@@ -21018,25 +21537,61 @@ function BudgetCashflowView({ data, setData, userId }) {
 
   const totalBalance = accounts.reduce((s, a) => s + cashflowAccountBalance(a, ops, data.savingsTransactions, data.debtTransactions), 0);
 
+  // Телефон: операции списком по дням (как в банковском приложении) вместо
+  // таблицы; тап по операции — правка, удаление — внутри неё.
+  const isMobile = useBudgetMobile();
+  const newOp = () => setEditingOp({
+    id: crypto.randomUUID(),
+    date: new Date().toISOString().slice(0, 10),
+    direction: 'out',
+    amount: '',
+    accountId: (data.budgetCashflowSettings || {}).quickAccountId || accounts[0]?.id || '',
+    categoryId: '',
+    purpose: '',
+    source: 'manual',
+    _isNew: true,
+  });
+  const opsByDay = useMemo(() => {
+    if (!isMobile) return [];
+    const out = [];
+    visibleOps.forEach(op => {
+      const day = op.date || '';
+      let g = out[out.length - 1];
+      if (!g || g.day !== day) { g = { day, ops: [], net: 0 }; out.push(g); }
+      g.ops.push(op);
+      g.net += (op.direction === 'in' ? 1 : -1) * (Number(op.amount) || 0);
+    });
+    return out;
+  }, [isMobile, visibleOps]);
+  const dayLabel = (day) => {
+    const d = new Date(`${day}T12:00:00`);
+    if (isNaN(d)) return day || '—';
+    const today = getTodayKey();
+    if (day === today) return 'Сегодня';
+    if (day === addDaysStr(today, -1)) return 'Вчера';
+    return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', weekday: 'short' });
+  };
+
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col gap-4 md:gap-6">
       {/* ── Счета ───────────────────────────────────────────────── */}
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
         <div className="flex items-center justify-between gap-3 mb-3">
           <div>
             <div className="font-medium">Счета</div>
-            <div className="text-xs text-[var(--text-subtle)] mt-0.5">
+            <div className="text-xs text-[var(--text-subtle)] mt-0.5 max-md:hidden">
               Первоначальный баланс + операции. Эти же счета видны в приложении на телефоне.
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => setShowExport(true)} disabled={!accounts.length}
+            <button onClick={() => setShowExport(true)} disabled={!accounts.length} title="Скачать выписку ДДС"
               className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5">
               <Icon name="download" size={14} /> Выписка
             </button>
-            <button onClick={() => setShowAccounts(true)}
+            <button onClick={() => setShowAccounts(true)} title="Настроить счета"
               className="px-3 py-2 rounded-xl text-sm border border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5 transition-colors whitespace-nowrap">
-              Настроить
+              <span className="max-md:hidden">Настроить</span>
+              <span className="md:hidden flex"><Icon name="settings" size={16} /></span>
             </button>
           </div>
         </div>
@@ -21046,29 +21601,29 @@ function BudgetCashflowView({ data, setData, userId }) {
             Счетов пока нет — нажмите «Настроить», чтобы завести первый.
           </div>
         ) : (
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-2 max-md:grid-cols-2 sm:grid-cols-2 lg:grid-cols-3">
             {accounts.map(a => {
               const bal = cashflowAccountBalance(a, ops, data.savingsTransactions, data.debtTransactions);
               return (
-                <div key={a.id} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3.5 py-3">
-                  <div className="text-sm font-medium truncate">{a.name || 'Счёт'}</div>
-                  <div className={`mt-1 text-lg font-semibold tabular-nums ${bal < 0 ? 'text-red-500' : 'text-[var(--text)]'}`}>
+                <div key={a.id} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3.5 py-3 max-md:px-3 max-md:py-2.5 min-w-0">
+                  <div className="text-sm font-medium truncate max-md:text-[13px] max-md:text-[var(--text-muted)]">{a.name || 'Счёт'}</div>
+                  <div className={`mt-1 text-lg font-semibold tabular-nums max-md:text-base max-md:mt-0.5 truncate ${bal < 0 ? 'text-red-500' : 'text-[var(--text)]'}`}>
                     {formatRubExact(bal)} ₽
                   </div>
-                  <div className="text-[11px] text-[var(--text-subtle)] mt-0.5">
+                  <div className="text-[11px] text-[var(--text-subtle)] mt-0.5 truncate">
                     старт: {formatRubExact(a.initialBalance || 0)} ₽
                   </div>
                   <button onClick={() => setReconcileAccountId(a.id)}
                     className="text-[11px] text-[var(--text-muted)] hover:text-[var(--text)] underline mt-1.5">
-                    Сверить с выпиской
+                    Сверить<span className="max-md:hidden"> с выпиской</span>
                   </button>
                 </div>
               );
             })}
             {accounts.length > 1 && (
-              <div className="rounded-xl border border-dashed border-[var(--border-strong)] px-3.5 py-3">
-                <div className="text-sm font-medium truncate text-[var(--text-muted)]">Всего</div>
-                <div className={`mt-1 text-lg font-semibold tabular-nums ${totalBalance < 0 ? 'text-red-500' : 'text-[var(--text)]'}`}>
+              <div className="rounded-xl border border-dashed border-[var(--border-strong)] px-3.5 py-3 max-md:px-3 max-md:py-2.5 min-w-0">
+                <div className="text-sm font-medium truncate text-[var(--text-muted)] max-md:text-[13px]">Всего</div>
+                <div className={`mt-1 text-lg font-semibold tabular-nums max-md:text-base max-md:mt-0.5 truncate ${totalBalance < 0 ? 'text-red-500' : 'text-[var(--text)]'}`}>
                   {formatRubExact(totalBalance)} ₽
                 </div>
               </div>
@@ -21078,10 +21633,12 @@ function BudgetCashflowView({ data, setData, userId }) {
       </div>
 
       {/* ── Выводы по месяцу ─────────────────────────────────────── */}
-      <BudgetMonthlyNotesBlock data={data} setData={setData} />
+      <div className="max-md:order-3">
+        <BudgetMonthlyNotesBlock data={data} setData={setData} />
+      </div>
 
       {/* ── Ссылка на мобильное приложение ───────────────────────── */}
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5 max-md:order-4">
         <div className="font-medium">Приложение на телефон</div>
         <div className="text-xs text-[var(--text-subtle)] mt-0.5 mb-3">
           Отдельная ссылка для этого пользователя бюджета: откройте её на iPhone и добавьте на экран «Домой».
@@ -21098,7 +21655,7 @@ function BudgetCashflowView({ data, setData, userId }) {
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               <input readOnly value={shareUrl} onFocus={e => e.target.select()}
-                className="flex-1 min-w-[16rem] bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm font-mono" />
+                className="flex-1 min-w-[16rem] max-md:min-w-0 max-md:basis-full bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm font-mono" />
               <button onClick={copyLink} className="btn-primary text-sm px-4 py-2">
                 {copied ? 'Скопировано' : 'Копировать'}
               </button>
@@ -21116,11 +21673,18 @@ function BudgetCashflowView({ data, setData, userId }) {
       </div>
 
       {/* ── Операции ─────────────────────────────────────────────── */}
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden max-md:order-2">
         <div className="p-4 sm:p-5 border-b border-[var(--border)]">
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          <div className="md:hidden flex items-center justify-between gap-3 mb-3">
+            <div className="font-medium">Операции</div>
+            <button onClick={newOp} disabled={!accounts.length || !articles.length}
+              className="px-3.5 py-2 rounded-xl bg-[var(--text)] text-white text-sm font-medium inline-flex items-center gap-1.5 disabled:opacity-40">
+              <Icon name="plus" size={15} /> Операция
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 max-md:grid max-md:grid-cols-2">
             <select value={month} onChange={e => setMonth(e.target.value)}
-              className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm">
+              className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm max-md:col-span-2">
               <option value="">Все месяцы</option>
               {months.map(m => <option key={m} value={m}>{formatMonthFull(m)}</option>)}
             </select>
@@ -21133,34 +21697,24 @@ function BudgetCashflowView({ data, setData, userId }) {
 
             <select value={dirFilter} onChange={e => setDirFilter(e.target.value)}
               className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm">
-              <option value="">Расход и доход</option>
+              <option value="">Все типы</option>
               <option value="out">Только расход</option>
               <option value="in">Только доход</option>
             </select>
 
             <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Поиск по статье, счёту, назначению"
-              className="flex-1 min-w-[12rem] bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+              className="flex-1 min-w-[12rem] max-md:min-w-0 max-md:col-span-2 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
 
             <button
-              onClick={() => setEditingOp({
-                id: crypto.randomUUID(),
-                date: new Date().toISOString().slice(0, 10),
-                direction: 'out',
-                amount: '',
-                accountId: (data.budgetCashflowSettings || {}).quickAccountId || accounts[0]?.id || '',
-                categoryId: '',
-                purpose: '',
-                source: 'manual',
-                _isNew: true,
-              })}
+              onClick={newOp}
               disabled={!accounts.length || !articles.length}
-              className="btn-primary text-sm px-4 py-2 inline-flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="btn-primary text-sm px-4 py-2 inline-flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed max-md:hidden"
               title={!accounts.length ? 'Сначала заведите счёт' : (!articles.length ? 'Сначала добавьте статьи в «По месяцу»' : '')}>
               <Icon name="plus" size={14} /> Операция
             </button>
           </div>
 
-          <div className="flex flex-wrap gap-4 mt-3 text-sm">
+          <div className="flex flex-wrap gap-4 mt-3 text-sm max-md:gap-x-3 max-md:gap-y-1.5 max-md:text-[13px]">
             <div><span className="text-[var(--text-subtle)]">Доходы: </span>
               <span className="font-semibold text-emerald-600">{formatRubExact(totals.income)} ₽</span></div>
             <div><span className="text-[var(--text-subtle)]">Расходы: </span>
@@ -21172,7 +21726,7 @@ function BudgetCashflowView({ data, setData, userId }) {
             <div className="text-[var(--text-subtle)]">{visibleOps.length} оп.</div>
             {duplicateGroups.length > 0 && (
               <button onClick={() => setShowDuplicates(true)}
-                className="ml-auto px-3 py-1 rounded-lg text-xs border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 transition-colors inline-flex items-center gap-1.5"
+                className="ml-auto px-3 py-1 rounded-lg text-xs border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 transition-colors inline-flex items-center gap-1.5 max-md:ml-0 max-md:w-full max-md:justify-center max-md:py-2"
                 title="Найдены операции с одинаковой датой, суммой, статьёй и счётом">
                 <Icon name="copy" size={13} />
                 Возможные повторы: {duplicateGroups.length}
@@ -21185,6 +21739,39 @@ function BudgetCashflowView({ data, setData, userId }) {
           <div className="px-4 py-12 text-center text-[var(--text-subtle)]">
             <div className="text-3xl mb-2">💸</div>
             <div className="text-sm">Операций за выбранный период нет</div>
+          </div>
+        ) : isMobile ? (
+          <div>
+            {opsByDay.map(g => (
+              <div key={g.day}>
+                <div className="flex items-center justify-between px-4 pt-3 pb-1.5 text-xs">
+                  <span className="font-semibold text-[var(--text-muted)] first-letter:uppercase">{dayLabel(g.day)}</span>
+                  <span className={`tabular-nums ${g.net >= 0 ? 'text-emerald-600' : 'text-[var(--text-subtle)]'}`}>
+                    {g.net >= 0 ? '+' : '−'}{formatRubExact(Math.abs(g.net))} ₽
+                  </span>
+                </div>
+                {g.ops.map(op => {
+                  const art = artById[op.categoryId];
+                  const isIn = op.direction === 'in';
+                  const sub = [op.purpose, accById[op.accountId]?.name || 'Счёт удалён', op.source === 'pwa' ? 'телефон' : ''].filter(Boolean).join(' · ');
+                  return (
+                    <button key={op.id} onClick={() => setEditingOp({ ...op })}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 text-left active:bg-black/[0.03]">
+                      <span className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-base ${isIn ? 'bg-emerald-50' : 'bg-[var(--bg)]'}`}>
+                        {art?.emoji || (isIn ? '💰' : '💸')}
+                      </span>
+                      <span className="flex-1 min-w-0">
+                        <span className="block text-sm font-medium truncate">{art ? art.label : <span className="text-red-500">Статья удалена</span>}</span>
+                        <span className="block text-xs text-[var(--text-subtle)] truncate mt-0.5">{sub}</span>
+                      </span>
+                      <span className={`text-sm font-semibold tabular-nums whitespace-nowrap ${isIn ? 'text-emerald-600' : 'text-[var(--text)]'}`}>
+                        {isIn ? '+' : '−'}{formatRubExact(op.amount)} ₽
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -21257,6 +21844,7 @@ function BudgetCashflowView({ data, setData, userId }) {
           accounts={accounts}
           articles={articles}
           onSave={saveOp}
+          onDelete={isMobile && !editingOp._isNew ? (id) => { if (deleteOp(id)) setEditingOp(null); } : null}
           onClose={() => setEditingOp(null)}
         />
       )}
@@ -21535,10 +22123,10 @@ function BudgetMonthlyNotesBlock({ data, setData }) {
           onKeyDown={e => { if (e.key === 'Enter') addNote(); }}
           maxLength={200}
           placeholder={`Например: следить за тратами на продукты`}
-          className="flex-1 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
-        <button onClick={addNote} disabled={!newText.trim()}
-          className="btn-primary text-sm px-4 py-2 flex items-center gap-1.5 disabled:opacity-40">
-          <Icon name="plus" size={14} /> Добавить
+          className="flex-1 min-w-0 bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--text)]" />
+        <button onClick={addNote} disabled={!newText.trim()} title="Добавить"
+          className="btn-primary text-sm px-4 py-2 flex items-center gap-1.5 disabled:opacity-40 shrink-0">
+          <Icon name="plus" size={14} /><span className="max-md:hidden"> Добавить</span>
         </button>
       </div>
 
@@ -21696,7 +22284,7 @@ function CashflowAccountsModal({ data, setData, onClose }) {
   );
 }
 
-function CashflowOpModal({ op, accounts, articles, onSave, onClose }) {
+function CashflowOpModal({ op, accounts, articles, onSave, onDelete, onClose }) {
   const [form, setForm] = useState(() => ({
     ...op,
     amount: op.amount === '' || op.amount == null ? '' : String(op.amount),
@@ -21781,7 +22369,14 @@ function CashflowOpModal({ op, accounts, articles, onSave, onClose }) {
       </div>
 
       <div className="flex gap-3 mt-5 pt-4 border-t border-[var(--border)]">
-        <button onClick={onClose} className="btn-secondary">Отмена</button>
+        {onDelete ? (
+          <button onClick={() => onDelete(op.id)} title="Удалить операцию"
+            className="btn-secondary !px-4 text-red-500 inline-flex items-center justify-center">
+            <Icon name="trash" size={18} />
+          </button>
+        ) : (
+          <button onClick={onClose} className="btn-secondary">Отмена</button>
+        )}
         <button onClick={submit} disabled={!valid}
           className="btn-primary flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
           Сохранить
@@ -22555,11 +23150,11 @@ function BudgetCopyMonthModal({ year, userCats, incomeSources, data, setData, on
               const disabled = m === srcMonth;
               const checked = dstMonths.includes(m);
               return (
-                <label key={m} className={`flex items-center gap-2.5 px-3 py-2 border-b border-[var(--border)] last:border-0 cursor-pointer transition-colors
+                <label key={m} className={`flex items-center gap-2.5 px-3 py-2 max-md:py-2.5 !mb-0 normal-case tracking-normal font-normal !text-[var(--text)] border-b border-[var(--border)] last:border-0 cursor-pointer transition-colors
                   ${disabled ? 'opacity-30 cursor-not-allowed' : checked ? 'bg-blue-50' : 'hover:bg-black/[0.02]'}`}>
                   <input type="checkbox" checked={checked} disabled={disabled}
                     onChange={() => !disabled && toggleDst(m)}
-                    className="rounded border-gray-300" />
+                    className="rounded border-gray-300 !w-auto shrink-0" />
                   <span className="text-sm">{MONTH_NAMES[i]}</span>
                   {m === srcMonth && <span className="text-[10px] text-[var(--text-subtle)] ml-auto">источник</span>}
                 </label>
@@ -22901,7 +23496,7 @@ function BudgetPlanSettingsModal({ data, setData, autoCategories, allCatsOrdered
 }
 
 
-function BudgetMultiSelect({ label, options, selected, onChange }) {
+function BudgetMultiSelect({ label, options, selected, onChange, className = 'w-36' }) {
   const [open, setOpen] = useState(false);
   const hasSelected = selected.length > 0;
 
@@ -22910,7 +23505,7 @@ function BudgetMultiSelect({ label, options, selected, onChange }) {
   };
 
   return (
-    <div className="relative w-36">
+    <div className={`relative ${className}`}>
       <button
         onClick={() => setOpen(v => !v)}
         className={`w-full flex items-center justify-between gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${
@@ -22993,6 +23588,11 @@ function SavingsListView({ data, setData }) {
   const [filterMonths, setFilterMonths] = useState([]);
   const [sortCol,      setSortCol]      = useState('targetDate');
   const [sortDir,      setSortDir]      = useState('asc');
+  // Телефон: карточки целей, меню «⋯» и своя сумма пополнения/списания.
+  const isMobile = useBudgetMobile();
+  const [menuFor,  setMenuFor]  = useState(null);
+  const [txFor,    setTxFor]    = useState(null); // { exp, type }
+  const [showUndo, undoNode]    = useBudgetUndo();
 
   const cats    = getExpenseCats(data);
   const allExpenses = (data.budgetExpenses || []);
@@ -23058,14 +23658,30 @@ function SavingsListView({ data, setData }) {
     return accs.some(a => a.id === quick) ? quick : (accs[0]?.id || '');
   })();
 
-  const addTransaction = (expenseId, type, amount, date) => {
+  const addTransaction = (expenseId, type, amount, date, comment = '', accountId = defaultAccountId) => {
+    const id = crypto.randomUUID();
     setData(d => ({
       ...d,
       savingsTransactions: [...(d.savingsTransactions || []), {
-        id: crypto.randomUUID(), expenseId, type, amount, date,
-        accountId: defaultAccountId, updatedAt: Date.now(),
+        id, expenseId, type, amount, date,
+        ...(comment ? { comment } : {}),
+        accountId, updatedAt: Date.now(),
       }],
     }));
+    return id;
+  };
+
+  const undoTransaction = (id) => setData(d => ({
+    ...d,
+    savingsTransactions: (d.savingsTransactions || []).filter(t => t.id !== id),
+    deletedIds: withDeletedId(d, 'savingsTransactions', id),
+  }));
+
+  // Быстрые действия на телефоне — с тостом «Отменить».
+  const quickTx = (e, type, amount) => {
+    if (!(amount > 0)) return;
+    const id = addTransaction(e.id, type, amount, today);
+    showUndo(`${type === 'income' ? 'Внесено' : 'Списано'} ${formatRub(amount)} ₽ · ${e.name}`, () => undoTransaction(id));
   };
 
   const toggleSort = (col) => {
@@ -23143,9 +23759,115 @@ function SavingsListView({ data, setData }) {
   const totalBalance = transactions.reduce((s, t) => s + (t.type === 'income' ? 1 : -1) * (t.amount || 0), 0);
   const totalTarget = sorted.reduce((s, e) => s + (e.amount || 0), 0);
 
+  // ── Телефон ───────────────────────────────────────────────────────────────
+  const mobileSummary = (() => {
+    if (!isMobile || !expenses.length) return null;
+    const saved = sorted.reduce((s, e) => s + getItemBalance(e).balance, 0);
+    const monthlyTotal = sorted.reduce((s, e) => s + calcSavingsMonthly(e, getItemBalance(e).balance), 0);
+    const dueNow = sorted.filter(e => !paidThisMonth(e.id)).reduce((s, e) => s + calcSavingsMonthly(e, getItemBalance(e).balance), 0);
+    return (
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 mb-4">
+        <div className="text-[11px] uppercase tracking-wide text-[var(--text-subtle)]">Накоплено</div>
+        <div className="flex items-baseline justify-between gap-3 mt-1">
+          <div className={`font-display text-3xl tabular-nums ${saved >= 0 ? 'text-green-600' : 'text-red-500'}`}>{formatRub(saved)} <span className="text-base">₽</span></div>
+          <div className="text-sm text-[var(--text-muted)] whitespace-nowrap">из {formatRub(totalTarget)} ₽</div>
+        </div>
+        <BudgetBar value={saved} max={totalTarget} tone="bg-violet-500" className="mt-3" />
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="rounded-xl bg-[var(--bg)] px-3 py-2">
+            <div className="text-[11px] text-[var(--text-subtle)]">План в месяц</div>
+            <div className="text-[15px] font-semibold tabular-nums">{formatRub(monthlyTotal)} ₽</div>
+          </div>
+          <div className="rounded-xl bg-[var(--bg)] px-3 py-2">
+            <div className="text-[11px] text-[var(--text-subtle)]">Внести в {formatMonthShortBudget(curMonth).split(' ')[0]}</div>
+            <div className={`text-[15px] font-semibold tabular-nums ${dueNow > 0 ? 'text-violet-600' : 'text-green-600'}`}>{dueNow > 0 ? `${formatRub(dueNow)} ₽` : 'Всё ✓'}</div>
+          </div>
+        </div>
+        {Math.round(totalBalance) !== Math.round(saved) && (
+          <div className="mt-2 text-[11px] text-[var(--text-subtle)]">Баланс счёта накоплений с архивом: {formatRub(totalBalance)} ₽</div>
+        )}
+      </div>
+    );
+  })();
+
+  const renderMobileGoal = (e) => {
+    const cat     = cats.find(c => c.id === e.category) || { emoji: '💡', label: e.category };
+    const bal     = getItemBalance(e).balance;
+    const monthly = calcSavingsMonthly(e, bal);
+    const mLeft   = savingsMonthsLeft(e);
+    const isOver  = e.targetDate < curMonth;
+    const pct     = e.amount > 0 ? Math.min(100, Math.round((bal / e.amount) * 100)) : 0;
+    const paid    = paidThisMonth(e.id);
+    const done    = e.amount > 0 && bal >= e.amount;
+    const monthShort = formatMonthShortBudget(curMonth).split(' ')[0];
+    return (
+      <div key={e.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+        <div className="flex items-start gap-3">
+          <span className="w-10 h-10 rounded-xl bg-violet-50 flex items-center justify-center text-lg shrink-0">{cat.emoji}</span>
+          <div className="flex-1 min-w-0" onClick={() => setEditing(e)}>
+            <div className="font-semibold text-[15px] truncate">{e.name}</div>
+            <div className={`text-xs truncate mt-0.5 ${isOver ? 'text-red-500' : 'text-[var(--text-subtle)]'}`}>
+              {cat.label} · до {formatMonthShortBudget(e.targetDate)}{isOver ? ' · просрочен' : mLeft > 0 ? ` · ${mLeft} мес` : ''}
+            </div>
+          </div>
+          <BudgetMoreButton onClick={() => setMenuFor(e)} />
+        </div>
+        <div className="mt-3 flex items-baseline justify-between gap-3">
+          <span className={`font-display text-xl tabular-nums ${bal > 0 ? 'text-green-600' : 'text-[var(--text-muted)]'}`}>{formatRub(bal)} ₽</span>
+          <span className="text-xs text-[var(--text-subtle)] whitespace-nowrap">из {formatRub(e.amount)} ₽ · {pct}%</span>
+        </div>
+        <BudgetBar value={bal} max={e.amount} tone={pct >= 100 ? 'bg-green-500' : 'bg-violet-500'} className="mt-2" />
+        {e.notes && <div className="text-xs text-[var(--text-subtle)] mt-2 line-clamp-2">{e.notes}</div>}
+        <div className="mt-3 flex items-center gap-2">
+          {done ? (
+            <div className="flex-1 text-sm font-medium text-green-700 bg-green-50 rounded-xl px-3 py-2.5 text-center">Цель собрана 🎉</div>
+          ) : paid ? (
+            <>
+              <div className="flex-1 flex items-center justify-center gap-1.5 text-sm font-medium text-green-700 bg-green-50 rounded-xl px-3 py-2.5">
+                <Icon name="check" size={15} /> Внесено в {monthShort}
+              </div>
+              {monthly > 0 && (
+                <button onClick={() => quickTx(e, 'income', monthly)}
+                  className="px-3.5 py-2.5 rounded-xl border border-[var(--border)] text-sm font-medium text-[var(--text-muted)] active:bg-black/5 whitespace-nowrap">
+                  + {formatRub(monthly)} ₽
+                </button>
+              )}
+            </>
+          ) : monthly > 0 ? (
+            <button onClick={() => quickTx(e, 'income', monthly)}
+              className="flex-1 py-2.5 rounded-xl bg-violet-600 text-white text-sm font-medium active:opacity-80">
+              Внести {formatRub(monthly)} ₽
+            </button>
+          ) : (
+            <button onClick={() => setTxFor({ exp: e, type: 'income' })}
+              className="flex-1 py-2.5 rounded-xl border border-[var(--border)] text-sm font-medium active:bg-black/5">
+              Пополнить
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const menuActions = menuFor ? (() => {
+    const bal = getItemBalance(menuFor).balance;
+    return [
+      { icon: 'plus', label: 'Пополнить на другую сумму', onClick: () => setTxFor({ exp: menuFor, type: 'income' }) },
+      bal > 0 && { icon: 'wallet', label: 'Списать часть', hint: 'Своя сумма списания', onClick: () => setTxFor({ exp: menuFor, type: 'expense' }) },
+      bal > 0 && { icon: 'download', label: `Списать всё — ${formatRub(bal)} ₽`, hint: 'Например, когда покупка совершена', onClick: () => quickTx(menuFor, 'expense', bal) },
+      { icon: 'edit', label: 'Редактировать', onClick: () => setEditing(menuFor) },
+      { icon: 'archive', label: 'В архив', onClick: () => {
+        const e = menuFor;
+        toggleArchive(e.id);
+        showUndo(`«${e.name}» в архиве`, () => toggleArchive(e.id));
+      } },
+    ];
+  })() : [];
+
   return (
     <div>
-      {expenses.length > 0 && (
+      {mobileSummary}
+      {expenses.length > 0 && !isMobile && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 mb-6 flex items-center justify-between flex-wrap gap-3">
           <div>
             <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-1">Баланс счёта</div>
@@ -23159,8 +23881,8 @@ function SavingsListView({ data, setData }) {
         </div>
       )}
 
-      <div className="flex items-center gap-2 flex-wrap mb-6">
-        <button onClick={newExp} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
+      <div className="flex items-center gap-2 flex-wrap mb-6 max-md:mb-4">
+        <button onClick={newExp} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all max-md:flex-none max-md:w-[calc(100%-3.25rem)] max-md:justify-center">
           <Icon name="plus" size={16} />Добавить накопление
         </button>
         {expenses.length > 0 && (
@@ -23170,17 +23892,19 @@ function SavingsListView({ data, setData }) {
               options={monthOptions}
               selected={filterMonths}
               onChange={setFilterMonths}
+              className="w-36 max-md:order-3 max-md:flex-1 max-md:w-auto"
             />
             <BudgetMultiSelect
               label="Категория"
               options={catOptions}
               selected={filterCats}
               onChange={setFilterCats}
+              className="w-36 max-md:order-3 max-md:flex-1 max-md:w-auto"
             />
           </>
         )}
         <button onClick={() => setShowSettings(true)}
-          className="inline-flex items-center justify-center px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
+          className="inline-flex items-center justify-center px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors max-md:order-2"
           title="Настройки категорий">
           <Icon name="settings" size={16} />
         </button>
@@ -23188,6 +23912,11 @@ function SavingsListView({ data, setData }) {
 
       {!expenses.length ? (
         <EmptyState title="Нет накоплений" text="Добавьте плановые накопления и получите план по месяцам" />
+      ) : isMobile ? (
+        <div className="space-y-3">
+          {sorted.map(renderMobileGoal)}
+          {!sorted.length && <div className="text-center text-sm text-[var(--text-subtle)] py-8">Под фильтр ничего не попало</div>}
+        </div>
       ) : (
         <>
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
@@ -23327,6 +24056,23 @@ function SavingsListView({ data, setData }) {
       )}
 
       {editing && <BudgetExpenseModal expense={editing} cats={cats} balance={getItemBalance(editing).balance} onSave={save} onClose={() => setEditing(null)} />}
+      {menuFor && <BudgetActionSheet title={menuFor.name || 'Накопление'} actions={menuActions} onClose={() => setMenuFor(null)} />}
+      {txFor && (
+        <SavingsTransactionModal
+          expenses={expenses}
+          transactions={transactions}
+          accounts={data.budgetCashflowAccounts || []}
+          defaultAccountId={defaultAccountId}
+          preselectedId={txFor.exp.id}
+          preselectedType={txFor.type}
+          onSave={(expId, type, amount, date, comment, accountId) => {
+            addTransaction(expId, type, amount, date, (comment || '').trim(), accountId || '');
+            setTxFor(null);
+          }}
+          onClose={() => setTxFor(null)}
+        />
+      )}
+      {undoNode}
       {showSettings && (
         <BudgetCategoriesModal
           title="Категории накоплений"
@@ -23448,23 +24194,79 @@ function SavingsDDSView({ data, setData }) {
     </span>
   );
 
+  // Телефон: вместо фильтров в заголовках таблицы — тип чипами и цель списком.
+  const isMobile = useBudgetMobile();
+  const typeFilter = (filters.type || [])[0] || '';
+  const nameFilter = (filters.name || [])[0] || '';
+
   return (
     <div>
-      <div className="flex items-center gap-2 flex-wrap mb-6">
+      <div className="flex items-center gap-2 flex-wrap mb-6 max-md:mb-3">
         <button onClick={() => setShowAdd(true)}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all max-md:flex-1 max-md:justify-center">
           <Icon name="plus" size={16} />Добавить операцию
         </button>
         {activeFilterCount > 0 && (
           <button onClick={() => setFilters({})}
             className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors">
-            Сбросить фильтры ({activeFilterCount})
+            Сбросить<span className="max-md:hidden"> фильтры</span> ({activeFilterCount})
           </button>
         )}
       </div>
 
+      {isMobile && transactions.length > 0 && (
+        <div className="flex items-center gap-2 mb-3">
+          <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-0.5 shrink-0">
+            {[['', 'Все'], ['Доход', '↑'], ['Расход', '↓']].map(([v, label]) => (
+              <button key={label} onClick={() => setFilter('type', v ? [v] : null)}
+                className={`px-3 py-1.5 rounded-[10px] text-sm font-medium ${typeFilter === v ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <select value={nameFilter} onChange={e => setFilter('name', e.target.value ? [e.target.value] : null)}
+            className="flex-1 min-w-0 !py-2 !px-3 rounded-xl text-sm">
+            <option value="">Все цели</option>
+            {getUniqueVals('name').map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </div>
+      )}
+
       {transactions.length === 0 ? (
         <EmptyState title="Нет операций" text="Добавьте операцию — пополнение или списание со счёта накоплений" />
+      ) : isMobile ? (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+          <div className="divide-y divide-[var(--border)]">
+            {sorted.map(t => {
+              const isIncome = t.type === 'income';
+              return (
+                <div key={t.id} className="flex items-center gap-3 px-4 py-2.5">
+                  <span className={`w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold shrink-0 ${isIncome ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-500'}`}>
+                    {isIncome ? '↑' : '↓'}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{getExpName(t.expenseId)}</div>
+                    <div className="text-xs text-[var(--text-subtle)] truncate mt-0.5">{formatDate(t.date)}{t.comment ? ` · ${t.comment}` : ''}</div>
+                  </div>
+                  <span className={`text-sm font-semibold tabular-nums whitespace-nowrap ${isIncome ? 'text-green-600' : 'text-red-500'}`}>
+                    {isIncome ? '+' : '−'}{formatRub(t.amount)} ₽
+                  </span>
+                  <button onClick={() => removeTransaction(t.id)} title="Удалить"
+                    className="w-8 h-8 -mr-2 rounded-lg flex items-center justify-center text-[var(--text-subtle)] active:bg-red-50 active:text-red-500 shrink-0">
+                    <Icon name="trash" size={15} />
+                  </button>
+                </div>
+              );
+            })}
+            {!sorted.length && <div className="px-4 py-8 text-center text-sm text-[var(--text-subtle)]">Под фильтр ничего не попало</div>}
+          </div>
+          <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] grid grid-cols-3 gap-2 text-xs">
+            <div><div className="text-[var(--text-subtle)]">Пополнено</div><div className="font-semibold text-green-600 tabular-nums">+{formatRub(totalIncome)} ₽</div></div>
+            <div><div className="text-[var(--text-subtle)]">Списано</div><div className="font-semibold text-red-500 tabular-nums">−{formatRub(totalExpense)} ₽</div></div>
+            <div className="text-right"><div className="text-[var(--text-subtle)]">Баланс</div>
+              <div className={`font-semibold tabular-nums ${totalIncome - totalExpense >= 0 ? 'text-green-600' : 'text-red-500'}`}>{totalIncome - totalExpense >= 0 ? '+' : ''}{formatRub(totalIncome - totalExpense)} ₽</div></div>
+          </div>
+        </div>
       ) : (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
           <div className="overflow-x-auto md:overflow-x-visible">
@@ -24004,10 +24806,20 @@ function BudgetRecurringView({ data, setData }) {
     </span>
   );
 
+  // Телефон: карточки по категориям, тап — правка, остальное — в «⋯».
+  const isMobile = useBudgetMobile();
+  const [menuFor, setMenuFor] = useState(null);
+  const MONTH_SHORT = ['Янв','Фев','Мар','Апр','Май','Июн','Июл','Авг','Сен','Окт','Ноя','Дек'];
+  const curMonthNum = parseInt(getCurrentMonthStr().split('-')[1], 10);
+  const mobileGroups = isMobile ? [...new Set(sorted.map(r => r.category))].map(cid => ({
+    cat: cats.find(c => c.id === cid) || { emoji: '📌', label: cid },
+    items: sorted.filter(r => r.category === cid),
+  })) : [];
+
   return (
     <div>
-      <div className="flex items-center gap-2 flex-wrap mb-6">
-        <button onClick={newItem} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
+      <div className="flex items-center gap-2 flex-wrap mb-6 max-md:mb-4">
+        <button onClick={newItem} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all max-md:flex-1 max-md:justify-center">
           <Icon name="plus" size={16} />Добавить платёж
         </button>
         {items.length > 0 && (
@@ -24016,10 +24828,11 @@ function BudgetRecurringView({ data, setData }) {
             options={catOptions}
             selected={filterCats}
             onChange={setFilterCats}
+            className="w-36 max-md:order-3 max-md:w-full"
           />
         )}
         <button onClick={() => setShowSettings(true)}
-          className="inline-flex items-center justify-center px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
+          className="inline-flex items-center justify-center px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors max-md:order-2"
           title="Настройки категорий">
           <Icon name="settings" size={16} />
         </button>
@@ -24027,6 +24840,47 @@ function BudgetRecurringView({ data, setData }) {
 
       {!items.length ? (
         <EmptyState title="Нет постоянных платежей" text="Добавьте регулярные расходы: подписки, интернет, аренду и прочее" />
+      ) : isMobile ? (
+        <div className="space-y-3">
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl px-4 py-3 flex items-baseline justify-between gap-3">
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-[var(--text-subtle)]">В месяц</div>
+              <div className="font-display text-3xl tabular-nums mt-0.5">{formatRub(totalMonthly)} <span className="text-base text-[var(--text-muted)]">₽</span></div>
+            </div>
+            <div className="text-right text-xs text-[var(--text-subtle)]">
+              {sorted.length} {pluralRu(sorted.length, ['платёж', 'платежа', 'платежей'])}
+              <div className="mt-0.5">{formatRub(totalMonthly * 12)} ₽ в год</div>
+            </div>
+          </div>
+          {mobileGroups.map(({ cat, items: list }) => (
+            <div key={cat.label} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+              <div className="flex items-center justify-between px-4 pt-3 pb-1.5">
+                <span className="text-xs font-semibold uppercase tracking-wide text-[var(--text-subtle)]">{cat.emoji} {cat.label}</span>
+                <span className="text-xs text-[var(--text-subtle)] tabular-nums">{formatRub(list.reduce((s, r) => s + (r.amount || 0), 0))} ₽</span>
+              </div>
+              <div className="divide-y divide-[var(--border)]">
+                {list.map(r => {
+                  const skips = (Array.isArray(r.skipMonths) ? [...r.skipMonths].sort((a, b) => a - b) : []);
+                  const skipNow = skips.includes(curMonthNum);
+                  const sub = [skips.length ? `пропуск: ${skips.map(m => MONTH_SHORT[m - 1]).join(', ')}` : '', r.notes || ''].filter(Boolean).join(' · ');
+                  return (
+                    <div key={r.id} className="flex items-center gap-2 pl-4 pr-3 py-2.5">
+                      <button onClick={() => setEditing(r)} className="flex-1 min-w-0 flex items-center gap-3 text-left">
+                        <span className="flex-1 min-w-0">
+                          <span className="block text-sm font-medium truncate">{r.name}</span>
+                          {sub && <span className={`block text-xs truncate mt-0.5 ${skipNow ? 'text-amber-600' : 'text-[var(--text-subtle)]'}`}>{sub}</span>}
+                        </span>
+                        <span className={`text-sm font-semibold tabular-nums whitespace-nowrap ${skipNow ? 'text-[var(--text-subtle)] line-through' : ''}`}>{formatRub(r.amount)} ₽</span>
+                      </button>
+                      <BudgetMoreButton onClick={() => setMenuFor(r)} />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          {!sorted.length && <div className="text-center text-sm text-[var(--text-subtle)] py-8">Под фильтр ничего не попало</div>}
+        </div>
       ) : (
         <>
           {/* Сводка */}
@@ -24098,7 +24952,24 @@ function BudgetRecurringView({ data, setData }) {
             className="inline-flex items-center gap-2 text-sm text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">
             <Icon name="archive" size={14} />Архив ({archivedItems.length}) {showArchive ? '▴' : '▾'}
           </button>
-          {showArchive && (
+          {showArchive && isMobile && (
+            <div className="mt-3 bg-[var(--surface)] border border-[var(--border)] rounded-2xl divide-y divide-[var(--border)]">
+              {archivedItems.map(r => {
+                const cat = cats.find(c => c.id === r.category) || { emoji: '📌', label: r.category };
+                return (
+                  <div key={r.id} className="flex items-center gap-2 pl-4 pr-2 py-2.5 text-[var(--text-muted)]">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{cat.emoji} {r.name}</div>
+                      <div className="text-xs text-[var(--text-subtle)]">{formatRub(r.amount)} ₽ · план по {monthLabel(addMonthsStr(r.archivedFrom, -1))}</div>
+                    </div>
+                    <button onClick={() => unarchive(r)} title="Вернуть из архива" className="w-9 h-9 rounded-xl flex items-center justify-center active:bg-black/5"><Icon name="restore" size={16} /></button>
+                    <button onClick={() => remove(r.id)} title="Удалить совсем" className="w-9 h-9 rounded-xl flex items-center justify-center active:bg-red-50 text-red-400"><Icon name="trash" size={16} /></button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {showArchive && !isMobile && (
             <div className="mt-3 bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
               <div className="overflow-x-auto">
                 <table className="text-sm w-max max-w-full">
@@ -24129,6 +25000,13 @@ function BudgetRecurringView({ data, setData }) {
       )}
 
       {editing && <BudgetRecurringModal item={editing} cats={cats} onSave={save} onClose={() => setEditing(null)} />}
+      {menuFor && (
+        <BudgetActionSheet title={menuFor.name || 'Платёж'} onClose={() => setMenuFor(null)} actions={[
+          { icon: 'edit', label: 'Редактировать', hint: 'Сумма, категория, пропуск месяцев', onClick: () => setEditing(menuFor) },
+          { icon: 'archive', label: 'В архив', hint: 'Прошлые месяцы сохранятся в «По месяцу»', onClick: () => archive(menuFor) },
+          { icon: 'trash', danger: true, label: 'Удалить совсем', hint: 'Пропадёт и из прошлых месяцев', onClick: () => remove(menuFor.id) },
+        ]} />
+      )}
       {showSettings && (
         <BudgetCategoriesModal
           title="Категории постоянных платежей"
@@ -24332,17 +25210,30 @@ function DebtsListView({ data, setData }) {
 
   const addTx = (debtId, type, amount, date, comment, accountId = '', cashflowDirection = '') => {
     const linked = accountId && (cashflowDirection === 'in' || cashflowDirection === 'out');
+    const id = crypto.randomUUID();
     setData(d => ({
       ...d,
       debtTransactions: [...(d.debtTransactions || []), {
-        id: crypto.randomUUID(), debtId, type, amount, date,
+        id, debtId, type, amount, date,
         comment: (comment || '').trim(),
         accountId: linked ? accountId : '',
         cashflowDirection: linked ? cashflowDirection : '',
         updatedAt: Date.now(),
       }],
     }));
+    return id;
   };
+
+  // Телефон: отметка платежа с одного тапа + тост «Отменить», остальные
+  // действия по долгу — в меню «⋯».
+  const isMobile = useBudgetMobile();
+  const [menuFor, setMenuFor] = useState(null);
+  const [showUndo, undoNode] = useBudgetUndo();
+  const markWithUndo = (d, id, text) => showUndo(`${text} · ${d.debtor || 'долг'}`, () => setData(s => ({
+    ...s,
+    debtTransactions: (s.debtTransactions || []).filter(t => t.id !== id),
+    deletedIds: withDeletedId(s, 'debtTransactions', id),
+  })));
 
   const newDebt = () => setEditing({
     id: crypto.randomUUID(), amount: '', debtor: '', source: DEBT_SOURCES[0],
@@ -24438,6 +25329,69 @@ function DebtsListView({ data, setData }) {
       d.source || '',
       d.notify && d.notifyDate ? `🔔 ${fmtDate(d.notifyDate)}` : '',
     ].filter(Boolean).join(' · ');
+    if (isMobile) {
+      const markPlain = () => {
+        if (!(due > 0)) { setPayModal(d); return; }
+        markWithUndo(d, addTx(d.id, 'payment', due, today, ''), `Отмечено ${formatRub(due)} ₽`);
+      };
+      const markDds = () => {
+        if (!(due > 0 && defaultAccountId)) { setCashflowModal(d); return; }
+        markWithUndo(d, addTx(d.id, 'payment', due, today, d.debtor || '', defaultAccountId, 'out'), `Отмечено ${formatRub(due)} ₽ + ДДС`);
+      };
+      return (
+        <div key={d.id} className={`px-4 py-3 ${dim ? 'opacity-70' : ''}`}>
+          <div className="flex items-start gap-3">
+            <span className={`w-1.5 self-stretch rounded-full shrink-0 ${group === 'now' ? ui.bar : 'bg-[var(--border)]'}`} />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-start justify-between gap-2">
+                <div className="text-[15px] font-semibold truncate">{d.debtor || '—'}</div>
+                <div className="text-right shrink-0">
+                  {group === 'now' && need > 0 && (
+                    <div className={`text-[15px] font-semibold tabular-nums ${status === 'paid' ? 'text-green-600' : status === 'overdue' ? 'text-red-600' : ''}`}>
+                      {status === 'paid' ? `✓ ${formatRub(paidThis)} ₽` : `${formatRub(due)} ₽`}
+                    </div>
+                  )}
+                  {group === 'later' && <div className="text-xs text-[var(--text-muted)]">с {formatMonthShortBudget(d.startDate)}</div>}
+                  {group === 'free' && <div className="text-xs text-[var(--text-muted)]">без графика</div>}
+                </div>
+              </div>
+              <div className="text-xs text-[var(--text-subtle)] mt-0.5 leading-snug">{sub}</div>
+              {group === 'now' && (
+                <div className={`text-[11px] mt-1 font-medium ${status === 'overdue' ? 'text-red-500' : status === 'partial' ? 'text-amber-600' : status === 'paid' || status === 'done' ? 'text-green-600' : 'text-[var(--text-subtle)]'}`}>
+                  {status === 'partial' ? `Внесено ${formatRub(paidThis)} из ${formatRub(need)} ₽` : (status === 'due' ? 'К оплате в этом месяце' : ui.label)}
+                </div>
+              )}
+              <BudgetBar value={effective - remaining} max={effective} tone="bg-rose-400" className="mt-2" />
+            </div>
+          </div>
+          <div className="mt-3 ml-[18px] flex items-center gap-2">
+            {remaining > 0 ? (
+              <>
+                <button onClick={markPlain}
+                  className="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-rose-600 text-white text-sm font-medium active:opacity-80 truncate">
+                  Отметить{due > 0 ? ` ${formatRub(due)} ₽` : ''}
+                </button>
+                <button onClick={markDds} title="Отметить платёж и записать трату в ДДС"
+                  className="shrink-0 px-3.5 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium active:opacity-80">
+                  + ДДС
+                </button>
+              </>
+            ) : <span className="flex-1 text-sm text-green-700">Погашен ✓</span>}
+            <BudgetMoreButton onClick={() => setMenuFor(d)} />
+          </div>
+          {monthPays.length > 0 && (
+            <div className="mt-2 ml-[18px] flex flex-wrap gap-1.5">
+              {monthPays.map(t => (
+                <span key={t.id} className="inline-flex items-center gap-1 text-xs bg-green-50 text-green-700 rounded-lg pl-2 pr-0.5 py-0.5">
+                  ✓ {fmtShort(t.date)} · {formatRub(t.amount)} ₽{t.comment ? ` · ${t.comment}` : ''}
+                  <button onClick={() => removeTx(t.id)} title="Отменить платёж" className="w-6 h-6 flex items-center justify-center text-green-700/60 active:text-red-500">✕</button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
     return (
       <div key={d.id} className={`px-3 py-2.5 ${dim ? 'opacity-60' : ''}`}>
         <div className="flex items-center gap-3">
@@ -24508,7 +25462,31 @@ function DebtsListView({ data, setData }) {
 
   return (
     <div>
-      {active.length > 0 && (
+      {active.length > 0 && isMobile && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 mb-4">
+          <div className="text-[11px] text-[var(--text-subtle)] uppercase tracking-wide">Платежи · {formatMonthFull(curMonth)}</div>
+          {monthNeed > 0 ? (
+            monthDue > 0 ? (
+              <div className="font-display text-3xl mt-1 tabular-nums">{formatRub(monthDue)} <span className="text-base text-[var(--text-muted)]">₽ ещё оплатить</span></div>
+            ) : (
+              <div className="font-display text-2xl mt-1 text-green-600">Всё оплачено ✓</div>
+            )
+          ) : (
+            <div className="font-display text-xl mt-1 text-[var(--text-muted)]">В этом месяце платить не нужно</div>
+          )}
+          {monthNeed > 0 && (
+            <>
+              <BudgetBar value={monthPaid} max={monthNeed} tone={monthPct >= 100 ? 'bg-green-500' : 'bg-rose-500'} className="mt-3 !h-2" />
+              <div className="mt-1.5 text-xs text-[var(--text-subtle)]">Оплачено {formatRub(monthPaid)} из {formatRub(monthNeed)} ₽</div>
+            </>
+          )}
+          <div className="mt-3 pt-3 border-t border-[var(--border)] flex items-baseline justify-between gap-3">
+            <span className="text-xs text-[var(--text-subtle)]">Всего осталось вернуть · {active.length} {pluralRu(active.length, ['долг', 'долга', 'долгов'])}</span>
+            <span className="font-display text-lg tabular-nums whitespace-nowrap">{formatRub(totalRemaining)} ₽</span>
+          </div>
+        </div>
+      )}
+      {active.length > 0 && !isMobile && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 mb-6">
           <div className="flex items-start justify-between flex-wrap gap-4">
             <div>
@@ -24542,8 +25520,8 @@ function DebtsListView({ data, setData }) {
         </div>
       )}
 
-      <div className="flex items-center gap-2 flex-wrap mb-6">
-        <button onClick={newDebt} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
+      <div className="flex items-center gap-2 flex-wrap mb-6 max-md:mb-4">
+        <button onClick={newDebt} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all max-md:flex-1 max-md:justify-center">
           <Icon name="plus" size={16} />Добавить долг
         </button>
       </div>
@@ -24641,6 +25619,16 @@ function DebtsListView({ data, setData }) {
           onClose={() => setCashflowModal(null)}
         />
       )}
+      {menuFor && (
+        <BudgetActionSheet title={menuFor.debtor || 'Долг'} onClose={() => setMenuFor(null)} actions={[
+          getDebtRemaining(menuFor, transactions) > 0 && { icon: 'creditCard', label: 'Другая сумма или пополнить долг', hint: 'Платёж на свою сумму или доп. выдача', onClick: () => setPayModal(menuFor) },
+          getDebtRemaining(menuFor, transactions) > 0 && { icon: 'wallet', label: 'Платёж со счётом ДДС', hint: 'Своя сумма, счёт и направление денег', onClick: () => setCashflowModal(menuFor) },
+          { icon: 'edit', label: 'Редактировать', onClick: () => setEditing(menuFor) },
+          { icon: 'check', label: 'Отметить закрытым', hint: 'Уйдёт в «Закрытые»', onClick: () => toggleClosed(menuFor.id) },
+          { icon: 'trash', danger: true, label: 'Удалить', hint: 'Вместе с платежами', onClick: () => remove(menuFor.id) },
+        ]} />
+      )}
+      {undoNode}
     </div>
   );
 }
@@ -24707,17 +25695,51 @@ function DebtsPaymentsView({ data, setData }) {
     { col: 'amount', label: 'Сумма', cls: 'text-right' },
   ];
 
+  const isMobile = useBudgetMobile();
+
   return (
     <div>
-      <div className="flex items-center gap-2 flex-wrap mb-6">
+      <div className="flex items-center gap-2 flex-wrap mb-6 max-md:mb-4">
         <button onClick={() => setShowAdd(true)} disabled={!activeDebts.length && !debts.length}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all disabled:opacity-40">
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all disabled:opacity-40 max-md:flex-1 max-md:justify-center">
           <Icon name="plus" size={16} />Добавить операцию
         </button>
       </div>
 
       {!transactions.length ? (
         <EmptyState title="Нет платежей" text="Отмечайте плановые платежи или вносите внеплановые — остаток и план в «По месяцу» пересчитаются сами" />
+      ) : isMobile ? (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+          <div className="divide-y divide-[var(--border)]">
+            {sorted.map(t => {
+              const isInc = t.type === 'increase';
+              return (
+                <div key={t.id} className="flex items-center gap-3 px-4 py-2.5">
+                  <span className={`w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold shrink-0 ${isInc ? 'bg-amber-50 text-amber-700' : 'bg-green-50 text-green-600'}`}>
+                    {isInc ? '↑' : '↓'}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{getDebtName(t.debtId)}</div>
+                    <div className="text-xs text-[var(--text-subtle)] truncate mt-0.5">
+                      {formatDate(t.date)} · {isInc ? 'пополнение долга' : 'платёж'}{t.comment ? ` · ${t.comment}` : ''}
+                    </div>
+                  </div>
+                  <span className={`text-sm font-semibold tabular-nums whitespace-nowrap ${isInc ? 'text-amber-700' : 'text-green-600'}`}>
+                    {isInc ? '+' : '−'}{formatRub(t.amount)} ₽
+                  </span>
+                  <button onClick={() => removeTx(t.id)} title="Удалить"
+                    className="w-8 h-8 -mr-2 rounded-lg flex items-center justify-center text-[var(--text-subtle)] active:bg-red-50 active:text-red-500 shrink-0">
+                    <Icon name="trash" size={15} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] flex justify-between gap-3 text-xs">
+            <span className="text-green-600">Платежи: <b className="tabular-nums">−{formatRub(totalPaid)} ₽</b></span>
+            <span className="text-amber-700">Пополнения: <b className="tabular-nums">+{formatRub(totalInc)} ₽</b></span>
+          </div>
+        </div>
       ) : (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
           <div className="overflow-x-auto md:overflow-x-visible">
@@ -25371,7 +26393,7 @@ function BudgetPlansView({ data, setData, onDirtyChange }) {
                 <div className="flex items-start justify-between gap-2">
                   <div className="font-semibold text-sm truncate">{p.name || 'Без названия'}</div>
                   <button onClick={e => { e.stopPropagation(); removePlan(p.id); }}
-                    className="p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-red-50 text-[var(--text-subtle)] hover:text-red-500 transition-all shrink-0">
+                    className="p-1 rounded-lg opacity-0 group-hover:opacity-100 max-md:opacity-100 max-md:p-1.5 max-md:-m-1 hover:bg-red-50 text-[var(--text-subtle)] hover:text-red-500 transition-all shrink-0">
                     <Icon name="trash" size={14} />
                   </button>
                 </div>
@@ -25466,23 +26488,51 @@ function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel, onDirtyC
   const planHeaderCls = "px-1 py-1.5 text-center text-xs font-semibold tracking-wide border-b border-l-2 border-[var(--border)] w-[110px] bg-blue-50 text-blue-600";
   const planDivCls = "border-l-2 border-[var(--border)]";
 
+  // Телефон: карточки групп вместо таблицы, панель с «Сохранить» прилипает
+  // под шапкой приложения — чтобы правки не терялись при длинном плане.
+  const isMobile = useBudgetMobile();
+  const dirty = isDirty();
+  const breakdownText = (rows) => (rows && rows.length > 1)
+    ? rows.map(r => `${r.label || 'Без названия'} ${formatRub(r.amount)}`).join(' · ') : '';
+  const mobileRow = (it, income) => {
+    const v = getItemVal(it.id);
+    const sub = breakdownText(breakdowns[it.id]);
+    return (
+      <button key={it.id} onClick={() => setCellEdit({ item: it })}
+        className="w-full flex items-center gap-3 px-4 py-2.5 text-left active:bg-black/[0.03]">
+        <span className="flex-1 min-w-0">
+          <span className="block text-sm truncate">{it.label}</span>
+          {sub && <span className="block text-xs text-[var(--text-subtle)] truncate mt-0.5">{sub}</span>}
+        </span>
+        <span className={`text-sm font-medium tabular-nums whitespace-nowrap ${v > 0 ? (income ? 'text-emerald-600' : 'text-blue-600') : 'text-[var(--text-subtle)]'}`}>
+          {v > 0 ? `${formatRub(v)} ₽` : 'указать'}
+        </span>
+        <span className="text-[var(--text-subtle)]"><Icon name="chevronRight" size={14} /></span>
+      </button>
+    );
+  };
+
   return (
     <div>
-      <div className="flex items-center gap-2 sm:gap-3 mb-4 flex-wrap">
+      <div className="flex items-center gap-2 sm:gap-3 mb-4 flex-wrap max-md:flex-nowrap max-md:sticky max-md:top-[61px] max-md:z-10 max-md:-mx-4 max-md:px-4 max-md:py-2 max-md:bg-[var(--bg)]/95 max-md:backdrop-blur">
         <button onClick={requestCancel}
-          className="p-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">
+          className="p-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors max-md:shrink-0">
           <Icon name="chevronLeft" size={16} />
         </button>
         <input
           value={plan.name}
           onChange={e => setPlan(p => ({ ...p, name: e.target.value }))}
           placeholder="Название плана (например, «Поездка в Сочи»)"
-          className="flex-1 min-w-[180px] bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm font-medium focus:outline-none focus:border-[var(--text)]"
+          className="flex-1 min-w-[180px] max-md:min-w-0 bg-[var(--surface)] border border-[var(--border)] rounded-xl px-3 py-2 text-sm font-medium focus:outline-none focus:border-[var(--text)]"
         />
         <button onClick={() => setShowStructure(true)}
-          className="p-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors"
+          className="p-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] hover:text-[var(--text)] transition-colors max-md:shrink-0"
           title="Группы и статьи плана">
           <Icon name="settings" size={16} />
+        </button>
+        <button onClick={doSave} disabled={!dirty && !isNew}
+          className="md:hidden shrink-0 px-3.5 py-2 rounded-xl bg-[var(--text)] text-white text-sm font-medium disabled:opacity-35">
+          Сохранить
         </button>
       </div>
 
@@ -25494,6 +26544,52 @@ function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel, onDirtyC
           <button onClick={() => setShowStructure(true)} className="btn-primary inline-flex items-center gap-2">
             <Icon name="settings" size={16} />Добавить группы и статьи
           </button>
+        </div>
+      ) : isMobile ? (
+        <div className="space-y-3">
+          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+            <div className={`grid gap-3 ${incomeSources.length ? 'grid-cols-3' : 'grid-cols-1'}`}>
+              <div className="min-w-0">
+                <div className="text-[11px] uppercase tracking-wide text-[var(--text-subtle)]">Расходы</div>
+                <div className="font-display text-[19px] mt-1 truncate tabular-nums text-blue-700">{formatRub(grandTotal())}</div>
+              </div>
+              {incomeSources.length > 0 && (
+                <>
+                  <div className="min-w-0">
+                    <div className="text-[11px] uppercase tracking-wide text-[var(--text-subtle)]">Приход</div>
+                    <div className="font-display text-[19px] mt-1 truncate tabular-nums text-emerald-600">{formatRub(incomeTotal())}</div>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[11px] uppercase tracking-wide text-[var(--text-subtle)]">Остаток</div>
+                    <div className={`font-display text-[19px] mt-1 truncate tabular-nums ${incomeTotal() - grandTotal() >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                      {incomeTotal() - grandTotal() >= 0 ? '+' : '−'}{formatRub(Math.abs(incomeTotal() - grandTotal()))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+          {incomeSources.length > 0 && (
+            <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+              <div className="flex items-center justify-between px-4 pt-3 pb-1.5">
+                <span className="font-semibold text-[15px] text-emerald-700">💰 Приход</span>
+                <span className="text-sm font-semibold tabular-nums text-emerald-600">{formatRub(incomeTotal())} ₽</span>
+              </div>
+              <div className="divide-y divide-[var(--border)]">{incomeSources.map(src => mobileRow(src, true))}</div>
+            </div>
+          )}
+          {groups.map(g => (
+            <div key={g.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
+              <div className="flex items-center justify-between gap-3 px-4 pt-3 pb-1.5">
+                <span className="font-semibold text-[15px] truncate">{g.emoji && <span className="mr-1.5">{g.emoji}</span>}{g.label}</span>
+                <span className="text-sm font-semibold tabular-nums text-blue-600 whitespace-nowrap">{formatRub(groupTotal(g))} ₽</span>
+              </div>
+              <div className="divide-y divide-[var(--border)]">
+                {(g.items || []).map(it => mobileRow(it, false))}
+                {!(g.items || []).length && <div className="px-4 py-3 text-xs text-[var(--text-subtle)]">Нет статей — добавьте их через ⚙</div>}
+              </div>
+            </div>
+          ))}
         </div>
       ) : (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
@@ -25511,7 +26607,7 @@ function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel, onDirtyC
                 {incomeSources.length > 0 && (
                   <React.Fragment>
                     <tr className="bg-emerald-50">
-                      <td className="sticky left-0 z-10 bg-emerald-50 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs">
+                      <td className="sticky left-0 z-10 bg-emerald-50 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs max-md:px-3">
                         <span className="mr-1.5">💰</span>
                         <span className="uppercase tracking-wide text-emerald-700">Приход</span>
                       </td>
@@ -25524,7 +26620,7 @@ function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel, onDirtyC
                       const rows = breakdowns[src.id];
                       return (
                         <tr key={src.id} className="border-b border-[var(--border)] transition-colors hover:bg-emerald-50/30 bg-white">
-                          <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
+                          <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8 max-md:pl-4 max-md:pr-2">
                             <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{src.label}</span>
                           </td>
                           <td className={`px-1 py-1 w-[110px] ${planDivCls}`}>
@@ -25545,7 +26641,7 @@ function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel, onDirtyC
                 {groups.map(g => (
                   <React.Fragment key={g.id}>
                     <tr className="bg-gray-100">
-                      <td className="sticky left-0 z-10 bg-gray-100 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs">
+                      <td className="sticky left-0 z-10 bg-gray-100 px-4 py-2 border-b border-r border-[var(--border)] font-semibold text-xs max-md:px-3">
                         {g.emoji && <span className="mr-1.5">{g.emoji}</span>}
                         <span className="uppercase tracking-wide text-[var(--text)]">{g.label}</span>
                       </td>
@@ -25558,7 +26654,7 @@ function BudgetPlanEditor({ plan: initialPlan, isNew, onSave, onCancel, onDirtyC
                       const rows = breakdowns[item.id];
                       return (
                         <tr key={item.id} className="border-b border-[var(--border)] transition-colors hover:bg-blue-50/20 bg-white">
-                          <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8">
+                          <td className="sticky left-0 z-10 bg-white px-4 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)] text-sm pl-8 max-md:pl-4 max-md:pr-2">
                             <span className="before:content-['·'] before:mr-2 before:text-[var(--border-strong)]">{item.label}</span>
                           </td>
                           <td className={`px-1 py-1 w-[110px] ${planDivCls}`}>
@@ -26136,28 +27232,76 @@ function BudgetSupplementsView({ data, setData }) {
 
   const assignedMonths = Object.keys(assignments).filter(m => (assignments[m] || []).length > 0).sort();
 
+  // Телефон: карточки с галочкой выбора, «В месяц» — плашкой над навигацией.
+  const isMobile = useBudgetMobile();
+  const [menuFor, setMenuFor] = useState(null);
+  const selectedVisible = selected.filter(id => sorted.some(x => x.id === id));
+
   return (
     <div>
-      <div className="flex items-center gap-2 flex-wrap mb-6">
-        <button onClick={newItem} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all">
-          <Icon name="plus" size={16} />Добавить
+      <div className="flex items-center gap-2 flex-wrap mb-6 max-md:mb-4">
+        <button onClick={newItem} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all max-md:flex-1 max-md:justify-center">
+          <Icon name="plus" size={16} />Добавить<span className="md:hidden"> позицию</span>
         </button>
         {selected.length > 0 && (
           <button onClick={() => setShowAssign(true)}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-medium hover:opacity-85 transition-all">
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-medium hover:opacity-85 transition-all max-md:hidden">
             📅 В месяц ({selected.length} поз.)
           </button>
         )}
         {activeFilterCount > 0 && (
           <button onClick={() => setFilters({})}
             className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors">
-            Сбросить фильтры ({activeFilterCount})
+            Сбросить<span className="max-md:hidden"> фильтры</span> ({activeFilterCount})
           </button>
         )}
       </div>
 
       {!items.length ? (
         <EmptyState title="Нет добавок" text="Добавьте БАДы или спортивное питание — укажите количество, дозировку и стоимость" />
+      ) : isMobile ? (
+        <div>
+          <div className="flex items-center justify-between px-1 mb-2 text-xs text-[var(--text-subtle)]">
+            <button onClick={selectAll} className="font-medium text-[var(--text-muted)] py-1">
+              {sorted.length > 0 && selectedVisible.length === sorted.length ? 'Снять выбор' : 'Выбрать все'}
+            </button>
+            <span>{sorted.length} {pluralRu(sorted.length, ['позиция', 'позиции', 'позиций'])} · {formatRub(sorted.reduce((s, x) => s + (Number(x.cost) || 0), 0))} ₽</span>
+          </div>
+          <div className="space-y-2">
+            {sorted.map(item => {
+              const days = daysLast(item);
+              const sel = selected.includes(item.id);
+              const sub = [item.brand, item.dailyIntake ? `${item.dailyIntake} в день` : '', days > 0 ? `хватит на ${days} дн` : ''].filter(Boolean).join(' · ');
+              return (
+                <div key={item.id} className={`flex items-center gap-3 border rounded-2xl pl-3 pr-2 py-2.5 transition-colors ${sel ? 'border-blue-300 bg-blue-50/60' : 'border-[var(--border)] bg-[var(--surface)]'}`}>
+                  <button onClick={() => toggleSelect(item.id)} aria-label="Выбрать"
+                    className={`w-7 h-7 rounded-lg border-2 flex items-center justify-center shrink-0 transition-colors ${sel ? 'bg-blue-600 border-blue-600 text-white' : 'border-[var(--border-strong)] bg-[var(--surface)]'}`}>
+                    {sel && <Icon name="check" size={14} />}
+                  </button>
+                  <button onClick={() => toggleSelect(item.id)} className="flex-1 min-w-0 text-left">
+                    <span className="block text-sm font-medium truncate">{item.name}</span>
+                    {sub && <span className="block text-xs text-[var(--text-subtle)] truncate mt-0.5">{sub}</span>}
+                  </button>
+                  <span className="text-sm font-semibold tabular-nums whitespace-nowrap">{item.cost ? `${formatRub(item.cost)} ₽` : '—'}</span>
+                  <BudgetMoreButton onClick={() => setMenuFor(item)} />
+                </div>
+              );
+            })}
+            {!sorted.length && <div className="text-center text-sm text-[var(--text-subtle)] py-8">Под фильтр ничего не попало</div>}
+          </div>
+          {selectedVisible.length > 0 && !showAssign && ReactDOM.createPortal(
+            <div className="md:hidden fixed left-3 right-3 z-40 fade-in" style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 72px)' }}>
+              <div className="flex items-center gap-3 rounded-2xl bg-[var(--text)] text-white pl-4 pr-2 py-2 shadow-xl">
+                <span className="flex-1 min-w-0 text-sm truncate">
+                  Выбрано {selectedVisible.length} · {formatRub(totalSelected)} ₽
+                </span>
+                <button onClick={() => setSelected([])} className="px-2.5 py-2 text-sm text-white/70">Сброс</button>
+                <button onClick={() => setShowAssign(true)} className="px-3.5 py-2 rounded-xl bg-blue-600 text-sm font-semibold">📅 В месяц</button>
+              </div>
+            </div>,
+            document.body
+          )}
+        </div>
       ) : (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden inline-block max-w-full align-top">
           <div className="overflow-x-auto md:overflow-x-visible">
@@ -26281,6 +27425,13 @@ function BudgetSupplementsView({ data, setData }) {
       )}
 
       {editing && <BudgetSupplementModal item={editing} onSave={save} onClose={() => setEditing(null)} />}
+      {menuFor && (
+        <BudgetActionSheet title={menuFor.name || 'Позиция'} onClose={() => setMenuFor(null)} actions={[
+          menuFor.link && { icon: 'externalLink', label: 'Открыть ссылку', onClick: () => window.open(menuFor.link, '_blank', 'noopener') },
+          { icon: 'edit', label: 'Редактировать', onClick: () => setEditing(menuFor) },
+          { icon: 'trash', danger: true, label: 'Удалить', onClick: () => remove(menuFor.id) },
+        ]} />
+      )}
 
       {showAssign && (
         <BudgetSupplementAssignModal
@@ -41246,7 +42397,12 @@ function BarcodeScanModal({ onClose, onDetected }) {
   );
 }
 
+// true внутри раздела «Бюджет»: там на телефоне любая Modal открывается
+// шторкой снизу (на ПК — как обычно). Контекст доходит и сквозь портал.
+const ModalSheetContext = React.createContext(false);
+
 function Modal({ title, children, onClose, wide, xl }) {
+  const sheet = React.useContext(ModalSheetContext);
   useEffect(() => {
     const handler = (e) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', handler);
@@ -41256,20 +42412,24 @@ function Modal({ title, children, onClose, wide, xl }) {
   return ReactDOM.createPortal(
     <div
       className="fixed inset-0 z-50 overflow-y-auto bg-black/30 backdrop-blur-sm fade-in"
+      style={sheet ? { overscrollBehavior: 'contain' } : undefined}
       onClick={onClose}
     >
-      <div className="min-h-full flex items-start justify-center p-4 sm:py-10">
+      <div className={`min-h-full flex justify-center ${sheet
+        ? 'items-end pt-12 md:items-start md:p-4 md:py-10'
+        : 'items-start p-4 sm:py-10'}`}>
         <div
           onClick={e => e.stopPropagation()}
-          className={`bg-[var(--bg)] w-full rounded-2xl my-auto ${xl ? 'max-w-5xl' : wide ? 'max-w-3xl' : 'max-w-lg'}`}
+          className={`bg-[var(--bg)] w-full ${sheet ? 'modal-sheet rounded-t-3xl md:rounded-2xl md:my-auto' : 'rounded-2xl my-auto'} ${xl ? 'max-w-5xl' : wide ? 'max-w-3xl' : 'max-w-lg'}`}
         >
-          <div className="bg-[var(--bg)] px-4 py-4 sm:px-6 sm:py-5 flex items-center justify-between border-b border-[var(--border)] rounded-t-2xl">
-            <h2 className="font-display text-xl sm:text-2xl">{title}</h2>
-            <button onClick={onClose} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
+          <div className={`bg-[var(--bg)] px-4 py-4 sm:px-6 sm:py-5 flex items-center justify-between border-b border-[var(--border)] rounded-t-2xl ${sheet ? 'max-md:sticky max-md:top-0 max-md:z-10 max-md:rounded-t-3xl max-md:pt-5 relative' : ''}`}>
+            {sheet && <span className="md:hidden absolute left-1/2 top-2 -translate-x-1/2 w-10 h-1 rounded-full bg-[var(--border-strong)]" />}
+            <h2 className="font-display text-xl sm:text-2xl min-w-0">{title}</h2>
+            <button onClick={onClose} className="p-2.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)] shrink-0">
               <Icon name="x" size={20} />
             </button>
           </div>
-          <div className="p-4 sm:p-6">{children}</div>
+          <div className={`p-4 sm:p-6 ${sheet ? 'modal-sheet-body' : ''}`}>{children}</div>
         </div>
       </div>
     </div>,
