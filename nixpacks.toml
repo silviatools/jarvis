@@ -2,9 +2,11 @@
 # LibreOffice (Impress) + poppler: превью слайдов и PDF для навыка «Презентации»
 # (deck_builder.render_png: soffice → PDF → pdftoppm → PNG).
 # Шрифты: Carlito — метрически совместим с Calibri, Liberation — с Arial/Times, DejaVu — кириллица по умолчанию.
-# Chromium для кабинетов Ozon/WB ставит Playwright в /app/ms-playwright (см. install).
+# Chromium для кабинетов Ozon/WB ставит Playwright в /app/ms-playwright.
 # Здесь — системные библиотеки, без которых этот браузер не стартует. Пакет chromium из apt
 # на Ubuntu часто оказывается заглушкой snap и в контейнере не запускается.
+# install не переписывать целиком: «...» — команда Python-провайдера
+# (python -m venv /opt/venv, activate, pip install). Без неё pip нет в PATH.
 [variables]
 PLAYWRIGHT_BROWSERS_PATH = "/app/ms-playwright"
 
@@ -43,6 +45,6 @@ aptPkgs = [
 
 [phases.install]
 cmds = [
-  "pip install -r requirements.txt",
-  "python -m playwright install chromium",
+  "...",
+  ". /opt/venv/bin/activate && python -m playwright install chromium",
 ]
