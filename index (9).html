@@ -25418,6 +25418,7 @@ function DebtsListView({ dir, data, setData }) {
   };
   const fmtShort = (s) => (s ? s.split('-').reverse().slice(0, 2).join('.') : '');
 
+  const LEND_STATUS_LABEL = { overdue: 'Просрочен', due: 'Ждём возврат', partial: 'Частично', paid: 'Вернули ✓', done: 'Вернули ✓', none: 'Возврат не ожидается' };
   const STATUS_UI = {
     overdue: { label: 'Просрочен',  cls: 'bg-red-50 text-red-600 border-red-200',       bar: 'bg-red-500' },
     due:     { label: 'К оплате',   cls: 'bg-rose-50 text-rose-600 border-rose-200',    bar: 'bg-rose-500' },
@@ -25431,7 +25432,7 @@ function DebtsListView({ dir, data, setData }) {
   // оплаты справа, остальные действия — в меню «⋯».
   const renderDebtCard = (r) => {
     const { d, remaining, effective, pct, hasSchedule, monthPays, paidThis, need, due, status, group } = r;
-    const ui = STATUS_UI[status];
+    const ui = lend ? { ...STATUS_UI[status], label: LEND_STATUS_LABEL[status] } : STATUS_UI[status];
     const mLeft = hasSchedule ? monthsLeftFor(d) : 0;
     const dim = status === 'paid' || status === 'done';
     const sub = [
@@ -25443,11 +25444,11 @@ function DebtsListView({ dir, data, setData }) {
     if (isMobile) {
       const markPlain = () => {
         if (!(due > 0)) { setPayModal(d); return; }
-        markWithUndo(d, addTx(d.id, 'payment', due, today, ''), `Отмечено ${formatRub(due)} ₽`);
+        markWithUndo(d, addTx(d.id, 'payment', due, today, ''), `${lend ? 'Возврат' : 'Отмечено'} ${formatRub(due)} ₽`);
       };
       const markDds = () => {
         if (!(due > 0 && defaultAccountId)) { setCashflowModal(d); return; }
-        markWithUndo(d, addTx(d.id, 'payment', due, today, d.debtor || '', defaultAccountId, lend ? 'in' : 'out'), `Отмечено ${formatRub(due)} ₽ + ДДС`);
+        markWithUndo(d, addTx(d.id, 'payment', due, today, d.debtor || '', defaultAccountId, lend ? 'in' : 'out'), `${lend ? 'Возврат' : 'Отмечено'} ${formatRub(due)} ₽ + ДДС`);
       };
       return (
         <div key={d.id} className={`px-4 py-3 ${dim ? 'opacity-70' : ''}`}>
@@ -25469,7 +25470,7 @@ function DebtsListView({ dir, data, setData }) {
               <div className="text-xs text-[var(--text-subtle)] mt-0.5 leading-snug">{sub}</div>
               {group === 'now' && (
                 <div className={`text-[11px] mt-1 font-medium ${status === 'overdue' ? 'text-red-500' : status === 'partial' ? 'text-amber-600' : status === 'paid' || status === 'done' ? 'text-green-600' : 'text-[var(--text-subtle)]'}`}>
-                  {status === 'partial' ? `Внесено ${formatRub(paidThis)} из ${formatRub(need)} ₽` : (status === 'due' ? 'К оплате в этом месяце' : ui.label)}
+                  {status === 'partial' ? `${lend ? 'Вернули' : 'Внесено'} ${formatRub(paidThis)} из ${formatRub(need)} ₽` : (status === 'due' ? (lend ? 'Ждём возврат в этом месяце' : 'К оплате в этом месяце') : ui.label)}
                 </div>
               )}
               <BudgetBar value={effective - remaining} max={effective} tone="bg-rose-400" className="mt-2" />
@@ -25487,7 +25488,7 @@ function DebtsListView({ dir, data, setData }) {
                   + ДДС
                 </button>
               </>
-            ) : <span className="flex-1 text-sm text-green-700">Погашен ✓</span>}
+            ) : <span className="flex-1 text-sm text-green-700">{lend ? 'Вернули всё' : 'Погашен'} ✓</span>}
             <BudgetMoreButton onClick={() => setMenuFor(d)} />
           </div>
           {monthPays.length > 0 && (
@@ -25519,7 +25520,7 @@ function DebtsListView({ dir, data, setData }) {
             )}
             {group === 'now' && (
               <div className={`text-[11px] ${status === 'overdue' ? 'text-red-500' : status === 'partial' ? 'text-amber-600' : status === 'paid' || status === 'done' ? 'text-green-600' : 'text-[var(--text-subtle)]'}`}>
-                {status === 'partial' ? `из ${formatRub(need)} ₽` : (status === 'due' ? 'к оплате' : ui.label)}
+                {status === 'partial' ? `из ${formatRub(need)} ₽` : (status === 'due' ? (lend ? 'ждём' : 'к оплате') : ui.label)}
               </div>
             )}
             {group === 'later' && <div className="text-xs text-[var(--text-muted)]">с {formatMonthShortBudget(d.startDate)}</div>}
@@ -25573,7 +25574,13 @@ function DebtsListView({ dir, data, setData }) {
 
   return (
     <div>
-      {active.length > 0 && isMobile && (
+      {active.length > 0 && lend && monthNeed === 0 && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 md:p-5 mb-4 md:mb-6 flex items-baseline justify-between gap-3">
+          <span className="text-xs text-[var(--text-subtle)] uppercase tracking-widest">Мне должны · {active.length} {pluralRu(active.length, ['долг', 'долга', 'долгов'])}</span>
+          <span className="font-display text-2xl tabular-nums whitespace-nowrap">{formatRub(totalRemaining)} ₽</span>
+        </div>
+      )}
+      {active.length > 0 && isMobile && !(lend && monthNeed === 0) && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 mb-4">
           <div className="text-[11px] text-[var(--text-subtle)] uppercase tracking-wide">{lend ? 'Возвраты' : 'Платежи'} · {formatMonthFull(curMonth)}</div>
           {monthNeed > 0 ? (
@@ -25588,7 +25595,7 @@ function DebtsListView({ dir, data, setData }) {
           {monthNeed > 0 && (
             <>
               <BudgetBar value={monthPaid} max={monthNeed} tone={monthPct >= 100 ? 'bg-green-500' : 'bg-rose-500'} className="mt-3 !h-2" />
-              <div className="mt-1.5 text-xs text-[var(--text-subtle)]">Оплачено {formatRub(monthPaid)} из {formatRub(monthNeed)} ₽</div>
+              <div className="mt-1.5 text-xs text-[var(--text-subtle)]">{lend ? 'Возвращено' : 'Оплачено'} {formatRub(monthPaid)} из {formatRub(monthNeed)} ₽</div>
             </>
           )}
           <div className="mt-3 pt-3 border-t border-[var(--border)] flex items-baseline justify-between gap-3">
@@ -25597,7 +25604,7 @@ function DebtsListView({ dir, data, setData }) {
           </div>
         </div>
       )}
-      {active.length > 0 && !isMobile && (
+      {active.length > 0 && !isMobile && !(lend && monthNeed === 0) && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 mb-6">
           <div className="flex items-start justify-between flex-wrap gap-4">
             <div>
@@ -25613,7 +25620,7 @@ function DebtsListView({ dir, data, setData }) {
               )}
               {monthNeed > 0 && (
                 <div className="text-sm text-[var(--text-muted)] mt-1">
-                  Оплачено {formatRub(monthPaid)} из {formatRub(monthNeed)} ₽
+                  {lend ? 'Возвращено' : 'Оплачено'} {formatRub(monthPaid)} из {formatRub(monthNeed)} ₽
                 </div>
               )}
             </div>
@@ -25739,7 +25746,7 @@ function DebtsListView({ dir, data, setData }) {
       {menuFor && (
         <BudgetActionSheet title={menuFor.debtor || 'Долг'} onClose={() => setMenuFor(null)} actions={[
           getDebtRemaining(menuFor, transactions) > 0 && { icon: 'creditCard', label: 'Другая сумма или пополнить долг', hint: lend ? 'Возврат на свою сумму или доп. выдача' : 'Платёж на свою сумму или доп. выдача', onClick: () => setPayModal(menuFor) },
-          getDebtRemaining(menuFor, transactions) > 0 && { icon: 'wallet', label: 'Платёж со счётом ДДС', hint: 'Своя сумма, счёт и направление денег', onClick: () => setCashflowModal(menuFor) },
+          getDebtRemaining(menuFor, transactions) > 0 && { icon: 'wallet', label: lend ? 'Возврат со счётом ДДС' : 'Платёж со счётом ДДС', hint: 'Своя сумма, счёт и направление денег', onClick: () => setCashflowModal(menuFor) },
           { icon: 'edit', label: 'Редактировать', onClick: () => setEditing(menuFor) },
           { icon: 'check', label: 'Отметить закрытым', hint: 'Уйдёт в «Закрытые»', onClick: () => toggleClosed(menuFor.id) },
           { icon: 'trash', danger: true, label: 'Удалить', hint: 'Вместе с платежами', onClick: () => remove(menuFor.id) },
@@ -26070,7 +26077,7 @@ function DebtCashflowModal({ debt, lend = false, transactions = [], accounts = [
   };
 
   return (
-    <Modal title="Платёж по долгу — с учётом трат" onClose={onClose}>
+    <Modal title={lend ? 'Возврат долга — с учётом ДДС' : 'Платёж по долгу — с учётом трат'} onClose={onClose}>
       <div className="space-y-4">
         <div className="text-sm text-[var(--text-muted)]">
           {debt?.debtor || 'Долг'}
@@ -26091,7 +26098,7 @@ function DebtCashflowModal({ debt, lend = false, transactions = [], accounts = [
           </div>
           <div className="text-xs text-[var(--text-subtle)] mt-1.5">
             {type === 'payment'
-              ? 'Уменьшает остаток и пересчитывает план в «По месяцу»'
+              ? (lend ? 'Уменьшает остаток — сколько ещё должны вернуть' : 'Уменьшает остаток и пересчитывает план в «По месяцу»')
               : 'Увеличивает сумму долга (доп. выдача) — остаток и /мес пересчитаются'}
           </div>
         </div>
@@ -26171,7 +26178,7 @@ function BudgetDebtModal({ debt, people = [], onAddPerson, paid = 0, increased =
   // Долг без даты начала/окончания уже не попадает в план «По месяцу» —
   // это ровно то, что фильтрует planDebts. Переключатель просто даёт этому
   // управляемый интерфейс вместо ручной очистки обеих дат.
-  const [noSchedule, setNoSchedule] = useState(() => !debt.startDate && !debt.targetDate);
+  const [noSchedule, setNoSchedule] = useState(() => (!debt.startDate && !debt.targetDate) || (lend && !debt.debtor && !debt.amount));
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
   const toggleNoSchedule = (v) => {
@@ -26332,11 +26339,11 @@ function BudgetDebtModal({ debt, people = [], onAddPerson, paid = 0, increased =
         {!noSchedule && (
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label>Начать выплаты</label>
+              <label>{lend ? 'Начало возвратов' : 'Начать выплаты'}</label>
               <input type="month" value={form.startDate || ''} onChange={e => set('startDate', e.target.value)} />
             </div>
             <div>
-              <label>Выплатить к</label>
+              <label>{lend ? 'Вернуть к' : 'Выплатить к'}</label>
               <input type="month" value={form.targetDate || ''} onChange={e => set('targetDate', e.target.value)} />
             </div>
           </div>
@@ -26347,7 +26354,7 @@ function BudgetDebtModal({ debt, people = [], onAddPerson, paid = 0, increased =
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-medium">Свой план по месяцам</div>
-                <div className="text-xs text-[var(--text-subtle)] mt-0.5">Сумма на каждый месяц вручную вместо равного деления — так и попадёт в «По месяцу», а сумма долга станет равна итогу плана</div>
+                <div className="text-xs text-[var(--text-subtle)] mt-0.5">Сумма на каждый месяц вручную вместо равного деления{lend ? '' : ' — так и попадёт в «По месяцу»'}, а сумма долга станет равна итогу плана</div>
               </div>
               <Toggle checked={customOn} onChange={toggleCustom} />
             </div>
@@ -26378,7 +26385,7 @@ function BudgetDebtModal({ debt, people = [], onAddPerson, paid = 0, increased =
 
         {!noSchedule && !customOn && monthly > 0 && (
           <div className="bg-[var(--bg)] border border-[var(--border)] rounded-2xl p-4 fade-in">
-            <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-3">План выплат</div>
+            <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-3">{lend ? 'План возвратов' : 'План выплат'}</div>
             <div className="flex items-baseline gap-2 mb-1">
               <span className="font-display text-4xl">{formatRub(monthly)}</span>
               <span className="text-[var(--text-muted)] text-base">₽ в месяц</span>
