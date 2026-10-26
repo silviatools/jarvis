@@ -5504,6 +5504,194 @@ const formatTime = (iso) => {
 const monthShort = (m) => ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'][m];
 const monthFullLower = (m) => ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'][m];
 
+// ============== МАРКЕТПЛЕЙСЫ: кабинеты покупателя Ozon и WB ==============
+// Прокси и сессии живут только на сервере (DATA_DIR). В браузер уходит маска:
+// схема, хост, порт и первые 3 символа логина. Пароль сюда не возвращается.
+const MARKET_SHOPS = [
+  { id: 'ozon', title: 'Ozon' },
+  { id: 'wb', title: 'Wildberries' },
+];
+const MARKET_STATUS_CLS = {
+  none: 'text-[var(--text-subtle)]',
+  awaiting_code: 'text-amber-600',
+  active: 'text-green-600',
+  expired: 'text-red-600',
+};
+
+function MarketplaceSettings() {
+  const [st, setSt] = React.useState(null);
+  const [proxy, setProxy] = React.useState('');
+  const [err, setErr] = React.useState('');
+  const [info, setInfo] = React.useState('');
+  const [busy, setBusy] = React.useState('');
+  const [phones, setPhones] = React.useState({ ozon: '', wb: '' });
+  const [codes, setCodes] = React.useState({ ozon: '', wb: '' });
+
+  const load = React.useCallback(() => {
+    fetch('/api/market/status')
+      .then(r => r.json())
+      .then(setSt)
+      .catch(e => setErr('Сервер не ответил: ' + e.message));
+  }, []);
+  React.useEffect(load, [load]);
+
+  const post = async (path, body, key) => {
+    setBusy(key);
+    setErr('');
+    setInfo('');
+    try {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+      });
+      const j = await res.json();
+      if (!res.ok || j.ok === false) setErr(j.error || 'Не получилось');
+      else if (j.exit_ip) setInfo(`Трафик выходит не с IP сервера (${j.exit_ip}). IP сервера: ${j.server_ip}.`);
+      else if (j.message) setInfo(j.message);
+      if (path === '/api/market/proxy' && j.ok) setProxy('');
+      load();
+    } catch (e) {
+      setErr('Сервер не ответил: ' + e.message);
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const shops = (st && st.shops) || {};
+  const hasProxy = !!(st && st.has_proxy);
+  const input = 'w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm';
+
+  return (
+    <div className="space-y-3" data-testid="market-settings">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
+        <h3 className="font-display text-lg mb-1">Прокси</h3>
+        <p className="text-sm text-[var(--text-muted)] mb-3">
+          Один мобильный HTTP(S)-прокси с липким IP на оба кабинета. Ротацию не включайте: смена IP обрывает сессию,
+          и снова нужен код из СМС. С IP сервера кабинет не открывается.
+        </p>
+        <div className="text-xs text-[var(--text-subtle)] mb-1">Сохранённый прокси</div>
+        <div className="text-sm font-mono break-all mb-3" data-testid="market-proxy-mask">
+          {st ? (st.proxy || 'Прокси не задан') : 'Загрузка…'}
+        </div>
+        <label className="block mb-2">
+          <div className="text-xs text-[var(--text-subtle)] mb-1">Новый прокси</div>
+          <input
+            className={input}
+            data-testid="market-proxy-input"
+            value={proxy}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="http://логин:пароль@хост:порт"
+            onChange={e => setProxy(e.target.value)}
+          />
+        </label>
+        <p className="text-[11px] text-[var(--text-subtle)] mb-3">
+          Пароль в интерфейсе не показывается: после сохранения видны схема, хост, порт и первые 3 символа логина.
+          Если в пароле есть @, запишите его как %40.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <button
+            className="btn-primary text-sm px-4 py-2"
+            data-testid="market-proxy-save"
+            disabled={busy || !proxy.trim()}
+            onClick={() => post('/api/market/proxy', { proxy }, 'proxy')}
+          >
+            {busy === 'proxy' ? 'Сохраняю…' : 'Сохранить прокси'}
+          </button>
+          <button
+            className="btn-secondary text-sm px-4 py-2"
+            data-testid="market-ip-check"
+            disabled={busy || !hasProxy}
+            onClick={() => post('/api/market/proxy/check', {}, 'ip')}
+          >
+            {busy === 'ip' ? 'Проверяю…' : 'Проверить IP'}
+          </button>
+        </div>
+      </div>
+
+      {!hasProxy && st && (
+        <div className="text-sm text-amber-600" data-testid="market-no-proxy">
+          Без сохранённого прокси вход не начнётся: с IP сервера кабинет не открывается.
+        </div>
+      )}
+      {err && <div className="text-sm text-red-600" data-testid="market-error">{err}</div>}
+      {info && <div className="text-sm text-[var(--text-muted)]" data-testid="market-info">{info}</div>}
+
+      {MARKET_SHOPS.map(shop => {
+        const row = shops[shop.id] || { status: 'none', label: 'Нет сессии', phone_mask: '' };
+        return (
+          <div key={shop.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5" data-testid={'market-shop-' + shop.id}>
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <h3 className="font-display text-lg">{shop.title}</h3>
+              <div className={'text-sm font-medium ' + (MARKET_STATUS_CLS[row.status] || '')} data-testid={'market-status-' + shop.id}>
+                {row.label || 'Нет сессии'}
+              </div>
+            </div>
+            <p className="text-sm text-[var(--text-muted)] mb-3">
+              Кабинет покупателя. Сессия одна на этот прокси: выйти можно кнопкой ниже.
+              {row.phone_mask ? ' Номер ' + row.phone_mask + '.' : ''}
+            </p>
+            <label className="block mb-2">
+              <div className="text-xs text-[var(--text-subtle)] mb-1">Телефон</div>
+              <input
+                className={input}
+                inputMode="tel"
+                autoComplete="off"
+                placeholder="+79991234567"
+                value={phones[shop.id]}
+                onChange={e => setPhones(p => ({ ...p, [shop.id]: e.target.value }))}
+              />
+            </label>
+            <div className="flex flex-col sm:flex-row flex-wrap gap-2">
+              <button
+                className="btn-primary text-sm px-4 py-2"
+                data-testid={'market-login-' + shop.id}
+                disabled={!!busy || !hasProxy || !phones[shop.id].trim()}
+                onClick={() => post('/api/market/login', { shop: shop.id, phone: phones[shop.id] }, 'login-' + shop.id)}
+              >
+                {busy === 'login-' + shop.id ? 'Вхожу…' : 'Войти'}
+              </button>
+              {row.status !== 'none' && (
+                <button
+                  className="btn-secondary text-sm px-4 py-2"
+                  data-testid={'market-logout-' + shop.id}
+                  disabled={!!busy}
+                  onClick={() => post('/api/market/logout', { shop: shop.id }, 'logout-' + shop.id)}
+                >
+                  Выйти
+                </button>
+              )}
+            </div>
+            {row.status === 'awaiting_code' && (
+              <div className="mt-3 flex flex-col sm:flex-row gap-2 sm:items-end">
+                <label className="block flex-1">
+                  <div className="text-xs text-[var(--text-subtle)] mb-1">Код из СМС</div>
+                  <input
+                    className={input}
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    data-testid={'market-code-' + shop.id}
+                    value={codes[shop.id]}
+                    onChange={e => setCodes(c => ({ ...c, [shop.id]: e.target.value }))}
+                  />
+                </label>
+                <button
+                  className="btn-primary text-sm px-4 py-2"
+                  disabled={!!busy || !codes[shop.id].trim()}
+                  onClick={() => post('/api/market/code', { shop: shop.id, code: codes[shop.id] }, 'code-' + shop.id)}
+                >
+                  {busy === 'code-' + shop.id ? 'Проверяю…' : 'Код из СМС'}
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ============== SETTINGS VIEW ==============
 function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
   return (
@@ -5554,6 +5742,14 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
         >
           Телеграм
         </button>
+        <button
+          onClick={() => setSettingsTab('market')}
+          className={`px-2.5 sm:px-5 py-2.5 rounded-lg text-[13px] sm:text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${
+            settingsTab === 'market' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+          }`}
+        >
+          Маркетплейсы
+        </button>
       </div>
 
       {settingsTab === 'general' && <GeneralSettings data={data} setData={setData} />}
@@ -5561,6 +5757,7 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
       {settingsTab === 'weather' && <WeatherSettings data={data} setData={setData} />}
       {settingsTab === 'study' && <StudySettings data={data} setData={setData} />}
       {settingsTab === 'telegram' && <TelegramSettings data={data} setData={setData} />}
+      {settingsTab === 'market' && <MarketplaceSettings />}
     </div>
   );
 }
@@ -6238,6 +6435,7 @@ function AssistantSkillsCard({ data, setData }) {
   const toggleSkill = (sk) => {
     setData(d => ({ ...d, telegramSkills: { ...(d.telegramSkills || {}), [sk.id]: !skillOn(sk) }, telegramSkillsUpdatedAt: Date.now() }));
     tgToolsLoadedAt = 0; // ассистент подхватит новый набор инструментов
+    marketToolsLoadedAt = 0;
   };
   const riskLabel = { read: 'чтение', create: 'создаёт файлы', write: 'действия с подтверждением', danger: 'опасно' };
   const riskCls = {
@@ -14384,6 +14582,21 @@ async function loadTgTools(force) {
   } catch (e) { /* без Telegram-инструментов ассистент работает как раньше */ }
 }
 
+// Кабинеты Ozon и WB: те же схемы, что у серверных циклов ассистента.
+// Пустой список — навык выключен или сервер его не отдал.
+let MARKET_AGENT_TOOLS = [];
+let MARKET_AGENT_PROMPT = '';
+let marketToolsLoadedAt = 0;
+async function loadMarketTools(force) {
+  if (!force && Date.now() - marketToolsLoadedAt < 20000) return;
+  try {
+    const j = await (await fetch('/api/market/tools')).json();
+    MARKET_AGENT_TOOLS = j.tools || [];
+    MARKET_AGENT_PROMPT = j.prompt || '';
+    marketToolsLoadedAt = Date.now();
+  } catch (e) { /* без кабинетов ассистент работает как раньше */ }
+}
+
 
 function buildVoiceAgentSystemPrompt(data) {
   // «База данных» — то, что пользователь рассказал о себе. Подмешиваем в
@@ -14431,7 +14644,7 @@ ${writeList}
 
 9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй.
 
-${TG_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
+${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
@@ -14533,6 +14746,17 @@ async function executeVoiceTool(name, input, nav, data) {
       return noop(await res.json());
     } catch (e) {
       return noop({ error: 'Сервер не ответил по Telegram: ' + e.message });
+    }
+  }
+  if (name.startsWith('market_')) {
+    try {
+      const res = await fetch('/api/market/tool', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, input }),
+      });
+      return noop(await res.json());
+    } catch (e) {
+      return noop({ error: 'Сервер не ответил по кабинету: ' + e.message });
     }
   }
   if (name === 'study_schedule') {
@@ -14671,6 +14895,7 @@ async function runVoiceAgent(messages, settings, data, nav, maxSteps = 6) {
 // историю после ответа, чтобы следующее «да» продолжило тот же разговор.
 async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
   await loadTgTools();
+  await loadMarketTools();
   const system = buildVoiceAgentSystemPrompt(data);
   let pendingConfirmation = false;
   for (let step = 0; step < maxSteps; step++) {
@@ -14682,7 +14907,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS] }),
+      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS] }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -14718,8 +14943,9 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
 // сообщениями role:"tool" с tool_call_id, а не одним user-сообщением как у Claude.
 async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps) {
   await loadTgTools();
+  await loadMarketTools();
   const system = buildVoiceAgentSystemPrompt(data);
-  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS].map(t => ({
+  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS].map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.input_schema },
   }));
