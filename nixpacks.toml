@@ -38,7 +38,7 @@ aptPkgs = [
   "libxcb1",
   "libxext6",
   "libxshmfence1",
-  "libasound2",
+  "libasound2t64",
 ]
 
 [phases.install]
