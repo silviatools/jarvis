@@ -104,6 +104,11 @@ except Exception as _e:
     deck_skill = None
     print(f"NOTE: deck_skill disabled: {_e}")
 try:
+    import market_skill
+except Exception as _e:
+    market_skill = None
+    print(f"NOTE: market_skill disabled: {_e}")
+try:
     import tg_bot
 except Exception as _e:
     tg_bot = None
@@ -1088,6 +1093,7 @@ Jarvis — резервная копия проекта и данных
                                             бюджет, режимы и т.д.)
               jarvis_subscribers.json    — подписчики ТГ-бота
               jarvis_notify_config.json  — старый конфиг уведомлений
+              jarvis_market.json         — прокси и сессии кабинетов Ozon/WB
               photos/                    — загруженные фото («Моё тело»)
               files/                     — загруженные файлы («Режим»)
 
@@ -1128,7 +1134,7 @@ def build_backup_zip() -> bytes:
             zf.write(path, arcname=arcname)
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
-                      "jarvis_study_chats_state.json", "jarvis_anchors.json"}
+                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
@@ -5590,6 +5596,7 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
         "кладётся через use_received_file. После успеха скажи, куда именно положил (предмет → задание → имя файла).\n\n"
         + (deck_skill.prompt_section((app or {}).get("telegramSkills")) if deck_skill else "")
         + (study_skills.prompt_section((app or {}).get("telegramSkills")) if study_skills else "")
+        + (market_skill.prompt_section((app or {}).get("telegramSkills")) if market_skill else "")
         + (tg_tools.prompt_section((app or {}).get("telegramSkills")) if with_tg else "") +
         "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
         "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
@@ -5614,6 +5621,8 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
     # Возможности бота (чеклисты, файлы, опросы…) — шлют в чат, где идёт диалог.
     if tg_bot and name in tg_bot.TOOL_NAMES:
         return tg_bot.execute_tool(name, inp)
+    if market_skill and name in market_skill.TOOL_NAMES:
+        return market_skill.execute(name, inp, (app or {}).get("telegramSkills"))
     if deck_skill and name in deck_skill.TOOL_NAMES:
         def _study_attach(x):
             r = study_attach_file(app, x)
@@ -5737,9 +5746,7 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
     Возвращает (текст ответа | None, список ссылок navigate). None — агент не
     уложился в отведённые шаги. Ошибки HTTP/сети — как _AssistantError."""
     system = build_assistant_system_prompt(app, with_tg) + extra_system
-    all_tools = ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
-        (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
-        (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + _study_skill_tools(app)
+    all_tools = _assistant_tool_list(app, with_tg)
     if allowed:   # фоновые задания работают только на чтение: лишних инструментов у модели нет
         all_tools = [t for t in all_tools if t["name"] in allowed]
     convo = list(history)
@@ -5813,9 +5820,7 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
     ответа (tool_calls в сообщении assistant, результаты — отдельными
     сообщениями role:"tool"), но те же инструменты и та же семантика."""
     system = build_assistant_system_prompt(app, with_tg) + extra_system
-    all_tools = ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
-        (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
-        (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + _study_skill_tools(app)
+    all_tools = _assistant_tool_list(app, with_tg)
     if allowed:   # фоновые задания работают только на чтение: лишних инструментов у модели нет
         all_tools = [t for t in all_tools if t["name"] in allowed]
     tools = [
@@ -6057,6 +6062,29 @@ def _dispatch_user_message(token: str, chat_id, msg: dict):
 # рассылка отчётов в бот, ежедневный контроль, точки входа. Отчёты бота сохраняют контекст:
 # после отправки диалог засеивается (ответ продолжает его), а якорь по id сообщения
 # восстанавливает контекст, если пользователь ответит позже (см. tg_bot.remember_anchor).
+
+def _market_skill_tools(app) -> list:
+    """Инструменты навыка «Маркетплейсы», если он включён. Те же схемы уходят голосовому помощнику."""
+    if not market_skill or not market_skill.skill_on((app or {}).get("telegramSkills")):
+        return []
+    return market_skill.TOOLS
+
+
+def _assistant_tool_list(app, with_tg: bool) -> list:
+    return ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
+        (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
+        (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + \
+        _study_skill_tools(app) + _market_skill_tools(app)
+
+
+def assistant_skills_catalog() -> list:
+    return (
+        (deck_skill.SKILLS if deck_skill else [])
+        + (study_skills.SKILLS if study_skills else [])
+        + (tg_tools.skills_catalog() if tg_tools else [])
+        + (market_skill.SKILLS if market_skill else [])
+    )
+
 
 def _study_skill_tools(app) -> list:
     """Инструменты включённых навыков «Учёбы» для чата."""
@@ -9452,7 +9480,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif route == "/api/tg/status":
             self._json(200, tg_user.status() if tg_user else {"library": False})
         elif route == "/api/tg/skills":
-            self._json(200, {"skills": (deck_skill.SKILLS if deck_skill else []) + (study_skills.SKILLS if study_skills else []) + (tg_tools.skills_catalog() if tg_tools else [])})
+            self._json(200, {"skills": assistant_skills_catalog()})
+        elif route == "/api/market/status":
+            self._json(200, market_skill.public_status() if market_skill else {"ok": False, "error": "Кабинеты маркетплейсов на сервере недоступны."})
+        elif route == "/api/market/tools":
+            state = (load_app_data() or {}).get("telegramSkills")
+            self._json(200, market_skill.voice_payload(state) if market_skill else {"tools": [], "prompt": ""})
         elif route == "/api/tg/tools":
             # Схемы инструментов и кусок промпта для браузерного ассистента: только
             # если аккаунт подключён и только включённые навыки.
@@ -9637,6 +9670,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._apple_post(route)
         elif route.startswith("/api/tg/"):
             self._tg_post(route)
+        elif route.startswith("/api/market/"):
+            self._market_post(route)
         elif route == "/api/student/check":
             try:
                 self._json(200, student_check())
@@ -11036,6 +11071,45 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {"error": str(e)})
         except Exception as e:
             self._json(500, {"error": str(e)})
+
+    def _market_post(self, route: str):
+        """Прокси, вход в кабинеты Ozon/WB и вызов их инструментов голосовым ассистентом."""
+        if market_skill is None:
+            self._json(200, {"ok": False, "error": "Кабинеты маркетплейсов на сервере недоступны."})
+            return
+        length = self._content_length() or 0
+        if length > 32 * 1024:
+            self._json(413, {"error": "body too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except Exception as e:
+            self._json(400, {"error": str(e)})
+            return
+        if not isinstance(payload, dict):
+            payload = {}
+        try:
+            if route == "/api/market/proxy":
+                self._json(200, market_skill.save_proxy(payload.get("proxy") or ""))
+            elif route == "/api/market/proxy/check":
+                self._json(200, market_skill.check_ip())
+            elif route == "/api/market/login":
+                self._json(200, market_skill.begin_login(payload.get("shop") or "", payload.get("phone") or ""))
+            elif route == "/api/market/code":
+                self._json(200, market_skill.submit_code(payload.get("shop") or "", payload.get("code") or ""))
+            elif route == "/api/market/logout":
+                self._json(200, market_skill.logout(payload.get("shop") or ""))
+            elif route == "/api/market/tool":
+                name = payload.get("name")
+                if name not in market_skill.TOOL_NAMES:
+                    self._json(400, {"error": "unknown tool"})
+                else:
+                    app = load_app_data() or {}
+                    self._json(200, execute_assistant_tool(name, payload.get("input") or {}, app, "", False))
+            else:
+                self._json(404, {"error": "not found"})
+        except Exception as e:
+            self._json(200, {"ok": False, "error": market_skill.redact(e, market_skill._proxy())})
 
     def _tg_post(self, route: str):
         """Вход в личный Telegram и вызов его инструментов браузерным ассистентом."""
