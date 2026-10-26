@@ -4427,6 +4427,8 @@ ASSISTANT_DATA_DOMAINS = {
             "supplementAssignments": _assistant_budget_slice(app).get("budgetSupplementAssignments", {}),
             "debts": _assistant_budget_slice(app).get("budgetDebts", []),
             "debtTransactions": _assistant_budget_slice(app).get("debtTransactions", [])[-100:],
+            "debtLenders": _assistant_budget_slice(app).get("debtLenders", []),
+            "debtBorrowers": _assistant_budget_slice(app).get("debtBorrowers", []),
             "cashflowAccounts": _assistant_budget_slice(app).get("budgetCashflowAccounts", []),
             "cashflowOps": _assistant_budget_slice(app).get("budgetCashflowOps", [])[-200:],
             "monthlyNotes": _assistant_budget_slice(app).get("budgetMonthlyNotes", []),
@@ -7068,7 +7070,10 @@ def _tick():
             amount = debt.get("amount", 0)
             debtor = debt.get("debtor", "")
             comment = debt.get("comment", "")
-            text = f"💰 <b>Долг — напоминание</b>\n\n{debtor} должен вернуть {amount} ₽"
+            if debt.get("direction") == "lend":
+                text = f"💰 <b>Долг — напоминание</b>\n\n{debtor} должен вернуть вам {amount} ₽"
+            else:
+                text = f"💰 <b>Долг — напоминание</b>\n\nВернуть {debtor}: {amount} ₽"
             if comment:
                 text += f"\n<i>{comment}</i>"
             recipients = recipients_for(app_data_raw, subs, "debts")

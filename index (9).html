@@ -1753,7 +1753,7 @@ const BUDGET_SLICE_KEYS = [
   'budgetExpenses', 'budgetCategories', 'budgetRecurring',
   'budgetPlanCategories', 'budgetPlanValues', 'budgetRecurringCategories',
   'savingsActual', 'savingsCorrections', 'savingsTransactions',
-  'budgetDebts', 'debtTransactions', 'budgetIncomeSources', 'budgetIncomeValues',
+  'budgetDebts', 'debtTransactions', 'debtLenders', 'debtBorrowers', 'budgetIncomeSources', 'budgetIncomeValues',
   'budgetCategoryOrder', 'budgetSupplements', 'budgetSupplementAssignments',
   'budgetFactValues', 'budgetIncomeFactValues',
   'budgetStatementMappings', 'budgetStatementAccount',
@@ -1780,6 +1780,9 @@ const emptyBudgetSlice = () => ({
   savingsTransactions: [],
   budgetDebts: [],
   debtTransactions: [],
+  // Справочники вкладки «Долги»: «Кто даёт в долг» (я беру) и «Кому даю в долг» (я даю).
+  debtLenders: [],
+  debtBorrowers: [],
   budgetIncomeSources: [],
   budgetIncomeValues: {},
   budgetCategoryOrder: [],
@@ -13442,6 +13445,8 @@ const VOICE_DATA_DOMAINS = {
         supplementAssignments: slice.budgetSupplementAssignments || {}, // в каком месяце что куплено
         debts: slice.budgetDebts || [],
         debtTransactions: (slice.debtTransactions || []).slice(-100),
+        debtLenders: slice.debtLenders || [], // справочник «Кто даёт в долг»
+        debtBorrowers: slice.debtBorrowers || [], // справочник «Кому даю в долг»
         cashflowAccounts: slice.budgetCashflowAccounts || [],
         cashflowOps: (slice.budgetCashflowOps || []).slice(-200),
         monthlyNotes: slice.budgetMonthlyNotes || [], // «Выводы по месяцу» — заметки текстом
@@ -19118,6 +19123,10 @@ const debtCustomPlanVal = (debt, month) => {
   return Number((debt.monthlyPlan || {})[m]) || 0;
 };
 
+// Направление долга: 'borrow' — я беру (плачу по графику), 'lend' — я даю (мне возвращают).
+// У старых записей поля нет — это «я беру».
+const debtDir = (d) => (d && d.direction === 'lend' ? 'lend' : 'borrow');
+
 const calcDebtMonthly = (debt, transactions, asOfMonth) => {
   // Closed debts still keep their schedule in «По месяцу».
   if (!debt || !debt.startDate || !debt.targetDate) return 0;
@@ -19983,7 +19992,7 @@ function BudgetMonthlyView({ data, setData, onOpenTab }) {
   const activeRec    = (data.budgetRecurring || []).filter(r => r && months.some(m => recurringActiveIn(r, m)));
   const savTx        = data.savingsTransactions || [];
   const debtTx       = data.debtTransactions || [];
-  const planDebts    = (data.budgetDebts || []).filter(d => d.startDate && d.targetDate);
+  const planDebts    = (data.budgetDebts || []).filter(d => debtDir(d) === 'borrow' && d.startDate && d.targetDate);
 
   const monthKey = (dateStr) => (dateStr || '').slice(0, 7);
 
@@ -25117,30 +25126,132 @@ function BudgetRecurringModal({ item, cats, onSave, onClose }) {
 const DEBT_SOURCES = ['Альфа', '9816', 'Накопления'];
 
 function BudgetDebtsView({ data, setData }) {
+  const [dir, setDir] = useState('borrow');
   const [subTab, setSubTab] = useState('list');
+  const tabBtn = (active, onClick, label, cls) => (
+    <button onClick={onClick}
+      className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${active ? cls : 'text-[var(--text-muted)]'}`}>
+      {label}
+    </button>
+  );
   return (
     <div>
-      <div className="inline-flex bg-[var(--bg)] border border-[var(--border)] rounded-xl p-1 mb-6">
-        {[['list','Список'],['payments','Платежи']].map(([id, label]) => (
-          <button key={id} onClick={() => setSubTab(id)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${subTab === id ? 'bg-rose-600 text-white' : 'text-[var(--text-muted)]'}`}>
-            {label}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center gap-3 mb-6">
+        <div className="inline-flex bg-[var(--bg)] border border-[var(--border)] rounded-xl p-1">
+          {tabBtn(dir === 'borrow', () => setDir('borrow'), 'Я беру долг', 'bg-rose-600 text-white')}
+          {tabBtn(dir === 'lend', () => setDir('lend'), 'Я даю в долг', 'bg-emerald-600 text-white')}
+        </div>
+        <div className="inline-flex bg-[var(--bg)] border border-[var(--border)] rounded-xl p-1">
+          {[['list','Список'],['payments','Платежи'],['people','Справочники']].map(([id, label]) =>
+            <React.Fragment key={id}>{tabBtn(subTab === id, () => setSubTab(id), label, 'bg-[var(--text)] text-white')}</React.Fragment>)}
+        </div>
       </div>
-      {subTab === 'list' && <DebtsListView data={data} setData={setData} />}
-      {subTab === 'payments' && <DebtsPaymentsView data={data} setData={setData} />}
+      {subTab === 'list' && <DebtsListView key={dir} dir={dir} data={data} setData={setData} />}
+      {subTab === 'payments' && <DebtsPaymentsView key={dir} dir={dir} data={data} setData={setData} />}
+      {subTab === 'people' && <DebtPeopleView data={data} setData={setData} />}
     </div>
   );
 }
 
-function DebtsListView({ data, setData }) {
+// Справочники: «Кто даёт в долг» (debtLenders) и «Кому даю в долг» (debtBorrowers).
+const DEBT_PEOPLE = {
+  borrow: { key: 'debtLenders',   title: 'Кто даёт в долг',  hint: 'У кого я беру в долг' },
+  lend:   { key: 'debtBorrowers', title: 'Кому даю в долг', hint: 'Кто берёт в долг у меня' },
+};
+
+function DebtPeopleView({ data, setData }) {
+  return (
+    <div className="grid md:grid-cols-2 gap-4">
+      {['borrow', 'lend'].map(dir => <DebtPeopleList key={dir} dir={dir} data={data} setData={setData} />)}
+    </div>
+  );
+}
+
+function DebtPeopleList({ dir, data, setData }) {
+  const cfg = DEBT_PEOPLE[dir];
+  const list = data[cfg.key] || [];
+  const [name, setName] = useState('');
+  const [editId, setEditId] = useState(null);
+  const [editName, setEditName] = useState('');
+  const usedBy = (n) => (data.budgetDebts || []).filter(d => debtDir(d) === dir && d.debtor === n).length;
+
+  const add = () => {
+    const v = name.trim();
+    if (!v || list.some(x => x.name.toLowerCase() === v.toLowerCase())) { setName(''); return; }
+    setData(d => ({ ...d, [cfg.key]: [...(d[cfg.key] || []), { id: crypto.randomUUID(), name: v, updatedAt: Date.now() }] }));
+    setName('');
+  };
+  const saveEdit = () => {
+    const v = editName.trim();
+    const old = list.find(x => x.id === editId);
+    if (v && old && v !== old.name) {
+      // Переименование тянет за собой долги этого человека.
+      setData(d => ({
+        ...d,
+        [cfg.key]: (d[cfg.key] || []).map(x => x.id === editId ? { ...x, name: v, updatedAt: Date.now() } : x),
+        budgetDebts: (d.budgetDebts || []).map(x => (debtDir(x) === dir && x.debtor === old.name) ? { ...x, debtor: v, updatedAt: Date.now() } : x),
+      }));
+    }
+    setEditId(null);
+  };
+  const remove = (x) => {
+    const n = usedBy(x.name);
+    if (!confirm(n ? `Удалить «${x.name}» из справочника? Долги (${n}) останутся.` : `Удалить «${x.name}»?`)) return;
+    setData(d => ({
+      ...d,
+      [cfg.key]: (d[cfg.key] || []).filter(y => y.id !== x.id),
+      deletedIds: withDeletedId(d, cfg.key, x.id),
+    }));
+  };
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4">
+      <div className="font-semibold">{cfg.title}</div>
+      <div className="text-xs text-[var(--text-subtle)] mb-3">{cfg.hint}</div>
+      <div className="flex gap-2 mb-3">
+        <input value={name} onChange={e => setName(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} placeholder="Имя" />
+        <button onClick={add} className="px-4 rounded-xl bg-[var(--text)] text-white text-sm font-medium shrink-0">Добавить</button>
+      </div>
+      {!list.length ? (
+        <div className="text-sm text-[var(--text-muted)] py-2">Список пуст</div>
+      ) : (
+        <div className="divide-y divide-[var(--border)]">
+          {list.map(x => (
+            <div key={x.id} className="flex items-center gap-2 py-2">
+              {editId === x.id ? (
+                <>
+                  <input autoFocus value={editName} onChange={e => setEditName(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') saveEdit(); if (e.key === 'Escape') setEditId(null); }} />
+                  <button onClick={saveEdit} className="p-1.5 rounded-lg hover:bg-black/5 text-green-600"><Icon name="check" size={14} /></button>
+                </>
+              ) : (
+                <>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{x.name}</div>
+                    {usedBy(x.name) > 0 && <div className="text-[11px] text-[var(--text-subtle)]">долгов: {usedBy(x.name)}</div>}
+                  </div>
+                  <button onClick={() => { setEditId(x.id); setEditName(x.name); }} title="Переименовать"
+                    className="p-1.5 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={13} /></button>
+                  <button onClick={() => remove(x)} title="Удалить"
+                    className="p-1.5 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={13} /></button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DebtsListView({ dir, data, setData }) {
+  const lend = dir === 'lend';
   const [editing, setEditing] = useState(null);
   const [payModal, setPayModal] = useState(null); // debt | null — custom payment
   const [cashflowModal, setCashflowModal] = useState(null); // debt | null — платёж с привязкой к ДДС
   const [showClosed, setShowClosed] = useState(false);
 
-  const debts = data.budgetDebts || [];
+  const debts = (data.budgetDebts || []).filter(d => debtDir(d) === dir);
   const transactions = data.debtTransactions || [];
   const active = debts.filter(d => !d.closed);
   const closed = debts.filter(d => d.closed);
@@ -25236,7 +25347,7 @@ function DebtsListView({ data, setData }) {
   })));
 
   const newDebt = () => setEditing({
-    id: crypto.randomUUID(), amount: '', debtor: '', source: DEBT_SOURCES[0],
+    id: crypto.randomUUID(), direction: dir, amount: '', debtor: '', source: DEBT_SOURCES[0],
     startDate: getCurrentMonthStr(), targetDate: addMonthsStr(getCurrentMonthStr(), 6),
     returnDate: '', notify: false, notifyDate: '', notifyTime: '12:00',
     comment: '', closed: false,
@@ -25336,7 +25447,7 @@ function DebtsListView({ data, setData }) {
       };
       const markDds = () => {
         if (!(due > 0 && defaultAccountId)) { setCashflowModal(d); return; }
-        markWithUndo(d, addTx(d.id, 'payment', due, today, d.debtor || '', defaultAccountId, 'out'), `Отмечено ${formatRub(due)} ₽ + ДДС`);
+        markWithUndo(d, addTx(d.id, 'payment', due, today, d.debtor || '', defaultAccountId, lend ? 'in' : 'out'), `Отмечено ${formatRub(due)} ₽ + ДДС`);
       };
       return (
         <div key={d.id} className={`px-4 py-3 ${dim ? 'opacity-70' : ''}`}>
@@ -25369,7 +25480,7 @@ function DebtsListView({ data, setData }) {
               <>
                 <button onClick={markPlain}
                   className="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-rose-600 text-white text-sm font-medium active:opacity-80 truncate">
-                  Отметить{due > 0 ? ` ${formatRub(due)} ₽` : ''}
+                  {lend ? 'Вернули' : 'Отметить'}{due > 0 ? ` ${formatRub(due)} ₽` : ''}
                 </button>
                 <button onClick={markDds} title="Отметить платёж и записать трату в ДДС"
                   className="shrink-0 px-3.5 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium active:opacity-80">
@@ -25422,16 +25533,16 @@ function DebtsListView({ data, setData }) {
                 onClick={() => (due > 0 ? addTx(d.id, 'payment', due, today, '') : setPayModal(d))}
                 title={due > 0 ? `Отметить платёж ${formatRub(due)} ₽ на ${today}` : 'Внести платёж'}
                 className="px-3.5 py-1.5 rounded-lg bg-rose-600 text-white text-sm font-medium hover:opacity-90">
-                Отметить{due > 0 ? ` ${formatRub(due)} ₽` : ''}
+                {lend ? 'Вернули' : 'Отметить'}{due > 0 ? ` ${formatRub(due)} ₽` : ''}
               </button>
               <button onClick={() => (due > 0 && defaultAccountId
-                  ? addTx(d.id, 'payment', due, today, d.debtor || '', defaultAccountId, 'out')
+                  ? addTx(d.id, 'payment', due, today, d.debtor || '', defaultAccountId, lend ? 'in' : 'out')
                   : setCashflowModal(d))}
                 title={due > 0 && defaultAccountId
                   ? `Отметить платёж ${formatRub(due)} ₽ и сразу записать трату ${formatRub(due)} ₽ на счёт сегодня (${today})`
                   : 'Отметить платёж и записать в личный учёт трат (ДДС)'}
                 className="px-3.5 py-1.5 rounded-lg bg-[var(--text)] text-white text-sm font-medium hover:opacity-85">
-                Отметить + ДДС
+                {lend ? 'Вернули + ДДС' : 'Отметить + ДДС'}
               </button>
             </>
           )}
@@ -25464,15 +25575,15 @@ function DebtsListView({ data, setData }) {
     <div>
       {active.length > 0 && isMobile && (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 mb-4">
-          <div className="text-[11px] text-[var(--text-subtle)] uppercase tracking-wide">Платежи · {formatMonthFull(curMonth)}</div>
+          <div className="text-[11px] text-[var(--text-subtle)] uppercase tracking-wide">{lend ? 'Возвраты' : 'Платежи'} · {formatMonthFull(curMonth)}</div>
           {monthNeed > 0 ? (
             monthDue > 0 ? (
-              <div className="font-display text-3xl mt-1 tabular-nums">{formatRub(monthDue)} <span className="text-base text-[var(--text-muted)]">₽ ещё оплатить</span></div>
+              <div className="font-display text-3xl mt-1 tabular-nums">{formatRub(monthDue)} <span className="text-base text-[var(--text-muted)]">₽ {lend ? 'ещё вернут' : 'ещё оплатить'}</span></div>
             ) : (
-              <div className="font-display text-2xl mt-1 text-green-600">Всё оплачено ✓</div>
+              <div className="font-display text-2xl mt-1 text-green-600">{lend ? 'Всё вернули' : 'Всё оплачено'} ✓</div>
             )
           ) : (
-            <div className="font-display text-xl mt-1 text-[var(--text-muted)]">В этом месяце платить не нужно</div>
+            <div className="font-display text-xl mt-1 text-[var(--text-muted)]">{lend ? 'В этом месяце возвратов нет' : 'В этом месяце платить не нужно'}</div>
           )}
           {monthNeed > 0 && (
             <>
@@ -25481,7 +25592,7 @@ function DebtsListView({ data, setData }) {
             </>
           )}
           <div className="mt-3 pt-3 border-t border-[var(--border)] flex items-baseline justify-between gap-3">
-            <span className="text-xs text-[var(--text-subtle)]">Всего осталось вернуть · {active.length} {pluralRu(active.length, ['долг', 'долга', 'долгов'])}</span>
+            <span className="text-xs text-[var(--text-subtle)]">{lend ? 'Мне должны' : 'Всего осталось вернуть'} · {active.length} {pluralRu(active.length, ['долг', 'долга', 'долгов'])}</span>
             <span className="font-display text-lg tabular-nums whitespace-nowrap">{formatRub(totalRemaining)} ₽</span>
           </div>
         </div>
@@ -25490,15 +25601,15 @@ function DebtsListView({ data, setData }) {
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 mb-6">
           <div className="flex items-start justify-between flex-wrap gap-4">
             <div>
-              <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-1 capitalize">Платежи в {formatMonthFull(curMonth)}</div>
+              <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-1 capitalize">{lend ? 'Возвраты' : 'Платежи'} в {formatMonthFull(curMonth)}</div>
               {monthNeed > 0 ? (
                 monthDue > 0 ? (
-                  <div className="font-display text-3xl">{formatRub(monthDue)} <span className="text-base">₽ ещё оплатить</span></div>
+                  <div className="font-display text-3xl">{formatRub(monthDue)} <span className="text-base">₽ {lend ? 'ещё вернут' : 'ещё оплатить'}</span></div>
                 ) : (
-                  <div className="font-display text-3xl text-green-600">Всё оплачено ✓</div>
+                  <div className="font-display text-3xl text-green-600">{lend ? 'Всё вернули' : 'Всё оплачено'} ✓</div>
                 )
               ) : (
-                <div className="font-display text-2xl text-[var(--text-muted)]">В этом месяце платить не нужно</div>
+                <div className="font-display text-2xl text-[var(--text-muted)]">{lend ? 'В этом месяце возвратов нет' : 'В этом месяце платить не нужно'}</div>
               )}
               {monthNeed > 0 && (
                 <div className="text-sm text-[var(--text-muted)] mt-1">
@@ -25507,7 +25618,7 @@ function DebtsListView({ data, setData }) {
               )}
             </div>
             <div className="text-right text-sm text-[var(--text-muted)]">
-              <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-1">Всего осталось вернуть</div>
+              <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest mb-1">{lend ? 'Мне должны' : 'Всего осталось вернуть'}</div>
               <div className="font-display text-xl text-[var(--text)]">{formatRub(totalRemaining)} ₽</div>
               <div className="text-xs mt-0.5">{active.length} {pluralRu(active.length, ['активный долг', 'активных долга', 'активных долгов'])}</div>
             </div>
@@ -25522,12 +25633,12 @@ function DebtsListView({ data, setData }) {
 
       <div className="flex items-center gap-2 flex-wrap mb-6 max-md:mb-4">
         <button onClick={newDebt} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium hover:opacity-85 transition-all max-md:flex-1 max-md:justify-center">
-          <Icon name="plus" size={16} />Добавить долг
+          <Icon name="plus" size={16} />{lend ? 'Дать в долг' : 'Взять долг'}
         </button>
       </div>
 
       {!debts.length ? (
-        <EmptyState title="Нет долгов" text="Добавьте долг с периодичностью выплат — план появится в «По месяцу», а платежи уменьшат остаток" />
+        <EmptyState title={lend ? 'Нет выданных долгов' : 'Нет долгов'} text={lend ? 'Добавьте, кому и сколько вы дали в долг — возвраты уменьшат остаток. В план «По месяцу» эти долги не попадают' : 'Добавьте долг с периодичностью выплат — план появится в «По месяцу», а платежи уменьшат остаток'} />
       ) : (
         <>
           {nowRows.length > 0 && (
@@ -25589,6 +25700,10 @@ function DebtsListView({ data, setData }) {
       {editing && (
         <BudgetDebtModal
           debt={editing}
+          people={data[DEBT_PEOPLE[dir].key] || []}
+          onAddPerson={(name) => setData(d => (d[DEBT_PEOPLE[dir].key] || []).some(x => x.name.toLowerCase() === name.toLowerCase()) ? d : ({
+            ...d, [DEBT_PEOPLE[dir].key]: [...(d[DEBT_PEOPLE[dir].key] || []), { id: crypto.randomUUID(), name, updatedAt: Date.now() }],
+          }))}
           paid={getDebtPaid(editing, transactions)}
           increased={getDebtTxTotals(editing.id, transactions).increased}
           onSave={save}
@@ -25598,6 +25713,7 @@ function DebtsListView({ data, setData }) {
       {payModal && (
         <DebtPaymentModal
           debt={payModal}
+          lend={lend}
           transactions={transactions}
           onSave={(type, amount, date, comment) => {
             addTx(payModal.id, type, amount, date, comment);
@@ -25609,6 +25725,7 @@ function DebtsListView({ data, setData }) {
       {cashflowModal && (
         <DebtCashflowModal
           debt={cashflowModal}
+          lend={lend}
           transactions={transactions}
           accounts={data.budgetCashflowAccounts || []}
           defaultAccountId={defaultAccountId}
@@ -25621,7 +25738,7 @@ function DebtsListView({ data, setData }) {
       )}
       {menuFor && (
         <BudgetActionSheet title={menuFor.debtor || 'Долг'} onClose={() => setMenuFor(null)} actions={[
-          getDebtRemaining(menuFor, transactions) > 0 && { icon: 'creditCard', label: 'Другая сумма или пополнить долг', hint: 'Платёж на свою сумму или доп. выдача', onClick: () => setPayModal(menuFor) },
+          getDebtRemaining(menuFor, transactions) > 0 && { icon: 'creditCard', label: 'Другая сумма или пополнить долг', hint: lend ? 'Возврат на свою сумму или доп. выдача' : 'Платёж на свою сумму или доп. выдача', onClick: () => setPayModal(menuFor) },
           getDebtRemaining(menuFor, transactions) > 0 && { icon: 'wallet', label: 'Платёж со счётом ДДС', hint: 'Своя сумма, счёт и направление денег', onClick: () => setCashflowModal(menuFor) },
           { icon: 'edit', label: 'Редактировать', onClick: () => setEditing(menuFor) },
           { icon: 'check', label: 'Отметить закрытым', hint: 'Уйдёт в «Закрытые»', onClick: () => toggleClosed(menuFor.id) },
@@ -25633,17 +25750,20 @@ function DebtsListView({ data, setData }) {
   );
 }
 
-function DebtsPaymentsView({ data, setData }) {
+function DebtsPaymentsView({ dir, data, setData }) {
+  const lend = dir === 'lend';
   const [showAdd, setShowAdd] = useState(false);
   const [sortCol, setSortCol] = useState('date');
   const [sortDir, setSortDir] = useState('desc');
 
-  const debts = data.budgetDebts || [];
+  const debts = (data.budgetDebts || []).filter(d => debtDir(d) === dir);
   const activeDebts = debts.filter(d => !d.closed);
-  const transactions = data.debtTransactions || [];
+  const debtIds = new Set(debts.map(d => d.id));
+  const transactions = (data.debtTransactions || []).filter(t => debtIds.has(t.debtId));
+  const allDebts = data.budgetDebts || [];
 
   const getDebtName = (id) => {
-    const d = debts.find(x => x.id === id);
+    const d = allDebts.find(x => x.id === id);
     return d ? (d.closed ? `${d.debtor || 'Долг'} (закрыт)` : (d.debtor || 'Долг')) : '(удалено)';
   };
 
@@ -25707,7 +25827,7 @@ function DebtsPaymentsView({ data, setData }) {
       </div>
 
       {!transactions.length ? (
-        <EmptyState title="Нет платежей" text="Отмечайте плановые платежи или вносите внеплановые — остаток и план в «По месяцу» пересчитаются сами" />
+        <EmptyState title={lend ? 'Нет возвратов' : 'Нет платежей'} text="Отмечайте плановые платежи или вносите внеплановые — остаток и план в «По месяцу» пересчитаются сами" />
       ) : isMobile ? (
         <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden">
           <div className="divide-y divide-[var(--border)]">
@@ -25721,7 +25841,7 @@ function DebtsPaymentsView({ data, setData }) {
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">{getDebtName(t.debtId)}</div>
                     <div className="text-xs text-[var(--text-subtle)] truncate mt-0.5">
-                      {formatDate(t.date)} · {isInc ? 'пополнение долга' : 'платёж'}{t.comment ? ` · ${t.comment}` : ''}
+                      {formatDate(t.date)} · {isInc ? 'пополнение долга' : (lend ? 'возврат' : 'платёж')}{t.comment ? ` · ${t.comment}` : ''}
                     </div>
                   </div>
                   <span className={`text-sm font-semibold tabular-nums whitespace-nowrap ${isInc ? 'text-amber-700' : 'text-green-600'}`}>
@@ -25736,7 +25856,7 @@ function DebtsPaymentsView({ data, setData }) {
             })}
           </div>
           <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] flex justify-between gap-3 text-xs">
-            <span className="text-green-600">Платежи: <b className="tabular-nums">−{formatRub(totalPaid)} ₽</b></span>
+            <span className="text-green-600">{lend ? 'Возвраты' : 'Платежи'}: <b className="tabular-nums">−{formatRub(totalPaid)} ₽</b></span>
             <span className="text-amber-700">Пополнения: <b className="tabular-nums">+{formatRub(totalInc)} ₽</b></span>
           </div>
         </div>
@@ -25765,7 +25885,7 @@ function DebtsPaymentsView({ data, setData }) {
                       <td className="px-3 py-2.5 font-medium">{getDebtName(t.debtId)}</td>
                       <td className="px-3 py-2.5 whitespace-nowrap">
                         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${isInc ? 'bg-amber-50 text-amber-700' : 'bg-green-50 text-green-700'}`}>
-                          {isInc ? '↑ Пополнение долга' : '↓ Платёж'}
+                          {isInc ? '↑ Пополнение долга' : (lend ? '↓ Возврат' : '↓ Платёж')}
                         </span>
                       </td>
                       <td className={`px-3 py-2.5 text-right whitespace-nowrap font-semibold ${isInc ? 'text-amber-700' : 'text-green-600'}`}>
@@ -25787,7 +25907,7 @@ function DebtsPaymentsView({ data, setData }) {
           <div className="px-4 py-3 bg-[var(--bg)] border-t border-[var(--border)] flex flex-wrap gap-4 justify-between items-center">
             <span className="text-xs text-[var(--text-subtle)] uppercase tracking-wide">{sorted.length} операций</span>
             <div className="flex gap-5 text-sm">
-              <span className="text-green-600">Платежи: <b>−{formatRub(totalPaid)} ₽</b></span>
+              <span className="text-green-600">{lend ? 'Возвраты' : 'Платежи'}: <b>−{formatRub(totalPaid)} ₽</b></span>
               <span className="text-amber-700">Пополнения: <b>+{formatRub(totalInc)} ₽</b></span>
             </div>
           </div>
@@ -25797,6 +25917,7 @@ function DebtsPaymentsView({ data, setData }) {
       {showAdd && (
         <DebtPaymentModal
           debts={debts}
+          lend={lend}
           transactions={transactions}
           onSave={(debtId, type, amount, date, comment) => {
             setData(d => ({
@@ -25815,7 +25936,7 @@ function DebtsPaymentsView({ data, setData }) {
   );
 }
 
-function DebtPaymentModal({ debt, debts, transactions = [], onSave, onClose }) {
+function DebtPaymentModal({ debt, debts, lend = false, transactions = [], onSave, onClose }) {
   const today = getTodayKey();
   const list = debt ? [debt] : (debts || []);
   const [debtId, setDebtId] = useState(debt?.id || (list.find(d => !d.closed)?.id || list[0]?.id || ''));
@@ -25844,7 +25965,7 @@ function DebtPaymentModal({ debt, debts, transactions = [], onSave, onClose }) {
           <div className="flex gap-2">
             <button onClick={() => setType('payment')}
               className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${type === 'payment' ? 'bg-green-50 border-green-300 text-green-700' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
-              ↓ Платёж
+              {lend ? '↓ Возврат' : '↓ Платёж'}
             </button>
             <button onClick={() => setType('increase')}
               className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${type === 'increase' ? 'bg-amber-50 border-amber-300 text-amber-700' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
@@ -25853,7 +25974,7 @@ function DebtPaymentModal({ debt, debts, transactions = [], onSave, onClose }) {
           </div>
           <div className="text-xs text-[var(--text-subtle)] mt-1.5">
             {type === 'payment'
-              ? 'Уменьшает остаток и пересчитывает план в «По месяцу»'
+              ? (lend ? 'Уменьшает остаток — сколько ещё должны вернуть' : 'Уменьшает остаток и пересчитывает план в «По месяцу»')
               : 'Увеличивает сумму долга (доп. выдача) — остаток и /мес пересчитаются'}
           </div>
         </div>
@@ -25906,7 +26027,7 @@ function DebtPaymentModal({ debt, debts, transactions = [], onSave, onClose }) {
           <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
           <button onClick={submit}
             className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-medium text-white transition-all hover:opacity-90 ${type === 'payment' ? 'bg-green-600' : 'bg-amber-600'}`}>
-            {type === 'payment' ? 'Внести платёж' : 'Пополнить долг'}
+            {type === 'payment' ? (lend ? 'Внести возврат' : 'Внести платёж') : 'Пополнить долг'}
           </button>
         </div>
       </div>
@@ -25918,7 +26039,7 @@ function DebtPaymentModal({ debt, debts, transactions = [], onSave, onClose }) {
 // (например, перевели себе с бизнес-карты на личную). Поэтому, в отличие
 // от обычного платежа выше, здесь счёт указывается явно, а направление
 // денег на нём выбирается вручную — не угадывается по типу операции.
-function DebtCashflowModal({ debt, transactions = [], accounts = [], defaultAccountId = '', onSave, onClose }) {
+function DebtCashflowModal({ debt, lend = false, transactions = [], accounts = [], defaultAccountId = '', onSave, onClose }) {
   const today = getTodayKey();
   const [type, setType] = useState('payment');
   const [amount, setAmount] = useState('');
@@ -25927,14 +26048,15 @@ function DebtCashflowModal({ debt, transactions = [], accounts = [], defaultAcco
   const [accountId, setAccountId] = useState(
     accounts.some(a => a.id === defaultAccountId) ? defaultAccountId : (accounts[0]?.id || '')
   );
-  const [flowDir, setFlowDir] = useState('in'); // 'in' | 'out' — что произошло на выбранном счёте
+  // 'in' | 'out' — что произошло на выбранном счёте. Даю в долг: возврат — приход, выдача — расход; беру: наоборот.
+  const [flowDir, setFlowDir] = useState(lend ? 'in' : 'out');
 
   const onTypeChange = (t) => {
     setType(t);
     // Разумный дефолт: обычно должник платит вам (приход), а довнесение —
     // это вы дали ещё (расход). Но это только подсказка — переключатель
     // ниже можно поменять на обратное.
-    setFlowDir(t === 'payment' ? 'in' : 'out');
+    setFlowDir((t === 'payment') === lend ? 'in' : 'out');
   };
 
   const rem = debt ? getDebtRemaining(debt, transactions) : 0;
@@ -25960,7 +26082,7 @@ function DebtCashflowModal({ debt, transactions = [], accounts = [], defaultAcco
           <div className="flex gap-2">
             <button onClick={() => onTypeChange('payment')}
               className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${type === 'payment' ? 'bg-green-50 border-green-300 text-green-700' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
-              ↓ Платёж
+              {lend ? '↓ Возврат' : '↓ Платёж'}
             </button>
             <button onClick={() => onTypeChange('increase')}
               className={`flex-1 px-3 py-2.5 rounded-xl text-sm font-medium border transition-all ${type === 'increase' ? 'bg-amber-50 border-amber-300 text-amber-700' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
@@ -26038,7 +26160,9 @@ function DebtCashflowModal({ debt, transactions = [], accounts = [], defaultAcco
   );
 }
 
-function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
+function BudgetDebtModal({ debt, people = [], onAddPerson, paid = 0, increased = 0, onSave, onClose }) {
+  const lend = debtDir(debt) === 'lend';
+  const [newPerson, setNewPerson] = useState(false);
   const [form, setForm] = useState(() => ({
     ...debt,
     startDate: debt.startDate || getCurrentMonthStr(),
@@ -26138,8 +26262,10 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
     // В плане храним только месяцы графика и только числа.
     const monthlyPlan = {};
     scheduleMonths.forEach(mo => { const v = Number(planOf(mo)); if (v > 0) monthlyPlan[mo] = v; });
+    if (onAddPerson && form.debtor.trim()) onAddPerson(form.debtor.trim());
     onSave({
       ...form,
+      direction: lend ? 'lend' : 'borrow',
       customPlan: customOn,
       monthlyPlan: customOn ? monthlyPlan : (form.monthlyPlan || {}),
       amount: customOn ? amountFromPlan : Number(form.amount),
@@ -26155,7 +26281,7 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
   const isNew = !debt.debtor && !debt.amount;
 
   return (
-    <Modal title={isNew ? 'Новый долг' : 'Редактировать долг'} onClose={onClose}>
+    <Modal title={isNew ? (lend ? 'Новый долг мне' : 'Новый долг') : 'Редактировать долг'} onClose={onClose}>
       <div className="space-y-4">
         <div>
           <label>Сумма долга (₽)</label>
@@ -26172,12 +26298,22 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
         </div>
 
         <div>
-          <label>Кому даётся долг</label>
-          <input value={form.debtor} onChange={e => set('debtor', e.target.value)} placeholder="Имя" />
+          <label>{lend ? 'Кому даю в долг' : 'Кто даёт в долг'}</label>
+          {people.length > 0 && !newPerson ? (
+            <select value={form.debtor || ''}
+              onChange={e => e.target.value === '__new' ? (setNewPerson(true), set('debtor', '')) : set('debtor', e.target.value)}>
+              <option value="">— выберите —</option>
+              {form.debtor && !people.some(x => x.name === form.debtor) && <option value={form.debtor}>{form.debtor}</option>}
+              {people.map(x => <option key={x.id} value={x.name}>{x.name}</option>)}
+              <option value="__new">+ Новый в справочник…</option>
+            </select>
+          ) : (
+            <input value={form.debtor} onChange={e => set('debtor', e.target.value)} placeholder="Имя" />
+          )}
         </div>
 
         <div>
-          <label>Откуда даётся долг</label>
+          <label>{lend ? 'Откуда даю (счёт)' : 'Куда поступил долг (счёт)'}</label>
           <select value={form.source} onChange={e => set('source', e.target.value)}>
             {DEBT_SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
@@ -26187,7 +26323,7 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-sm font-medium">Просто суммой, без плана по месяцам</div>
-              <div className="text-xs text-[var(--text-subtle)] mt-0.5">Не делится на месяцы и не попадает во вкладку «По месяцу» — платежи и довнесения отмечаются как обычно</div>
+              <div className="text-xs text-[var(--text-subtle)] mt-0.5">{lend ? 'Без графика возвратов — возвраты и довнесения отмечаются как обычно' : 'Не делится на месяцы и не попадает во вкладку «По месяцу» — платежи и довнесения отмечаются как обычно'}</div>
             </div>
             <Toggle checked={noSchedule} onChange={toggleNoSchedule} />
           </div>
@@ -26269,7 +26405,7 @@ function BudgetDebtModal({ debt, paid = 0, increased = 0, onSave, onClose }) {
         )}
 
         <div>
-          <label>Вернуть до (дата, необязательно)</label>
+          <label>{lend ? 'Вернуть мне до (дата, необязательно)' : 'Вернуть до (дата, необязательно)'}</label>
           <input type="date" value={form.returnDate || ''} onChange={e => set('returnDate', e.target.value)} />
         </div>
 
