@@ -25479,13 +25479,13 @@ function DebtsListView({ dir, data, setData }) {
           <div className="mt-3 ml-[18px] flex items-center gap-2">
             {remaining > 0 ? (
               <>
-                <button onClick={markPlain}
-                  className="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-rose-600 text-white text-sm font-medium active:opacity-80 truncate">
-                  {lend ? 'Вернули' : 'Отметить'}{due > 0 ? ` ${formatRub(due)} ₽` : ''}
-                </button>
                 <button onClick={markDds} title="Отметить платёж и записать трату в ДДС"
-                  className="shrink-0 px-3.5 py-2.5 rounded-xl bg-[var(--text)] text-white text-sm font-medium active:opacity-80">
-                  + ДДС
+                  className="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-rose-600 text-white text-sm font-medium active:opacity-80 truncate">
+                  {lend ? 'Вернули + в ДДС' : 'Отметить + в ДДС'}
+                </button>
+                <button onClick={markPlain} title={due > 0 ? `Отметить ${formatRub(due)} ₽ без записи в ДДС` : 'Внести платёж'}
+                  className="shrink-0 px-3 py-2.5 rounded-xl bg-[var(--text)] text-white text-xs font-medium active:opacity-80">
+                  {lend ? 'Вернули' : 'Отметить'}
                 </button>
               </>
             ) : <span className="flex-1 text-sm text-green-700">{lend ? 'Вернули всё' : 'Погашен'} ✓</span>}
@@ -25530,20 +25530,20 @@ function DebtsListView({ dir, data, setData }) {
         <div className="mt-2 ml-[18px] flex items-center gap-2 flex-wrap">
           {remaining > 0 && (
             <>
-              <button
-                onClick={() => (due > 0 ? addTx(d.id, 'payment', due, today, '') : setPayModal(d))}
-                title={due > 0 ? `Отметить платёж ${formatRub(due)} ₽ на ${today}` : 'Внести платёж'}
-                className="px-3.5 py-1.5 rounded-lg bg-rose-600 text-white text-sm font-medium hover:opacity-90">
-                {lend ? 'Вернули' : 'Отметить'}{due > 0 ? ` ${formatRub(due)} ₽` : ''}
-              </button>
               <button onClick={() => (due > 0 && defaultAccountId
                   ? addTx(d.id, 'payment', due, today, d.debtor || '', defaultAccountId, lend ? 'in' : 'out')
                   : setCashflowModal(d))}
                 title={due > 0 && defaultAccountId
                   ? `Отметить платёж ${formatRub(due)} ₽ и сразу записать трату ${formatRub(due)} ₽ на счёт сегодня (${today})`
                   : 'Отметить платёж и записать в личный учёт трат (ДДС)'}
-                className="px-3.5 py-1.5 rounded-lg bg-[var(--text)] text-white text-sm font-medium hover:opacity-85">
-                {lend ? 'Вернули + ДДС' : 'Отметить + ДДС'}
+                className="px-3.5 py-1.5 rounded-lg bg-rose-600 text-white text-sm font-medium hover:opacity-90">
+                {lend ? 'Вернули + в ДДС' : 'Отметить + в ДДС'}
+              </button>
+              <button
+                onClick={() => (due > 0 ? addTx(d.id, 'payment', due, today, '') : setPayModal(d))}
+                title={due > 0 ? `Отметить платёж ${formatRub(due)} ₽ на ${today} без записи в ДДС` : 'Внести платёж'}
+                className="px-2.5 py-1 rounded-lg bg-[var(--text)] text-white text-xs font-medium hover:opacity-85">
+                {lend ? 'Вернули' : 'Отметить'}
               </button>
             </>
           )}
