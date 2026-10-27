@@ -227,9 +227,12 @@ WB_HOME = "https://www.wildberries.ru/"
 WB_SHELL_S = 25
 WB_COOLDOWN_S = 300
 WB_CHECK_STREAK = 2
-# Чтение заказов WB: ждём JSON кабинета, не networkidle. Картинки и шрифты не грузим.
-WB_READ_S = 12
+# Чтение заказов WB: ждём список, не networkidle и не справочник ПВЗ.
+# Оболочка со спиннером на мобильном прокси не укладывается в 12 с.
+WB_READ_S = 40
 HEAVY_TYPES = frozenset({"image", "media", "font"})
+# Только картинки, видео и шрифты. script, xhr, document и css в перехват не попадают.
+HEAVY_GLOBS = "**/*.{png,jpg,jpeg,gif,webp,avif,svg,ico,bmp,mp4,webm,mp3,ogg,woff,woff2,ttf,otf,eot}*"
 _READ_TRACE = frozenset({"orders", "order", "delivery", "returns"})
 # Страница кода WB остаётся открытой, пока человек не введёт код или не выйдут 5 минут.
 CODE_WAIT_S = 300
@@ -1607,6 +1610,54 @@ def is_heavy(resource_type) -> bool:
     return (resource_type or "") in HEAVY_TYPES
 
 
+def wb_skip_body(url) -> bool:
+    """Справочник ПВЗ и статика. Это не список заказов, тело не читаем."""
+    blob = (url or "").lower()
+    if "wbbasket" in blob or "static-basket" in blob:
+        return True
+    path = urlparse(blob).path or ""
+    return "/delivery/offices" in path
+
+
+def wb_orders_api(url) -> bool:
+    """Список покупок или возвратов. Справочник ПВЗ и srids сюда не входят."""
+    if wb_skip_body(url):
+        return False
+    blob = (url or "").lower()
+    path = (urlparse(blob).path or "").rstrip("/")
+    if path.endswith("/srids"):
+        return False
+    needles = (
+        "/myorders/archive/get",
+        "/archive/getbyrids",
+        "/shopper/api/v2/purchases/list",
+        "/webapi/lk/refunds/get",
+        "/webapi/lk/refunds/list",
+        "/webapi/lk/claims/get",
+    )
+    return any(part in blob for part in needles)
+
+
+def wb_list_settled(captures) -> bool:
+    """Список ответил 200 без error. Пустой список тоже ответ."""
+    for item in captures or []:
+        if not wb_orders_api((item or {}).get("url") or ""):
+            continue
+        if int((item or {}).get("status") or 0) != 200:
+            continue
+        body = ((item or {}).get("body") or "").lstrip()
+        if not body or body[0] not in "{[":
+            continue
+        try:
+            data = json.loads(body)
+        except Exception:
+            continue
+        if isinstance(data, dict) and data.get("error"):
+            continue
+        return True
+    return False
+
+
 def _flat_key(key) -> str:
     return re.sub(r"[^a-z0-9]", "", str(key or "").lower())
 
@@ -1663,7 +1714,7 @@ def _as_order(flat, inherited_id) -> dict:
             if price:
                 break
     date = ""
-    for key in ("orderdate", "datetime", "createdat", "deliverydate", "date"):
+    for key in ("orderdate", "datetime", "createdat", "deliverydate", "date", "createdt", "dt"):
         if key in flat:
             date = _date_text(flat.get(key))
             if date:
@@ -1797,19 +1848,21 @@ class ApiSink:
             url = getattr(response, "url", "") or ""
             status = int(getattr(response, "status", 0) or 0)
             headers = {}
-            try:
-                headers = response.headers or {}
-            except Exception:
-                headers = {}
             ctype = ""
-            if isinstance(headers, dict):
-                ctype = str(headers.get("content-type") or headers.get("Content-Type") or "")
             body = ""
-            if "json" in ctype.lower() or kind in ("xhr", "fetch"):
+            # Тело ПВЗ и static-basket не читаем: оно не список и держит поток, пока висят route.
+            if not wb_skip_body(url):
                 try:
-                    body = response.text() or ""
+                    headers = response.headers or {}
                 except Exception:
-                    body = ""
+                    headers = {}
+                if isinstance(headers, dict):
+                    ctype = str(headers.get("content-type") or headers.get("Content-Type") or "")
+                if "json" in ctype.lower() or kind in ("xhr", "fetch"):
+                    try:
+                        body = response.text() or ""
+                    except Exception:
+                        body = ""
             if len(body) > 200_000:
                 body = body[:200_000]
             self.rows.append({"url": url, "status": status, "body": body, "type": kind})
@@ -2482,9 +2535,12 @@ class PlaywrightCabinet:
         try:
             text = page.evaluate(
                 """() => {
-                  const root = document.querySelector('main') || document.body;
-                  const t = (root && root.innerText) ? root.innerText : '';
-                  return t.replace(/\\n{3,}/g, '\\n\\n').trim().slice(0, 8000);
+                  const main = document.querySelector('main');
+                  const mainText = main && main.innerText ? main.innerText.trim() : '';
+                  const body = document.body;
+                  const bodyText = body && body.innerText ? body.innerText.trim() : '';
+                  const t = mainText || bodyText;
+                  return t.replace(/\\n{3,}/g, '\\n\\n').slice(0, 8000);
                 }"""
             )
         except Exception:
@@ -3279,17 +3335,24 @@ class PlaywrightCabinet:
             self._drop(warm.get("context"))
 
     def _block_heavy(self, context):
+        """Картинки и видео обрываем, шрифт закрываем пустым ответом. script и xhr не трогаем."""
         def handle(route):
             try:
                 kind = getattr(getattr(route, "request", None), "resource_type", "") or ""
+                if kind == "font":
+                    route.fulfill(status=200, content_type="font/woff2", body=b"")
+                    return
                 if is_heavy(kind):
-                    route.abort()
-                else:
-                    route.continue_()
+                    route.abort("blockedbyclient")
+                    return
+                route.fallback()
             except Exception:
-                pass
+                try:
+                    route.fallback()
+                except Exception:
+                    pass
         try:
-            context.route("**/*", handle)
+            context.route(HEAVY_GLOBS, handle)
         except Exception as e:
             _log("route " + type(e).__name__)
 
@@ -3332,21 +3395,24 @@ class PlaywrightCabinet:
         return page, tap
 
     def _wait_wb_read(self, page, tap):
+        """Пока нет списка заказов — ждём. Справочник ПВЗ и спиннер оболочки чтением не считаются."""
         started = time.time()
         info = self._snapshot(page)
         while time.time() - started < WB_READ_S:
-            parsed = rows_from_captures(getattr(tap, "rows", None) or [])
+            captures = list(getattr(tap, "rows", None) or [])
+            parsed = rows_from_captures(captures)
             info = self._snapshot(page)
             kind = classify_page(info)
-            if parsed:
-                return parsed, info
             if kind in ("offline", "challenge", "login", "code", "password"):
                 return parsed, info
+            if parsed or wb_list_settled(captures) or cabinet_open(info):
+                return parsed, info
             try:
-                page.wait_for_timeout(350)
+                page.wait_for_timeout(400)
             except Exception:
-                time.sleep(0.35)
-        return rows_from_captures(getattr(tap, "rows", None) or []), self._snapshot(page)
+                time.sleep(0.4)
+        captures = list(getattr(tap, "rows", None) or [])
+        return rows_from_captures(captures), self._snapshot(page)
 
     def _read_wb(self, section, proxy, storage, order_id) -> dict:
         key = "orders" if section == "order" else section
@@ -3369,17 +3435,24 @@ class PlaywrightCabinet:
             own = [row for row in parsed if order_id in (row.get("id") or "")]
             if own:
                 parsed = own
+        captures = list(getattr(tap, "rows", None) or [])
         page_text = info.get("text") or ""
         structured = format_wb_rows(parsed)
+        if not structured and wb_list_settled(captures):
+            if key in ("orders", "order"):
+                structured = "Заказов нет."
+            elif key == "delivery":
+                structured = "Доставок нет."
+            else:
+                structured = "Возвратов нет."
         text = structured or page_text
-        captures = getattr(tap, "rows", None) or []
         shot = ""
         try:
             shot = self._shot(page)
         except Exception:
             shot = ""
         base = session_from_page(info)
-        if parsed and base.get("session") not in ("blocked", "expired"):
+        if (parsed or structured) and base.get("session") not in ("blocked", "expired"):
             base["ok"] = True
             base["session"] = "active"
         base["title"] = info.get("title") or ""

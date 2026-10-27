@@ -393,8 +393,63 @@ class MarketSkillTest(unittest.TestCase):
         self.assertNotIn("super-secret", journal)
         self.assertIn("***", journal)
         self.assertTrue(market_skill.is_heavy("image"))
+        self.assertTrue(market_skill.is_heavy("media"))
         self.assertTrue(market_skill.is_heavy("font"))
-        self.assertFalse(market_skill.is_heavy("xhr"))
+        for kind in ("xhr", "fetch", "script", "document", "stylesheet"):
+            self.assertFalse(market_skill.is_heavy(kind), kind)
+        self.assertNotIn(".js", market_skill.HEAVY_GLOBS)
+        self.assertIn("woff2", market_skill.HEAVY_GLOBS)
+        offices = {"resultState": 0, "value": {"500084871": {"isActive": True, "name": "ПВЗ", "address": "Москва"}}}
+        self.assertEqual(market_skill.parse_wb_orders(offices), [])
+        self.assertTrue(market_skill.wb_skip_body("https://www.wildberries.ru/webapi/lk/myorders/delivery/offices"))
+        self.assertTrue(market_skill.wb_skip_body("https://static-basket-01.wbbasket.ru/vol0/data/prodversion-front-v2.json"))
+        self.assertFalse(market_skill.wb_orders_api("https://www.wildberries.ru/webapi/lk/myorders/delivery/offices"))
+        self.assertTrue(market_skill.wb_orders_api("https://www.wildberries.ru/webapi/lk/myorders/archive/get"))
+        self.assertTrue(market_skill.wb_orders_api("https://astro.wildberries.ru/api/v1/shopper/api/v2/purchases/list?limit=20"))
+        self.assertFalse(market_skill.wb_orders_api("https://astro.wildberries.ru/api/v1/shopper/api/v2/purchases/list/srids"))
+        purchase = {"data": {"purchases": [{
+            "GoodsName": "Кружка",
+            "OrderId": "555666",
+            "Rid": "rid.1",
+            "Price": 150000,
+            "Dt": "2026-10-01",
+            "Status": 32,
+            "DstOfficeId": 500084871,
+        }]}}
+        bought = market_skill.parse_wb_orders(purchase)
+        self.assertEqual(bought[0]["name"], "Кружка")
+        self.assertEqual(bought[0]["id"], "555666")
+        self.assertEqual(bought[0]["price"], "1500 ₽")
+        self.assertEqual(bought[0]["date"], "2026-10-01")
+        self.assertEqual(bought[0]["status"], "")
+        self.assertFalse(market_skill.wb_list_settled([{
+            "url": "https://astro.wildberries.ru/api/v1/shopper/api/v2/purchases/list",
+            "status": 200,
+            "body": json.dumps({"error": {"message": "fail"}}),
+        }]))
+        self.assertTrue(market_skill.wb_list_settled([{
+            "url": "https://www.wildberries.ru/webapi/lk/myorders/archive/get",
+            "status": 200,
+            "body": '{"value":[]}',
+        }]))
+        self.assertFalse(market_skill.wb_list_settled([{
+            "url": "https://www.wildberries.ru/webapi/lk/myorders/delivery/offices",
+            "status": 200,
+            "body": json.dumps(offices),
+        }]))
+
+        class OfficeResp:
+            url = "https://www.wildberries.ru/webapi/lk/myorders/delivery/offices"
+            status = 200
+            request = type("Q", (), {"resource_type": "xhr"})()
+
+            def text(self):
+                raise AssertionError("offices body")
+
+        sink = market_skill.ApiSink()
+        sink.add(OfficeResp())
+        self.assertEqual(sink.rows[0]["body"], "")
+        self.assertEqual(sink.rows[0]["status"], 200)
         self.assertIn("уже полученные", market_skill.SKILLS[0]["desc"])
         self.assertIn("market_delivery", market_skill.PROMPT)
         self.assertIn("не подменяй", market_skill.PROMPT)
@@ -481,11 +536,17 @@ class MarketSkillTest(unittest.TestCase):
                 self.aborted = False
                 self.went = False
 
-            def abort(self):
+            def abort(self, *args):
                 self.aborted = True
 
             def continue_(self):
                 self.went = True
+
+            def fallback(self):
+                self.went = True
+
+            def fulfill(self, **kwargs):
+                self.fulfilled = True
 
         class Ctx:
             def __init__(self):
@@ -493,6 +554,7 @@ class MarketSkillTest(unittest.TestCase):
                 self.closed = False
 
             def route(self, pattern, handler):
+                self.pattern = pattern
                 self.handler = handler
 
             def close(self):
@@ -512,12 +574,22 @@ class MarketSkillTest(unittest.TestCase):
         storage = {"cookies": [{"name": "sid", "value": COOKIE, "domain": ".wildberries.ru"}]}
         proxy = market_skill._proxy()
         first, tap = cab._borrow_wb_page(proxy, storage)
+        self.assertEqual(contexts[0].pattern, market_skill.HEAVY_GLOBS)
         img = Route("image")
         contexts[0].handler(img)
+        font = Route("font")
+        contexts[0].handler(font)
         xhr = Route("xhr")
         contexts[0].handler(xhr)
+        script = Route("script")
+        contexts[0].handler(script)
         self.assertTrue(img.aborted)
+        self.assertTrue(getattr(font, "fulfilled", False))
+        self.assertFalse(getattr(font, "aborted", False))
         self.assertTrue(xhr.went)
+        self.assertFalse(xhr.aborted)
+        self.assertTrue(script.went)
+        self.assertFalse(script.aborted)
         again, tap2 = cab._borrow_wb_page(proxy, storage)
         self.assertIs(first, again)
         self.assertIs(tap, tap2)
@@ -538,6 +610,64 @@ class MarketSkillTest(unittest.TestCase):
         self.assertEqual(len(contexts), 2)
         cab._close_login("wb")
         self.assertTrue(contexts[1].closed)
+
+    def test_wb_empty_archive_is_read_not_closed_cabinet(self):
+        self._proxy()
+
+        class Req:
+            resource_type = "xhr"
+
+        class Resp:
+            url = "https://www.wildberries.ru/webapi/lk/myorders/archive/get"
+            status = 200
+            request = Req()
+            headers = {"content-type": "application/json"}
+
+            def text(self):
+                return '{"value":[]}'
+
+        class Page:
+            def __init__(self):
+                self.url = "https://www.wildberries.ru/lk/myorders/archive"
+                self.listeners = []
+
+            def on(self, event, callback):
+                self.listeners.append(callback)
+
+            def goto(self, url, **kwargs):
+                for callback in self.listeners:
+                    callback(Resp())
+
+            def is_closed(self):
+                return False
+
+            def title(self):
+                return "Интернет-магазин Wildberries"
+
+            def evaluate(self, script):
+                return ""
+
+            def wait_for_timeout(self, ms):
+                raise AssertionError("empty list must not keep waiting")
+
+            def screenshot(self, **kwargs):
+                return b"\xff\xd8" + b"\x00" * 8
+
+        class Ctx:
+            def route(self, pattern, handler):
+                self.pattern = pattern
+
+            def close(self):
+                pass
+
+        cab = market_skill.PlaywrightCabinet()
+        cab._new_context = lambda proxy, storage=None, mode="android": Ctx()
+        cab._open = lambda context, mode="android": Page()
+        result = cab._read_wb("orders", market_skill._proxy(), {"cookies": [{"name": "sid", "value": COOKIE, "domain": ".wildberries.ru"}]}, "")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["session"], "active")
+        self.assertEqual(result["text"], "Заказов нет.")
+        self.assertIn("archive/get", result["apis"])
 
     def test_cancel_needs_confirmation(self):
         self._active()
