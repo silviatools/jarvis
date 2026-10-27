@@ -6095,6 +6095,7 @@ function MarketplaceSettings() {
               {row.url ? <div className="font-mono break-all">{row.url}</div> : null}
               {row.title ? <div>{row.title}</div> : null}
               {row.summary ? <div>{row.summary}</div> : null}
+              {row.apis ? <pre className="mt-1 whitespace-pre-wrap break-all font-mono text-[11px]">{row.apis}</pre> : null}
               {row.shot ? (
                 <a className="underline" href={'/api/market/shot/' + row.shot} target="_blank" rel="noreferrer">скриншот</a>
               ) : null}

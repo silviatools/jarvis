@@ -361,6 +361,184 @@ class MarketSkillTest(unittest.TestCase):
         self.assertEqual(market_skill.public_status()["shops"]["ozon"]["status"], "active")
         self.assertIsNotNone(market_skill._storage("ozon"))
 
+    def test_wb_json_orders_and_journal_trace(self):
+        payload = {
+            "value": {"positions": [{
+                "orderId": "1234567890",
+                "goodsName": "Кроссовки",
+                "price": 199000,
+                "statusName": "В пути",
+                "orderDate": "2026-10-20",
+                "pooAddress": "Москва, ПВЗ 1",
+                "token": "super-secret",
+            }]}
+        }
+        rows = market_skill.parse_wb_orders(payload)
+        self.assertEqual(rows[0]["id"], "1234567890")
+        self.assertEqual(rows[0]["name"], "Кроссовки")
+        self.assertEqual(rows[0]["price"], "1990 ₽")
+        self.assertEqual(rows[0]["status"], "В пути")
+        self.assertEqual(rows[0]["date"], "2026-10-20")
+        self.assertIn("ПВЗ 1", rows[0]["pvz"])
+        text = market_skill.format_wb_rows(rows)
+        self.assertIn("Заказ 1234567890", text)
+        self.assertNotIn("super-secret", text)
+        journal = market_skill.api_journal([{
+            "url": "https://www.wildberries.ru/webapi/lk/myorders/delivery/active?token=hide",
+            "status": 200,
+            "body": json.dumps(payload, ensure_ascii=False),
+        }])
+        self.assertIn("/webapi/lk/myorders/delivery/active", journal)
+        self.assertNotIn("hide", journal)
+        self.assertNotIn("super-secret", journal)
+        self.assertIn("***", journal)
+        self.assertTrue(market_skill.is_heavy("image"))
+        self.assertTrue(market_skill.is_heavy("font"))
+        self.assertFalse(market_skill.is_heavy("xhr"))
+        self.assertIn("уже полученные", market_skill.SKILLS[0]["desc"])
+        self.assertIn("market_delivery", market_skill.PROMPT)
+        self.assertIn("не подменяй", market_skill.PROMPT)
+        self._active("wb")
+        self.drv.read_result = {
+            "ok": True, "session": "active",
+            "url": "https://www.wildberries.ru/lk/myorders/delivery?token=hide",
+            "title": "Доставки",
+            "text": text,
+            "text_len": 4,
+            "apis": journal,
+            "shot": "",
+        }
+        out = market_skill.execute("market_delivery", {"shop": "wb"}, None)
+        self.assertIn("Кроссовки", out["text"])
+        row = next(item for item in market_skill.public_status()["journal"] if item.get("step") == "read")
+        self.assertIn("текст 4", row["summary"])
+        self.assertIn("delivery/active", row["apis"])
+        self.assertNotIn("token=hide", row["url"])
+        blob = json.dumps(market_skill.public_status()["journal"], ensure_ascii=False)
+        self.assertNotIn("super-secret", blob)
+        self.assertNotIn("hide", blob)
+
+    def test_wb_read_uses_json_and_reuses_page(self):
+        self._proxy()
+        body = json.dumps({
+            "positions": [{
+                "rId": "99887766",
+                "name": "Рюкзак",
+                "price": 250000,
+                "status": "Доставлен в ПВЗ",
+                "date": "2026-10-21",
+                "address": "ПВЗ на Ленина",
+            }]
+        }, ensure_ascii=False)
+
+        class Req:
+            resource_type = "xhr"
+
+        class Resp:
+            url = "https://www.wildberries.ru/webapi/v2/lk/myorders/delivery/active?token=hide"
+            status = 200
+            request = Req()
+            headers = {"content-type": "application/json"}
+
+            def text(self):
+                return body
+
+        class Page:
+            def __init__(self):
+                self.url = "https://www.wildberries.ru/lk/myorders/delivery"
+                self._title = "Доставки"
+                self._text = "Заказы"
+                self.listeners = []
+                self.gotos = []
+                self.closed = False
+
+            def on(self, event, callback):
+                self.listeners.append(callback)
+
+            def goto(self, url, **kwargs):
+                self.gotos.append(url)
+                for callback in self.listeners:
+                    callback(Resp())
+
+            def is_closed(self):
+                return self.closed
+
+            def title(self):
+                return self._title
+
+            def evaluate(self, script):
+                return self._text
+
+            def wait_for_timeout(self, ms):
+                return None
+
+            def screenshot(self, **kwargs):
+                return b"\xff\xd8" + b"\x00" * 16
+
+        class Route:
+            def __init__(self, kind):
+                self.request = type("Q", (), {"resource_type": kind})()
+                self.aborted = False
+                self.went = False
+
+            def abort(self):
+                self.aborted = True
+
+            def continue_(self):
+                self.went = True
+
+        class Ctx:
+            def __init__(self):
+                self.handler = None
+                self.closed = False
+
+            def route(self, pattern, handler):
+                self.handler = handler
+
+            def close(self):
+                self.closed = True
+
+        cab = market_skill.PlaywrightCabinet()
+        contexts = []
+
+        def new_context(proxy, storage=None, mode="android"):
+            ctx = Ctx()
+            contexts.append(ctx)
+            return ctx
+
+        page = Page()
+        cab._new_context = new_context
+        cab._open = lambda context, mode="android": page
+        storage = {"cookies": [{"name": "sid", "value": COOKIE, "domain": ".wildberries.ru"}]}
+        proxy = market_skill._proxy()
+        first, tap = cab._borrow_wb_page(proxy, storage)
+        img = Route("image")
+        contexts[0].handler(img)
+        xhr = Route("xhr")
+        contexts[0].handler(xhr)
+        self.assertTrue(img.aborted)
+        self.assertTrue(xhr.went)
+        again, tap2 = cab._borrow_wb_page(proxy, storage)
+        self.assertIs(first, again)
+        self.assertIs(tap, tap2)
+        self.assertEqual(len(contexts), 1)
+        result = cab._read_wb("delivery", proxy, storage, "")
+        self.assertIn("Рюкзак", result["text"])
+        self.assertIn("2500 ₽", result["text"])
+        self.assertIn("ПВЗ на Ленина", result["text"])
+        self.assertIn("99887766", result["text"])
+        self.assertNotIn("hide", result["apis"])
+        self.assertIn("delivery/active", result["apis"])
+        self.assertEqual(result["text_len"], len("Заказы"))
+        self.assertTrue(any("myorders/delivery" in url for url in page.gotos))
+        self.assertFalse(contexts[0].closed)
+        other = {"cookies": [{"name": "sid", "value": "other", "domain": ".wildberries.ru"}]}
+        cab._borrow_wb_page(proxy, other)
+        self.assertTrue(contexts[0].closed)
+        self.assertEqual(len(contexts), 2)
+        cab._close_login("wb")
+        self.assertTrue(contexts[1].closed)
+
     def test_cancel_needs_confirmation(self):
         self._active()
         self.drv.calls.clear()
@@ -1000,6 +1178,8 @@ class AssistantLoopTest(unittest.TestCase):
         self.assertEqual([t["name"] for t in payload["tools"]], [t["name"] for t in market_skill.TOOLS])
         self.assertIn("прокси", payload["prompt"])
         self.assertIn("СМС", payload["prompt"])
+        self.assertIn("market_returns", payload["prompt"])
+        self.assertIn("не подменяй", payload["prompt"])
 
         src = Path("jarvis.py").read_text(encoding="utf-8")
         self.assertIn('"jarvis_market.json"', src)
@@ -1037,6 +1217,7 @@ class AssistantLoopTest(unittest.TestCase):
         self.assertIn("Подтвердить код", market_html)
         self.assertIn("Выйти", market_html)
         self.assertIn("market-journal", market_html)
+        self.assertIn("row.apis", market_html)
         self.assertIn("/api/market/shot/", market_html)
         self.assertIn("blocked:", market_html)
         self.assertIn("j.message ||", market_html)

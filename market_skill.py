@@ -45,8 +45,9 @@ STATUS_LABEL = {
 SKILLS = [
     {"id": SKILL_ID, "title": "Маркетплейсы", "risk": "write", "default": True,
      "desc": (
-         "Личные кабинеты покупателя Ozon и Wildberries: заказы, карточка заказа, доставка, возвраты, "
-         "избранное и краткий профиль (телефон маской). Это не кабинет продавца и не цены с витрины. "
+         "Личные кабинеты покупателя Ozon и Wildberries. У Wildberries это разные страницы: "
+         "market_orders — покупки (уже полученные), market_delivery — что в пути, market_returns — возвраты. "
+         "Ещё карточка заказа, избранное и краткий профиль (телефон маской). Не кабинет продавца и не цены с витрины. "
          "Нужен сохранённый мобильный HTTP(S)-прокси с липким IP (Настройки → Маркетплейсы) и живая сессия: "
          "без прокси кабинет с сервера не открывается, смена IP сессию сбрасывает. Если сессия слетела, "
          "инструменты так и скажут — нужен новый вход: у Ozon код из СМС, у Wildberries уведомление в приложении. Если антибот не пускает, статус "
@@ -64,16 +65,16 @@ _SHOP = {"type": "string", "enum": ["ozon", "wb"], "description": "ozon или w
 
 TOOLS = [
     {"name": "market_orders",
-     "description": "Заказы в личном кабинете покупателя Ozon или Wildberries. Не витрина и не кабинет продавца. Нужны прокси и живая сессия.",
+     "description": "Покупки в кабинете покупателя. Для Wildberries это уже полученные заказы, не то, что сейчас в пути (для пути — market_delivery). Нужны прокси и живая сессия.",
      "input_schema": {"type": "object", "properties": {"shop": _SHOP}, "required": ["shop"]}},
     {"name": "market_order",
      "description": "Карточка одного заказа в кабинете покупателя. order_id — номер заказа со страницы заказов.",
      "input_schema": {"type": "object", "properties": {"shop": _SHOP, "order_id": _STR}, "required": ["shop", "order_id"]}},
     {"name": "market_delivery",
-     "description": "Доставка в кабинете покупателя: что в пути и статусы. Можно сузить до order_id.",
+     "description": "Доставки в пути: статус, дата и ПВЗ. Для Wildberries это не список покупок и не возвраты. Можно сузить до order_id.",
      "input_schema": {"type": "object", "properties": {"shop": _SHOP, "order_id": _STR}, "required": ["shop"]}},
     {"name": "market_returns",
-     "description": "Возвраты в личном кабинете покупателя Ozon или Wildberries.",
+     "description": "Возвраты в личном кабинете покупателя. Для Wildberries отдельная страница, не доставки и не покупки.",
      "input_schema": {"type": "object", "properties": {"shop": _SHOP}, "required": ["shop"]}},
     {"name": "market_favorites",
      "description": "Избранное в личном кабинете покупателя. Не поиск по каталогу.",
@@ -99,8 +100,12 @@ if _missing:
 
 PROMPT = (
     "МАРКЕТПЛЕЙСЫ — личные кабинеты покупателя Ozon и Wildberries (не продавец и не карточки товаров). "
-    "Инструменты: market_orders, market_order, market_delivery, market_returns, market_favorites, market_profile "
-    "(чтение) и market_cancel_order (меняет кабинет). shop — ozon или wb. Читать можно без спроса. "
+    "Инструменты: market_orders (покупки, у WB уже полученные), market_delivery (что в пути, статус и ПВЗ), "
+    "market_returns (возвраты), market_order (один заказ), market_favorites, market_profile "
+    "(чтение) и market_cancel_order (меняет кабинет). У WB это три разные страницы, не подменяй одну другой. "
+    "shop — ozon или wb. Читать можно без спроса. "
+    "Если в ответе есть строки «Заказ …», перескажи номер, товар, цену, статус, дату и ПВЗ оттуда. "
+    "Если строк нет — так и скажи, заказы не выдумывай. "
     "Отмена заказа — только после явного «да»: первый вызов без confirmed вернёт needs_confirmation, опиши заказ и спроси, "
     "повтор с confirmed:true только следующим сообщением. Если на странице нет кнопки отмены или страница не подтвердила отмену — "
     "так и скажи, не говори, что заказ отменён. Если инструмент вернул, что нет прокси, нет сессии или сессия слетела — "
@@ -143,8 +148,8 @@ _CABINET_URLS = {
     },
     "wb": {
         "login": "https://www.wildberries.ru/security/login?returnUrl=https%3A%2F%2Fwww.wildberries.ru%2Flk%2Fmyorders%2Fdelivery",
-        "orders": "https://www.wildberries.ru/lk/myorders/delivery",
-        "order": "https://www.wildberries.ru/lk/myorders/delivery",
+        "orders": "https://www.wildberries.ru/lk/myorders/archive",
+        "order": "https://www.wildberries.ru/lk/myorders/archive",
         "delivery": "https://www.wildberries.ru/lk/myorders/delivery",
         "returns": "https://www.wildberries.ru/lk/myrefunds",
         "favorites": "https://www.wildberries.ru/lk/favorites",
@@ -222,6 +227,10 @@ WB_HOME = "https://www.wildberries.ru/"
 WB_SHELL_S = 25
 WB_COOLDOWN_S = 300
 WB_CHECK_STREAK = 2
+# Чтение заказов WB: ждём JSON кабинета, не networkidle. Картинки и шрифты не грузим.
+WB_READ_S = 12
+HEAVY_TYPES = frozenset({"image", "media", "font"})
+_READ_TRACE = frozenset({"orders", "order", "delivery", "returns"})
 # Страница кода WB остаётся открытой, пока человек не введёт код или не выйдут 5 минут.
 CODE_WAIT_S = 300
 # После ввода кода страница может уйти на согласие OAuth не сразу. Это не отказ кода.
@@ -1374,10 +1383,23 @@ def _read(shop, section, order_id, state) -> dict:
     except Exception as e:
         _log("read " + sid + " " + section + " " + type(e).__name__)
         return {"error": "Не удалось открыть кабинет: " + redact(e, _proxy())}
+    if section in _READ_TRACE:
+        length = result.get("text_len")
+        if length is None:
+            length = len(result.get("text") or "")
+        note_step(
+            sid, "read", result.get("url") or "",
+            f"текст {int(length)} символов",
+            "ok" if result.get("ok") else (result.get("session") or "read"),
+            title=result.get("title") or "",
+            shot=result.get("shot") or "",
+            apis=result.get("apis") or "",
+        )
     failed = _apply_read_session(sid, result)
     if failed:
         return failed
-    note_step(sid, "read", result.get("url") or "", result.get("text") or result.get("title") or "", "ok")
+    if section not in _READ_TRACE:
+        note_step(sid, "read", result.get("url") or "", result.get("text") or result.get("title") or "", "ok")
     text = mask_phones(result.get("text") or "")
     if section == "profile":
         text = text[:1800]
@@ -1402,7 +1424,7 @@ def _norm_text(text: str) -> str:
     return re.sub(r"[\u00a0\u2007\u202f]+", " ", text or "").lower()
 
 
-def _append_journal(data, shop, step, url, summary, result, title="", shot=""):
+def _append_journal(data, shop, step, url, summary, result, title="", shot="", apis=""):
     data.setdefault("journal", [])
     data["journal"].append({
         "t": int(time.time()),
@@ -1413,6 +1435,7 @@ def _append_journal(data, shop, step, url, summary, result, title="", shot=""):
         "summary": _journal_text(summary),
         "result": _journal_text(result),
         "shot": shot if _SHOT_RE.fullmatch(shot or "") else "",
+        "apis": scrub_secrets(apis)[:3500],
     })
     data["journal"] = data["journal"][-_JOURNAL_MAX:]
 
@@ -1438,6 +1461,7 @@ def _clean_journal(raw) -> list:
             "summary": _journal_text(item.get("summary") or ""),
             "result": _journal_text(item.get("result") or ""),
             "shot": shot if _SHOT_RE.fullmatch(shot) else "",
+            "apis": scrub_secrets(item.get("apis") or "")[:3500],
         })
     return out
 
@@ -1483,14 +1507,15 @@ def _heal_unproved(data) -> bool:
     return changed
 
 
-def note_step(shop, step, url, summary, result, title="", shot=""):
+def note_step(shop, step, url, summary, result, title="", shot="", apis=""):
     proxy = _proxy()
     summary = redact(_journal_text(summary), proxy)
     result = redact(_journal_text(result), proxy)
     title = redact(_journal_text(title), proxy)
+    apis = redact(scrub_secrets(apis), proxy)[:3500]
     with _lock:
         data = _load()
-        _append_journal(data, shop, step, url, summary, result, title=title, shot=shot)
+        _append_journal(data, shop, step, url, summary, result, title=title, shot=shot, apis=apis)
         _write(data)
 
 
@@ -1559,6 +1584,237 @@ def _record_steps(sid, result, fallback_step, fallback_result):
         title=(result or {}).get("title") or "",
         shot=(result or {}).get("shot") or "",
     )
+
+
+def scrub_secrets(text) -> str:
+    """Убирает токены, cookie и телефоны. Query в журнал всё равно не пишем."""
+    out = mask_phones(str(text or ""))
+    out = re.sub(
+        r'(?i)("(?:token|cookie|authorization|access_token|refresh_token|jwt|password|set-cookie)"\s*:\s*")[^"]*"',
+        r'\1***"',
+        out,
+    )
+    out = re.sub(r"(?i)\b(bearer\s+)\S+", r"\1***", out)
+    out = re.sub(r"(?i)([?&](?:token|access_token|cookie|authorization)=)[^&\s]+", r"\1***", out)
+    return out
+
+
+def redact_api_snippet(text) -> str:
+    return scrub_secrets(text)[:300]
+
+
+def is_heavy(resource_type) -> bool:
+    return (resource_type or "") in HEAVY_TYPES
+
+
+def _flat_key(key) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(key or "").lower())
+
+
+def _scalar(value) -> bool:
+    return isinstance(value, (str, int, float)) and not isinstance(value, bool)
+
+
+def _pick(flat, keys) -> str:
+    for key in keys:
+        value = flat.get(key)
+        if _scalar(value) and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _price_text(value) -> str:
+    if not _scalar(value):
+        return ""
+    if isinstance(value, str):
+        return value[:40]
+    number = float(value)
+    if number >= 10000 and number.is_integer():
+        number = number / 100
+    if number.is_integer():
+        return f"{int(number)} ₽"
+    return f"{number:.2f} ₽"
+
+
+def _date_text(value) -> str:
+    if not _scalar(value):
+        return ""
+    raw = str(value).strip()
+    if re.fullmatch(r"\d{13}", raw):
+        try:
+            return time.strftime("%Y-%m-%d", time.gmtime(int(raw) / 1000))
+        except (OverflowError, OSError, ValueError):
+            return raw[:40]
+    return raw[:40]
+
+
+def _as_order(flat, inherited_id) -> dict:
+    oid = _pick(flat, ("orderid", "rid", "srid", "claimid", "refundid")) or inherited_id
+    name = _pick(flat, ("goodsname", "imtname", "name", "title"))
+    status = _pick(flat, ("statusname", "trackingstatus"))
+    if not status:
+        raw_status = flat.get("status")
+        if isinstance(raw_status, str) and len(raw_status.strip()) > 2:
+            status = raw_status.strip()
+    price = ""
+    for key in ("price", "saleprice", "totalprice", "finalprice"):
+        if key in flat:
+            price = _price_text(flat.get(key))
+            if price:
+                break
+    date = ""
+    for key in ("orderdate", "datetime", "createdat", "deliverydate", "date"):
+        if key in flat:
+            date = _date_text(flat.get(key))
+            if date:
+                break
+    pvz = _pick(flat, ("pooaddress", "deliveryaddress", "officeaddress", "pvzaddress", "address"))
+    if not oid or not (name or status or price):
+        return {}
+    if name.lower() in ("true", "false", "null"):
+        name = ""
+        if not (status or price):
+            return {}
+    return {"id": oid[:40], "name": name[:120], "price": price[:40], "status": status[:80], "date": date[:40], "pvz": pvz[:160]}
+
+
+def _walk_orders(node, found, inherited_id="", depth=0):
+    if depth > 7 or len(found) >= 40:
+        return
+    if isinstance(node, list):
+        for item in node[:100]:
+            _walk_orders(item, found, inherited_id, depth + 1)
+        return
+    if not isinstance(node, dict):
+        return
+    flat = {_flat_key(key): value for key, value in node.items()}
+    oid = _pick(flat, ("orderid", "rid", "srid", "claimid", "refundid")) or inherited_id
+    row = _as_order(flat, inherited_id)
+    if row:
+        found.append(row)
+    for value in node.values():
+        if isinstance(value, (dict, list)):
+            _walk_orders(value, found, oid, depth + 1)
+
+
+def parse_wb_orders(data) -> list:
+    """Номер, товар, цена, статус, дата и ПВЗ из JSON кабинета WB."""
+    found = []
+    _walk_orders(data, found)
+    merged = []
+    index = {}
+    for row in found:
+        key = row["id"] + "\n" + row.get("name", "")
+        if key in index:
+            current = merged[index[key]]
+            for field, value in row.items():
+                if value and not current.get(field):
+                    current[field] = value
+            continue
+        index[key] = len(merged)
+        merged.append(dict(row))
+    named = {row["id"] for row in merged if row.get("name")}
+    return [row for row in merged if row.get("name") or row["id"] not in named]
+
+
+def format_wb_rows(rows) -> str:
+    blocks = []
+    for row in rows[:30]:
+        lines = ["Заказ " + row.get("id", "")]
+        if row.get("name"):
+            lines.append("Товар: " + row["name"])
+        if row.get("price"):
+            lines.append("Цена: " + row["price"])
+        if row.get("status"):
+            lines.append("Статус: " + row["status"])
+        if row.get("date"):
+            lines.append("Дата: " + row["date"])
+        if row.get("pvz"):
+            lines.append("ПВЗ: " + row["pvz"])
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def _api_rank(url) -> int:
+    blob = (url or "").lower()
+    if any(part in blob for part in ("order", "deliver", "refund", "return", "purchase", "archive", "myorders")):
+        return 0
+    return 1
+
+
+def api_journal(captures) -> str:
+    ranked = sorted(captures or [], key=lambda item: _api_rank((item or {}).get("url") or ""))
+    lines = []
+    for item in ranked[:8]:
+        url = _safe_url((item or {}).get("url") or "")
+        status = (item or {}).get("status") or 0
+        body = redact_api_snippet((item or {}).get("body") or "")
+        line = f"{status} {url}".strip()
+        if body:
+            line += "\n" + body
+        if url or body:
+            lines.append(line)
+    return "\n".join(lines)[:3500]
+
+
+def rows_from_captures(captures) -> list:
+    found = []
+    seen = set()
+    for item in captures or []:
+        body = (item or {}).get("body") or ""
+        stripped = body.lstrip()
+        if not stripped or stripped[0] not in "{[":
+            continue
+        try:
+            data = json.loads(body)
+        except Exception:
+            continue
+        for row in parse_wb_orders(data):
+            key = (row.get("id"), row.get("name"), row.get("status"))
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(row)
+            if len(found) >= 30:
+                return found
+    return found
+
+
+class ApiSink:
+    """XHR и fetch. Тела JSON держим для разбора, в журнал уходит урезанный кусок."""
+
+    def __init__(self):
+        self.rows = []
+
+    def add(self, response):
+        if len(self.rows) >= 24:
+            return
+        try:
+            request = getattr(response, "request", None)
+            kind = getattr(request, "resource_type", "") or ""
+            if kind and kind not in ("xhr", "fetch"):
+                return
+            url = getattr(response, "url", "") or ""
+            status = int(getattr(response, "status", 0) or 0)
+            headers = {}
+            try:
+                headers = response.headers or {}
+            except Exception:
+                headers = {}
+            ctype = ""
+            if isinstance(headers, dict):
+                ctype = str(headers.get("content-type") or headers.get("Content-Type") or "")
+            body = ""
+            if "json" in ctype.lower() or kind in ("xhr", "fetch"):
+                try:
+                    body = response.text() or ""
+                except Exception:
+                    body = ""
+            if len(body) > 200_000:
+                body = body[:200_000]
+            self.rows.append({"url": url, "status": status, "body": body, "type": kind})
+        except Exception:
+            return
 
 
 def page_snippet(info, limit=160) -> str:
@@ -2074,6 +2330,7 @@ class PlaywrightCabinet:
         self._live = {}
         self._watch = {}
         self._manual = None
+        self._warm_read = None
         self._hints = build_hints("131.0.0.0")
 
     def exit_ip(self, proxy) -> str:
@@ -2247,6 +2504,9 @@ class PlaywrightCabinet:
         if shop == "wb":
             self._save_wb_abt(_proxy(), context)
         self._drop(context)
+        warm = self._warm_read or {}
+        if warm.get("shop") == shop:
+            self._drop_warm()
 
     def _save_wb_abt(self, proxy, context):
         """Cookies антибота WB между попытками. Сессия кабинета сюда не пишется."""
@@ -3012,6 +3272,140 @@ class PlaywrightCabinet:
             info = self._watch_after_code(page, shop, CODE_AFTER_S, steps)
         return self._decide_after_code(shop, context, page, steps, info)
 
+    def _drop_warm(self):
+        warm = self._warm_read
+        self._warm_read = None
+        if warm:
+            self._drop(warm.get("context"))
+
+    def _block_heavy(self, context):
+        def handle(route):
+            try:
+                kind = getattr(getattr(route, "request", None), "resource_type", "") or ""
+                if is_heavy(kind):
+                    route.abort()
+                else:
+                    route.continue_()
+            except Exception:
+                pass
+        try:
+            context.route("**/*", handle)
+        except Exception as e:
+            _log("route " + type(e).__name__)
+
+    def _storage_sig(self, storage) -> str:
+        cookies = (storage or {}).get("cookies") if isinstance(storage, dict) else None
+        parts = []
+        for item in cookies or []:
+            if isinstance(item, dict):
+                parts.append(str(item.get("name") or "") + ":" + str(item.get("domain") or "") + ":" + str(item.get("value") or ""))
+        raw = "|".join(sorted(parts))
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    def _borrow_wb_page(self, proxy, storage):
+        """Один контекст WB между вопросами, пока те же прокси и cookies. Картинки не грузим."""
+        sig = ("wb", proxy_hash(proxy), self._storage_sig(storage))
+        warm = self._warm_read or {}
+        page = warm.get("page")
+        alive = False
+        if warm.get("sig") == sig and page is not None and time.time() - float(warm.get("used") or 0) < 600:
+            try:
+                alive = not page.is_closed()
+            except Exception:
+                alive = False
+        if alive:
+            warm["used"] = time.time()
+            return page, warm.get("tap")
+        self._drop_warm()
+        context = self._new_context(proxy, storage)
+        self._block_heavy(context)
+        page = self._open(context)
+        tap = ApiSink()
+        try:
+            page.on("response", tap.add)
+        except Exception as e:
+            _log("listen " + type(e).__name__)
+        self._warm_read = {
+            "sig": sig, "shop": "wb", "context": context, "page": page,
+            "tap": tap, "used": time.time(),
+        }
+        return page, tap
+
+    def _wait_wb_read(self, page, tap):
+        started = time.time()
+        info = self._snapshot(page)
+        while time.time() - started < WB_READ_S:
+            parsed = rows_from_captures(getattr(tap, "rows", None) or [])
+            info = self._snapshot(page)
+            kind = classify_page(info)
+            if parsed:
+                return parsed, info
+            if kind in ("offline", "challenge", "login", "code", "password"):
+                return parsed, info
+            try:
+                page.wait_for_timeout(350)
+            except Exception:
+                time.sleep(0.35)
+        return rows_from_captures(getattr(tap, "rows", None) or []), self._snapshot(page)
+
+    def _read_wb(self, section, proxy, storage, order_id) -> dict:
+        key = "orders" if section == "order" else section
+        url = _CABINET_URLS["wb"][key]
+        try:
+            page, tap = self._borrow_wb_page(proxy, storage)
+        except Exception as e:
+            _log("wb read open " + type(e).__name__)
+            return {"ok": False, "session": "public", "url": url, "title": "", "text": "", "text_len": 0, "apis": "", "shot": ""}
+        if tap is not None:
+            tap.rows.clear()
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=25000)
+        except Exception as e:
+            _log("wb read goto " + type(e).__name__)
+        if order_id:
+            self._focus_order(page, order_id)
+        parsed, info = self._wait_wb_read(page, tap)
+        if order_id:
+            own = [row for row in parsed if order_id in (row.get("id") or "")]
+            if own:
+                parsed = own
+        page_text = info.get("text") or ""
+        structured = format_wb_rows(parsed)
+        text = structured or page_text
+        captures = getattr(tap, "rows", None) or []
+        shot = ""
+        try:
+            shot = self._shot(page)
+        except Exception:
+            shot = ""
+        base = session_from_page(info)
+        if parsed and base.get("session") not in ("blocked", "expired"):
+            base["ok"] = True
+            base["session"] = "active"
+        base["title"] = info.get("title") or ""
+        base["text"] = text
+        base["text_len"] = len(page_text)
+        base["apis"] = api_journal(captures)
+        base["shot"] = shot
+        if not base.get("ok"):
+            if base.get("session") in ("blocked", "expired") and base.get("error"):
+                _log_page("wb", info)
+            if base.get("session") in ("blocked", "expired", "login"):
+                self._drop_warm()
+            return base
+        if order_id and section == "order" and order_id not in (text + (info.get("url") or "")):
+            return {
+                "ok": False, "session": "active", "error": "Карточка этого заказа не открылась.",
+                "url": info.get("url") or "", "title": info.get("title") or "", "text": text,
+                "text_len": len(page_text), "apis": base["apis"], "shot": shot,
+            }
+        _log("wb read " + key + " lines " + str(len(parsed)) + " api " + str(len(captures)))
+        return {
+            "ok": True, "session": "active", "url": info.get("url") or url,
+            "title": info.get("title") or "", "text": text,
+            "text_len": len(page_text), "apis": base["apis"], "shot": shot,
+        }
+
     def _goto_section(self, page, shop, section, order_id):
         url = _CABINET_URLS[shop][section]
         if section == "order" and shop == "ozon":
@@ -3033,6 +3427,8 @@ class PlaywrightCabinet:
                 continue
 
     def _read(self, shop, section, proxy, storage, order_id) -> dict:
+        if shop == "wb" and section in _READ_TRACE:
+            return self._read_wb(section, proxy, storage, order_id)
         context = None
         page = None
         if shop == "ozon":
@@ -3046,25 +3442,43 @@ class PlaywrightCabinet:
             if context is None:
                 return {
                     "ok": False, "session": "blocked", "url": OZON_HOME,
-                    "title": "", "text": "главная не открылась", "error": BLOCKED_ERROR,
+                    "title": "", "text": "главная не открылась", "text_len": 0, "apis": "", "shot": "",
+                    "error": BLOCKED_ERROR,
                 }
         else:
             context = self._new_context(proxy, storage)
             page = self._open(context)
+        tap = None
+        if section in _READ_TRACE:
+            tap = ApiSink()
+            try:
+                page.on("response", tap.add)
+            except Exception as e:
+                _log("listen " + type(e).__name__)
         try:
             self._goto_section(page, shop, section, order_id)
             info = self._snapshot(page)
             base = session_from_page(info)
+            page_text = info.get("text") or ""
             base["title"] = info.get("title") or ""
-            base["text"] = info.get("text") or ""
+            base["text"] = page_text
+            base["text_len"] = len(page_text)
+            base["apis"] = api_journal(getattr(tap, "rows", None) or [])
             if not base.get("ok"):
                 base["shot"] = self._shot(page)
                 if base.get("session") in ("blocked", "expired") and base.get("error"):
                     _log_page(shop, info)
                 return base
-            if order_id and section == "order" and order_id not in ((info.get("text") or "") + (info.get("url") or "")):
-                return {"ok": False, "session": "active", "error": "Карточка этого заказа не открылась.", "url": info.get("url") or "", "title": info.get("title") or "", "text": info.get("text") or ""}
-            return {"ok": True, "session": "active", "url": info["url"], "title": info["title"], "text": info["text"]}
+            if order_id and section == "order" and order_id not in (page_text + (info.get("url") or "")):
+                return {
+                    "ok": False, "session": "active", "error": "Карточка этого заказа не открылась.",
+                    "url": info.get("url") or "", "title": info.get("title") or "", "text": page_text,
+                    "text_len": len(page_text), "apis": base["apis"], "shot": self._shot(page),
+                }
+            out = {"ok": True, "session": "active", "url": info["url"], "title": info["title"], "text": page_text, "text_len": len(page_text), "apis": base["apis"]}
+            if section in _READ_TRACE:
+                out["shot"] = self._shot(page)
+            return out
         finally:
             self._drop(context)
 
