@@ -41,7 +41,7 @@ class FakeDriver:
         return self.exit_value
 
     def begin_login(self, shop, phone, proxy):
-        self.calls.append(("login", shop))
+        self.calls.append(("login", shop, phone))
         if self.boom == "login":
             raise RuntimeError("net::ERR " + proxy.get("password", ""))
         return dict(self.login_result)
@@ -119,18 +119,19 @@ class MarketSkillTest(unittest.TestCase):
         self.assertFalse(market_skill.save_proxy("http://h")["ok"])
 
     def test_login_requires_proxy_and_hides_cookie(self):
-        res = market_skill.begin_login("ozon", "+79991234567")
+        res = market_skill.begin_login("ozon", "+79001234579")
         self.assertFalse(res["ok"])
         self.assertIn("прокси", res["error"].lower())
         self.assertEqual(self.drv.calls, [])
 
         self._proxy("zzq")
         self.drv.calls.clear()
-        started = market_skill.begin_login("ozon", "+7 999 123 45 67")
+        started = market_skill.begin_login("ozon", "+7 900 123 45 79")
         self.assertTrue(started["ok"])
         self.assertEqual(started["status"], "awaiting_code")
         self.assertEqual(market_skill.public_status()["shops"]["ozon"]["status"], "awaiting_code")
-        self.assertEqual(market_skill.public_status()["shops"]["ozon"]["phone_mask"], "79…67")
+        self.assertEqual(market_skill.public_status()["shops"]["ozon"]["phone_mask"], "79…79")
+        self.assertEqual(self.drv.calls[0], ("login", "ozon", "+79001234579"))
 
         done = market_skill.submit_code("ozon", "1234")
         self.assertTrue(done["ok"])
@@ -143,7 +144,7 @@ class MarketSkillTest(unittest.TestCase):
 
     def test_bad_code_does_not_activate(self):
         self._proxy()
-        market_skill.begin_login("wb", "89991234567")
+        market_skill.begin_login("wb", "89001234579")
         self.drv.code_result = {"ok": False, "status": "awaiting_code", "error": "Код не принят. " + SECRET}
         res = market_skill.submit_code("wb", "0000")
         self.assertFalse(res["ok"])
@@ -241,6 +242,88 @@ class MarketSkillTest(unittest.TestCase):
         self.assertEqual(market_skill.classify_page({"url": "https://www.wildberries.ru/catalog/1/detail.aspx", "title": "", "text": ""}), "public")
         self.assertEqual(market_skill.classify_page({"url": "https://www.ozon.ru/my/orderlist", "title": "Заказы", "text": "Мои заказы"}), "cabinet")
         self.assertEqual(market_skill.classify_page({"url": "https://id.ozon.ru/", "title": "", "text": "Введите номер телефона"}), "login")
+        self.assertEqual(market_skill.classify_page({
+            "url": "https://www.ozon.ru/my/orderlist", "title": "", "text": "Введите номер телефона\nДоставка",
+        }), "login")
+        offline = {
+            "url": "https://www.ozon.ru/my/orderlist",
+            "title": "Ozon",
+            "text": "Похоже, нет соединения. Выключите VPN или смените сеть",
+        }
+        self.assertEqual(market_skill.classify_page(offline), "offline")
+        self.assertNotEqual(market_skill.classify_page(offline), "cabinet")
+
+    def test_phone_without_code_is_not_active(self):
+        self._proxy()
+        self.drv.login_result = {
+            "ok": True, "status": "active",
+            "storage": {"cookies": [{"name": "sid", "value": COOKIE}]},
+            "message": "Кабинет открыт",
+        }
+        res = market_skill.begin_login("ozon", "+79001234579")
+        self.assertEqual(res["status"], "awaiting_code")
+        self.assertNotEqual(market_skill.public_status()["shops"]["ozon"]["status"], "active")
+        self.assertIsNone(market_skill._storage("ozon"))
+        self.assertNotIn(COOKIE, json.dumps(market_skill.public_status(), ensure_ascii=False))
+
+    def test_offline_page_is_not_active_and_resets(self):
+        info = {
+            "url": "https://www.ozon.ru/my/orderlist",
+            "title": "Ozon",
+            "text": "Похоже, нет соединения. Выключите VPN или смените сеть",
+        }
+        decision = market_skill.decide_after_phone("ozon", info, code_field=True)
+        self.assertFalse(decision.get("ok"))
+        self.assertNotEqual(decision.get("status"), "active")
+        self.assertEqual(decision.get("status"), "offline")
+        flagged = market_skill.session_from_page(info)
+        self.assertEqual(flagged["session"], "expired")
+        self.assertIn("соединен", flagged["error"])
+
+        self._proxy()
+        self.drv.login_result = {"ok": False, "status": "offline", "error": market_skill.OFFLINE_ERROR}
+        started = market_skill.begin_login("ozon", "+79001234579")
+        self.assertFalse(started["ok"])
+        self.assertNotEqual(market_skill.public_status()["shops"]["ozon"]["status"], "active")
+
+        self._active()
+        self.drv.read_result = {"ok": False, "session": "expired", "error": market_skill.OFFLINE_ERROR}
+        out = market_skill.execute("market_orders", {"shop": "ozon"}, None)
+        self.assertEqual(market_skill.public_status()["shops"]["ozon"]["status"], "expired")
+        self.assertIn("соединен", out["error"].lower())
+        self.assertIn("VPN", out["error"])
+
+    def test_placeholder_not_saved_or_sent_to_wb(self):
+        self._proxy()
+        self.drv.calls.clear()
+        for raw in ("+79991234567", "79991234567", "8 999 123-45-67"):
+            res = market_skill.begin_login("wb", raw)
+            self.assertFalse(res["ok"])
+            self.assertNotIn("79991234567", res.get("error") or "")
+        self.assertEqual(self.drv.calls, [])
+        self.assertEqual(market_skill.public_status()["shops"]["wb"]["status"], "none")
+        raw = (Path(self.tmp.name) / "jarvis_market.json").read_text(encoding="utf-8")
+        self.assertNotIn("79991234567", raw)
+        self.assertNotIn("79991234567", "\n".join(market_skill._logs))
+
+    def test_wb_phone_is_national_and_not_found_is_literal(self):
+        self._proxy()
+        self.drv.calls.clear()
+        res = market_skill.begin_login("wb", "+79001234579")
+        self.assertTrue(res["ok"])
+        self.assertEqual([c for c in self.drv.calls if c[0] == "login"], [("login", "wb", "9001234579")])
+        literal = market_skill.login_fail_message("wb", {
+            "url": "https://www.wildberries.ru/security/login",
+            "text": "Номер не найден",
+        })
+        self.assertIn("номер не найден", literal.lower())
+        other = market_skill.login_fail_message("wb", {
+            "url": "https://www.wildberries.ru/security/login",
+            "title": "Вход",
+            "text": "Получить код",
+        })
+        self.assertNotIn("не найден", other.lower())
+        self.assertIn("/security/login", other)
 
     def test_worker_is_single_thread(self):
         worker = market_skill.SerialWorker()
@@ -354,6 +437,11 @@ class AssistantLoopTest(unittest.TestCase):
         self.assertIn("name.startsWith('market_')", html)
         self.assertIn("/api/market/tool", html)
         self.assertIn("data-testid=\"market-settings\"", html)
+        market_html = html.split("МАРКЕТПЛЕЙСЫ")[1].split("SETTINGS VIEW")[0]
+        self.assertNotIn("+79991234567", market_html)
+        self.assertIn("const active = row.status === 'active'", market_html)
+        self.assertIn("{!active && (", market_html)
+        self.assertIn("Выйти", market_html)
 
 
 class MarketHttpTest(unittest.TestCase):

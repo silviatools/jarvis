@@ -99,7 +99,8 @@ PROMPT = (
     "Отмена заказа — только после явного «да»: первый вызов без confirmed вернёт needs_confirmation, опиши заказ и спроси, "
     "повтор с confirmed:true только следующим сообщением. Если на странице нет кнопки отмены или страница не подтвердила отмену — "
     "так и скажи, не говори, что заказ отменён. Если инструмент вернул, что нет прокси, нет сессии или сессия слетела — "
-    "так и скажи, не выдумывай заказы. Новый вход — код из СМС в Настройки → Маркетплейсы. "
+    "так и скажи, не выдумывай заказы. Если инструмент говорит, что открылась страница «нет соединения» "
+    "или просит выключить VPN — сессия слетела, так и скажи. Новый вход — код из СМС в Настройки → Маркетплейсы. "
     "Телефон в профиле уже замаскирован, не восстанавливай его.\n\n"
 )
 
@@ -147,6 +148,23 @@ _IP_URLS = ("https://api.ipify.org/?format=json", "https://ifconfig.me/ip")
 _PHONE_RE = re.compile(r"(?:\+?\d[\d\-\s()]{8,}\d)")
 _ORDER_RE = re.compile(r"^[A-Za-z0-9\-]{4,64}$")
 _CANCELLED_RE = re.compile(r"заказ\s+отмен[её]н|отмена\s+оформлена|статус[:\s]+отмен", re.I)
+_NOT_FOUND_RE = re.compile(r"номер\s+не\s+найден|телефон\s+не\s+найден|пользователь\s+не\s+найден", re.I)
+_PLACEHOLDER_INTL = "79991234567"
+_OFFLINE_MARKERS = (
+    "нет соединения",
+    "выключите vpn",
+    "выключить vpn",
+    "отключите vpn",
+    "сменить сеть",
+    "смените сеть",
+    "проверьте соединение",
+    "проверьте подключение",
+    "нет подключения к интернету",
+)
+OFFLINE_ERROR = (
+    "Сессия слетела: открылась страница «нет соединения» "
+    "(сайт просит выключить VPN или сменить сеть). Заказы не прочитаны, нужен повторный вход."
+)
 _lock = threading.Lock()
 _driver = None
 _logs = []
@@ -270,6 +288,49 @@ def mask_phones(text: str) -> str:
             return m.group(0)
         return digits[:2] + "…" + digits[-2:]
     return _PHONE_RE.sub(repl, text or "")
+
+
+def _phone_digits(raw: str) -> str:
+    return re.sub(r"\D", "", raw or "")
+
+
+def is_placeholder_phone(raw: str) -> bool:
+    digits = _phone_digits(raw)
+    if len(digits) == 11 and digits[0] == "8":
+        digits = "7" + digits[1:]
+    elif len(digits) == 10 and digits.startswith("9"):
+        digits = "7" + digits
+    return digits == _PLACEHOLDER_INTL
+
+
+def prepare_phone(shop: str, raw: str) -> dict:
+    """Номер для формы. Плейсхолдер +79991234567 не сохраняем и никуда не отправляем.
+
+    WB рисует +7 отдельно и ждёт 10 цифр. Если вписать 11 цифр с семёркой,
+    маска обрежет номер, и сайт ответит «не найден» на другой телефон.
+    Ozon принимает +7 и те же 10 цифр одним полем.
+    """
+    if is_placeholder_phone(raw):
+        return {"ok": False, "error": "Это пример из поля, не номер. Введите свой телефон."}
+    digits = _phone_digits(raw)
+    if len(digits) == 11 and digits[0] in "78":
+        national = digits[1:]
+    elif len(digits) == 10:
+        national = digits
+    else:
+        return {"ok": False, "error": "Введите номер телефона"}
+    if len(national) != 10 or not national.startswith("9"):
+        return {"ok": False, "error": "Нужен мобильный номер: +7 и 10 цифр, начиная с 9."}
+    intl = "7" + national
+    form = national if shop == "wb" else "+" + intl
+    return {"ok": True, "form": form, "intl": intl, "national": national}
+
+
+def phone_landed(national: str, actual: str) -> bool:
+    got = _phone_digits(actual)
+    if not got or not national:
+        return False
+    return got == national or got.endswith(national) or got in ("7" + national, "8" + national)
 
 
 def parse_proxy(raw: str) -> dict:
@@ -526,18 +587,18 @@ def begin_login(shop: str, phone: str) -> dict:
     sid = _known_shop(shop)
     if not sid:
         return {"ok": False, "error": "Неизвестный магазин"}
-    digits = re.sub(r"\D", "", phone or "")
-    if len(digits) < 10:
-        return {"ok": False, "error": "Введите номер телефона"}
+    prepared = prepare_phone(sid, phone)
+    if not prepared.get("ok"):
+        return prepared
     proxy = _proxy()
     if not proxy:
         return _no_proxy_error()
     try:
-        result = get_driver().begin_login(sid, digits, proxy)
+        result = get_driver().begin_login(sid, prepared["form"], proxy)
     except Exception as e:
         _log("login failed " + sid + " " + type(e).__name__)
         return {"ok": False, "error": "Вход не выполнен: " + redact(e, proxy)}
-    return _finish_login(sid, digits, result, proxy)
+    return _finish_login(sid, prepared["intl"], result, proxy)
 
 
 def submit_code(shop: str, code: str) -> dict:
@@ -566,6 +627,23 @@ def submit_code(shop: str, code: str) -> dict:
 def _finish_login(sid, phone, result, proxy, code="") -> dict:
     result = result or {}
     status = result.get("status")
+    if status == "offline":
+        if _status(sid) in ("active", "awaiting_code"):
+            _set_shop(sid, "expired", storage=None)
+            _log(sid + " offline, session dropped")
+        else:
+            _log(sid + " offline, not active")
+        err = redact(result.get("error") or OFFLINE_ERROR, proxy, [code])
+        return {"ok": False, "error": err, "status": _status(sid)}
+    # Телефон без кода и без пароля сессию не открывает, даже если страница похожа на кабинет.
+    if not code and status == "active" and result.get("ok") is not False:
+        _set_shop(sid, "awaiting_code", phone_mask=mask_phone_value(phone) or None, storage=None)
+        _log(sid + " phone without code, not active")
+        return {
+            "ok": True,
+            "status": "awaiting_code",
+            "message": result.get("message") or "Введён только телефон. Введите код из СМС — без него сессия не активна.",
+        }
     if result.get("ok") is False or result.get("lost"):
         err = redact(result.get("error") or "Вход не выполнен.", proxy, [code])
         _log(sid + " login not finished")
@@ -621,7 +699,8 @@ def _apply_read_session(shop, result) -> dict:
     if flag == "expired":
         _set_shop(shop, "expired", storage=None)
         _log(shop + " session expired")
-        return {"error": "Сессия слетела, нужен повторный вход (код из СМС).", "shop": shop, "status": "expired"}
+        err = result.get("error") or "Сессия слетела, нужен повторный вход (код из СМС)."
+        return {"error": err, "shop": shop, "status": "expired"}
     if flag == "challenge":
         return {"error": "Антибот не пустил в кабинет. Заказы не прочитаны.", "shop": shop}
     if flag == "public":
@@ -670,6 +749,79 @@ def _safe_url(url: str) -> str:
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return ""
     return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+
+def page_snippet(info, limit=160) -> str:
+    text = mask_phones((info or {}).get("text") or "")
+    text = re.sub(r"(?i)\b(?:cookie|token|session)[=:][^\s]+", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+def login_fail_message(shop, info) -> str:
+    raw = (info or {}).get("text") or ""
+    if _NOT_FOUND_RE.search(raw):
+        return f"{SHOP_TITLE.get(shop, 'Сайт')}: номер не найден."
+    url = _safe_url((info or {}).get("url") or "")
+    snippet = page_snippet(info) or ((info or {}).get("title") or "").strip()[:80]
+    msg = "Вход остановился"
+    if url:
+        msg += f" на {url}"
+    if snippet:
+        msg += f": {snippet}"
+    return msg + "."
+
+
+def _log_page(sid, info, phone_mask="", form_mask=""):
+    url = _safe_url((info or {}).get("url") or "")
+    bits = f"{sid} page {url}"
+    if phone_mask:
+        bits += " phone " + phone_mask
+    if form_mask:
+        bits += " form " + form_mask
+    snippet = page_snippet(info)
+    if snippet:
+        bits += " " + snippet
+    _log(bits)
+
+
+def decide_after_phone(shop, info, code_field=False) -> dict:
+    """После ввода телефона сессия не бывает активной: нужен код или пароль и живой кабинет."""
+    kind = classify_page(info)
+    if kind == "offline":
+        return {"ok": False, "status": "offline", "error": OFFLINE_ERROR}
+    if kind == "challenge":
+        return {"ok": False, "error": "Антибот не пропустил на страницу входа. Вход не выполнен."}
+    if _NOT_FOUND_RE.search((info or {}).get("text") or ""):
+        return {"ok": False, "error": login_fail_message(shop, info)}
+    if kind == "code" or (code_field and kind not in ("login", "password")):
+        text = ((info or {}).get("text") or "").lower()
+        sent = any(s in text for s in ("отправлен", "выслал", "смс", "sms"))
+        message = "Введите код из СМС." if sent else "Открылась форма кода. Если СМС пришла — введите код."
+        return {"ok": True, "status": "awaiting_code", "message": message}
+    if kind == "password":
+        return {"ok": False, "error": "Сайт просит пароль. Телефон без кода или пароля сессию не активирует."}
+    if kind == "cabinet":
+        return {
+            "ok": True,
+            "status": "awaiting_code",
+            "message": "Введён только телефон. Сессия станет активной после кода из СМС.",
+        }
+    return {"ok": False, "error": login_fail_message(shop, info)}
+
+
+def session_from_page(info) -> dict:
+    kind = classify_page(info or {})
+    url = (info or {}).get("url") or ""
+    if kind == "offline":
+        return {"ok": False, "session": "expired", "error": OFFLINE_ERROR, "url": url}
+    if kind in ("login", "code", "password"):
+        return {"ok": False, "session": "expired", "url": url}
+    if kind == "challenge":
+        return {"ok": False, "session": "challenge", "url": url}
+    if kind != "cabinet":
+        return {"ok": False, "session": "public", "url": url}
+    return {"ok": True, "session": "active", "url": url}
 
 
 def execute(name: str, inp: dict, state=None) -> dict:
@@ -824,6 +976,25 @@ def _fill_first(page, selectors, value) -> bool:
     return False
 
 
+def _type_phone(page, value) -> str:
+    """Печатает номер по символам: маска WB не принимает fill() целиком. Возвращает текст поля."""
+    for sel in _PHONE_INPUTS:
+        loc = _first_locator(page, sel)
+        if loc is None:
+            continue
+        try:
+            loc.click(timeout=3000)
+            loc.fill("")
+            loc.press_sequentially(value, delay=20)
+            try:
+                return loc.input_value() or ""
+            except Exception:
+                return value
+        except Exception:
+            continue
+    return ""
+
+
 _PHONE_INPUTS = (
     "input[type='tel']",
     "input[name='phone']",
@@ -846,27 +1017,26 @@ def classify_page(info: dict) -> str:
     text = ((info.get("title") or "") + "\n" + (info.get("text") or "")).lower()
     if "/product/" in path or path.endswith("detail.aspx") or ("/catalog/" in path and not path.startswith("/lk") and not path.startswith("/my")):
         return "public"
+    # «Нет соединения» часто остаётся на /my/orderlist. Это не кабинет.
+    if any(s in text for s in _OFFLINE_MARKERS):
+        return "offline"
     if any(s in text for s in ("variti", "не робот", "captcha", "доступ ограничен", "проверка браузера", "подтвердите, что вы человек")):
         return "challenge"
     if any(s in text for s in ("введите код", "код из смс", "код из sms", "код подтверждения")):
         return "code"
+    if any(s in text for s in ("введите пароль", "пароль от аккаунта")):
+        return "password"
     login_url = any(s in url.lower() for s in ("/security/login", "/signin")) or "id.ozon.ru" in host
     login_text = any(s in text for s in ("введите номер телефона", "войти или зарегистрироваться", "войдите, чтобы"))
     cabinet = path.startswith("/my") or path.startswith("/lk")
+    proof = any(s in text for s in ("мои заказы", "покупки", "номер заказа", "профиль", "личные данные", "мои данные"))
     if login_url:
         return "code" if "код" in text else "login"
-    if login_text and not cabinet:
+    if login_text:
         return "login"
-    if cabinet and login_text and not any(s in text for s in ("мои заказы", "покупки", "доставк", "избранн", "возврат", "профиль")):
-        return "login"
-    if cabinet:
+    if cabinet and proof:
         return "cabinet"
     return "unknown"
-
-
-def _cabinet_path(url: str) -> bool:
-    path = (urlparse(url).path or "").lower()
-    return path.startswith("/my") or path.startswith("/lk")
 
 
 class PlaywrightCabinet:
@@ -1016,21 +1186,41 @@ class PlaywrightCabinet:
             self._settle(page)
             info = self._snapshot(page)
             kind = classify_page(info)
-            if kind == "challenge":
+            if kind in ("offline", "challenge"):
+                _log_page(shop, info, mask_phone_value(phone))
                 self._drop(context)
-                return {"ok": False, "error": "Антибот не пропустил на страницу входа. Вход не выполнен."}
+                return decide_after_phone(shop, info, False)
             if kind == "cabinet":
-                storage = context.storage_state()
+                _log_page(shop, info, mask_phone_value(phone))
                 self._drop(context)
-                if storage_usable(storage):
-                    return {"ok": True, "status": "active", "storage": storage, "message": "Кабинет уже открыт, сессия сохранена."}
-                return {"ok": False, "error": "Кабинет открылся, но сессия не сохранилась. Вход не засчитан."}
-            if not _fill_first(page, _PHONE_INPUTS, phone):
+                return {
+                    "ok": True,
+                    "status": "awaiting_code",
+                    "message": "Кабинет на экране, но код из СМС не вводился. Сессия не активна.",
+                }
+            got = _type_phone(page, phone)
+            if not got:
                 _click_label(page, [r"войти", r"вход"])
                 self._settle(page)
-                if not _fill_first(page, _PHONE_INPUTS, phone):
-                    self._drop(context)
-                    return {"ok": False, "error": "Поле телефона не найдено. Вход не выполнен."}
+                got = _type_phone(page, phone)
+            if not got:
+                info = self._snapshot(page)
+                _log_page(shop, info, mask_phone_value(phone))
+                self._drop(context)
+                return {"ok": False, "error": "Поле телефона не найдено. Вход не выполнен."}
+            national = _phone_digits(phone)[-10:]
+            if not phone_landed(national, got):
+                info = self._snapshot(page)
+                _log_page(shop, info, mask_phone_value(phone), mask_phone_value(got))
+                self._drop(context)
+                return {
+                    "ok": False,
+                    "error": (
+                        f"В форму ушёл номер {mask_phone_value(got) or 'пусто'}, "
+                        f"ждали {mask_phone_value(national)}. "
+                        + login_fail_message(shop, info)
+                    ),
+                }
             _click_label(page, [r"получить код", r"выслать код", r"отправить код", r"продолжить", r"далее", r"войти"])
             self._settle(page)
             try:
@@ -1038,20 +1228,14 @@ class PlaywrightCabinet:
             except Exception:
                 pass
             info = self._snapshot(page)
-            kind = classify_page(info)
             code_field = _first_locator(page, ", ".join(_CODE_INPUTS)) is not None
-            if kind == "code" or code_field:
+            decision = decide_after_phone(shop, info, code_field)
+            _log_page(shop, info, mask_phone_value(phone), mask_phone_value(got))
+            if decision.get("ok") and decision.get("status") == "awaiting_code":
                 self._live[shop] = context
-                sent = any(s in (info.get("text") or "").lower() for s in ("отправлен", "выслал", "смс", "sms"))
-                message = "Введите код из СМС." if sent else "Открылась форма кода. Если СМС пришла — введите код."
-                return {"ok": True, "status": "awaiting_code", "message": message}
-            if kind == "cabinet":
-                storage = context.storage_state()
-                self._drop(context)
-                return {"ok": True, "status": "active", "storage": storage, "message": "Кабинет открыт, сессия сохранена."}
+                return decision
             self._drop(context)
-            title = (info.get("title") or "").strip()[:80]
-            return {"ok": False, "error": "Форма кода не появилась. Вход не выполнен." + (f" Страница: {title}." if title else "")}
+            return decision
         except Exception:
             self._drop(context)
             raise
@@ -1088,10 +1272,13 @@ class PlaywrightCabinet:
         self._settle(page)
         info = self._snapshot(page)
         kind = classify_page(info)
-        if kind == "cabinet" or (_cabinet_path(info.get("url") or "") and kind not in ("login", "code", "challenge")):
+        if kind == "offline":
+            _log_page(shop, info)
+            return {"ok": False, "status": "offline", "error": OFFLINE_ERROR}
+        if kind == "cabinet":
             storage = context.storage_state()
             self._close_login(shop)
-            return {"ok": True, "status": "active", "storage": storage, "message": "Сессия сохранена."}
+            return {"ok": True, "status": "active", "authenticated": True, "storage": storage, "message": "Сессия сохранена."}
         if kind == "challenge":
             return {"ok": False, "error": "Антибот не пропустил после кода. Вход не выполнен."}
         if kind == "code":
@@ -1124,13 +1311,11 @@ class PlaywrightCabinet:
         try:
             self._goto_section(page, shop, section, order_id)
             info = self._snapshot(page)
-            kind = classify_page(info)
-            if kind == "login":
-                return {"ok": False, "session": "expired", "url": info["url"]}
-            if kind == "challenge":
-                return {"ok": False, "session": "challenge", "url": info["url"]}
-            if kind == "public" or not _cabinet_path(info.get("url") or ""):
-                return {"ok": False, "session": "public", "url": info["url"]}
+            base = session_from_page(info)
+            if not base.get("ok"):
+                if base.get("session") == "expired" and base.get("error"):
+                    _log_page(shop, info)
+                return base
             if order_id and section == "order" and order_id not in ((info.get("text") or "") + (info.get("url") or "")):
                 return {"ok": False, "session": "active", "error": "Карточка этого заказа не открылась."}
             return {"ok": True, "session": "active", "url": info["url"], "title": info["title"], "text": info["text"]}
@@ -1143,13 +1328,12 @@ class PlaywrightCabinet:
         try:
             self._goto_section(page, shop, "order", order_id)
             info = self._snapshot(page)
-            kind = classify_page(info)
-            if kind == "login":
-                return {"ok": False, "cancelled": False, "session": "expired"}
-            if kind == "challenge":
-                return {"ok": False, "cancelled": False, "session": "challenge"}
-            if kind == "public" or not _cabinet_path(info.get("url") or ""):
-                return {"ok": False, "cancelled": False, "session": "public"}
+            base = session_from_page(info)
+            if not base.get("ok"):
+                out = {"ok": False, "cancelled": False, "session": base.get("session")}
+                if base.get("error"):
+                    out["error"] = base["error"]
+                return out
             blob = (info.get("text") or "") + (info.get("url") or "")
             if order_id not in blob:
                 return {"ok": False, "cancelled": False, "session": "active", "error": "Этот заказ на странице не найден."}
@@ -1160,9 +1344,12 @@ class PlaywrightCabinet:
             _click_label(page, [r"да,?\s*отменить", r"подтвердить отмену", r"отменить заказ"])
             self._settle(page)
             after = self._snapshot(page)
-            kind = classify_page(after)
-            if kind == "login":
-                return {"ok": False, "cancelled": False, "session": "expired"}
+            base = session_from_page(after)
+            if not base.get("ok") and base.get("session") == "expired":
+                out = {"ok": False, "cancelled": False, "session": "expired"}
+                if base.get("error"):
+                    out["error"] = base["error"]
+                return out
             if _CANCELLED_RE.search(after.get("text") or "") and not before:
                 return {"ok": True, "cancelled": True, "session": "active", "text": after.get("text") or "", "url": after.get("url") or ""}
             return {
