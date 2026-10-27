@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -33,6 +34,7 @@ class FakeDriver:
             "text": "Заказ 1001-0001, телефон +79991234567",
         }
         self.cancel_result = {"ok": True, "cancelled": True, "session": "active", "text": "Заказ отменён"}
+        self.code_open = False
 
     def exit_ip(self, proxy):
         self.calls.append(("ip",))
@@ -54,6 +56,10 @@ class FakeDriver:
 
     def close_login(self, shop):
         self.calls.append(("close", shop))
+
+    def code_page_open(self, shop):
+        self.calls.append(("open", shop))
+        return bool(self.code_open)
 
     def read(self, shop, section, proxy, storage, order_id=""):
         self.calls.append(("read", shop, section, order_id))
@@ -608,7 +614,10 @@ class AssistantLoopTest(unittest.TestCase):
         market_html = html.split("МАРКЕТПЛЕЙСЫ")[1].split("SETTINGS VIEW")[0]
         self.assertNotIn("+79991234567", market_html)
         self.assertIn("const active = row.status === 'active'", market_html)
-        self.assertIn("{!active && (", market_html)
+        self.assertIn("const waiting = row.status === 'awaiting_code'", market_html)
+        self.assertIn("{!active && !waiting && (", market_html)
+        self.assertIn("Код в приложении Wildberries (уведомление или колокольчик)", market_html)
+        self.assertIn("Код из СМС", market_html)
         self.assertIn("Выйти", market_html)
         self.assertIn("market-journal", market_html)
         self.assertIn("/api/market/shot/", market_html)
@@ -790,6 +799,175 @@ class MarketFixtureHtmlTest(unittest.TestCase):
         for sel in market_skill._CODE_INPUTS:
             self.assertEqual(self._page.locator(sel).count(), 0, sel)
         self.assertGreater(self._page.locator("button[type='submit']").count(), 0)
+
+    def test_wb_code_notice_page(self):
+        self._open("wb-id-code.html")
+        info = self._info("https://id.wb.ru/login/")
+        self.assertIn("Введите код из уведомления", info["text"])
+        self.assertIn("колокольчик", info["text"])
+        self.assertIn("Wildberries", info["text"])
+        self.assertEqual(market_skill.classify_page(info), "code")
+        self.assertEqual(market_skill.page_face(info), "форма кода")
+        decision = market_skill.decide_after_phone("wb", info, True)
+        self.assertEqual(decision["status"], "awaiting_code")
+        self.assertEqual(decision["message"], market_skill.WB_CODE_HINT)
+        self.assertNotIn("смс", decision["message"].lower())
+        self.assertNotIn("СМС", decision["message"])
+        label = self._page.locator("button").inner_text()
+        self.assertTrue(market_skill.is_resend_code(label))
+        self.assertFalse(market_skill.is_fresh_code_request(label))
+        self.assertEqual(self._page.locator("input#wb-phone-number").count(), 0)
+        ozon = market_skill.decide_after_phone("ozon", {
+            "url": "https://id.ozon.ru/",
+            "text": "Введите код из СМС. Код отправлен",
+        }, True)
+        self.assertIn("СМС", ozon["message"])
+
+
+class WbCodeWaitTest(unittest.TestCase):
+    def setUp(self):
+        MarketSkillTest.setUp(self)
+
+    def tearDown(self):
+        MarketSkillTest.tearDown(self)
+
+    def _proxy(self, user="abcdef"):
+        return MarketSkillTest._proxy(self, user)
+
+    def test_wb_notice_is_app_code_and_ozon_stays_sms(self):
+        html = Path("tests/fixtures/market/wb-id-code.html").read_text(encoding="utf-8")
+        self.assertIn(
+            "Введите код из уведомления. Отправили пуш и уведомление в колокольчик на сайт и в приложение Wildberries.",
+            html,
+        )
+        info = {
+            "url": "https://id.wb.ru/login/",
+            "title": "Введите код из уведомления",
+            "text": "Введите код из уведомления. Отправили пуш и уведомление в колокольчик на сайт и в приложение Wildberries. Получить новый код через 0:59",
+        }
+        self.assertEqual(market_skill.classify_page(info), "code")
+        decision = market_skill.decide_after_phone("wb", info, True)
+        self.assertEqual(decision["message"], market_skill.WB_CODE_HINT)
+        self.assertNotIn("смс", decision["message"].lower())
+        ozon = market_skill.decide_after_phone("ozon", {
+            "url": "https://id.ozon.ru/",
+            "title": "Код",
+            "text": "Введите код из СМС. Код отправлен",
+        }, True)
+        self.assertIn("СМС", ozon["message"])
+        self.assertFalse(market_skill.is_fresh_code_request("Получить новый код через 0:59"))
+        self.assertTrue(market_skill.is_resend_code("Получить новый код через 0:59"))
+        self.assertTrue(market_skill.is_fresh_code_request("Получить код"))
+        self.assertEqual(market_skill.code_wait_action(30), "hold")
+        self.assertEqual(market_skill.code_wait_action(299), "hold")
+        self.assertEqual(market_skill.code_wait_action(300), "expire")
+        ui = Path("index (9).html").read_text(encoding="utf-8")
+        self.assertIn(market_skill.WB_CODE_HINT, ui)
+        self.assertIn("Код из СМС", ui)
+        self.assertIn("!waiting", ui)
+
+    def test_second_login_keeps_code_page(self):
+        self._proxy()
+        started = market_skill.begin_login("wb", "89001234579")
+        self.assertEqual(started["status"], "awaiting_code")
+        self.assertIn("колокольчик", started["message"])
+        self.assertNotIn("СМС", started["message"])
+        self.drv.code_open = True
+        self.drv.calls.clear()
+        again = market_skill.begin_login("wb", "89001234579")
+        self.assertFalse(any(call[0] == "login" for call in self.drv.calls))
+        self.assertEqual(again["status"], "awaiting_code")
+        self.assertIn("Новый код не отправляем", again["error"])
+        self.assertNotIn("СМС", again["error"])
+        self.assertEqual(market_skill.public_status()["shops"]["wb"]["status"], "awaiting_code")
+        blob = json.dumps(market_skill.public_status()["journal"], ensure_ascii=False)
+        self.assertIn("страница кода открыта", blob)
+
+    def test_restart_clears_awaiting_code(self):
+        path = Path(self.tmp.name) / "jarvis_market.json"
+        path.write_text(json.dumps({
+            "shops": {
+                "wb": {
+                    "status": "awaiting_code", "auth": "", "phone_mask": "79…79",
+                    "boot": "dead-boot", "storage": {"cookies": [{"name": "sid", "value": COOKIE}]},
+                },
+                "ozon": {"status": "none", "auth": "", "phone_mask": "", "storage": None},
+            },
+        }), encoding="utf-8")
+        status = market_skill.public_status()
+        self.assertEqual(status["shops"]["wb"]["status"], "none")
+        self.assertEqual(status["shops"]["wb"]["label"], "Нет сессии")
+        blob = json.dumps(status["journal"], ensure_ascii=False)
+        self.assertIn("Процесс перезапустился, окно ввода кода закрыто", blob)
+        self.assertNotIn(COOKIE, blob)
+        self.assertNotIn(SECRET, blob)
+        self.assertIsNone(market_skill._storage("wb"))
+        market_skill._set_shop("wb", "awaiting_code", phone_mask="79…79", why="форма кода")
+        self.assertEqual(market_skill.public_status()["shops"]["wb"]["status"], "awaiting_code")
+
+    def test_watch_journals_navigation_and_expires(self):
+        self._proxy()
+        market_skill._set_shop("wb", "awaiting_code", phone_mask="79…79", why="форма кода")
+
+        class Page:
+            def __init__(self):
+                self.url = "https://id.wb.ru/login/"
+                self._title = "Введите код из уведомления"
+                self._text = (
+                    "Введите код из уведомления. Отправили пуш и уведомление в колокольчик "
+                    "на сайт и в приложение Wildberries. Получить новый код через 0:59"
+                )
+                self.gotos = []
+
+            def title(self):
+                return self._title
+
+            def evaluate(self, script):
+                return self._text
+
+            def goto(self, url, **kwargs):
+                self.gotos.append(url)
+
+        class Ctx:
+            def __init__(self, page):
+                self.pages = [page]
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+                self.pages = []
+
+        page = Page()
+        cab = market_skill.PlaywrightCabinet()
+        cab._live["wb"] = Ctx(page)
+        cab._watch["wb"] = {
+            "until": time.time() + market_skill.CODE_WAIT_S,
+            "sig": market_skill.page_sig({"url": page.url, "title": page.title(), "text": page._text}),
+        }
+        cab._watch_code_pages()
+        self.assertEqual(page.gotos, [])
+        self.assertFalse(cab._live["wb"].closed)
+        page._text = page._text.replace("0:59", "0:58")
+        cab._watch_code_pages()
+        self.assertEqual(page.gotos, [])
+        page.url = "https://www.wildberries.ru/security/login?returnUrl=1"
+        page._title = "Проверяем браузер"
+        page._text = "Проверяем браузер"
+        cab._watch_code_pages()
+        self.assertEqual(page.gotos, [])
+        self.assertIn("wb", cab._live)
+        blob = json.dumps(market_skill.public_status()["journal"], ensure_ascii=False)
+        self.assertIn("https://www.wildberries.ru/security/login", blob)
+        self.assertIn("страница изменилась", blob)
+        self.assertNotIn("returnUrl", blob)
+        self.assertEqual(market_skill.public_status()["shops"]["wb"]["status"], "awaiting_code")
+        cab._watch["wb"]["until"] = time.time() - 1
+        cab._watch_code_pages()
+        self.assertNotIn("wb", cab._live)
+        self.assertEqual(market_skill.public_status()["shops"]["wb"]["status"], "none")
+        blob = json.dumps(market_skill.public_status()["journal"], ensure_ascii=False)
+        self.assertIn("5 минут", blob)
+        self.assertEqual(page.gotos, [])
 
 
 if __name__ == "__main__":

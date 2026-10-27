@@ -5693,7 +5693,7 @@ function MarketplaceSettings() {
         <h3 className="font-display text-lg mb-1">Прокси</h3>
         <p className="text-sm text-[var(--text-muted)] mb-3">
           Один мобильный HTTP(S)-прокси с липким IP на оба кабинета. Ротацию не включайте: смена IP обрывает сессию,
-          и снова нужен код из СМС. С IP сервера кабинет не открывается.
+          и снова нужен код (у Ozon — из СМС, у Wildberries — в приложении). С IP сервера кабинет не открывается.
         </p>
         <div className="text-xs text-[var(--text-subtle)] mb-1">Сохранённый прокси</div>
         <div className="text-sm font-mono break-all mb-3" data-testid="market-proxy-mask">
@@ -5746,6 +5746,10 @@ function MarketplaceSettings() {
       {MARKET_SHOPS.map(shop => {
         const row = shops[shop.id] || { status: 'none', label: 'Нет сессии', phone_mask: '' };
         const active = row.status === 'active';
+        const waiting = row.status === 'awaiting_code';
+        const codeLabel = shop.id === 'wb'
+          ? 'Код в приложении Wildberries (уведомление или колокольчик)'
+          : 'Код из СМС';
         const phoneExample = marketPhoneDigits(phones[shop.id]) === '79991234567';
         return (
           <div key={shop.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5" data-testid={'market-shop-' + shop.id}>
@@ -5759,7 +5763,7 @@ function MarketplaceSettings() {
               Кабинет покупателя. Сессия одна на этот прокси: выйти можно кнопкой ниже.
               {row.phone_mask ? ' Номер ' + row.phone_mask + '.' : ''}
             </p>
-            {!active && (
+            {!active && !waiting && (
               <label className="block mb-2">
                 <div className="text-xs text-[var(--text-subtle)] mb-1">Телефон</div>
                 <input
@@ -5773,7 +5777,7 @@ function MarketplaceSettings() {
               </label>
             )}
             <div className="flex flex-col sm:flex-row flex-wrap gap-2">
-              {!active && (
+              {!active && !waiting && (
                 <button
                   className="btn-primary text-sm px-4 py-2"
                   data-testid={'market-login-' + shop.id}
@@ -5797,7 +5801,7 @@ function MarketplaceSettings() {
             {row.status === 'awaiting_code' && (
               <div className="mt-3 flex flex-col sm:flex-row gap-2 sm:items-end">
                 <label className="block flex-1">
-                  <div className="text-xs text-[var(--text-subtle)] mb-1">Код из СМС</div>
+                  <div className="text-xs text-[var(--text-subtle)] mb-1">{codeLabel}</div>
                   <input
                     className={input}
                     inputMode="numeric"
@@ -5812,7 +5816,7 @@ function MarketplaceSettings() {
                   disabled={!!busy || !codes[shop.id].trim()}
                   onClick={() => post('/api/market/code', { shop: shop.id, code: codes[shop.id] }, 'code-' + shop.id)}
                 >
-                  {busy === 'code-' + shop.id ? 'Проверяю…' : 'Код из СМС'}
+                  {busy === 'code-' + shop.id ? 'Проверяю…' : codeLabel}
                 </button>
               </div>
             )}

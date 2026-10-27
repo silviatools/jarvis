@@ -10,7 +10,8 @@ Europe/Moscow, Client Hints). Без сохранённого прокси вх�
 
 Чтение кабинета и редкая отмена заказа идут тем же браузером и той же сессией.
 Публичные карточки товаров не открываем. Если сессия мертва, статус «слетела»,
-инструмент прямо говорит, что нужен повторный вход и код из СМС.
+инструмент прямо говорит, что нужен повторный вход: у Ozon код из СМС,
+у Wildberries — уведомление в приложении.
 """
 
 import hashlib
@@ -48,7 +49,7 @@ SKILLS = [
          "избранное и краткий профиль (телефон маской). Это не кабинет продавца и не цены с витрины. "
          "Нужен сохранённый мобильный HTTP(S)-прокси с липким IP (Настройки → Маркетплейсы) и живая сессия: "
          "без прокси кабинет с сервера не открывается, смена IP сессию сбрасывает. Если сессия слетела, "
-         "инструменты так и скажут — нужен новый вход и код из СМС. Если антибот не пускает, статус "
+         "инструменты так и скажут — нужен новый вход: у Ozon код из СМС, у Wildberries уведомление в приложении. Если антибот не пускает, статус "
          "«Заблокировано антиботом»: это не «сессия слетела». Отмена заказа, если кнопка есть на странице, "
          "только после вашего подтверждения."
      ),
@@ -106,7 +107,8 @@ PROMPT = (
     "так и скажи, не выдумывай заказы. Если кабинет не открылся или сессия не активна — так и скажи "
     "и направь в Настройки → Маркетплейсы. Если ответ «заблокировано антиботом» — так и скажи, "
     "это не слетевшая сессия. Не советуй выключать VPN: это текст страницы магазина, не наш шаг. "
-    "Новый вход — код из СМС в Настройки → Маркетплейсы. "
+    "Новый вход — в Настройки → Маркетплейсы: у Ozon код из СМС, "
+    "у Wildberries код в приложении (уведомление или колокольчик). "
     "Телефон в профиле уже замаскирован, не восстанавливай его.\n\n"
 )
 
@@ -183,6 +185,9 @@ _CODE_MARKERS = (
     "введите код",
     "код из смс",
     "код из sms",
+    "код из уведомления",
+    "отправили пуш",
+    "уведомление в колокольчик",
     "код подтверждения",
     "код из приложения",
     "код отправлен",
@@ -211,7 +216,12 @@ OZON_WARM_LIMIT = 25
 OZON_WARM_RELOADS = (10, 18)
 OZON_WARM_SETTLE = 3
 WB_WAIT_S = 40
+# Страница кода WB остаётся открытой, пока человек не введёт код или не выйдут 5 минут.
+CODE_WAIT_S = 300
+WB_CODE_HINT = "Код в приложении Wildberries (уведомление или колокольчик)"
 _AUTH_OK = ("code", "password")
+_BOOT = secrets.token_hex(8)
+_TIMER_RE = re.compile(r"\d{1,2}:\d{2}")
 _lock = threading.Lock()
 _driver = None
 _logs = []
@@ -482,6 +492,7 @@ def _load() -> dict:
             "phone_mask": str(raw.get("phone_mask") or "")[:16],
             "updated": int(raw.get("updated") or 0),
             "storage": storage,
+            "boot": str(raw.get("boot") or ""),
         }
     base["journal"] = _clean_journal(data.get("journal"))
     base["abt"] = _clean_abt(data.get("abt"))
@@ -563,6 +574,7 @@ def _set_shop(shop, status, phone_mask=None, storage="__keep__", auth="__keep__"
         if storage != "__keep__":
             row["storage"] = storage
         row["updated"] = int(time.time())
+        row["boot"] = _BOOT if new_status == "awaiting_code" else ""
         if new_status != prev or why:
             _append_journal(data, shop, "status", "", why or new_status, new_status)
         _write(data)
@@ -573,10 +585,12 @@ def _proxy():
 
 
 def _load_live() -> dict:
-    """Читает файл и снимает «Активна», если не было кода или пароля."""
+    """Читает файл, снимает «Активна» без кода и «ждём код» после рестарта процесса."""
     with _lock:
         data = _load()
-        if _heal_unproved(data):
+        changed = _heal_lost_code(data)
+        changed = _heal_unproved(data) or changed
+        if changed:
             _write(data)
         return data
 
@@ -658,7 +672,7 @@ def save_proxy(raw: str) -> dict:
     _log("proxy saved " + mask_proxy(parsed) + (" reset" if reset else ""))
     message = "Прокси сохранён."
     if reset:
-        message = "Прокси сохранён. Сессии сброшены: другой IP обрывает вход, войдите заново и введите код из СМС."
+        message = "Прокси сохранён. Сессии сброшены: другой IP обрывает вход, войдите заново и введите код."
     return {"ok": True, "mask": mask_proxy(parsed), "message": message}
 
 
@@ -854,6 +868,15 @@ def begin_login(shop: str, phone: str) -> dict:
     proxy = _proxy()
     if not proxy:
         return _no_proxy_error()
+    if _status(sid) == "awaiting_code":
+        opened = False
+        try:
+            opened = bool(get_driver().code_page_open(sid))
+        except Exception as e:
+            _log("code page " + sid + " " + type(e).__name__)
+        if opened:
+            note_step(sid, "login", "", "повторный вход не запущен, страница кода открыта", "awaiting_code")
+            return {"ok": False, "status": "awaiting_code", "error": _code_wait_block(sid)}
     try:
         result = get_driver().begin_login(sid, prepared["form"], proxy)
     except Exception as e:
@@ -868,6 +891,8 @@ def submit_code(shop: str, code: str) -> dict:
         return {"ok": False, "error": "Неизвестный магазин"}
     code = re.sub(r"\s", "", code or "")
     if not re.fullmatch(r"\d{4,8}", code):
+        if sid == "wb":
+            return {"ok": False, "error": WB_CODE_HINT + ". Нужны 4–8 цифр."}
         return {"ok": False, "error": "Код из СМС — это 4–8 цифр"}
     if _status(sid) != "awaiting_code":
         return {"ok": False, "error": "Сейчас код не ожидается. Нажмите «Войти»."}
@@ -916,8 +941,16 @@ def _finish_login(sid, phone, result, proxy, code="") -> dict:
         return {
             "ok": True,
             "status": "awaiting_code",
-            "message": "Введён только телефон. Введите код из СМС — без него сессия не активна.",
+            "message": (
+                "Введён только телефон. " + WB_CODE_HINT + " — без него сессия не активна."
+                if sid == "wb" else
+                "Введён только телефон. Введите код из СМС — без него сессия не активна."
+            ),
         }
+    if result.get("kept"):
+        _log(sid + " code page kept")
+        note_step(sid, "login", result.get("url") or "", "повторный вход не запущен, страница кода открыта", "awaiting_code", title=result.get("title") or "")
+        return {"ok": False, "status": "awaiting_code", "error": result.get("error") or _code_wait_block(sid)}
     if result.get("ok") is False or result.get("lost"):
         err = redact(result.get("error") or "Вход не выполнен.", proxy, [code])
         if "vpn" in err.lower() or "нет соединения" in err.lower():
@@ -928,7 +961,12 @@ def _finish_login(sid, phone, result, proxy, code="") -> dict:
         _record_steps(sid, result, step, "blocked" if status == "blocked" else err)
         return {"ok": False, "error": err, "status": status or _status(sid)}
     if status == "active" and proved and storage_usable(result.get("storage")):
-        why = "код из СМС принят, кабинет открыт" if proved == "code" else "пароль принят, кабинет открыт"
+        if proved == "password":
+            why = "пароль принят, кабинет открыт"
+        elif sid == "wb":
+            why = "код из приложения принят, кабинет открыт"
+        else:
+            why = "код из СМС принят, кабинет открыт"
         _set_shop(sid, "active", phone_mask=mask_phone_value(phone) or None, storage=result.get("storage"), auth=proved, why=why)
         try:
             get_driver().close_login(sid)
@@ -946,7 +984,13 @@ def _finish_login(sid, phone, result, proxy, code="") -> dict:
                   why="открылась форма кода, сессия ещё не активна")
         _log(sid + " awaiting code")
         _record_steps(sid, result, step, "awaiting_code")
-        return {"ok": True, "status": "awaiting_code", "message": result.get("message") or "Открылась форма кода. Введите код из СМС."}
+        message = result.get("message") or ""
+        if sid == "wb":
+            if "колокольчик" not in message.lower():
+                message = WB_CODE_HINT
+        elif not message:
+            message = "Открылась форма кода. Введите код из СМС."
+        return {"ok": True, "status": "awaiting_code", "message": message}
     _log(sid + " login not finished")
     err = redact(result.get("error") or "Вход не выполнен.", proxy, [code])
     _record_steps(sid, result, step, err)
@@ -972,12 +1016,18 @@ def _require_session(shop) -> dict:
         return {"error": "Нет сохранённого прокси. Кабинет с сервера без него не открывается."}
     status = _status(shop)
     if status == "awaiting_code":
+        if shop == "wb":
+            return {"error": "Вход не закончен. " + WB_CODE_HINT + ".", "status": status}
         return {"error": "Вход не закончен: нужен код из СМС.", "status": status}
     if status == "blocked":
         return {"error": BLOCKED_ERROR, "status": "blocked"}
     if status == "expired":
+        if shop == "wb":
+            return {"error": "Сессия слетела, нужен повторный вход. " + WB_CODE_HINT + ".", "status": "expired"}
         return {"error": "Сессия слетела, нужен повторный вход (код из СМС).", "status": "expired"}
     if status != "active" or not storage_usable(_storage(shop)):
+        if shop == "wb":
+            return {"error": "Нет сессии. Войдите в Настройки → Маркетплейсы. " + WB_CODE_HINT + ".", "status": status or "none"}
         return {"error": "Нет сессии. Войдите в Настройки → Маркетплейсы (код из СМС).", "status": status or "none"}
     return {}
 
@@ -1130,6 +1180,33 @@ def _clean_journal(raw) -> list:
     return out
 
 
+def _code_wait_block(shop) -> str:
+    if shop == "wb":
+        return "Код уже запрошен, страница ввода открыта. " + WB_CODE_HINT + ". Новый код не отправляем."
+    return "Код уже запрошен, страница ввода открыта. Введите код из СМС. Новый код не отправляем."
+
+
+def _heal_lost_code(data) -> bool:
+    """«Ждём код» живёт только в памяти браузера. После рестарта процесса страницы уже нет."""
+    changed = False
+    for sid in SHOPS:
+        row = data["shops"][sid]
+        if row.get("status") != "awaiting_code" or row.get("boot") == _BOOT:
+            continue
+        row["status"] = "none"
+        row["auth"] = ""
+        row["storage"] = None
+        row["boot"] = ""
+        row["updated"] = int(time.time())
+        _append_journal(
+            data, sid, "status", "",
+            "Процесс перезапустился, окно ввода кода закрыто. Сессии нет.",
+            "none",
+        )
+        changed = True
+    return changed
+
+
 def _heal_unproved(data) -> bool:
     changed = False
     for sid in SHOPS:
@@ -1256,6 +1333,36 @@ def _log_page(sid, info, phone_mask="", form_mask=""):
     _log(bits)
 
 
+def page_sig(info) -> tuple:
+    """Подпись страницы для журнала. Обратный отсчёт «0:59» сам по себе страницу не меняет."""
+    info = info or {}
+    text = _TIMER_RE.sub("", page_snippet(info, 180))
+    title = _TIMER_RE.sub("", info.get("title") or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    title = re.sub(r"\s+", " ", title).strip()
+    return (_safe_url(info.get("url") or ""), title[:120], text)
+
+
+def code_wait_action(elapsed) -> str:
+    """Пока не вышли 5 минут — держим страницу. Вход заново отсюда не начинается."""
+    if elapsed >= CODE_WAIT_S:
+        return "expire"
+    return "hold"
+
+
+def is_resend_code(label: str) -> bool:
+    name = re.sub(r"\s+", " ", (label or "")).strip().lower()
+    return "получить новый код" in name
+
+
+def is_fresh_code_request(label: str) -> bool:
+    """Первая кнопка «Получить код». «Получить новый код» во время ожидания не нажимаем."""
+    if is_resend_code(label):
+        return False
+    name = re.sub(r"\s+", " ", (label or "")).strip()
+    return bool(re.search(r"получить код|выслать код|отправить код|продолжить|далее", name, re.I))
+
+
 def decide_after_phone(shop, info, code_field=False) -> dict:
     """После ввода телефона сессия не бывает активной: нужен код или пароль и живой кабинет."""
     kind = classify_page(info)
@@ -1272,18 +1379,21 @@ def decide_after_phone(shop, info, code_field=False) -> dict:
     if _NOT_FOUND_RE.search((info or {}).get("text") or ""):
         return {"ok": False, "error": login_fail_message(shop, info)}
     if kind == "code" or (code_field and kind not in ("login", "password")):
-        text = ((info or {}).get("text") or "").lower()
-        sent = any(s in text for s in ("отправлен", "выслал", "смс", "sms"))
-        message = "Введите код из СМС." if sent else "Открылась форма кода. Если СМС пришла — введите код."
+        if shop == "wb":
+            message = WB_CODE_HINT
+        else:
+            text = ((info or {}).get("text") or "").lower()
+            sent = any(s in text for s in ("отправлен", "выслал", "смс", "sms"))
+            message = "Введите код из СМС." if sent else "Открылась форма кода. Если СМС пришла — введите код."
         return {"ok": True, "status": "awaiting_code", "message": message}
     if kind == "password":
         return {"ok": False, "error": "Сайт просит пароль. Телефон без кода или пароля сессию не активирует."}
     if kind == "cabinet":
-        return {
-            "ok": True,
-            "status": "awaiting_code",
-            "message": "Введён только телефон. Сессия станет активной после кода из СМС.",
-        }
+        if shop == "wb":
+            message = "Введён только телефон. " + WB_CODE_HINT + "."
+        else:
+            message = "Введён только телефон. Сессия станет активной после кода из СМС."
+        return {"ok": True, "status": "awaiting_code", "message": message}
     return {"ok": False, "error": login_fail_message(shop, info)}
 
 
@@ -1362,15 +1472,24 @@ def get_driver():
 class SerialWorker:
     """Очередь на один поток: sync Playwright нельзя звать с потоков HTTP-сервера."""
 
-    def __init__(self):
+    def __init__(self, on_idle=None):
         self._q = queue.Queue()
+        self._on_idle = on_idle
         self._thread = threading.Thread(target=self._loop, name="market-browser", daemon=True)
         self._started = False
         self._start_lock = threading.Lock()
 
     def _loop(self):
         while True:
-            item = self._q.get()
+            try:
+                item = self._q.get(timeout=1 if self._on_idle else None)
+            except queue.Empty:
+                try:
+                    if self._on_idle:
+                        self._on_idle()
+                except Exception as e:
+                    _log("watch " + type(e).__name__)
+                continue
             if item is None:
                 return
             fn, args, kwargs, slot = item
@@ -1551,10 +1670,11 @@ class PlaywrightCabinet:
     """Один браузер на процесс. Контексты — с одним и тем же прокси, без ротации."""
 
     def __init__(self):
-        self._worker = SerialWorker()
+        self._worker = SerialWorker(self._watch_code_pages)
         self._pw = None
         self._browser = None
         self._live = {}
+        self._watch = {}
         self._hints = build_hints("131.0.0.0")
 
     def exit_ip(self, proxy) -> str:
@@ -1562,6 +1682,9 @@ class PlaywrightCabinet:
 
     def begin_login(self, shop, phone, proxy) -> dict:
         return self._worker.call(self._begin_login, shop, phone, proxy, timeout=180)
+
+    def code_page_open(self, shop) -> bool:
+        return bool(self._worker.call(lambda: shop in self._live, timeout=10))
 
     def submit_code(self, shop, code, proxy) -> dict:
         return self._worker.call(self._submit_code, shop, code, proxy, timeout=70)
@@ -1705,7 +1828,60 @@ class PlaywrightCabinet:
             pass
 
     def _close_login(self, shop):
+        self._watch.pop(shop, None)
         self._drop(self._live.pop(shop, None))
+
+    def _click_fresh_code(self, page) -> bool:
+        """Жмёт первую отправку кода. «Получить новый код» на странице ожидания не трогает."""
+        for frame in _frames(page):
+            for role in ("button", "link"):
+                try:
+                    loc = frame.get_by_role(role)
+                    n = loc.count()
+                except Exception:
+                    continue
+                for i in range(min(n, 40)):
+                    try:
+                        name = loc.nth(i).inner_text(timeout=1000) or ""
+                    except Exception:
+                        continue
+                    if not is_fresh_code_request(name):
+                        continue
+                    try:
+                        loc.nth(i).click(timeout=4000)
+                        return True
+                    except Exception:
+                        continue
+        return False
+
+    def _watch_code_pages(self):
+        """Между задачами смотрит открытую страницу кода. Сам на /security/login не уходит и код заново не шлёт."""
+        now = time.time()
+        for shop in list(self._live):
+            meta = self._watch.get(shop) or {}
+            until = meta.get("until") or 0
+            started = until - CODE_WAIT_S if until else 0
+            if not until or code_wait_action(now - started) == "expire":
+                self._close_login(shop)
+                _set_shop(
+                    shop, "none", storage=None,
+                    why="Истекло ожидание кода (5 минут), страница закрыта. Сессии нет.",
+                )
+                continue
+            context = self._live.get(shop)
+            pages = getattr(context, "pages", None) or []
+            if not pages:
+                continue
+            info = self._snapshot(pages[0])
+            sig = page_sig(info)
+            if sig == meta.get("sig"):
+                continue
+            meta["sig"] = sig
+            self._watch[shop] = meta
+            note_step(
+                shop, "page", info.get("url") or "", page_snippet(info),
+                "страница изменилась", title=info.get("title") or "", shot=self._shot(pages[0]),
+            )
 
     def _exit_ip(self, proxy) -> str:
         context = self._new_context(proxy)
@@ -1833,6 +2009,18 @@ class PlaywrightCabinet:
         return self._with_page({"ok": False, "status": "blocked", "error": BLOCKED_ERROR}, info, steps)
 
     def _begin_login(self, shop, phone, proxy) -> dict:
+        if shop in self._live:
+            info = {}
+            ctx = self._live.get(shop)
+            pages = getattr(ctx, "pages", None) or []
+            if pages:
+                info = self._snapshot(pages[0])
+            return self._with_page({
+                "ok": False,
+                "kept": True,
+                "status": "awaiting_code",
+                "error": _code_wait_block(shop),
+            }, info, [])
         self._close_login(shop)
         context = None
         steps = []
@@ -1865,7 +2053,11 @@ class PlaywrightCabinet:
                 return self._with_page({
                     "ok": True,
                     "status": "awaiting_code",
-                    "message": "Кабинет на экране, но код из СМС не вводился. Сессия не активна.",
+                    "message": (
+                        "Кабинет на экране, но код из приложения не вводился. Сессия не активна."
+                        if shop == "wb" else
+                        "Кабинет на экране, но код из СМС не вводился. Сессия не активна."
+                    ),
                 }, info, steps)
             if shop == "wb":
                 info = self._await_wb(page)
@@ -1905,7 +2097,7 @@ class PlaywrightCabinet:
                         + login_fail_message(shop, info)
                     ),
                 }, info, steps)
-            _click_label(page, [r"получить код", r"выслать код", r"отправить код", r"продолжить", r"далее"])
+            self._click_fresh_code(page)
             self._settle(page)
             try:
                 page.wait_for_selector(", ".join(_CODE_INPUTS), timeout=8000)
@@ -1922,6 +2114,7 @@ class PlaywrightCabinet:
             _log_page(shop, info, mask_phone_value(phone), mask_phone_value(got))
             if decision.get("ok") and decision.get("status") == "awaiting_code":
                 self._live[shop] = context
+                self._watch[shop] = {"until": time.time() + CODE_WAIT_S, "sig": page_sig(info)}
                 return self._with_page(decision, info, steps)
             self._drop(context)
             return self._with_page(decision, info, steps)
