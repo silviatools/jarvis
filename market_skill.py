@@ -228,12 +228,16 @@ CODE_WAIT_S = 300
 CODE_AFTER_S = 20
 CONSENT_REDIRECT_S = 25
 WB_CODE_HINT = "Код в приложении Wildberries (уведомление или колокольчик)"
-_AUTH_OK = ("code", "password")
+_AUTH_OK = ("code", "password", "manual")
+# Ручной экран WB. Кадры в память, на диск не пишем. 10 минут без действий — сеанс закрыт.
+MANUAL_IDLE_S = 600
+_MANUAL_KEYS = {"enter": "Enter", "backspace": "Backspace"}
 _BOOT = secrets.token_hex(8)
 _TIMER_RE = re.compile(r"\d{1,2}:\d{2}")
 _lock = threading.Lock()
 _driver = None
 _logs = []
+_manual_pub = {"open": False}
 
 
 def skill_on(state) -> bool:
@@ -665,6 +669,7 @@ def public_status() -> dict:
         "proxy": mask_proxy(proxy),
         "shops": shops,
         "journal": journal,
+        "manual": {"open": manual_is_open(), "shop": "wb" if manual_is_open() else ""},
     }
 
 
@@ -917,6 +922,43 @@ def wb_wait_line(elapsed, info, has_phone, shell=False) -> str:
     return f"ждали {sec} с от страницы, итог: {outcome}"
 
 
+def _set_manual_open(flag):
+    with _lock:
+        _manual_pub["open"] = bool(flag)
+
+
+def manual_is_open() -> bool:
+    with _lock:
+        return bool(_manual_pub["open"])
+
+
+def manual_point(x, y, view_w, view_h, page_w=None, page_h=None):
+    """Точка на картинке в пикселях экрана → CSS-пиксели вьюпорта 412×915."""
+    page_w = PIXEL7_PROFILE["viewport"]["width"] if page_w is None else page_w
+    page_h = PIXEL7_PROFILE["viewport"]["height"] if page_h is None else page_h
+    try:
+        x, y, view_w, view_h = float(x), float(y), float(view_w), float(view_h)
+        page_w, page_h = float(page_w), float(page_h)
+    except (TypeError, ValueError):
+        return None
+    if view_w <= 0 or view_h <= 0 or page_w <= 0 or page_h <= 0:
+        return None
+    px = min(max(x * page_w / view_w, 0), page_w - 1)
+    py = min(max(y * page_h / view_h, 0), page_h - 1)
+    return (round(px, 2), round(py, 2))
+
+
+def manual_delta(dy, view_h, page_h=None):
+    page_h = PIXEL7_PROFILE["viewport"]["height"] if page_h is None else page_h
+    try:
+        dy, view_h, page_h = float(dy), float(view_h), float(page_h)
+    except (TypeError, ValueError):
+        return None
+    if view_h <= 0 or page_h <= 0:
+        return None
+    return max(-2400.0, min(2400.0, dy * page_h / view_h))
+
+
 def check_ip() -> dict:
     proxy = _proxy()
     if not proxy:
@@ -1119,9 +1161,90 @@ def logout(shop: str) -> dict:
         get_driver().close_login(sid)
     except Exception as e:
         _log("logout " + sid + " " + redact(e, _proxy()))
+    if sid == "wb" and manual_is_open():
+        try:
+            get_driver().manual_cancel()
+        except Exception as e:
+            _log("manual logout " + type(e).__name__)
     _set_shop(sid, "none", phone_mask="", storage=None)
     _log(sid + " logout")
     return {"ok": True, "status": "none", "message": "Сессия удалена."}
+
+
+def manual_start() -> dict:
+    """Живой экран входа WB. Тот же Chromium, профиль Pixel 7 и прокси."""
+    proxy = _proxy()
+    if not proxy:
+        return _no_proxy_error()
+    try:
+        result = get_driver().manual_open(proxy) or {}
+    except Exception as e:
+        _log("manual open " + type(e).__name__)
+        return {"ok": False, "error": "Ручной вход не открылся."}
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("error") or "Ручной вход не открылся."}
+    if not result.get("already"):
+        note_step("wb", "manual", result.get("url") or "", "ручной вход начат", "ручной вход начат")
+    vp = PIXEL7_PROFILE["viewport"]
+    return {
+        "ok": True,
+        "already": bool(result.get("already")),
+        "width": int(result.get("width") or vp["width"]),
+        "height": int(result.get("height") or vp["height"]),
+    }
+
+
+def manual_frame():
+    """JPEG текущего кадра. Пусто, если сеанса нет. На диск не пишется."""
+    try:
+        blob = get_driver().manual_frame()
+    except Exception:
+        return b""
+    if isinstance(blob, (bytes, bytearray)) and bytes(blob).startswith(b"\xff\xd8"):
+        return bytes(blob)
+    return b""
+
+
+def manual_input(payload) -> dict:
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Неизвестная команда."}
+    action = str(payload.get("action") or "")
+    if action not in ("click", "scroll", "type", "key", "back", "reload"):
+        return {"ok": False, "error": "Неизвестная команда."}
+    try:
+        result = get_driver().manual_input(payload) or {}
+    except Exception as e:
+        _log("manual input " + type(e).__name__)
+        return {"ok": False, "error": "Команда не выполнена."}
+    if not isinstance(result, dict) or not result.get("ok"):
+        return {"ok": False, "error": (result or {}).get("error") or "Команда не выполнена."}
+    return {"ok": True}
+
+
+def manual_finish() -> dict:
+    proxy = _proxy()
+    if not proxy:
+        return _no_proxy_error()
+    try:
+        result = get_driver().manual_finish(proxy) or {}
+    except Exception as e:
+        _log("manual finish " + type(e).__name__)
+        return {"ok": False, "error": "Проверка кабинета не выполнена."}
+    if result.get("ok"):
+        return {"ok": True, "status": "active", "message": result.get("message") or "Сессия сохранена."}
+    return {"ok": False, "error": result.get("error") or "Кабинет не открылся. Сессия не активна."}
+
+
+def manual_cancel() -> dict:
+    try:
+        result = get_driver().manual_cancel() or {}
+    except Exception as e:
+        _log("manual cancel " + type(e).__name__)
+        _set_manual_open(False)
+        return {"ok": False, "error": "Сеанс не закрылся."}
+    if result.get("closed"):
+        return {"ok": True, "message": "Ручной вход отменён."}
+    return {"ok": True, "message": "Ручной вход не был открыт."}
 
 
 def _require_session(shop) -> dict:
@@ -1574,6 +1697,7 @@ def set_driver(driver):
     """Подмена браузера в тестах. None — следующий вызов снова возьмёт Chromium."""
     global _driver
     _driver = driver
+    _set_manual_open(False)
 
 
 def get_driver():
@@ -1900,6 +2024,7 @@ class PlaywrightCabinet:
         self._browser = None
         self._live = {}
         self._watch = {}
+        self._manual = None
         self._hints = build_hints("131.0.0.0")
 
     def exit_ip(self, proxy) -> str:
@@ -1922,6 +2047,21 @@ class PlaywrightCabinet:
 
     def cancel_order(self, shop, order_id, proxy, storage) -> dict:
         return self._worker.call(self._cancel, shop, order_id, proxy, storage, timeout=70)
+
+    def manual_open(self, proxy) -> dict:
+        return self._worker.call(self._manual_open, proxy, timeout=60)
+
+    def manual_frame(self):
+        return self._worker.call(self._manual_frame, timeout=15)
+
+    def manual_input(self, payload) -> dict:
+        return self._worker.call(self._manual_input, payload, timeout=20)
+
+    def manual_finish(self, proxy) -> dict:
+        return self._worker.call(self._manual_finish, proxy, timeout=90)
+
+    def manual_cancel(self) -> dict:
+        return self._worker.call(self._manual_cancel, timeout=20)
 
     def _ensure_browser(self):
         if self._browser is not None:
@@ -2132,6 +2272,7 @@ class PlaywrightCabinet:
 
     def _watch_code_pages(self):
         """Между задачами смотрит открытую страницу кода. Сам на /security/login не уходит и код заново не шлёт."""
+        self._manual_session()
         now = time.time()
         for shop in list(self._live):
             meta = self._watch.get(shop) or {}
@@ -2464,6 +2605,169 @@ class PlaywrightCabinet:
         except Exception:
             self._release_login(shop, proxy, context)
             raise
+
+    def _manual_session(self):
+        session = self._manual
+        if not session:
+            return None
+        if time.time() - float(session.get("touched") or 0) >= MANUAL_IDLE_S:
+            self._close_manual("timeout")
+            return None
+        return session
+
+    def _close_manual_context(self):
+        session = self._manual
+        self._manual = None
+        _set_manual_open(False)
+        if session:
+            self._drop(session.get("context"))
+
+    def _close_manual(self, reason):
+        if not self._manual:
+            _set_manual_open(False)
+            return False
+        self._close_manual_context()
+        if reason == "timeout":
+            note_step("wb", "manual", "", "10 минут без действий", "ручной вход отменён")
+        elif reason == "cancel":
+            note_step("wb", "manual", "", "ручной вход отменён", "ручной вход отменён")
+        return True
+
+    def _manual_open(self, proxy) -> dict:
+        if self._manual_session() is not None:
+            self._manual["touched"] = time.time()
+            _set_manual_open(True)
+            vp = PIXEL7_PROFILE["viewport"]
+            return {"ok": True, "already": True, "width": vp["width"], "height": vp["height"]}
+        context = None
+        try:
+            context = self._new_context(proxy, load_abt(proxy, "wb"))
+            page = self._open(context)
+            self._goto_logged(page, _CABINET_URLS["wb"]["login"], "wb", "manual")
+            self._manual = {"context": context, "page": page, "touched": time.time()}
+            _set_manual_open(True)
+            vp = PIXEL7_PROFILE["viewport"]
+            return {
+                "ok": True,
+                "width": vp["width"],
+                "height": vp["height"],
+                "url": getattr(page, "url", "") or _CABINET_URLS["wb"]["login"],
+            }
+        except Exception as e:
+            _log("manual open " + type(e).__name__)
+            self._drop(context)
+            self._manual = None
+            _set_manual_open(False)
+            return {"ok": False, "error": "Ручной вход не открылся."}
+
+    def _manual_frame(self):
+        session = self._manual_session()
+        if session is None:
+            return b""
+        try:
+            blob = session["page"].screenshot(type="jpeg", quality=40, full_page=False)
+        except Exception:
+            return b""
+        if isinstance(blob, (bytes, bytearray)) and bytes(blob).startswith(b"\xff\xd8"):
+            return bytes(blob)
+        return b""
+
+    def _manual_tap(self, page, pt):
+        touch = getattr(page, "touchscreen", None)
+        if touch is not None and hasattr(touch, "tap"):
+            touch.tap(pt[0], pt[1])
+            return
+        page.mouse.click(pt[0], pt[1])
+
+    def _manual_input(self, payload) -> dict:
+        payload = payload if isinstance(payload, dict) else {}
+        session = self._manual_session()
+        if session is None:
+            return {"ok": False, "error": "Ручной вход не открыт."}
+        action = str(payload.get("action") or "")
+        page = session["page"]
+        try:
+            if action == "click":
+                pt = manual_point(payload.get("x"), payload.get("y"), payload.get("viewW"), payload.get("viewH"))
+                if pt is None:
+                    return {"ok": False, "error": "Нет координат."}
+                self._manual_tap(page, pt)
+            elif action == "scroll":
+                pt = manual_point(payload.get("x"), payload.get("y"), payload.get("viewW"), payload.get("viewH"))
+                dy = manual_delta(payload.get("dy"), payload.get("viewH"))
+                if pt is None or dy is None:
+                    return {"ok": False, "error": "Нет координат."}
+                page.mouse.move(pt[0], pt[1])
+                page.mouse.wheel(0, dy)
+            elif action == "type":
+                text = payload.get("text")
+                if not isinstance(text, str) or not text.strip() or len(text) > 120:
+                    return {"ok": False, "error": "Нечего вводить."}
+                page.keyboard.type(text)
+            elif action == "key":
+                key = _MANUAL_KEYS.get(str(payload.get("key") or "").strip().casefold())
+                if not key:
+                    return {"ok": False, "error": "Неизвестная клавиша."}
+                page.keyboard.press(key)
+            elif action == "back":
+                page.go_back(wait_until="domcontentloaded", timeout=20000)
+            elif action == "reload":
+                page.reload(wait_until="domcontentloaded", timeout=20000)
+            else:
+                return {"ok": False, "error": "Неизвестная команда."}
+        except Exception as e:
+            _log("manual " + action + " " + type(e).__name__)
+            return {"ok": False, "error": "Команда не выполнена."}
+        session["touched"] = time.time()
+        return {"ok": True}
+
+    def _manual_prove(self, page):
+        info = self._snapshot(page)
+        if cabinet_open(info):
+            return info
+        for section in ("orders", "profile"):
+            try:
+                page.goto(_CABINET_URLS["wb"][section], wait_until="domcontentloaded", timeout=20000)
+            except Exception as e:
+                _log("manual cabinet " + type(e).__name__)
+            self._settle(page)
+            info = self._snapshot(page)
+            if cabinet_open(info):
+                return info
+        return info
+
+    def _manual_finish(self, proxy) -> dict:
+        session = self._manual_session()
+        if session is None:
+            return {"ok": False, "error": "Ручной вход не открыт."}
+        page = session["page"]
+        context = session["context"]
+        info = self._manual_prove(page)
+        url = (info or {}).get("url") or ""
+        if not cabinet_open(info):
+            note_step("wb", "manual", url, "кабинет не открылся", "кабинет не открылся")
+            session["touched"] = time.time()
+            return {"ok": False, "error": "Кабинет не открылся. Сессия не активна. Экран ещё открыт."}
+        try:
+            storage = context.storage_state()
+        except Exception:
+            storage = None
+        if not storage_usable(storage):
+            note_step("wb", "manual", url, "кабинет открылся, сессия не сохранилась", "кабинет не открылся")
+            return {"ok": False, "error": "Кабинет открылся, но сессия не сохранилась."}
+        self._close_manual_context()
+        self._close_login("wb")
+        save_abt(proxy, "wb", storage)
+        _set_shop("wb", "active", storage=storage, auth="manual", why="ручной вход завершён")
+        note_step("wb", "manual", url, "ручной вход завершён", "кабинет открылся")
+        return {"ok": True, "status": "active", "message": "Сессия сохранена."}
+
+    def _manual_cancel(self) -> dict:
+        if not self._manual:
+            _set_manual_open(False)
+            return {"ok": True, "closed": False}
+        self._close_manual("cancel")
+        return {"ok": True, "closed": True}
 
     def _fill_code(self, page, code) -> bool:
         for frame in _frames(page):

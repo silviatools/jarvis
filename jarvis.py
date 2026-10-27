@@ -9580,6 +9580,26 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {"skills": assistant_skills_catalog()})
         elif route == "/api/market/status":
             self._json(200, market_skill.public_status() if market_skill else {"ok": False, "error": "Кабинеты маркетплейсов на сервере недоступны."})
+        elif route == "/api/market/manual/frame":
+            blob = b""
+            if market_skill:
+                try:
+                    blob = market_skill.manual_frame() or b""
+                except Exception:
+                    blob = b""
+            if not blob:
+                self._json(404, {"error": "no session"})
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(blob)))
+                self.send_header("Cache-Control", "private, no-store")
+                self._cors()
+                self.end_headers()
+                try:
+                    self.wfile.write(blob)
+                except Exception:
+                    pass
         elif route.startswith("/api/market/shot/"):
             name = route[len("/api/market/shot/"):]
             path = market_skill.shot_path(name) if market_skill else None
@@ -11262,6 +11282,14 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(200, market_skill.submit_code(payload.get("shop") or "", payload.get("code") or ""))
             elif route == "/api/market/logout":
                 self._json(200, market_skill.logout(payload.get("shop") or ""))
+            elif route == "/api/market/manual/start":
+                self._json(200, market_skill.manual_start())
+            elif route == "/api/market/manual/input":
+                self._json(200, market_skill.manual_input(payload))
+            elif route == "/api/market/manual/finish":
+                self._json(200, market_skill.manual_finish())
+            elif route == "/api/market/manual/cancel":
+                self._json(200, market_skill.manual_cancel())
             elif route == "/api/market/tool":
                 name = payload.get("name")
                 if name not in market_skill.TOOL_NAMES:

@@ -71,6 +71,26 @@ class FakeDriver:
         self.calls.append(("cancel", shop, order_id))
         return dict(self.cancel_result)
 
+    def manual_open(self, proxy):
+        self.calls.append(("manual-open",))
+        return {"ok": True, "width": 412, "height": 915, "url": "https://www.wildberries.ru/security/login"}
+
+    def manual_frame(self):
+        self.calls.append(("manual-frame",))
+        return getattr(self, "frame", None)
+
+    def manual_input(self, payload):
+        self.calls.append(("manual-input", (payload or {}).get("action")))
+        return {"ok": True}
+
+    def manual_finish(self, proxy):
+        self.calls.append(("manual-finish",))
+        return {"ok": True, "status": "active", "message": "Сессия сохранена."}
+
+    def manual_cancel(self):
+        self.calls.append(("manual-cancel",))
+        return {"ok": True, "closed": False}
+
 
 class MarketSkillTest(unittest.TestCase):
     def setUp(self):
@@ -594,6 +614,197 @@ class MarketSkillTest(unittest.TestCase):
         blob = json.dumps(market_skill.public_status(), ensure_ascii=False)
         self.assertNotIn(COOKIE, blob)
 
+    def _manual_page(self):
+        class Touch:
+            def __init__(self):
+                self.taps = []
+
+            def tap(self, x, y):
+                self.taps.append((x, y))
+
+        class Mouse:
+            def __init__(self):
+                self.moved = []
+                self.wheeled = []
+
+            def move(self, x, y):
+                self.moved.append((x, y))
+
+            def wheel(self, dx, dy):
+                self.wheeled.append((dx, dy))
+
+            def click(self, x, y):
+                self.moved.append(("click", x, y))
+
+        class Keys:
+            def __init__(self):
+                self.typed = []
+                self.pressed = []
+
+            def type(self, text, **kwargs):
+                self.typed.append(text)
+
+            def press(self, key):
+                self.pressed.append(key)
+
+        class Page:
+            def __init__(self):
+                self.url = "https://www.wildberries.ru/security/login"
+                self._title = "Вход"
+                self._text = "Проверяем браузер"
+                self.touchscreen = Touch()
+                self.mouse = Mouse()
+                self.keyboard = Keys()
+                self.gotos = []
+                self.closed_nav = []
+
+            def title(self):
+                return self._title
+
+            def evaluate(self, script):
+                return self._text
+
+            def screenshot(self, **kwargs):
+                return b"\xff\xd8" + b"\x00" * 8
+
+            def goto(self, url, **kwargs):
+                self.gotos.append(url)
+                if "myorders" in url:
+                    self.url = "https://www.wildberries.ru/lk/myorders/delivery"
+                    self._title = "Заказы"
+                    self._text = "Мои заказы\nДоставка"
+
+            def go_back(self, **kwargs):
+                self.closed_nav.append("back")
+
+            def reload(self, **kwargs):
+                self.closed_nav.append("reload")
+
+            def wait_for_load_state(self, *args, **kwargs):
+                return None
+
+        class Ctx:
+            def __init__(self, page):
+                self.page = page
+                self.pages = [page]
+                self.closed = False
+
+            def storage_state(self):
+                return {"cookies": [{"name": "sid", "value": COOKIE}], "origins": []}
+
+            def close(self):
+                self.closed = True
+
+        page = Page()
+        return page, Ctx(page)
+
+    def test_manual_click_scales_to_viewport(self):
+        self.assertEqual(market_skill.manual_point(100, 200, 200, 400), (206.0, 457.5))
+        self.assertIsNone(market_skill.manual_point(1, 1, 0, 10))
+        self.assertAlmostEqual(market_skill.manual_delta(40, 400), 91.5, places=2)
+        page, ctx = self._manual_page()
+        cab = market_skill.PlaywrightCabinet()
+        cab._manual = {"context": ctx, "page": page, "touched": time.time()}
+        res = cab._manual_input({"action": "click", "x": 100, "y": 200, "viewW": 200, "viewH": 400})
+        self.assertTrue(res["ok"])
+        self.assertEqual(page.touchscreen.taps, [(206.0, 457.5)])
+        scroll = cab._manual_input({"action": "scroll", "x": 10, "y": 10, "viewW": 200, "viewH": 400, "dy": 40})
+        self.assertTrue(scroll["ok"])
+        self.assertEqual(page.mouse.wheeled, [(0, 91.5)])
+        typed = cab._manual_input({"action": "type", "text": "654321"})
+        self.assertTrue(typed["ok"])
+        self.assertEqual(page.keyboard.typed, ["654321"])
+        self.assertEqual(cab._manual_input({"action": "key", "key": "Backspace"})["ok"], True)
+        self.assertEqual(page.keyboard.pressed, ["Backspace"])
+        self.assertFalse(cab._manual_input({"action": "key", "key": "Control+V"})["ok"])
+        blob = json.dumps(market_skill.public_status(), ensure_ascii=False) + "\n".join(market_skill._logs)
+        self.assertNotIn("654321", blob)
+        before = time.time() - 30
+        cab._manual["touched"] = before
+        frame = cab._manual_frame()
+        self.assertTrue(frame.startswith(b"\xff\xd8"))
+        self.assertLess(abs(cab._manual["touched"] - before), 1)
+        self.assertFalse((Path(self.tmp.name) / "market_shots").exists())
+
+    def test_manual_done_checks_cabinet_then_active(self):
+        self._proxy()
+        page, ctx = self._manual_page()
+        cab = market_skill.PlaywrightCabinet()
+        cab._manual = {"context": ctx, "page": page, "touched": time.time()}
+        market_skill._set_manual_open(True)
+        live = self._manual_page()[1]
+        cab._live["wb"] = live
+        result = cab._manual_finish(market_skill._proxy())
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "active")
+        self.assertTrue(ctx.closed)
+        self.assertTrue(live.closed)
+        self.assertTrue(any("myorders" in url for url in page.gotos))
+        status = market_skill.public_status()
+        self.assertEqual(status["shops"]["wb"]["status"], "active")
+        self.assertEqual(status["shops"]["wb"]["label"], "Активна")
+        self.assertFalse(status["manual"]["open"])
+        blob = json.dumps(status, ensure_ascii=False)
+        self.assertIn("ручной вход завершён", blob)
+        self.assertIn("кабинет открылся", blob)
+        self.assertNotIn(COOKIE, blob)
+        self.assertEqual(market_skill._load_live()["shops"]["wb"]["status"], "active")
+        self.assertEqual(market_skill._load_live()["shops"]["wb"]["auth"], "manual")
+        raw = (Path(self.tmp.name) / "jarvis_market.json").read_text(encoding="utf-8")
+        self.assertIn(COOKIE, raw)
+
+    def test_manual_timeout_closes_without_session(self):
+        self._proxy()
+        page, ctx = self._manual_page()
+        cab = market_skill.PlaywrightCabinet()
+        cab._manual = {"context": ctx, "page": page, "touched": time.time() - market_skill.MANUAL_IDLE_S - 5}
+        market_skill._set_manual_open(True)
+        self.assertIsNone(cab._manual_session())
+        self.assertTrue(ctx.closed)
+        self.assertIsNone(cab._manual)
+        status = market_skill.public_status()
+        self.assertEqual(status["shops"]["wb"]["status"], "none")
+        self.assertFalse(status["manual"]["open"])
+        blob = json.dumps(status["journal"], ensure_ascii=False)
+        self.assertIn("ручной вход отменён", blob)
+        self.assertIn("10 минут без действий", blob)
+        self.assertNotIn("Активна", json.dumps(status["shops"], ensure_ascii=False))
+
+    def test_manual_session_survives_auto_login_close(self):
+        page, ctx = self._manual_page()
+        other_page, other = self._manual_page()
+        cab = market_skill.PlaywrightCabinet()
+        cab._manual = {"context": ctx, "page": page, "touched": time.time()}
+        cab._live["wb"] = other
+        again = cab._manual_open({"scheme": "http", "host": "h", "port": 1})
+        self.assertTrue(again.get("already"))
+        self.assertIs(cab._manual["context"], ctx)
+        cab._close_login("wb")
+        self.assertFalse(ctx.closed)
+        self.assertTrue(other.closed)
+        self.assertIs(cab._manual["context"], ctx)
+        cab._manual_input({"action": "back"})
+        self.assertEqual(page.closed_nav, ["back"])
+
+    def test_manual_done_without_cabinet_does_not_activate(self):
+        page, ctx = self._manual_page()
+
+        def goto(url, **kwargs):
+            page.gotos.append(url)
+
+        page.goto = goto
+        cab = market_skill.PlaywrightCabinet()
+        cab._manual = {"context": ctx, "page": page, "touched": time.time()}
+        result = cab._manual_finish({"scheme": "http", "host": "h", "port": 1})
+        self.assertFalse(result["ok"])
+        self.assertIn("Кабинет не открылся", result["error"])
+        self.assertFalse(ctx.closed)
+        self.assertIsNotNone(cab._manual)
+        self.assertEqual(market_skill.public_status()["shops"]["wb"]["status"], "none")
+        blob = json.dumps(market_skill.public_status()["journal"], ensure_ascii=False)
+        self.assertIn("кабинет не открылся", blob)
+        self.assertNotIn("ручной вход завершён", blob)
+
 
 class AssistantLoopTest(unittest.TestCase):
     def _run(self, provider, skills):
@@ -683,6 +894,12 @@ class AssistantLoopTest(unittest.TestCase):
         self.assertIn("data-testid=\"market-settings\"", html)
         self.assertIn("market-notice-", html)
         self.assertIn("row.notice", html)
+        self.assertIn("Войти вручную", html)
+        self.assertIn("market-manual-wb", html)
+        self.assertIn("Готово, я вошёл", html)
+        self.assertIn("/api/market/manual/start", html)
+        self.assertIn("market-manual-screen", html)
+        self.assertEqual(html.count("data-testid=\"market-manual-wb\""), 1)
         market_html = html.split("МАРКЕТПЛЕЙСЫ")[1].split("SETTINGS VIEW")[0]
         self.assertNotIn("+79991234567", market_html)
         self.assertIn("const active = row.status === 'active'", market_html)
@@ -782,6 +999,45 @@ class MarketHttpTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as raised:
             opener.open(missing, timeout=10)
         self.assertEqual(raised.exception.code, 404)
+
+    def test_manual_frame_is_private(self):
+        import urllib.error
+        import urllib.request
+        jpeg = bytes.fromhex(
+            "ffd8ffe000104a46494600010100000100010000ffdb004300080606070605080707070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c1c2837292c30313434341f27393d38323c2e333432ffc0000b080001000101011100ffc40014100100000000000000000000000000000000ffda00080001000100003f00fbffd9"
+        )
+        opener = self._opener()
+        bare = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/market/manual/frame")
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            opener.open(bare, timeout=10)
+        self.assertEqual(raised.exception.code, 401)
+        secret = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/market/manual/input",
+            data=json.dumps({"action": "type", "text": "654321"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            opener.open(secret, timeout=10)
+        self.assertEqual(raised.exception.code, 401)
+        self._req(opener, "POST", "/api/market/proxy", {"proxy": f"http://abcdef:{SECRET}@sticky.example:8080"})
+        opener.addheaders = [("Cookie", f"jarvis_auth={jarvis.AUTH_COOKIE_VALUE}")]
+        typed = self._req(opener, "POST", "/api/market/manual/input", {"action": "type", "text": "654321"})
+        self.assertTrue(typed["ok"])
+        self.assertNotIn("654321", json.dumps(typed))
+        self.assertNotIn("654321", "\n".join(market_skill._logs))
+        self.assertIn(("manual-input", "type"), self.drv.calls)
+        self.drv.frame = jpeg
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/market/manual/frame",
+            headers={"Cookie": f"jarvis_auth={jarvis.AUTH_COOKIE_VALUE}"},
+        )
+        with opener.open(req, timeout=10) as resp:
+            body = resp.read()
+            self.assertEqual(resp.headers.get("Content-Type"), "image/jpeg")
+            self.assertIn("no-store", (resp.headers.get("Cache-Control") or ""))
+        self.assertEqual(body, jpeg)
+        self.assertFalse((Path(self.tmp.name) / "market_shots").exists())
 
 
 class MarketFixtureHtmlTest(unittest.TestCase):
