@@ -1084,6 +1084,95 @@ class MarketSkillTest(unittest.TestCase):
         self.assertIn("android", closed["error"])
         self.assertFalse(market_skill.manual_is_open())
 
+    def test_ozon_loading_title_is_not_home_and_manual_stays_closed(self):
+        loading = {
+            "url": "https://www.ozon.ru/?__rr=1&abt_att=1",
+            "title": "Loading https://www.ozon.ru/?__rr=1&abt_att=1",
+            "text": "",
+        }
+        home = {"url": "https://www.ozon.ru/", "title": "OZON — интернет-магазин", "text": "каталог"}
+        self.assertFalse(market_skill.ozon_home_clear(loading))
+        self.assertFalse(market_skill.ozon_home_clear({
+            "url": "https://www.ozon.ru/",
+            "title": "Loading https://www.ozon.ru/?__rr=1&abt_att=1",
+        }))
+        self.assertFalse(market_skill.ozon_home_clear({
+            "url": "https://www.ozon.ru/?abt_att=1",
+            "title": "OZON — интернет-магазин",
+        }))
+        self.assertFalse(market_skill.ozon_home_clear({
+            "url": "https://www.ozon.ru/?__rr=1",
+            "title": "OZON — интернет-магазин",
+        }))
+        self.assertTrue(market_skill.ozon_home_clear(home))
+
+        clock = {"t": 0.0}
+
+        def now():
+            return clock["t"]
+
+        def sleep(sec):
+            clock["t"] += sec
+
+        reloads = []
+
+        def reload():
+            reloads.append(clock["t"])
+
+        def snapshot():
+            if clock["t"] >= 20:
+                return dict(home)
+            return dict(loading)
+
+        opened = market_skill.ozon_warm_pass(snapshot, reload, sleep, now)
+        self.assertTrue(opened["ok"])
+        self.assertEqual(len(reloads), 2)
+        self.assertEqual(opened["info"]["title"], home["title"])
+        self.assertNotIn("abt_att", opened["info"]["url"])
+
+        self._proxy()
+        page, ctx = self._manual_page()
+        page.url = loading["url"]
+        page._title = loading["title"]
+        page._text = ""
+        modes = []
+        cab = market_skill.PlaywrightCabinet()
+
+        def new_context(proxy, storage=None, mode="android", shop="wb"):
+            modes.append(mode)
+            ctx._jarvis_mode = mode
+            return ctx
+
+        cab._new_context = new_context
+        cab._open = lambda context, mode="android": page
+        hold = {"t": 1000.0}
+        real_sleep, real_mono = time.sleep, time.monotonic
+
+        def fake_sleep(sec):
+            hold["t"] += sec
+
+        def fake_mono():
+            return hold["t"]
+
+        time.sleep = fake_sleep
+        time.monotonic = fake_mono
+        try:
+            failed = cab._manual_open(market_skill._proxy(), "ozon")
+        finally:
+            time.sleep = real_sleep
+            time.monotonic = real_mono
+        self.assertFalse(failed["ok"])
+        self.assertIn("Главная Ozon не открылась", failed["error"])
+        for mode in ("android", "desktop", "patchright"):
+            self.assertIn(mode, failed["error"])
+        self.assertEqual(modes, ["android", "desktop", "patchright"])
+        self.assertEqual(page.closed_nav.count("reload"), 6)
+        self.assertFalse(market_skill.manual_is_open())
+        self.assertFalse(market_skill.public_status()["manual"]["open"])
+        results = [row.get("result") or "" for row in market_skill.public_status()["journal"]]
+        self.assertEqual(sum("главная не открылась" in row for row in results), 3)
+        self.assertFalse(any("главная открылась" in row for row in results))
+
     def test_exit_128_is_beeline_broadband(self):
         fields = json.loads(Path("tests/fixtures/market/exit-128.71.38.20.json").read_text(encoding="utf-8"))
         kind = market_skill.describe_exit(fields)

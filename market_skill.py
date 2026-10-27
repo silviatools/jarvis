@@ -1008,9 +1008,31 @@ _OZON_TITLE_BLOCK = (
 )
 
 
+def _ozon_title_placeholder(title: str) -> bool:
+    """«Loading <url>» и сам URL в заголовке — это ещё не главная, даже если внутри есть ozon."""
+    low = _norm_text(title).strip()
+    if not low:
+        return False
+    if low.startswith("loading") or low.startswith("загрузка"):
+        return True
+    return "http://" in low or "https://" in low
+
+
+def _ozon_url_pending(url: str) -> bool:
+    """abt_att и __rr в адресе ставит антибот. Такой адрес не проход."""
+    query = (urlparse(url or "").query or "").lower()
+    return "abt_att" in query or "__rr" in query
+
+
 def ozon_home_clear(info) -> bool:
-    """document.title: непустой, ozon или озон, без стены. Тело страницы не смотрим."""
-    title = _norm_text((info or {}).get("title") or "")
+    """document.title: непустой, ozon или озон, без стены и без заглушки «Loading <url>».
+    Адрес с abt_att или __rr — ещё не проход, ждём дальше. Тело страницы не смотрим."""
+    raw_title = (info or {}).get("title") or ""
+    if _ozon_title_placeholder(raw_title):
+        return False
+    if _ozon_url_pending((info or {}).get("url") or ""):
+        return False
+    title = _norm_text(raw_title)
     if not title:
         return False
     if "ozon" not in title and "озон" not in title:
