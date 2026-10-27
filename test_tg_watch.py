@@ -36,6 +36,7 @@ class WatchTest(unittest.TestCase):
         self._latest = tg_watch_skill.live_latest_id
         self._deliver = webpush._deliver_impl
         webpush._logs.clear()
+        webpush._jwt_logged = False
         tg_watch_skill._logs.clear()
         self.latest = {1: 10, 2: 20, 3: 30}
         tg_watch_skill.live_latest_id = lambda peer: self.latest.get(int(peer), 0)
@@ -397,6 +398,152 @@ class WatchTest(unittest.TestCase):
         self.assertNotIn(private, "\n".join(webpush._logs))
 
 
+    def test_apple_jwt_and_keys_survive_restart(self):
+        from py_vapid import Vapid
+        from py_vapid.jwt import decode
+
+        saved_env = {key: os.environ.get(key) for key in ("VAPID_SUBJECT", "PUSH_SUBJECT")}
+        os.environ.pop("VAPID_SUBJECT", None)
+        os.environ.pop("PUSH_SUBJECT", None)
+        try:
+            self._apple_jwt(Vapid, decode)
+        finally:
+            for key, value in saved_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def _apple_jwt(self, Vapid, decode):
+        first = webpush.ensure()
+        pub, priv = first["public_key"], first["private_key"]
+        webpush._key_announced = False
+        again = webpush.ensure()
+        self.assertEqual(again["public_key"], pub)
+        self.assertEqual(again["private_key"], priv)
+        self.assertEqual(json.loads(webpush.store_path().read_text(encoding="utf-8"))["public_key"], pub)
+        self.assertFalse(webpush.subject_ok("mailto:jarvis@localhost"))
+        self.assertFalse(webpush.subject_ok(""))
+        self.assertNotIn("localhost", webpush.vapid_subject())
+
+        saved = webpush.save_subscription({
+            "endpoint": "https://web.push.apple.com/3/device/abc",
+            "keys": {"p256dh": "B" + "A" * 80, "auth": AUTH},
+        }, origin="https://jarvis.example.com/app")
+        self.assertTrue(saved["ok"])
+        self.assertEqual(webpush.vapid_subject(), "https://jarvis.example.com")
+
+        now = 1_700_000_000
+        endpoint = "https://web.push.apple.com/3/device/abc"
+        claims = webpush.claims_for(endpoint, now=now)
+        self.assertEqual(claims["aud"], "https://web.push.apple.com")
+        self.assertEqual(claims["sub"], "https://jarvis.example.com")
+        self.assertGreater(claims["exp"], now)
+        self.assertLessEqual(claims["exp"] - now, 24 * 60 * 60)
+        signed = Vapid.from_string(priv).sign(dict(claims))
+        auth = signed["Authorization"]
+        token = auth.split("t=", 1)[1].split(",", 1)[0]
+        k = auth.split("k=", 1)[1]
+        self.assertEqual(k.rstrip("="), pub.rstrip("="))
+        got = decode(token, k)
+        self.assertEqual(got["aud"], "https://web.push.apple.com")
+        self.assertEqual(got["sub"], "https://jarvis.example.com")
+        self.assertEqual(int(got["exp"]), claims["exp"])
+        self.assertNotIn("localhost", json.dumps(got))
+        self.assertNotIn(priv, "\n".join(webpush._logs))
+
+        os.environ["VAPID_SUBJECT"] = "mailto:owner@example.com"
+        self.assertEqual(webpush.vapid_subject(), "mailto:owner@example.com")
+        mailed = webpush.claims_for(endpoint, now=now)
+        self.assertEqual(mailed["sub"], "mailto:owner@example.com")
+        self.assertNotIn("localhost", mailed["sub"])
+        os.environ.pop("VAPID_SUBJECT", None)
+
+        path = webpush.store_path()
+        raw = path.read_text(encoding="utf-8")
+        path.write_text("{", encoding="utf-8")
+        broken = webpush.ensure()
+        self.assertFalse(broken.get("private_key"))
+        self.assertEqual(path.read_text(encoding="utf-8"), "{")
+        path.write_text(raw, encoding="utf-8")
+        self.assertEqual(webpush.ensure()["public_key"], pub)
+
+    def test_bad_jwt_logged_once_and_retries_stop(self):
+        self._sub(endpoint="https://web.push.apple.com/3/device/abc")
+
+        class Resp:
+            status_code = 403
+            text = '{"reason":"BadJwtToken"}'
+
+        class Err(Exception):
+            def __init__(self):
+                super().__init__(
+                    'WebPushException: Push failed: 403 Forbidden. Response body: {"reason":"BadJwtToken"}'
+                )
+                self.response = Resp()
+
+        webpush.set_deliver(lambda *a, **k: (_ for _ in ()).throw(Err()))
+        webpush._logs.clear()
+        webpush._jwt_logged = False
+        for _ in range(8):
+            res = webpush.send_text("Чат", "Привет")
+            self.assertEqual(res["reason"], "bad_jwt")
+            self.assertIn("не дош", res["message"])
+        self.assertEqual(sum(1 for line in webpush._logs if "BadJwtToken" in line), 1)
+
+        class Gone(Exception):
+            def __init__(self):
+                super().__init__("WebPushException: Push failed: 410 Gone")
+                self.response = type("R", (), {"status_code": 410, "text": "gone"})()
+
+        webpush.set_deliver(lambda *a, **k: (_ for _ in ()).throw(Gone()))
+        gone = webpush.send_text("Чат", "Привет")
+        self.assertEqual(gone["reason"], "no_subscriptions")
+        self.assertEqual(webpush.subscription_count(), 0)
+
+        self._sub()
+        self._search_as(_dialogs())
+        notes = []
+        previous = tg_watch_skill.tell_owner
+        tg_watch_skill.tell_owner = notes.append
+        try:
+            now = 50_000
+            tg_watch_skill.start("Светлана", 30, now=now)
+            calls = {"n": 0}
+
+            def send(title, body, tag=""):
+                calls["n"] += 1
+                return {"ok": False, "reason": "bad_jwt", "message": "Пуш не дошёл"}
+
+            def fetch(peer, after):
+                if int(after) >= 11:
+                    return []
+                return [{"id": 11, "out": False, "text": "Привет", "media": "", "sender": "Светлана"}]
+
+            t0 = now + 1
+            tg_watch_skill.poll(now=t0, enabled=True, fetch_new=fetch, send=send)
+            self.assertEqual(calls["n"], 1)
+            self.assertEqual(notes, [])
+            tg_watch_skill.poll(now=t0 + 5, enabled=True, fetch_new=fetch, send=send)
+            self.assertEqual(calls["n"], 1)
+            tg_watch_skill.poll(now=t0 + tg_watch_skill.RETRY_DELAYS[0], enabled=True, fetch_new=fetch, send=send)
+            self.assertEqual(calls["n"], 2)
+            tg_watch_skill.poll(
+                now=t0 + tg_watch_skill.RETRY_DELAYS[0] + tg_watch_skill.RETRY_DELAYS[1],
+                enabled=True, fetch_new=fetch, send=send,
+            )
+            self.assertEqual(calls["n"], 3)
+            self.assertEqual(len(notes), 1)
+            self.assertIn("Пуш не дошёл", notes[0])
+            self.assertIn("Привет", notes[0])
+            self.assertEqual(tg_watch_skill._load()["1"]["last_id"], 11)
+            tg_watch_skill.poll(now=t0 + 10_000, enabled=True, fetch_new=fetch, send=send)
+            self.assertEqual(calls["n"], 3)
+            self.assertEqual(len(notes), 1)
+        finally:
+            tg_watch_skill.tell_owner = previous
+
+
 class AssistantLoopTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -512,6 +659,9 @@ class AssistantLoopTest(unittest.TestCase):
         self.assertIn('data-testid="push-settings"', html)
         self.assertIn('data-testid="push-status"', html)
         self.assertIn('data-testid="push-enable"', html)
+        self.assertIn('data-testid="push-resubscribe"', html)
+        self.assertIn("Переподписаться", html)
+        self.assertIn("jarvisPushRemember", html)
         self.assertEqual(html.count("await loadWatchTools()"), 2)
         self.assertIn("...WATCH_AGENT_TOOLS", html)
         self.assertIn("name.startsWith('tg_watch_')", html)

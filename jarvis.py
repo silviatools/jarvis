@@ -11210,7 +11210,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             payload = {}
         try:
             if route == "/api/push/subscribe":
-                self._json(200, webpush.save_subscription(payload))
+                origin = self.headers.get("Origin") or self.headers.get("Referer") or ""
+                self._json(200, webpush.save_subscription(payload, origin))
             elif route == "/api/push/unsubscribe":
                 self._json(200, webpush.drop_subscription(payload.get("endpoint") or ""))
             elif route == "/api/push/tool":

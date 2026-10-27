@@ -2933,6 +2933,29 @@ function jarvisPushKey(base64) {
   return out;
 }
 
+function jarvisPushKeyB64(buf) {
+  const bytes = new Uint8Array(buf);
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function jarvisPushSameKey(sub, publicKey) {
+  try {
+    const cur = sub && sub.options && sub.options.applicationServerKey;
+    if (!cur || !publicKey) return true;
+    return jarvisPushKeyB64(cur) === publicKey;
+  } catch (e) { return true; }
+}
+
+function jarvisPushRemember(publicKey) {
+  try { if (publicKey) localStorage.setItem('jarvisPushKey', publicKey); } catch (e) {}
+}
+
+function jarvisPushRemembered() {
+  try { return localStorage.getItem('jarvisPushKey') || ''; } catch (e) { return ''; }
+}
+
 async function jarvisPushEnable() {
   const home = jarvisPushHome();
   if (home.ios && !home.standalone) {
@@ -2956,6 +2979,7 @@ async function jarvisPushEnable() {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sub.toJSON()),
     })).json();
     if (!saved.ok) return { status: 'разрешены', error: saved.error || 'Подписка не сохранилась.' };
+    jarvisPushRemember(cfg.publicKey);
     return { status: 'разрешены', subscriptions: saved.subscriptions };
   } catch (e) {
     const raw = (e && e.message) ? String(e.message) : String(e || '');
@@ -2977,12 +3001,19 @@ async function ensureJarvisPush() {
     const cfg = await (await fetch('/api/push/status')).json();
     if (!cfg.publicKey) return;
     let sub = await reg.pushManager.getSubscription();
+    const remembered = jarvisPushRemembered();
+    const keyMismatch = (remembered && remembered !== cfg.publicKey) || (sub && !jarvisPushSameKey(sub, cfg.publicKey));
+    if (sub && keyMismatch) {
+      try { await sub.unsubscribe(); } catch (e) {}
+      sub = null;
+    }
     if (!sub) {
       sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: jarvisPushKey(cfg.publicKey),
       });
     }
+    jarvisPushRemember(cfg.publicKey);
     await fetch('/api/push/subscribe', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sub.toJSON()),
     });
@@ -6204,9 +6235,15 @@ function PushNotifyCard() {
   }, []);
   React.useEffect(() => { refresh(); }, [refresh]);
 
-  const onEnable = async () => {
+  const onEnable = async (force) => {
     setBusy(true); setErr(''); setInfo('');
     try {
+      if (force && 'serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        const cur = await reg.pushManager.getSubscription();
+        if (cur) { try { await cur.unsubscribe(); } catch (e) {} }
+        try { localStorage.removeItem('jarvisPushKey'); } catch (e) {}
+      }
       const r = await jarvisPushEnable();
       setStatus(r.status || jarvisPushStatusLabel());
       if (r.error) setErr(r.error);
@@ -6232,9 +6269,21 @@ function PushNotifyCard() {
           Safari → Поделиться → На экран «Домой». Откройте Джарвис с иконки и нажмите кнопку здесь.
         </p>
       )}
-      <button type="button" onClick={onEnable} disabled={busy} className="btn-primary text-sm px-4 py-2" data-testid="push-enable">
-        {busy ? 'Запрашиваю…' : 'Разрешить уведомления'}
-      </button>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={() => onEnable(false)} disabled={busy} className="btn-primary text-sm px-4 py-2" data-testid="push-enable">
+          {busy ? 'Запрашиваю…' : 'Разрешить уведомления'}
+        </button>
+        {status !== 'сайт не на домашнем экране' && (status === 'разрешены' || subs > 0) && (
+          <button type="button" onClick={() => onEnable(true)} disabled={busy} className="btn-secondary text-sm px-4 py-2" data-testid="push-resubscribe">
+            Переподписаться
+          </button>
+        )}
+      </div>
+      {(status === 'разрешены' || subs > 0) && status !== 'сайт не на домашнем экране' && (
+        <p className="text-xs text-[var(--text-subtle)]">
+          Если пуши молчат после обновления — «Переподписаться». Старая подписка со старым ключом сама не оживёт.
+        </p>
+      )}
       {err ? <div className="text-sm text-red-600" data-testid="push-error">{err}</div> : null}
       {info ? <div className="text-sm text-[var(--text-muted)]">{info}</div> : null}
     </div>

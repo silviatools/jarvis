@@ -21,6 +21,9 @@ SKILL_ID = "tg_watch"
 STORE_NAME = "jarvis_tg_watch.json"
 DEFAULT_MINUTES = 30
 MAX_MINUTES = 10080
+# Три попытки. Между ними пауза, а не новый пуш каждые несколько секунд.
+MAX_PUSH_TRIES = 3
+RETRY_DELAYS = (30, 120)
 _lock = threading.Lock()
 _logs = []
 
@@ -123,7 +126,9 @@ PROMPT = (
     "Посмотреть, удалить и переименовать псевдоним — отдельные инструменты. "
     "«Выключи» / «останови» по диалогу — сразу tg_watch_stop с этим именем. "
     "Если инструмент сказал, что сообщение некуда доставить — так и скажи: пуш Джарвиса не разрешён или подписки нет, "
-    "нужно открыть сайт с экрана «Домой» и разрешить уведомления в Настройки → Общее. Не говори, что слежка включена.\n\n"
+    "нужно открыть сайт с экрана «Домой» и разрешить уведомления в Настройки → Общее. Не говори, что слежка включена. "
+    "Если пуш не дошёл (BadJwtToken или ошибка отправки) — так и скажи, не говори «готово»: на телефоне сообщения нет. "
+    "Тогда на iPhone открыть Джарвис с иконки и нажать «Переподписаться».\n\n"
 )
 
 _TYPE_LABEL = {"user": "личный", "bot": "бот", "group": "группа", "channel": "канал"}
@@ -763,10 +768,52 @@ def stop(query: str = "", now=None) -> dict:
     return {"ok": True, "message": f"Слежку за «{title}» остановил.", "watches": left}
 
 
-def _apply_messages(w: dict, msgs: list, send) -> tuple:
-    """Двигает last_id. Свои и пустые пропускает. Сбой доставки — стоп, чтобы повторить это сообщение."""
+def tell_owner(text: str) -> None:
+    """Одно сообщение в чат бота с владельцем: пуш не дошёл. Без токена — молча."""
+    try:
+        import jarvis
+        import tg_bot
+        token = jarvis.get_token()
+        if not token:
+            _log("в чат не написал: нет токена бота")
+            return
+        subs = jarvis.load_subscribers()
+        chats = list(subs.get("chat_ids") or [])
+        owners = []
+        try:
+            import tg_user
+            owners = [c for c in chats if tg_user.is_owner_chat(c)]
+        except Exception:
+            owners = []
+        targets = owners or chats
+        if not targets:
+            _log("в чат не написал: нет чата")
+            return
+        for cid in targets:
+            tg_bot.send_text(token, cid, text)
+    except Exception as e:
+        _log("в чат не написал: " + webpush.redact(str(e)))
+
+
+def _fail_notice(title: str, body: str, reason: str) -> str:
+    snippet = " ".join((body or "").split())
+    if len(snippet) > 140:
+        snippet = snippet[:140] + "…"
+    why = " Apple отклонил подпись пуша." if reason == "bad_jwt" else ""
+    return (
+        f"Пуш не дошёл в приложение Джарвис.{why}\n"
+        f"Диалог «{title or 'Telegram'}»: {snippet or 'сообщение без текста'}\n"
+        "В Telegram оно осталось, на телефон не пришло. "
+        "Если после обновления пуши всё ещё молчат — откройте Джарвис с иконки "
+        "и нажмите «Переподписаться»."
+    )
+
+
+def _apply_messages(w: dict, msgs: list, send, now: float) -> tuple:
+    """Двигает last_id. Свои и пустые пропускает. Сбой — несколько попыток с паузой, потом сообщение в чат."""
     pushes = []
     logged_nowhere = False
+    retry = dict(w.get("retry") or {})
     for m in sorted(msgs or [], key=lambda item: int(item.get("id") or 0)):
         mid = int(m.get("id") or 0)
         if m.get("out"):
@@ -778,19 +825,35 @@ def _apply_messages(w: dict, msgs: list, send) -> tuple:
             if mid > int(w.get("last_id") or 0):
                 w["last_id"] = mid
             continue
+        if int(retry.get("id") or 0) == mid and float(retry.get("next_at") or 0) > now:
+            break
         result = send(payload["title"], payload["body"], tag=f"tg-{w.get('peer_id')}-{mid}") or {}
         if result.get("reason") == "no_subscriptions":
             if mid > int(w.get("last_id") or 0):
                 w["last_id"] = mid
+            w.pop("retry", None)
             if not logged_nowhere:
                 _log("некуда доставить: подписок нет")
                 logged_nowhere = True
             pushes.append({"title": payload["title"], "body": payload["body"], "result": result})
             continue
         if not result.get("ok"):
+            tries = int(retry.get("tries") or 0) + 1 if int(retry.get("id") or 0) == mid else 1
+            reason = result.get("reason") or "send_failed"
+            if tries >= MAX_PUSH_TRIES:
+                if mid > int(w.get("last_id") or 0):
+                    w["last_id"] = mid
+                w.pop("retry", None)
+                tell_owner(_fail_notice(payload["title"], payload["body"], reason))
+                pushes.append({"title": payload["title"], "body": payload["body"], "result": result, "gave_up": True})
+                continue
+            delay = RETRY_DELAYS[min(tries - 1, len(RETRY_DELAYS) - 1)]
+            w["retry"] = {"id": mid, "tries": tries, "next_at": now + delay, "reason": reason}
+            pushes.append({"title": payload["title"], "body": payload["body"], "result": result, "retry": True})
             break
         if mid > int(w.get("last_id") or 0):
             w["last_id"] = mid
+        w.pop("retry", None)
         pushes.append({"title": payload["title"], "body": payload["body"], "result": result})
     return pushes
 
@@ -816,13 +879,18 @@ def poll(now=None, enabled: bool = True, fetch_new=None, send=None) -> dict:
         except Exception as e:
             _log("чтение: " + webpush.redact(str(e)))
             continue
-        pushes.extend(_apply_messages(w, msgs, send))
-        advanced[key] = int(w.get("last_id") or 0)
+        pushes.extend(_apply_messages(w, msgs, send, now))
+        advanced[key] = {"last_id": int(w.get("last_id") or 0), "retry": w.get("retry")}
     with _lock:
         cur = _alive(now)
-        for key, last_id in advanced.items():
-            if key in cur:
-                cur[key]["last_id"] = max(int(cur[key].get("last_id") or 0), last_id)
+        for key, upd in advanced.items():
+            if key not in cur:
+                continue
+            cur[key]["last_id"] = max(int(cur[key].get("last_id") or 0), int(upd.get("last_id") or 0))
+            if upd.get("retry"):
+                cur[key]["retry"] = upd["retry"]
+            else:
+                cur[key].pop("retry", None)
         _save(cur)
         left = len(cur)
     return {"expired": expired, "pushes": pushes, "active": left}
