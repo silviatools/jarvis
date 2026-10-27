@@ -607,6 +607,8 @@ class PollerTest(Base):
 
     def tearDown(self):
         mail_skill._poller_state["gen"] += 1
+        if mail_skill._poller is not None:
+            mail_skill._poller.join(2)
         tg_bot.api, jarvis.get_token = self._api, self._tok
         super().tearDown()
 
