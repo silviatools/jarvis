@@ -1,0 +1,78 @@
+<!DOCTYPE html><html lang="ru"><head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1">
+  <meta content="text/html; charset=utf-8" http-equiv="Content-Type">
+  <link rel="stylesheet" href="https://st.ozone.ru/s3/abt-challenge/incidents/styles_v2/common.css">
+  <title>Antibot Challenge Page</title>
+  <link rel="stylesheet" href="https://st.ozone.ru/s3/abt-challenge/style_v47_2.css">
+</head>
+
+<body>
+  <noscript>
+    <div class="container">
+      <div class="message">
+        <div class="variant">
+          <h2 class="h2">Пожалуйста, включите JavaScript для продолжения</h2>
+          <span class="subtitle">Нам нужно убедиться, что вы не робот.</span>
+        </div>
+        <div class="variant" lang="en">
+          <h2 class="h2">Please, enable JavaScript to continue</h2>
+          <span class="subtitle">We need to make sure that you are not a robot.</span>
+        </div>
+      </div>
+      <div class="details">
+        <span class="details-text"><b>ID:</b> fab_chlg_20261027105228_01M5YFTXYP44JTM36QE7XJ86MF</span>,
+        <span class="details-text"><b>IP:</b> 54.200.13.96</span>,
+        <span class="details-text">Tuesday, 27-Oct-2026 10:52:28 UTC</span>
+      </div>
+    </div>
+  </noscript>
+  <div class="container" id="container">
+    <div class="content" id="content">
+      <input id="challenge" type="hidden" value="">
+      <input id="incident" type="hidden" value="">
+      <input id="complaints-token" type="hidden" value="">
+      <input id="challenge-ip" type="hidden" value="">
+      <input id="challenge-date" type="hidden" value="">
+      <input id="complain-new-window" type="hidden" value="">
+      <div class="message">
+        <div class="loader">
+          <div class="loader-ellipse"></div>
+          <div class="loader-ellipse"></div>
+          <div class="loader-ellipse"></div>
+          <div class="loader-ellipse"></div>
+        </div>
+      </div>
+      <div class="challenge-data">
+        <div class="details">
+          <span class="details-text">fab_chlg_20261027105228_01M5YFTXYP44JTM36QE7XJ86MF</span>
+        </div>
+        <div class="run-status-box">
+          <span id="run-status"></span>
+        </div>
+      </div>
+      <div class="challenge-information" hidden="hidden">
+        <div>Попробуйте:</div>
+        <ul class="recommendations">
+          <li>обновить страницу</li>
+          <li>отключить расширения и вновь обновить страницу</li>
+          <li>воспользоваться другим браузером или мобильным приложением</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <script>
+    performance.mark('jobStart', { startTime: Date.now() })
+    function showInformation() {
+      const informationElement = document.querySelector('.challenge-information');
+      if (informationElement) {
+        informationElement.removeAttribute("hidden");
+      }
+    }
+  </script>
+  <script src="https://st.ozone.ru/s3/abt-challenge/script_v47_2.js"></script>
+
+
+
+</body></html>

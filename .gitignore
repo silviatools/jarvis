@@ -10,4 +10,5 @@ jarvis_decks.json
 jarvis_study_chats_state.json
 jarvis_anchors.json
 jarvis_market.json
+market_shots/
 ms-playwright/

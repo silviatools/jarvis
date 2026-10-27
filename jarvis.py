@@ -9483,6 +9483,13 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {"skills": assistant_skills_catalog()})
         elif route == "/api/market/status":
             self._json(200, market_skill.public_status() if market_skill else {"ok": False, "error": "Кабинеты маркетплейсов на сервере недоступны."})
+        elif route.startswith("/api/market/shot/"):
+            name = route[len("/api/market/shot/"):]
+            path = market_skill.shot_path(name) if market_skill else None
+            if path is None:
+                self._json(404, {"error": "not found"})
+            else:
+                self._serve_ranged(path, "image/jpeg", "private, no-store")
         elif route == "/api/market/tools":
             state = (load_app_data() or {}).get("telegramSkills")
             self._json(200, market_skill.voice_payload(state) if market_skill else {"tools": [], "prompt": ""})
