@@ -1282,6 +1282,9 @@ def _drop_reason(result) -> str:
         return "pending"
     if kind in ("offline", "challenge") or result.get("session") in ("blocked", "challenge"):
         return "blocked"
+    # Список «Заказы / Доставки» — кабинет. Несовпадение фразы сессию не стирает.
+    if _wb_cabinet_readable(info):
+        return ""
     if result.get("session") in ("expired", "public") or kind in ("login", "code", "password", "public"):
         return "closed"
     if not result.get("ok") and result.get("session") != "active":
@@ -1643,9 +1646,9 @@ def session_from_page(info) -> dict:
         return {"ok": False, "session": "blocked", "error": BLOCKED_ERROR, "url": url, "face": page_face(info)}
     if kind in ("login", "code", "password"):
         return {"ok": False, "session": "expired", "url": url}
-    if kind != "cabinet":
-        return {"ok": False, "session": "public", "url": url}
-    return {"ok": True, "session": "active", "url": url}
+    if kind == "cabinet" or _wb_cabinet_readable(info):
+        return {"ok": True, "session": "active", "url": url}
+    return {"ok": False, "session": "public", "url": url}
 
 
 def execute(name: str, inp: dict, state=None) -> dict:
@@ -1889,6 +1892,25 @@ def on_wildberries(url) -> bool:
     return host.endswith("wildberries.ru") and "id.wb.ru" not in host
 
 
+_WB_CABINET_PREFIXES = ("/lk/myorders", "/lk/details", "/lk/myrefunds", "/lk/favorites")
+
+
+def _wb_cabinet_path(url) -> bool:
+    path = (urlparse(url or "").path or "").lower()
+    return on_wildberries(url) and any(path.startswith(prefix) for prefix in _WB_CABINET_PREFIXES)
+
+
+def _wb_cabinet_readable(info) -> bool:
+    """Страница раздела ЛК WB, это не вход и не антибот. Текст может быть без фразы «мои заказы»."""
+    info = info or {}
+    if is_wb_consent(info):
+        return False
+    kind = classify_page(info)
+    if kind in ("offline", "challenge", "pending", "login", "code", "password", "public"):
+        return False
+    return _wb_cabinet_path(info.get("url") or "")
+
+
 def cabinet_open(info) -> bool:
     """Кабинет покупателя: страница заказов или профиля, не вход и не согласие."""
     if is_wb_consent(info):
@@ -1896,16 +1918,10 @@ def cabinet_open(info) -> bool:
     kind = classify_page(info or {})
     if kind == "cabinet":
         return True
-    if kind in ("offline", "challenge", "pending", "login", "code", "password", "public"):
-        return False
-    url = (info or {}).get("url") or ""
-    path = (urlparse(url).path or "").lower()
-    if not on_wildberries(url):
-        return False
-    if not (path.startswith("/lk/myorders") or path.startswith("/lk/details")):
+    if not _wb_cabinet_readable(info):
         return False
     text = _page_text(info)
-    return any(marker in text for marker in ("заказ", "доставк", "профиль", "личн", "покупк"))
+    return any(marker in text for marker in ("заказ", "доставк", "профиль", "личн", "покупк", "возврат", "избран"))
 
 
 def interpret_after_code(shop, info) -> str:

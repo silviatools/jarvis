@@ -236,6 +236,34 @@ class MarketSkillTest(unittest.TestCase):
         self.assertIn("не активна", out["error"])
         self.assertEqual(market_skill.public_status()["shops"]["ozon"]["status"], "expired")
 
+    def test_wb_orders_list_keeps_session(self):
+        """Список «Заказы / Доставки» без фразы «мои заказы» — кабинет, сессию не стираем."""
+        info = {
+            "url": "https://www.wildberries.ru/lk/myorders/delivery",
+            "title": "Wildberries",
+            "text": "Заказы\nДоставка\nВ пути",
+        }
+        self.assertNotEqual(market_skill.classify_page(info), "cabinet")
+        self.assertTrue(market_skill.cabinet_open(info))
+        self.assertEqual(market_skill.session_from_page(info)["session"], "active")
+        self._active("wb")
+        self.drv.read_result = {"ok": False, "session": "public", **info}
+        out = market_skill.execute("market_orders", {"shop": "wb"}, None)
+        self.assertTrue(out["ok"])
+        self.assertIn("Доставка", out["text"])
+        self.assertEqual(market_skill.public_status()["shops"]["wb"]["status"], "active")
+        self.assertIsNotNone(market_skill._storage("wb"))
+        login = {
+            "url": "https://www.wildberries.ru/lk/myorders/delivery",
+            "title": "Войти",
+            "text": "Введите номер телефона",
+        }
+        self.assertEqual(market_skill.session_from_page(login)["session"], "expired")
+        self.drv.read_result = {"ok": False, "session": "expired", **login}
+        dead = market_skill.execute("market_orders", {"shop": "wb"}, None)
+        self.assertIn("не активна", dead["error"])
+        self.assertEqual(market_skill.public_status()["shops"]["wb"]["status"], "expired")
+
     def test_cancel_needs_confirmation(self):
         self._active()
         self.drv.calls.clear()
