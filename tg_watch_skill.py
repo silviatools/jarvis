@@ -34,9 +34,16 @@ SKILLS = [
          "На iPhone сайт должен быть на экране «Домой» (iOS 16.4+) и уведомления разрешены в Настройки → Общее. "
          "Свои исходящие сообщения не дублируются. Несколько диалогов можно держать сразу. "
          "«Выключи» останавливает слежку по этому диалогу сразу, по истечении срока она кончается сама. "
-         "Если пуш не разрешён или подписок нет, ассистент прямо говорит, что сообщение некуда доставить."
+         "Если пуш не разрешён или подписок нет, ассистент прямо говорит, что сообщение некуда доставить. "
+         "Если имя неточное («менеджер», «Света»), никого не нашёл или подходит несколько — не включает и коротко "
+         "переспрашивает: список из имени чата и типа (личный, группа, канал). После вашего выбора или фразы "
+         "«это Светлана» запоминает псевдоним и в следующий раз открывает этот диалог по id, а не по имени. "
+         "Псевдонимы можно посмотреть, переименовать и удалить."
      ),
-     "tools": ["tg_watch_start", "tg_watch_stop", "tg_watch_list"]},
+     "tools": [
+         "tg_watch_start", "tg_watch_stop", "tg_watch_list",
+         "tg_watch_alias_list", "tg_watch_alias_save", "tg_watch_alias_delete", "tg_watch_alias_rename",
+     ]},
 ]
 
 _STR = {"type": "string"}
@@ -45,13 +52,17 @@ TOOLS = [
      "description": (
          "Включить временную слежку за диалогом, группой или каналом личного Telegram. "
          "name — имя так, как сказал пользователь. minutes — срок в минутах; не передавай, если срок не назван (будет 30). "
-         "Несколько диалогов — несколько вызовов. Если в ответе несколько совпадений, не выбирай сам: перечисли их и спроси. "
+         "Несколько диалогов — несколько вызовов. Если ответ с ask:true (имя размыто, никого нет или несколько) — "
+         "не включай и не выбирай сам: коротко переспроси и перечисли matches как «имя — личный/группа/канал». "
+         "Когда пользователь подтвердил вариант, вызови снова с тем же name и peer_id выбранного диалога: "
+         "так запоминается псевдоним, следующий раз это имя включит диалог по id. "
          "Не меняет уведомления Telegram. Если deliverable:false или сказано, что некуда доставить — так и скажи пользователю "
          "и не говори, что слежка включена. Свои исходящие в пуш не попадают."
      ),
      "input_schema": {"type": "object", "properties": {
-         "name": {**_STR, "description": "Имя диалога, группы или канала"},
+         "name": {**_STR, "description": "Имя или псевдоним диалога, группы или канала — как сказал пользователь"},
          "minutes": {"type": "number", "description": "Срок в минутах. Пусто — 30."},
+         "peer_id": {"type": "number", "description": "Id диалога, который пользователь выбрал из списка. Пусто, пока он не подтвердил."},
      }, "required": ["name"]}},
     {"name": "tg_watch_stop",
      "description": (
@@ -64,6 +75,31 @@ TOOLS = [
     {"name": "tg_watch_list",
      "description": "Список диалогов, за которыми слежка ещё идёт, и сколько минут осталось.",
      "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "tg_watch_alias_list",
+     "description": "Показать запомненные псевдонимы: как пользователь называет диалог и какой это чат (имя и тип).",
+     "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "tg_watch_alias_save",
+     "description": (
+         "Запомнить псевдоним диалога, не включая слежку. Когда пользователь прямо говорит «это Светлана» или «запомни как». "
+         "alias — его слова. peer_id — если он уже выбрал диалог из списка. "
+         "Без peer_id ищи по alias; если совпадений нет или несколько — не сохраняй, переспроси списком имя и тип."
+     ),
+     "input_schema": {"type": "object", "properties": {
+         "alias": {**_STR, "description": "Как пользователь называет человека или чат"},
+         "peer_id": {"type": "number", "description": "Id диалога, если пользователь его уже указал"},
+         "name": {**_STR, "description": "Имя диалога в Telegram, если оно отличается от псевдонима"},
+     }, "required": ["alias"]}},
+    {"name": "tg_watch_alias_delete",
+     "description": "Удалить псевдоним. Слежку за диалогом не останавливает.",
+     "input_schema": {"type": "object", "properties": {
+         "alias": {**_STR, "description": "Псевдоним, который забыть"},
+     }, "required": ["alias"]}},
+    {"name": "tg_watch_alias_rename",
+     "description": "Переименовать псевдоним. Диалог по id остаётся тем же.",
+     "input_schema": {"type": "object", "properties": {
+         "alias": {**_STR, "description": "Текущий псевдоним"},
+         "new_alias": {**_STR, "description": "Новое имя, как теперь говорить"},
+     }, "required": ["alias", "new_alias"]}},
 ]
 TOOL_NAMES = {t["name"] for t in TOOLS}
 _missing = [t for s in SKILLS for t in s["tools"] if t not in TOOL_NAMES]
@@ -71,17 +107,26 @@ if _missing:
     raise RuntimeError("tg watch catalog tools missing: " + ", ".join(_missing))
 
 PROMPT = (
-    "ВРЕМЕННЫЕ ПУШИ ИЗ ЛИЧНОГО TELEGRAM. Инструменты: tg_watch_start(name, minutes?), tg_watch_stop(name?), tg_watch_list(). "
+    "ВРЕМЕННЫЕ ПУШИ ИЗ ЛИЧНОГО TELEGRAM. Инструменты: tg_watch_start(name, minutes?, peer_id?), "
+    "tg_watch_stop(name?), tg_watch_list(), tg_watch_alias_list(), tg_watch_alias_save(alias, peer_id?), "
+    "tg_watch_alias_delete(alias), tg_watch_alias_rename(alias, new_alias). "
     "Просьба включить уведомления по диалогу, группе или каналу на время («включи на полчаса уведомления в диалоге со Светланой») — "
     "это слежка через личный аккаунт, а не настройки уведомлений Telegram: их не включай и не меняй. "
     "Пока окно открыто, новые входящие от других людей уходят пушем в приложение Джарвис. Свои исходящие не дублируются. "
     "Срок передай в minutes, как сказал пользователь; не назвал срок — не передавай minutes (будет 30 минут). "
     "Несколько диалогов можно включить одновременно, каждый своим вызовом. "
-    "Если инструмент вернул несколько совпадений — не выбирай сам, перечисли названия и спроси, какой включить. "
+    "Если имя размыто («менеджер», «Света»), никого не нашли или подходит несколько — инструмент не включает слежку. "
+    "Коротко переспроси и дай варианты списком: имя чата и тип (личный, группа, канал). Сам не выбирай. "
+    "Пользователь подтвердил вариант — снова tg_watch_start с тем же name, как он назвал диалог, и peer_id выбранного: "
+    "псевдоним запоминается, в следующий раз это имя включит тот же диалог по id. "
+    "«Это Светлана» или «запомни как» без просьбы включить — tg_watch_alias_save, не start. "
+    "Посмотреть, удалить и переименовать псевдоним — отдельные инструменты. "
     "«Выключи» / «останови» по диалогу — сразу tg_watch_stop с этим именем. "
     "Если инструмент сказал, что сообщение некуда доставить — так и скажи: пуш Джарвиса не разрешён или подписки нет, "
     "нужно открыть сайт с экрана «Домой» и разрешить уведомления в Настройки → Общее. Не говори, что слежка включена.\n\n"
 )
+
+_TYPE_LABEL = {"user": "личный", "bot": "бот", "group": "группа", "channel": "канал"}
 
 _MEDIA = {
     "voice": "Голосовое",
@@ -132,27 +177,69 @@ def store_path() -> Path:
     return data_dir() / STORE_NAME
 
 
-def _load() -> dict:
+def _read() -> dict:
     try:
         data = json.loads(store_path().read_text(encoding="utf-8"))
     except Exception:
-        return {}
-    watches = data.get("watches") if isinstance(data, dict) else None
-    if not isinstance(watches, dict):
-        return {}
-    return watches
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    watches = data.get("watches") if isinstance(data.get("watches"), dict) else {}
+    aliases = data.get("aliases") if isinstance(data.get("aliases"), dict) else {}
+    return {"watches": watches, "aliases": aliases}
 
 
-def _save(watches: dict) -> None:
+def _write(doc: dict) -> None:
     path = store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"watches": watches}, ensure_ascii=False), encoding="utf-8")
+    tmp.write_text(json.dumps({
+        "watches": doc.get("watches") or {},
+        "aliases": doc.get("aliases") or {},
+    }, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _update(watches=None, aliases=None) -> None:
+    doc = _read()
+    if watches is not None:
+        doc["watches"] = watches
+    if aliases is not None:
+        doc["aliases"] = aliases
+    _write(doc)
+
+
+def _load() -> dict:
+    return _read()["watches"]
+
+
+def _save(watches: dict) -> None:
+    _update(watches=watches)
+
+
+def _aliases() -> dict:
+    return _read()["aliases"]
 
 
 def _norm(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip().casefold())
+
+
+def _key(value: str) -> str:
+    return re.sub(r"[^\w@]+", " ", _norm(value), flags=re.UNICODE).strip()
+
+
+def _type_label(kind: str) -> str:
+    return _TYPE_LABEL.get(kind or "", "чат")
+
+
+def _as_int(value):
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _minutes(value):
@@ -167,36 +254,92 @@ def _minutes(value):
     return n, ""
 
 
-def pick_dialog(query: str, dialogs: list) -> dict:
-    """Один диалог или отказ, если совпадений нет либо их несколько."""
+def _tokens(value: str) -> list:
+    return [t for t in re.split(r"[^\w@]+", _norm(value)) if t]
+
+
+def _related(query: str, dialog: dict) -> bool:
+    """Подстрока, общий префикс слова или уменьшительное («Света» → «Светлана»). Само по себе слежку не включает."""
     q = _norm(query).lstrip("@")
+    if not q:
+        return False
+    title = _norm(dialog.get("title"))
+    username = _norm(dialog.get("username")).lstrip("@")
+    if q in title or (username and q in username) or (title and title in q):
+        return True
+    q_tokens = [t for t in _tokens(q) if len(t) >= 3]
+    t_tokens = [t for t in _tokens(title) + ([username] if username else []) if len(t) >= 3]
+    for qt in q_tokens:
+        for tt in t_tokens:
+            if tt.startswith(qt) or qt.startswith(tt):
+                return True
+            if len(qt) >= 4 and tt.startswith(qt[:-1]):
+                return True
+            if len(tt) >= 4 and qt.startswith(tt[:-1]):
+                return True
+    return False
+
+
+def pick_dialog(query: str, dialogs: list, allow_partial: bool = False) -> dict:
+    """Точное имя включает. Неточное — нет, пока allow_partial (это остановка уже открытой слежки)."""
+    q = _key(query).lstrip("@")
     if not q:
         return {"ok": False, "message": "Не указано имя диалога."}
     exact, partial = [], []
     for d in dialogs or []:
-        title = _norm(d.get("title"))
-        username = _norm(d.get("username")).lstrip("@")
+        title = _key(d.get("title"))
+        username = _key(d.get("username")).lstrip("@")
         if title == q or (username and username == q):
             exact.append(d)
-        elif q in title or (username and q in username):
+        elif _related(query, d):
             partial.append(d)
     if len(exact) == 1:
         return {"ok": True, "dialog": exact[0]}
     if len(exact) > 1:
         return {"ok": False, "ambiguous": True, "matches": exact}
-    if len(partial) == 1:
+    if allow_partial and len(partial) == 1:
         return {"ok": True, "dialog": partial[0]}
-    if len(partial) > 1:
+    if partial:
         return {"ok": False, "ambiguous": True, "matches": partial}
     return {"ok": False, "message": f"Диалог «{query.strip()}» не найден в личном Telegram."}
 
 
 def _match_row(d: dict) -> dict:
+    kind = d.get("type") or ""
     return {
-        "id": d.get("id"),
+        "id": d.get("id") if d.get("id") is not None else d.get("peer_id"),
         "title": d.get("title") or "",
         "username": d.get("username") or "",
-        "type": d.get("type") or "",
+        "type": kind,
+        "type_label": _type_label(kind),
+    }
+
+
+def _option_line(row: dict) -> str:
+    name = row.get("title") or row.get("username") or str(row.get("id") or "")
+    return f"— {name} — {row.get('type_label') or 'чат'}"
+
+
+def _ask(query: str, matches, too_many: bool = False) -> dict:
+    rows = [_match_row(d) for d in (matches or [])[:8]]
+    shown = (query or "").strip()
+    if not rows:
+        return {
+            "ok": False, "ask": True, "matches": [],
+            "message": (
+                f"Не нашёл «{shown}». Уточните, кого включить: имя чата и это личный диалог, группа или канал."
+            ),
+        }
+    lines = "\n".join(_option_line(r) for r in rows)
+    if too_many:
+        head = f"Не включаю: по «{shown}» слишком много похожих. Уточните имя."
+    elif len(rows) == 1:
+        head = f"Не включаю: имя «{shown}» неточное. Это этот диалог?"
+    else:
+        head = f"Не включаю: по «{shown}» несколько диалогов. Кого включить?"
+    return {
+        "ok": False, "ask": True, "ambiguous": True, "matches": rows,
+        "message": head + "\n" + lines,
     }
 
 
@@ -265,6 +408,28 @@ def live_search(query: str) -> dict:
     dialogs = res.get("dialogs") or []
     matched = (res.get("summary") or {}).get("matched_chats", len(dialogs))
     return {"dialogs": dialogs, "matched": matched}
+
+
+def live_peer(peer_id: int) -> dict | None:
+    """Диалог по id, когда имя в выдаче поиска не совпало буквально («Света» не содержится в «Светлана»)."""
+    tg = _tg_user()
+
+    async def _go():
+        import tg_tools
+        c = await tg._get_client()
+        async for d in c.iter_dialogs():
+            if int(d.id) != int(peer_id):
+                continue
+            ent = d.entity
+            return {
+                "id": int(d.id),
+                "title": d.name or "",
+                "username": getattr(ent, "username", "") or "",
+                "type": tg_tools._kind(ent),
+            }
+        return None
+
+    return tg._run(_go(), 40)
 
 
 def live_latest_id(peer_id: int) -> int:
@@ -346,35 +511,45 @@ def live_fetch_new(peer_id: int, after_id: int) -> list:
     return tg._run(_go(), 40) or []
 
 
-def start(query: str, minutes=None, now=None) -> dict:
-    now = time.time() if now is None else now
-    span, err = _minutes(minutes)
-    if err:
-        return {"ok": False, "message": err}
-    if webpush.subscription_count() < 1:
-        return {"ok": False, "deliverable": False, "message": NO_PUSH}
-    try:
-        found = live_search(query)
-    except Exception as e:
-        return {"ok": False, "error": webpush.redact(str(e))}
-    dialogs = found.get("dialogs") or []
-    matched = int(found.get("matched") or len(dialogs))
-    if matched > len(dialogs):
-        return _ambiguous(dialogs, "Слишком много похожих диалогов, уточните имя.")
-    picked = pick_dialog(query, dialogs)
-    if not picked.get("ok"):
-        if picked.get("ambiguous"):
-            return _ambiguous(picked.get("matches"), "Подходят несколько диалогов, не включаю, пока не уточните:")
-        return {"ok": False, "message": picked.get("message") or "Диалог не найден."}
-    dialog = picked["dialog"]
+def _dialog_from_alias(rec: dict) -> dict:
+    return {
+        "id": rec.get("peer_id"),
+        "title": rec.get("title") or rec.get("alias") or "",
+        "username": rec.get("username") or "",
+        "type": rec.get("type") or "",
+    }
+
+
+def _alias_record(phrase: str, dialog: dict) -> dict | None:
+    shown = (phrase or "").strip()
+    if not _key(shown):
+        return None
     peer = dialog.get("id")
+    if peer is None:
+        peer = dialog.get("peer_id")
+    if peer is None:
+        return None
+    return {
+        "alias": shown,
+        "peer_id": int(peer),
+        "title": dialog.get("title") or "",
+        "username": dialog.get("username") or "",
+        "type": dialog.get("type") or "",
+    }
+
+
+def _arm(dialog: dict, span: int, now: float, alias_phrase: str = "") -> dict:
+    peer = dialog.get("id")
+    if peer is None:
+        peer = dialog.get("peer_id")
     if peer is None:
         return {"ok": False, "message": "Диалог без id."}
     try:
         latest = int(live_latest_id(peer) or 0)
     except Exception as e:
         return {"ok": False, "error": webpush.redact(str(e))}
-    title = dialog.get("title") or query.strip()
+    title = dialog.get("title") or (alias_phrase or "").strip() or str(peer)
+    remembered = ""
     with _lock:
         watches = _alive(now)
         prev = watches.get(str(peer)) or {}
@@ -390,20 +565,173 @@ def start(query: str, minutes=None, now=None) -> dict:
             "last_id": last_id,
             "started": now,
         }
-        _save(watches)
+        aliases = None
+        rec = _alias_record(alias_phrase, dialog)
+        if rec:
+            aliases = dict(_aliases())
+            aliases[_key(alias_phrase)] = rec
+            remembered = rec["alias"]
+        _update(watches=watches, aliases=aliases)
         rows = [_public_watch(w, now) for w in watches.values()]
+    message = (
+        f"Слежу за «{title}» {span} мин. Новые входящие от других придут пушем в Джарвис. "
+        "Свои сообщения не дублирую. Уведомления Telegram не менял."
+    )
+    if remembered:
+        message += f" Запомнил «{remembered}» за этим диалогом."
     return {
         "ok": True,
         "deliverable": True,
         "title": title,
         "type": dialog.get("type") or "",
+        "peer_id": peer,
         "minutes": span,
-        "message": (
-            f"Слежу за «{title}» {span} мин. Новые входящие от других придут пушем в Джарвис. "
-            "Свои сообщения не дублирую. Уведомления Telegram не менял."
-        ),
+        "alias": remembered,
+        "message": message,
         "watches": rows,
     }
+
+
+def start(query: str, minutes=None, now=None, peer_id=None) -> dict:
+    now = time.time() if now is None else now
+    span, err = _minutes(minutes)
+    if err:
+        return {"ok": False, "message": err}
+    if webpush.subscription_count() < 1:
+        return {"ok": False, "deliverable": False, "message": NO_PUSH}
+    phrase = (query or "").strip()
+    chosen = _as_int(peer_id)
+    if chosen is None and phrase:
+        rec = _aliases().get(_key(phrase))
+        if isinstance(rec, dict) and rec.get("peer_id") is not None:
+            return _arm(_dialog_from_alias(rec), span, now)
+    try:
+        found = live_search(phrase)
+    except Exception as e:
+        return {"ok": False, "error": webpush.redact(str(e))}
+    dialogs = found.get("dialogs") or []
+    matched = int(found.get("matched") or len(dialogs))
+    if chosen is not None:
+        resolved = _dialog_by_id(phrase, chosen, dialogs)
+        if not resolved.get("ok"):
+            return resolved
+        return _arm(resolved["dialog"], span, now, alias_phrase=phrase)
+    if matched > len(dialogs):
+        return _ask(phrase, dialogs, too_many=True)
+    picked = pick_dialog(phrase, dialogs, allow_partial=False)
+    if not picked.get("ok"):
+        if picked.get("ambiguous"):
+            return _ask(phrase, picked.get("matches"))
+        return _ask(phrase, [])
+    return _arm(picked["dialog"], span, now)
+
+
+def _dialog_by_id(phrase: str, peer_id: int, dialogs=None) -> dict:
+    """Сначала уже найденные строки, потом пустой поиск, потом обход диалогов по id."""
+    pool = list(dialogs or [])
+    dialog = next((d for d in pool if _as_int(d.get("id")) == peer_id), None)
+    if dialog:
+        return {"ok": True, "dialog": dialog}
+    try:
+        if dialogs is not None:
+            broad = live_search("")
+            pool = (broad or {}).get("dialogs") or []
+            dialog = next((d for d in pool if _as_int(d.get("id")) == peer_id), None)
+            if dialog:
+                return {"ok": True, "dialog": dialog}
+        dialog = live_peer(peer_id)
+    except Exception as e:
+        return {"ok": False, "error": webpush.redact(str(e))}
+    if not dialog:
+        return {"ok": False, "ask": True, "message": "Не вижу выбранный диалог. Уточните имя."}
+    return {"ok": True, "dialog": dialog}
+
+
+def _find_dialog(phrase: str, peer_id=None) -> dict:
+    chosen = _as_int(peer_id)
+    try:
+        found = live_search((phrase or "").strip())
+    except Exception as e:
+        return {"ok": False, "error": webpush.redact(str(e))}
+    dialogs = found.get("dialogs") or []
+    if chosen is not None:
+        return _dialog_by_id(phrase, chosen, dialogs)
+    picked = pick_dialog(phrase, dialogs, allow_partial=False)
+    if not picked.get("ok"):
+        if picked.get("ambiguous"):
+            return _ask(phrase, picked.get("matches"))
+        return _ask(phrase, [])
+    return {"ok": True, "dialog": picked["dialog"]}
+
+
+def alias_list() -> dict:
+    with _lock:
+        rows = [dict(r) for r in _aliases().values() if isinstance(r, dict)]
+    for row in rows:
+        row["type_label"] = _type_label(row.get("type") or "")
+    rows.sort(key=lambda r: (r.get("alias") or "").casefold())
+    return {"ok": True, "aliases": rows}
+
+
+def alias_save(alias: str, peer_id=None, dialog_name: str = "") -> dict:
+    phrase = (alias or "").strip()
+    if not _key(phrase):
+        return {"ok": False, "message": "Не сказано, как называть диалог."}
+    found = _find_dialog((dialog_name or phrase).strip(), peer_id)
+    if not found.get("ok"):
+        return found
+    dialog = found["dialog"]
+    rec = _alias_record(phrase, dialog)
+    if not rec:
+        return {"ok": False, "message": "Диалог без id."}
+    with _lock:
+        aliases = dict(_aliases())
+        aliases[_key(phrase)] = rec
+        _update(aliases=aliases)
+    label = _type_label(rec.get("type") or "")
+    title = rec.get("title") or str(rec.get("peer_id"))
+    return {
+        "ok": True,
+        "alias": rec,
+        "message": f"Запомнил: «{phrase}» — это «{title}», {label}. Слежку не включал.",
+    }
+
+
+def alias_delete(alias: str) -> dict:
+    key = _key(alias)
+    if not key:
+        return {"ok": False, "message": "Не сказано, какой псевдоним удалить."}
+    with _lock:
+        aliases = dict(_aliases())
+        gone = aliases.pop(key, None)
+        _update(aliases=aliases)
+    if not gone:
+        return {"ok": False, "message": f"Псевдонима «{(alias or '').strip()}» нет."}
+    return {"ok": True, "message": f"Псевдоним «{gone.get('alias') or alias.strip()}» удалён.", "alias": gone}
+
+
+def alias_rename(alias: str, new_alias: str) -> dict:
+    old = _key(alias)
+    phrase = (new_alias or "").strip()
+    new = _key(phrase)
+    if not old or not new:
+        return {"ok": False, "message": "Нужны старое и новое имя псевдонима."}
+    with _lock:
+        aliases = dict(_aliases())
+        rec = aliases.get(old)
+        if not rec:
+            return {"ok": False, "message": f"Псевдонима «{(alias or '').strip()}» нет."}
+        if new != old and new in aliases:
+            other = aliases[new]
+            busy = other.get("title") or other.get("peer_id")
+            return {"ok": False, "message": f"Псевдоним «{phrase}» уже занят диалогом «{busy}»."}
+        if new != old:
+            aliases.pop(old, None)
+        rec = dict(rec)
+        rec["alias"] = phrase
+        aliases[new] = rec
+        _update(aliases=aliases)
+    return {"ok": True, "message": f"Теперь это «{phrase}».", "alias": rec}
 
 
 def stop(query: str = "", now=None) -> dict:
@@ -421,7 +749,7 @@ def stop(query: str = "", now=None) -> dict:
                 return {"ok": True, "message": f"Слежку за «{gone.get('title')}» остановил.", "watches": []}
             _save(watches)
             return _ambiguous(rows, "Слежек несколько, скажите, какую остановить:")
-        picked = pick_dialog(query, rows)
+        picked = pick_dialog(query, rows, allow_partial=True)
         if not picked.get("ok"):
             _save(watches)
             if picked.get("ambiguous"):
@@ -506,11 +834,25 @@ def execute(name: str, inp: dict, state) -> dict:
     inp = inp or {}
     try:
         if name == "tg_watch_start":
-            return start(inp.get("name") or inp.get("query") or "", inp.get("minutes"))
+            return start(inp.get("name") or inp.get("query") or "", inp.get("minutes"), peer_id=inp.get("peer_id"))
         if name == "tg_watch_stop":
             return stop(inp.get("name") or inp.get("query") or "")
         if name == "tg_watch_list":
             return list_watches()
+        if name == "tg_watch_alias_list":
+            return alias_list()
+        if name == "tg_watch_alias_save":
+            alias = (inp.get("alias") or "").strip()
+            dialog_name = (inp.get("dialog") or "").strip()
+            if not alias:
+                alias = (inp.get("name") or "").strip()
+            elif inp.get("name"):
+                dialog_name = dialog_name or str(inp.get("name"))
+            return alias_save(alias, inp.get("peer_id"), dialog_name)
+        if name == "tg_watch_alias_delete":
+            return alias_delete(inp.get("alias") or inp.get("name") or "")
+        if name == "tg_watch_alias_rename":
+            return alias_rename(inp.get("alias") or "", inp.get("new_alias") or "")
     except Exception as e:
         return {"error": webpush.redact(str(e))}
     return {"error": "unknown_tool"}

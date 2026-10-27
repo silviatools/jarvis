@@ -63,10 +63,17 @@ class WatchTest(unittest.TestCase):
         rows = _dialogs()
         self.assertEqual(tg_watch_skill.pick_dialog("Светлана, менеджер по OZON", rows)["dialog"]["id"], 2)
         self.assertEqual(tg_watch_skill.pick_dialog("@ozon_sveta", rows)["dialog"]["id"], 2)
-        self.assertEqual(tg_watch_skill.pick_dialog("Склад", rows)["dialog"]["id"], 3)
+        sklad = tg_watch_skill.pick_dialog("Склад", rows)
+        self.assertFalse(sklad["ok"])
+        self.assertTrue(sklad["ambiguous"])
+        self.assertEqual([d["id"] for d in sklad["matches"]], [3])
+        self.assertEqual(tg_watch_skill.pick_dialog("Склад", rows, allow_partial=True)["dialog"]["id"], 3)
         amb = tg_watch_skill.pick_dialog("Свет", rows)
         self.assertTrue(amb["ambiguous"])
         self.assertGreater(len(amb["matches"]), 1)
+        sveta = tg_watch_skill.pick_dialog("Света", rows)
+        self.assertTrue(sveta["ambiguous"])
+        self.assertGreater(len(sveta["matches"]), 1)
         same = [
             {"id": 8, "title": "Анна", "username": "", "type": "user"},
             {"id": 9, "title": "Анна", "username": "anna2", "type": "user"},
@@ -108,6 +115,85 @@ class WatchTest(unittest.TestCase):
         self.assertEqual(tg_watch_skill._load()["3"]["minutes"], 45)
         bad = tg_watch_skill.start("Склад OZON", 0, now=now)
         self.assertFalse(bad["ok"])
+
+    def test_blurry_name_asks_then_alias_enables_by_id(self):
+        self._sub()
+        calls = {"n": 0}
+
+        def search(query):
+            calls["n"] += 1
+            return {"dialogs": _dialogs(), "matched": len(_dialogs())}
+
+        tg_watch_skill.live_search = search
+        now = 1_700_000_000
+        vague = tg_watch_skill.start("менеджер", now=now)
+        self.assertTrue(vague["ask"])
+        self.assertFalse(vague["ok"])
+        self.assertIn("— Светлана, менеджер по OZON — личный", vague["message"])
+        self.assertNotIn("Склад", vague["message"])
+        self.assertEqual(tg_watch_skill._load(), {})
+        self.assertEqual(tg_watch_skill.alias_list()["aliases"], [])
+
+        one = tg_watch_skill.start("Склад", now=now)
+        self.assertTrue(one["ask"])
+        self.assertIn("— Склад OZON — группа", one["message"])
+        self.assertEqual(tg_watch_skill._load(), {})
+
+        missing = tg_watch_skill.start("нет такого человека", now=now)
+        self.assertTrue(missing["ask"])
+        self.assertEqual(missing["matches"], [])
+        self.assertEqual(tg_watch_skill._load(), {})
+
+        channel = tg_watch_skill._ask("новости", [{"id": 5, "title": "Новости", "type": "channel"}])
+        self.assertIn("— Новости — канал", channel["message"])
+
+        asked = tg_watch_skill.start("Света", now=now)
+        self.assertTrue(asked["ask"])
+        self.assertFalse(asked["ok"])
+        self.assertGreaterEqual(len(asked["matches"]), 2)
+        self.assertTrue(all(m["type_label"] == "личный" for m in asked["matches"]))
+        self.assertEqual(tg_watch_skill._load(), {})
+        self.assertEqual(tg_watch_skill.alias_list()["aliases"], [])
+
+        saved = tg_watch_skill.start("Света", peer_id=2, now=now)
+        self.assertTrue(saved["ok"])
+        self.assertEqual(saved["peer_id"], 2)
+        self.assertEqual(saved["alias"], "Света")
+        self.assertEqual(tg_watch_skill._load()["2"]["peer_id"], 2)
+        self.assertEqual(tg_watch_skill.alias_list()["aliases"][0]["peer_id"], 2)
+
+        tg_watch_skill.live_search = lambda query: (_ for _ in ()).throw(AssertionError("поиск по имени"))
+        again = tg_watch_skill.start("Света", now=now + 10)
+        self.assertTrue(again["ok"])
+        self.assertEqual(again["peer_id"], 2)
+
+        tg_watch_skill.live_search = search
+        renamed = tg_watch_skill.alias_rename("Света", "менеджер OZON")
+        self.assertTrue(renamed["ok"])
+        calls["n"] = 0
+        by_new = tg_watch_skill.start("менеджер OZON", now=now + 20)
+        self.assertTrue(by_new["ok"])
+        self.assertEqual(calls["n"], 0)
+        self.assertEqual(by_new["peer_id"], 2)
+
+        deleted = tg_watch_skill.execute(
+            "tg_watch_alias_delete", {"alias": "менеджер OZON"}, {tg_watch_skill.SKILL_ID: True})
+        self.assertTrue(deleted["ok"])
+        self.assertEqual(tg_watch_skill.alias_list()["aliases"], [])
+        calls["n"] = 0
+        after = tg_watch_skill.start("Света", now=now + 30)
+        self.assertTrue(after["ask"])
+        self.assertFalse(after["ok"])
+        self.assertGreater(calls["n"], 0)
+
+        named = tg_watch_skill.alias_save("Светлана")
+        self.assertTrue(named["ok"])
+        self.assertEqual(named["alias"]["peer_id"], 1)
+        self.assertIn("не включал", named["message"])
+        self.assertNotIn("1", tg_watch_skill._load())
+        blurry_save = tg_watch_skill.alias_save("Света")
+        self.assertTrue(blurry_save["ask"])
+        self.assertFalse(any(a.get("alias") == "Света" for a in tg_watch_skill.alias_list()["aliases"]))
 
     def test_stop_and_list(self):
         self._sub()
@@ -411,6 +497,8 @@ class AssistantLoopTest(unittest.TestCase):
         self.assertIn("Джарвис", skill["desc"])
         self.assertIn("Домой", skill["desc"])
         self.assertIn("не дублируются", skill["desc"])
+        self.assertIn("псевдоним", skill["desc"])
+        self.assertIn("личный", skill["desc"])
 
         src = Path("jarvis.py").read_text(encoding="utf-8")
         self.assertIn('"jarvis_webpush.json"', src)
