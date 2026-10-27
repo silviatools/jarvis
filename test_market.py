@@ -75,9 +75,12 @@ class MarketSkillTest(unittest.TestCase):
         market_skill._logs.clear()
         self._ip = market_skill.fetch_ip_direct
         market_skill.fetch_ip_direct = lambda: "198.51.100.8"
+        self._lookup = market_skill.lookup_exit
+        market_skill.lookup_exit = lambda ip: {"mobile": True, "org": "", "asn": "", "warning": ""}
 
     def tearDown(self):
         market_skill.fetch_ip_direct = self._ip
+        market_skill.lookup_exit = self._lookup
         market_skill.set_driver(None)
         self.tmp.cleanup()
 
@@ -432,6 +435,90 @@ class MarketSkillTest(unittest.TestCase):
         self.assertIs(cab._ensure_browser(), browser)
 
 
+    def test_wb_browser_check_waits(self):
+        info = {
+            "url": "https://www.wildberries.ru/security/login",
+            "title": "",
+            "text": "Проверяем браузер",
+        }
+        self.assertEqual(market_skill.classify_page(info), "pending")
+        self.assertNotEqual(market_skill.classify_page(info), "challenge")
+        self.assertEqual(market_skill.page_face(info), "проверка браузера")
+        self.assertTrue(market_skill.wb_keep_waiting(info, 18, False))
+        self.assertFalse(market_skill.wb_keep_waiting(info, 40, False))
+        self.assertFalse(market_skill.wb_keep_waiting(info, 5, True))
+        decision = market_skill.decide_after_phone("wb", info, False)
+        self.assertNotEqual(decision.get("status"), "blocked")
+
+    def test_ozon_warmup_reloads_on_saved_block_page(self):
+        html = Path("tests/fixtures/market/ozon-antibot.html").read_text(encoding="utf-8")
+        self.assertIn("<title>Похоже, нет соединения</title>", html)
+        blocked = {"title": "Похоже, нет соединения", "text": "Выключите VPN, перезагрузите роутер"}
+        self.assertFalse(market_skill.ozon_home_clear(blocked))
+        self.assertTrue(market_skill.ozon_home_clear({"title": "OZON — интернет-магазин", "text": "каталог"}))
+        self.assertFalse(market_skill.ozon_home_clear({
+            "title": "OZON", "text": "Похоже, нет соединения",
+        }))
+
+        def run(clear_at):
+            clock = {"t": 0.0}
+            reloads = []
+
+            def now():
+                return clock["t"]
+
+            def sleep(sec):
+                clock["t"] += sec
+
+            def reload():
+                reloads.append(clock["t"])
+
+            def snapshot():
+                if clear_at is not None and clock["t"] >= clear_at:
+                    return {"title": "OZON — интернет-магазин", "text": "каталог"}
+                return blocked
+
+            result = market_skill.ozon_warm_pass(snapshot, reload, sleep, now)
+            return result, reloads
+
+        stuck, reloads = run(None)
+        self.assertFalse(stuck["ok"])
+        self.assertEqual(len(reloads), 2)
+        self.assertAlmostEqual(reloads[0], 10, delta=0.5)
+        self.assertAlmostEqual(reloads[1], 18, delta=0.5)
+        opened, reloads = run(19)
+        self.assertTrue(opened["ok"])
+        self.assertEqual([ev.get("action") for ev in opened["events"] if ev.get("action") != "see"], ["reload", "reload", "settle"])
+        self.assertAlmostEqual(reloads[0], 10, delta=0.5)
+        self.assertAlmostEqual(reloads[1], 18, delta=0.5)
+
+    def test_exit_128_is_beeline_broadband(self):
+        fields = json.loads(Path("tests/fixtures/market/exit-128.71.38.20.json").read_text(encoding="utf-8"))
+        kind = market_skill.describe_exit(fields)
+        self.assertEqual(kind["asn"], "AS16345")
+        self.assertFalse(kind["mobile"])
+        self.assertIn("Vimpelcom", kind["warning"])
+        self.assertIn("corbina.ru", kind["warning"])
+        self.assertIn("не мобильный", kind["warning"])
+        self.assertIn("Ozon", kind["warning"])
+        self.assertNotIn("VPN", kind["warning"])
+        mobile = market_skill.describe_exit({
+            "org": "PJSC Vimpelcom", "asn": "AS16345",
+            "netname": "BEELINE-GPRS", "descr": "APN internet.beeline.ru", "hostname": "",
+        })
+        self.assertTrue(mobile["mobile"])
+        self.assertEqual(mobile["warning"], "")
+
+    def test_abt_cookies_not_in_status(self):
+        self._proxy()
+        market_skill.save_abt(market_skill._proxy(), "android", {"cookies": [{"name": "abt", "value": COOKIE}]})
+        blob = json.dumps(market_skill.public_status(), ensure_ascii=False)
+        self.assertNotIn(COOKIE, blob)
+        raw = (Path(self.tmp.name) / "jarvis_market.json").read_text(encoding="utf-8")
+        self.assertIn(COOKIE, raw)
+        self.assertEqual(market_skill.load_abt(market_skill._proxy(), "android")["cookies"][0]["value"], COOKIE)
+
+
 class AssistantLoopTest(unittest.TestCase):
     def _run(self, provider, skills):
         captured = {}
@@ -526,6 +613,7 @@ class AssistantLoopTest(unittest.TestCase):
         self.assertIn("market-journal", market_html)
         self.assertIn("/api/market/shot/", market_html)
         self.assertIn("blocked:", market_html)
+        self.assertIn("j.message ||", market_html)
 
 
 class MarketHttpTest(unittest.TestCase):

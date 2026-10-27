@@ -9,3 +9,4 @@ xlrd
 fpdf2
 playwright
 pywebpush
+patchright

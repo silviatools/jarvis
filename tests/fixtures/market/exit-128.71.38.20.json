@@ -1,0 +1,12 @@
+{
+  "ip": "128.71.38.20",
+  "org": "PJSC Vimpelcom",
+  "asn": "AS16345",
+  "hostname": "128-71-38-20.broadband.corbina.ru",
+  "netname": "BEELINE-BROADBAND",
+  "descr": "Dynamic IP Pool for Broadband Customers",
+  "country": "RU",
+  "as_type": "ISP",
+  "route_note": "16345 Mobile Region",
+  "source": "ipinfo.io и RIPE whois, 2026-10-27. route_note — подпись маршрута /16, не inetnum."
+}

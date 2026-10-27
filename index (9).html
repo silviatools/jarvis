@@ -5641,7 +5641,7 @@ function MarketplaceSettings() {
       });
       const j = await res.json();
       if (!res.ok || j.ok === false) setErr(j.error || 'Не получилось');
-      else if (j.exit_ip) setInfo(`Трафик выходит не с IP сервера (${j.exit_ip}). IP сервера: ${j.server_ip}.`);
+      else if (j.exit_ip) setInfo(j.message || (`Трафик выходит не с IP сервера (${j.exit_ip}). IP сервера: ${j.server_ip}.`));
       else if (j.message) setInfo(j.message);
       if (path === '/api/market/proxy' && j.ok) setProxy('');
       load();

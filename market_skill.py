@@ -13,6 +13,7 @@ Europe/Moscow, Client Hints). Без сохранённого прокси вх�
 инструмент прямо говорит, что нужен повторный вход и код из СМС.
 """
 
+import hashlib
 import json
 import os
 import queue
@@ -203,6 +204,13 @@ BLOCKED_ERROR = (
 _JOURNAL_MAX = 40
 _SHOT_MAX = 24
 _SHOT_RE = re.compile(r"^m[0-9a-f]{16}\.jpg$")
+# Прогрев Ozon: главная, перезагрузки на 10-й и 18-й секунде, до 25 с, затем 3 с на cookies.
+OZON_HOME = "https://www.ozon.ru/"
+OZON_MODES = ("android", "desktop", "patchright")
+OZON_WARM_LIMIT = 25
+OZON_WARM_RELOADS = (10, 18)
+OZON_WARM_SETTLE = 3
+WB_WAIT_S = 40
 _AUTH_OK = ("code", "password")
 _lock = threading.Lock()
 _driver = None
@@ -440,6 +448,7 @@ def _empty() -> dict:
     return {
         "proxy": None,
         "journal": [],
+        "abt": {},
         "shops": {sid: {"status": "none", "auth": "", "phone_mask": "", "updated": 0, "storage": None} for sid in SHOPS},
     }
 
@@ -475,7 +484,44 @@ def _load() -> dict:
             "storage": storage,
         }
     base["journal"] = _clean_journal(data.get("journal"))
+    base["abt"] = _clean_abt(data.get("abt"))
     return base
+
+
+def _clean_abt(raw) -> dict:
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, modes in raw.items():
+        if not re.fullmatch(r"[0-9a-f]{16}", str(key)) or not isinstance(modes, dict):
+            continue
+        kept = {}
+        for mode, storage in modes.items():
+            if mode in OZON_MODES and isinstance(storage, dict):
+                kept[mode] = storage
+        if kept:
+            out[str(key)] = kept
+    return out
+
+
+def load_abt(proxy, mode):
+    if mode not in OZON_MODES:
+        return None
+    row = (_load().get("abt") or {}).get(proxy_hash(proxy)) or {}
+    storage = row.get(mode)
+    return storage if isinstance(storage, dict) else None
+
+
+def save_abt(proxy, mode, storage):
+    if mode not in OZON_MODES or not isinstance(storage, dict):
+        return
+    with _lock:
+        data = _load()
+        key = proxy_hash(proxy)
+        data.setdefault("abt", {})
+        data["abt"].setdefault(key, {})
+        data["abt"][key][mode] = storage
+        _write(data)
 
 
 def _write(data: dict):
@@ -616,6 +662,139 @@ def save_proxy(raw: str) -> dict:
     return {"ok": True, "mask": mask_proxy(parsed), "message": message}
 
 
+def proxy_hash(proxy) -> str:
+    raw = "|".join(str((proxy or {}).get(k) or "") for k in ("scheme", "host", "port", "username", "password"))
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def describe_exit(fields) -> dict:
+    """Мобильный выход или нет. Broadband/Corbina важнее общей подписи маршрута «Mobile Region»."""
+    fields = fields or {}
+    org = str(fields.get("org") or "").strip()
+    asn = str(fields.get("asn") or "").strip()
+    netname = str(fields.get("netname") or "").strip()
+    descr = str(fields.get("descr") or "").strip()
+    host = str(fields.get("hostname") or "").strip()
+    assign = _norm_text(" ".join((netname, descr, host)))
+    if any(s in assign for s in ("broadband", "corbina")):
+        mobile = False
+    elif any(s in assign for s in ("mobile", "gprs", "apn")):
+        mobile = True
+    else:
+        mobile = False
+    who = " ".join(x for x in (org, asn) if x).strip() or "неизвестен"
+    warning = ""
+    if not mobile:
+        where = host or netname or "сеть без признака мобильного оператора"
+        warning = f"Оператор: {who}. Выход {where}, не мобильный. Ozon такой IP режет."
+    return {
+        "mobile": mobile, "org": org, "asn": asn, "hostname": host,
+        "netname": netname, "descr": descr, "warning": warning,
+    }
+
+
+def lookup_exit(ip: str) -> dict:
+    """ASN и тип сети выхода. Запрос с сервера, не через прокси пользователя."""
+    fields = {"org": "", "asn": "", "hostname": "", "netname": "", "descr": ""}
+    if requests is None or not parse_ip_body(ip or ""):
+        return describe_exit(fields)
+    sess = requests.Session()
+    sess.trust_env = False
+    direct = {"http": None, "https": None}
+    try:
+        resp = sess.get(f"https://ipinfo.io/{ip}/json", timeout=8, proxies=direct)
+        if resp.ok:
+            data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") or resp.text.startswith("{") else {}
+            if isinstance(data, dict):
+                org = str(data.get("org") or "")
+                match = re.search(r"\bAS\d+\b", org)
+                if match:
+                    fields["asn"] = match.group(0)
+                    org = org.replace(match.group(0), "").strip(" -")
+                fields["org"] = org
+                fields["hostname"] = str(data.get("hostname") or "")
+    except Exception as e:
+        _log("ipinfo " + type(e).__name__)
+    try:
+        resp = sess.get(
+            "https://stat.ripe.net/data/whois/data.json",
+            params={"resource": ip}, timeout=8, proxies=direct,
+        )
+        if resp.ok:
+            records = ((resp.json() or {}).get("data") or {}).get("records") or []
+            for group in records:
+                if not isinstance(group, list):
+                    continue
+                keys = {item.get("key"): item.get("value") for item in group if isinstance(item, dict)}
+                if keys.get("netname") or keys.get("inetnum"):
+                    fields["netname"] = str(keys.get("netname") or "")
+                    fields["descr"] = str(keys.get("descr") or "")
+                    break
+    except Exception as e:
+        _log("ripe " + type(e).__name__)
+    return describe_exit(fields)
+
+
+def ozon_home_clear(info) -> bool:
+    """Заголовок с ozon и без стены антибота. Тело тоже смотрим на метки блокировки."""
+    title = _norm_text((info or {}).get("title") or "")
+    blob = title + "\n" + _norm_text((info or {}).get("text") or "")
+    if "ozon" not in title:
+        return False
+    if any(s in blob for s in _OFFLINE_MARKERS) or any(s in blob for s in _CHALLENGE_MARKERS):
+        return False
+    return True
+
+
+def ozon_warm_tick(elapsed, done) -> str:
+    if elapsed >= OZON_WARM_LIMIT:
+        return "stop"
+    for mark in OZON_WARM_RELOADS:
+        if elapsed >= mark and mark not in done:
+            return "reload"
+    return "wait"
+
+
+def ozon_warm_pass(snapshot, reload, sleep, now=None) -> dict:
+    """Главная Ozon до 25 с. Перезагрузка на 10-й и 18-й секунде. После прохода пауза 3 с."""
+    now = now or time.monotonic
+    started = now()
+    done = []
+    events = []
+    info = {}
+    while True:
+        elapsed = now() - started
+        info = snapshot() or {}
+        events.append({"elapsed": elapsed, "action": "see", "title": (info.get("title") or "")[:80]})
+        if ozon_home_clear(info):
+            sleep(OZON_WARM_SETTLE)
+            events.append({"elapsed": now() - started, "action": "settle"})
+            return {"ok": True, "events": events, "info": info}
+        tick = ozon_warm_tick(elapsed, done)
+        if tick == "stop":
+            events.append({"elapsed": elapsed, "action": "stop"})
+            return {"ok": False, "events": events, "info": info}
+        if tick == "reload":
+            mark = next(m for m in OZON_WARM_RELOADS if elapsed >= m and m not in done)
+            done.append(mark)
+            events.append({"elapsed": elapsed, "action": "reload", "at": mark})
+            reload()
+            continue
+        sleep(0.4)
+
+
+def wb_keep_waiting(info, elapsed, has_phone) -> bool:
+    """Пока нет поля телефона и не вышли 40 с — ждём, в том числе «Проверяем браузер»."""
+    if has_phone:
+        return False
+    if elapsed >= WB_WAIT_S:
+        return False
+    kind = classify_page(info or {})
+    if kind in ("offline", "challenge"):
+        return False
+    return True
+
+
 def check_ip() -> dict:
     proxy = _proxy()
     if not proxy:
@@ -640,11 +819,24 @@ def check_ip() -> dict:
             "server_ip": server_ip,
             "exit_ip": exit_ip,
         }
+    kind = lookup_exit(exit_ip)
+    message = f"Трафик выходит не с IP сервера ({exit_ip}). IP сервера: {server_ip}."
+    if kind.get("warning"):
+        message += " " + kind["warning"]
+    elif kind.get("org"):
+        message += " Оператор: " + kind["org"]
+        if kind.get("asn"):
+            message += ", " + kind["asn"]
+        message += "."
     return {
         "ok": True,
         "server_ip": server_ip,
         "exit_ip": exit_ip,
-        "message": "Трафик выходит не с IP сервера.",
+        "org": kind.get("org") or "",
+        "asn": kind.get("asn") or "",
+        "mobile": bool(kind.get("mobile")),
+        "warning": kind.get("warning") or "",
+        "message": message,
     }
 
 
@@ -799,6 +991,8 @@ def _drop_reason(result) -> str:
         "text": result.get("text") or "",
     }
     kind = classify_page(info) if any(info.values()) else ""
+    if kind == "pending" or result.get("session") == "pending":
+        return "pending"
     if kind in ("offline", "challenge") or result.get("session") in ("blocked", "challenge"):
         return "blocked"
     if result.get("session") in ("expired", "public") or kind in ("login", "code", "password", "public"):
@@ -812,6 +1006,15 @@ def _apply_read_session(shop, result) -> dict:
     reason = _drop_reason(result)
     if not reason:
         return {}
+    if reason == "pending":
+        note_step(
+            shop, "read", (result or {}).get("url") or "",
+            (result or {}).get("text") or (result or {}).get("title") or "проверка браузера",
+            "pending",
+            title=(result or {}).get("title") or "",
+            shot=(result or {}).get("shot") or "",
+        )
+        return {"error": "Сайт проверяет браузер. Кабинет ещё не открылся.", "shop": shop, "status": _status(shop)}
     if reason == "blocked":
         why = (result or {}).get("face") or page_face({
             "url": (result or {}).get("url") or "",
@@ -1056,6 +1259,8 @@ def _log_page(sid, info, phone_mask="", form_mask=""):
 def decide_after_phone(shop, info, code_field=False) -> dict:
     """После ввода телефона сессия не бывает активной: нужен код или пароль и живой кабинет."""
     kind = classify_page(info)
+    if kind == "pending":
+        return {"ok": False, "error": "Сайт ещё проверяет браузер. Вход не закончен.", "url": (info or {}).get("url") or "", "title": (info or {}).get("title") or "", "summary": page_snippet(info), "face": page_face(info)}
     if kind in ("offline", "challenge"):
         return {
             "ok": False, "status": "blocked", "error": BLOCKED_ERROR,
@@ -1085,6 +1290,8 @@ def decide_after_phone(shop, info, code_field=False) -> dict:
 def session_from_page(info) -> dict:
     kind = classify_page(info or {})
     url = (info or {}).get("url") or ""
+    if kind == "pending":
+        return {"ok": False, "session": "pending", "url": url}
     if kind in ("offline", "challenge"):
         return {"ok": False, "session": "blocked", "error": BLOCKED_ERROR, "url": url, "face": page_face(info)}
     if kind in ("login", "code", "password"):
@@ -1295,6 +1502,9 @@ def classify_page(info: dict) -> str:
     # «Нет соединения» часто остаётся на /my/orderlist. Это антибот, не кабинет.
     if any(s in text for s in _OFFLINE_MARKERS):
         return "offline"
+    # «Проверяем браузер» на WB — ещё идёт проверка, это не отказ.
+    if "проверяем браузер" in text:
+        return "pending"
     if any(s in text for s in _CHALLENGE_MARKERS):
         return "challenge"
     if any(s in text for s in _CODE_MARKERS):
@@ -1320,6 +1530,8 @@ def page_face(info) -> str:
     """Короткая пометка для журнала: антибот это или форма входа."""
     kind = classify_page(info or {})
     text = _norm_text(((info or {}).get("title") or "") + "\n" + ((info or {}).get("text") or ""))
+    if kind == "pending":
+        return "проверка браузера"
     if kind == "offline":
         return "антибот: нет соединения"
     if kind == "challenge":
@@ -1349,7 +1561,7 @@ class PlaywrightCabinet:
         return self._worker.call(self._exit_ip, proxy)
 
     def begin_login(self, shop, phone, proxy) -> dict:
-        return self._worker.call(self._begin_login, shop, phone, proxy, timeout=90)
+        return self._worker.call(self._begin_login, shop, phone, proxy, timeout=180)
 
     def submit_code(self, shop, code, proxy) -> dict:
         return self._worker.call(self._submit_code, shop, code, proxy, timeout=70)
@@ -1358,7 +1570,7 @@ class PlaywrightCabinet:
         return self._worker.call(self._close_login, shop, timeout=20)
 
     def read(self, shop, section, proxy, storage, order_id="") -> dict:
-        return self._worker.call(self._read, shop, section, proxy, storage, order_id, timeout=70)
+        return self._worker.call(self._read, shop, section, proxy, storage, order_id, timeout=180)
 
     def cancel_order(self, shop, order_id, proxy, storage) -> dict:
         return self._worker.call(self._cancel, shop, order_id, proxy, storage, timeout=70)
@@ -1381,10 +1593,14 @@ class PlaywrightCabinet:
         _log("browser started " + self._hints["version"])
         return self._browser
 
-    def _context_kwargs(self, proxy, storage=None) -> dict:
-        kw = dict(PIXEL7_PROFILE)
-        kw["user_agent"] = self._hints["user_agent"]
-        kw["extra_http_headers"] = dict(self._hints["headers"])
+    def _context_kwargs(self, proxy, storage=None, mode="android") -> dict:
+        if mode == "android":
+            kw = dict(PIXEL7_PROFILE)
+            kw["user_agent"] = self._hints["user_agent"]
+            kw["extra_http_headers"] = dict(self._hints["headers"])
+        else:
+            # Desktop и Patchright — без подмены UA, вьюпорта и Client Hints.
+            kw = {}
         kw["proxy"] = _pw_proxy(proxy)
         if storage:
             kw["storage_state"] = storage
@@ -1404,21 +1620,58 @@ class PlaywrightCabinet:
         except Exception as e:
             _log("client hints " + type(e).__name__)
 
-    def _new_context(self, proxy, storage=None):
+    def _chromium_exe(self) -> str:
+        env = (os.environ.get("CHROMIUM_PATH") or "").strip()
+        if env and os.path.isfile(env):
+            return env
+        root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or ""
+        if root and os.path.isdir(root):
+            found = sorted(Path(root).glob("chromium-*/chrome-linux*/chrome"))
+            if found:
+                return str(found[-1])
+        if os.path.isfile("/opt/google/chrome/chrome"):
+            return "/opt/google/chrome/chrome"
+        return ""
+
+    def _new_context(self, proxy, storage=None, mode="android"):
+        if mode == "patchright":
+            return self._patchright_context(proxy, storage)
         browser = self._ensure_browser()
-        context = browser.new_context(**self._context_kwargs(proxy, storage))
-        context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-            "Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 5});"
-            "Object.defineProperty(navigator, 'language', {get: () => 'ru-RU'});"
-            "Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru']});"
-        )
+        context = browser.new_context(**self._context_kwargs(proxy, storage, mode))
+        if mode == "android":
+            context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                "Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 5});"
+                "Object.defineProperty(navigator, 'language', {get: () => 'ru-RU'});"
+                "Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru']});"
+            )
         context.set_default_navigation_timeout(35000)
         return context
 
-    def _open(self, context):
+    def _patchright_context(self, proxy, storage):
+        from patchright.sync_api import sync_playwright
+        if getattr(self, "_prt", None) is None:
+            self._prt = sync_playwright().start()
+        if getattr(self, "_prt_browser", None) is not None:
+            try:
+                if not self._prt_browser.is_connected():
+                    self._prt_browser = None
+            except Exception:
+                self._prt_browser = None
+        if getattr(self, "_prt_browser", None) is None:
+            kwargs = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
+            exe = self._chromium_exe()
+            if exe:
+                kwargs["executable_path"] = exe
+            self._prt_browser = self._prt.chromium.launch(**kwargs)
+        context = self._prt_browser.new_context(**self._context_kwargs(proxy, storage, "patchright"))
+        context.set_default_navigation_timeout(35000)
+        return context
+
+    def _open(self, context, mode="android"):
         page = context.new_page()
-        self._apply_hints(context, page)
+        if mode == "android":
+            self._apply_hints(context, page)
         return page
 
     def _settle(self, page):
@@ -1495,7 +1748,7 @@ class PlaywrightCabinet:
         return _first_locator(page, ", ".join(_PHONE_INPUTS)) is not None
 
     def _await_surface(self, page, seconds) -> dict:
-        """Ждём поле телефона или стену антибота. Оболочка WB без поля — ещё не отказ."""
+        """Ждём поле телефона или стену антибота. «Проверяем браузер» сюда не входит."""
         deadline = time.time() + seconds
         info = self._snapshot(page)
         while time.time() < deadline:
@@ -1507,6 +1760,65 @@ class PlaywrightCabinet:
                 time.sleep(0.4)
             info = self._snapshot(page)
         return info
+
+    def _await_wb(self, page) -> dict:
+        """До 40 с: проверка браузера и оболочка не отказ. Конец — id.wb.ru и поле телефона."""
+        started = time.time()
+        info = self._snapshot(page)
+        while wb_keep_waiting(info, time.time() - started, self._phone_ready(page)):
+            try:
+                page.wait_for_timeout(400)
+            except Exception:
+                time.sleep(0.4)
+            info = self._snapshot(page)
+        return info
+
+    def _warm_summary(self, mode, result) -> str:
+        marks = [str(ev.get("at")) for ev in result.get("events") or [] if ev.get("action") == "reload"]
+        bits = [mode]
+        if marks:
+            bits.append("перезагрузка " + " и ".join(marks) + " с")
+        bits.append("главная открылась" if result.get("ok") else "главная не открылась")
+        if result.get("ok"):
+            bits.append("пауза 3 с")
+        return " · ".join(bits)
+
+    def _warm_ozon(self, proxy):
+        """Сначала главная. Android, при отказе desktop без подмен, затем Patchright."""
+        steps = []
+        last_info = {"url": OZON_HOME, "title": "", "text": ""}
+        for mode in OZON_MODES:
+            context = None
+            try:
+                context = self._new_context(proxy, load_abt(proxy, mode), mode)
+                page = self._open(context, mode)
+                try:
+                    page.goto(OZON_HOME, wait_until="domcontentloaded", timeout=40000)
+                except Exception as e:
+                    _log("ozon home " + mode + " " + type(e).__name__)
+                result = ozon_warm_pass(
+                    lambda: self._snapshot(page),
+                    lambda: page.reload(wait_until="domcontentloaded", timeout=20000),
+                    time.sleep,
+                )
+                info = result.get("info") or self._snapshot(page)
+                last_info = info
+                steps.append(self._page_step(page, "warm", self._warm_summary(mode, result), info))
+                if result.get("ok"):
+                    try:
+                        save_abt(proxy, mode, context.storage_state())
+                    except Exception as e:
+                        _log("abt save " + mode + " " + type(e).__name__)
+                    return context, page, steps
+            except Exception as e:
+                _log("ozon warm " + mode + " " + type(e).__name__)
+                steps.append({
+                    "step": "warm", "result": mode + " · не запустился",
+                    "url": OZON_HOME, "title": "", "summary": mode + " · " + type(e).__name__,
+                    "face": "", "shot": "",
+                })
+            self._drop(context)
+        return None, None, steps
 
     def _with_page(self, decision, info, steps) -> dict:
         decision = dict(decision)
@@ -1525,8 +1837,15 @@ class PlaywrightCabinet:
         context = None
         steps = []
         try:
-            context = self._new_context(proxy)
-            page = self._open(context)
+            if shop == "ozon":
+                context, page, warm_steps = self._warm_ozon(proxy)
+                steps.extend(warm_steps)
+                if context is None:
+                    info = steps[-1] if steps else {"url": OZON_HOME, "title": "", "text": ""}
+                    return self._blocked_result(info if isinstance(info, dict) else {"url": OZON_HOME}, steps)
+            else:
+                context = self._new_context(proxy)
+                page = self._open(context)
             try:
                 page.goto(_CABINET_URLS[shop]["login"], wait_until="domcontentloaded", timeout=40000)
             except Exception as e:
@@ -1548,14 +1867,17 @@ class PlaywrightCabinet:
                     "status": "awaiting_code",
                     "message": "Кабинет на экране, но код из СМС не вводился. Сессия не активна.",
                 }, info, steps)
-            info = self._await_surface(page, 22)
+            if shop == "wb":
+                info = self._await_wb(page)
+            else:
+                info = self._await_surface(page, 20)
             if classify_page(info) in ("offline", "challenge"):
                 steps.append(self._page_step(page, "opened", "blocked", info))
                 self._drop(context)
                 return self._blocked_result(info, steps)
             if self._phone_ready(page):
                 steps.append(self._page_step(page, "button", "поле телефона", info))
-            else:
+            elif shop != "wb":
                 clicked = _click_label(page, [r"^войти$", r"войти", r"^вход$"])
                 steps.append(self._page_step(page, "button", "нажали вход" if clicked else "кнопки входа нет", info))
                 info = self._await_surface(page, 12)
@@ -1690,8 +2012,24 @@ class PlaywrightCabinet:
                 continue
 
     def _read(self, shop, section, proxy, storage, order_id) -> dict:
-        context = self._new_context(proxy, storage)
-        page = self._open(context)
+        context = None
+        page = None
+        if shop == "ozon":
+            context, page, warm_steps = self._warm_ozon(proxy)
+            for item in warm_steps:
+                note_step(
+                    shop, item.get("step") or "warm", item.get("url") or "",
+                    _step_summary(item), item.get("result") or "",
+                    title=item.get("title") or "", shot=item.get("shot") or "",
+                )
+            if context is None:
+                return {
+                    "ok": False, "session": "blocked", "url": OZON_HOME,
+                    "title": "", "text": "главная не открылась", "error": BLOCKED_ERROR,
+                }
+        else:
+            context = self._new_context(proxy, storage)
+            page = self._open(context)
         try:
             self._goto_section(page, shop, section, order_id)
             info = self._snapshot(page)
@@ -1710,8 +2048,23 @@ class PlaywrightCabinet:
             self._drop(context)
 
     def _cancel(self, shop, order_id, proxy, storage) -> dict:
-        context = self._new_context(proxy, storage)
-        page = self._open(context)
+        context = None
+        if shop == "ozon":
+            context, page, warm_steps = self._warm_ozon(proxy)
+            for item in warm_steps:
+                note_step(
+                    shop, item.get("step") or "warm", item.get("url") or "",
+                    _step_summary(item), item.get("result") or "",
+                    title=item.get("title") or "", shot=item.get("shot") or "",
+                )
+            if context is None:
+                return {
+                    "ok": False, "cancelled": False, "session": "blocked",
+                    "error": BLOCKED_ERROR, "url": OZON_HOME, "text": "главная не открылась",
+                }
+        else:
+            context = self._new_context(proxy, storage)
+            page = self._open(context)
         try:
             self._goto_section(page, shop, "order", order_id)
             info = self._snapshot(page)
