@@ -1291,6 +1291,12 @@ class MarketSkillTest(unittest.TestCase):
             def click(self, x, y):
                 self.moved.append(("click", x, y))
 
+            def down(self):
+                self.moved.append("down")
+
+            def up(self):
+                self.moved.append("up")
+
         class Keys:
             def __init__(self):
                 self.typed = []
@@ -1338,6 +1344,9 @@ class MarketSkillTest(unittest.TestCase):
             def wait_for_load_state(self, *args, **kwargs):
                 return None
 
+            def wait_for_timeout(self, ms):
+                return None
+
         class Ctx:
             def __init__(self, page):
                 self.page = page
@@ -1363,6 +1372,10 @@ class MarketSkillTest(unittest.TestCase):
         res = cab._manual_input({"action": "click", "x": 100, "y": 200, "viewW": 200, "viewH": 400})
         self.assertTrue(res["ok"])
         self.assertEqual(page.touchscreen.taps, [(206.0, 457.5)])
+        self.assertTrue(market_skill.manual_uses_touch("ozon", "android"))
+        self.assertFalse(market_skill.manual_uses_touch("ozon", "desktop"))
+        self.assertFalse(market_skill.manual_uses_touch("ozon", "patchright"))
+        self.assertTrue(market_skill.manual_uses_touch("wb", "android"))
         scroll = cab._manual_input({"action": "scroll", "x": 10, "y": 10, "viewW": 200, "viewH": 400, "dy": 40})
         self.assertTrue(scroll["ok"])
         self.assertEqual(page.mouse.wheeled, [(0, 91.5)])
@@ -1380,6 +1393,106 @@ class MarketSkillTest(unittest.TestCase):
         self.assertTrue(frame.startswith(b"\xff\xd8"))
         self.assertLess(abs(cab._manual["touched"] - before), 1)
         self.assertFalse((Path(self.tmp.name) / "market_shots").exists())
+
+    def test_manual_ozon_touch_journal_and_frame_ua(self):
+        self._proxy()
+        page, ctx = self._manual_page()
+        page.url = "https://www.ozon.ru/"
+        page._title = "Ozon"
+        page._text = "Войти\nКаталог"
+
+        class Sent:
+            def __init__(self):
+                self.calls = []
+
+            def send(self, method, params):
+                self.calls.append((method, params))
+
+        sessions = []
+
+        class Browser:
+            def __init__(self):
+                self._jarvis_mode = "android"
+                self._jarvis_shop = "ozon"
+
+            def new_cdp_session(self, target):
+                cdp = Sent()
+                sessions.append((target, cdp))
+                return cdp
+
+        browser = Browser()
+        page.context = browser
+        handlers = {}
+
+        def on(event, callback):
+            handlers.setdefault(event, []).append(callback)
+
+        page.on = on
+        child = type("Frame", (), {"url": "https://id.ozon.ru/ozonid?token=hide", "parent_frame": page})()
+        page.frames = [page, child]
+        page.main_frame = page
+        cab = market_skill.PlaywrightCabinet()
+        cab._apply_ozon_hints(browser, page, "android")
+        self.assertEqual(len(sessions), 2)
+        self.assertEqual(sessions[0][1].calls[0][0], "Emulation.setUserAgentOverride")
+        extra = type("Frame", (), {"url": "about:blank", "parent_frame": page})()
+        handlers["frameattached"][0](extra)
+        handlers["frameattached"][0](extra)
+        self.assertEqual(len(sessions), 3)
+
+        cab._manual = {"context": browser, "page": page, "touched": time.time(), "shop": "ozon"}
+        opened = cab._manual_input({"action": "click", "x": 300, "y": 800, "viewW": 412, "viewH": 915})
+        self.assertTrue(opened["ok"])
+        kinds = [item[0] for item in sessions[-1][1].calls]
+        self.assertEqual(kinds, ["Input.dispatchTouchEvent", "Input.dispatchTouchEvent"])
+        self.assertEqual(sessions[-1][1].calls[0][1]["type"], "touchStart")
+        self.assertEqual(sessions[-1][1].calls[1][1]["type"], "touchEnd")
+        self.assertEqual(sessions[-1][1].calls[0][1]["touchPoints"][0]["radiusX"], 8)
+        self.assertEqual(page.touchscreen.taps, [])
+        self.assertNotIn("down", page.mouse.moved)
+
+        page._title = "Похоже, нет соединения"
+        page._text = "Похоже, нет соединения\nВыключите VPN"
+        page.url = "https://www.ozon.ru/"
+        wall = cab._manual_input({"action": "click", "x": 300, "y": 800, "viewW": 412, "viewH": 915})
+        self.assertTrue(wall["ok"])
+
+        class Resp:
+            def __init__(self, status, url, kind, method="GET"):
+                self.status = status
+                self.url = url
+                self.request = type("Req", (), {"resource_type": kind, "method": method})()
+
+        cab._watch_manual(page, "ozon")
+        handlers["response"][0](Resp(200, "https://www.ozon.ru/", "document"))
+        handlers["response"][0](Resp(403, "https://id.ozon.ru/ozonid?token=hide", "document", "GET"))
+        handlers["response"][0](Resp(403, "https://id.ozon.ru/ozonid?token=hide", "document", "GET"))
+        handlers["response"][0](Resp(404, "https://st.ozone.ru/a.png?x=1", "image"))
+        handlers["framenavigated"][0](type("Main", (), {"url": "https://www.ozon.ru/ozonid?code=secret", "parent_frame": None})())
+        handlers["framenavigated"][0](type("Main", (), {"url": "https://www.ozon.ru/ozonid?code=secret", "parent_frame": None})())
+        handlers["framenavigated"][0](child)
+
+        blob = json.dumps(market_skill.public_status()["journal"], ensure_ascii=False)
+        self.assertIn("тап", blob)
+        self.assertIn("touch", blob)
+        self.assertIn("экран", blob)
+        self.assertIn("нет соединения", blob)
+        self.assertIn("403 GET document", blob)
+        self.assertIn("https://id.ozon.ru/ozonid", blob)
+        self.assertIn("переход", blob)
+        self.assertIn("https://www.ozon.ru/ozonid", blob)
+        self.assertIn("фрейм", blob)
+        self.assertNotIn("token=hide", blob)
+        self.assertNotIn("code=secret", blob)
+        self.assertNotIn("a.png", blob)
+        self.assertEqual(sum("403 GET document" in (row.get("result") or "") for row in market_skill.public_status()["journal"]), 1)
+
+        browser._jarvis_mode = "desktop"
+        desk = cab._manual_input({"action": "click", "x": 10, "y": 10, "viewW": 412, "viewH": 915})
+        self.assertTrue(desk["ok"])
+        self.assertIn("down", page.mouse.moved)
+        self.assertIn("up", page.mouse.moved)
+        self.assertEqual(page.touchscreen.taps, [])
 
     def test_manual_done_checks_cabinet_then_active(self):
         self._proxy()

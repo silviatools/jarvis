@@ -1185,6 +1185,13 @@ def manual_shop() -> str:
         return _manual_pub["shop"] if _manual_pub["open"] else ""
 
 
+def manual_uses_touch(shop, mode) -> bool:
+    """Телефон — касание. Desktop и patchright — мышь, не touch поверх has_touch: false."""
+    if shop == "ozon" and mode in ("desktop", "patchright"):
+        return False
+    return True
+
+
 def manual_point(x, y, view_w, view_h, page_w=None, page_h=None):
     """Точка на картинке в пикселях экрана → CSS-пиксели вьюпорта 412×915."""
     page_w = PIXEL7_PROFILE["viewport"]["width"] if page_w is None else page_w
@@ -2066,6 +2073,76 @@ def rows_from_captures(captures) -> list:
     return found
 
 
+_MANUAL_SKIP_TYPES = frozenset({"image", "stylesheet", "font", "media"})
+_MANUAL_NET_MAX = 30
+MANUAL_TAP_LOOK = 0.6
+
+
+def _frame_host(url) -> str:
+    return (urlparse(url or "").hostname or "").lower()
+
+
+def _manual_frame_host(host: str) -> bool:
+    host = (host or "").lower()
+    return host.endswith("ozon.ru") or host.endswith("wb.ru") or host.endswith("wildberries.ru")
+
+
+class ManualTrace:
+    """Переходы ручного окна и ответы ≥400. Картинки не пишем, query в журнал не попадает."""
+
+    def __init__(self, shop):
+        self.shop = shop if shop in SHOPS else ""
+        self.seen = set()
+        self.n = 0
+        self.main_url = ""
+
+    def _add(self, url, summary, result):
+        if not self.shop or self.n >= _MANUAL_NET_MAX:
+            return
+        safe = _safe_url(url)
+        key = (result, safe)
+        if key in self.seen:
+            return
+        self.seen.add(key)
+        self.n += 1
+        note_step(self.shop, "manual", url or "", summary, result)
+
+    def on_frame(self, frame):
+        try:
+            url = getattr(frame, "url", "") or ""
+        except Exception:
+            return
+        if not str(url).startswith("http"):
+            return
+        main = getattr(frame, "parent_frame", None) is None
+        if not main and not _manual_frame_host(_frame_host(url)):
+            return
+        safe = _safe_url(url)
+        if main:
+            if safe == self.main_url:
+                return
+            self.main_url = safe
+            self._add(url, "страница", "переход")
+            return
+        self._add(url, "фрейм", "фрейм")
+
+    def on_response(self, response):
+        try:
+            status = int(getattr(response, "status", 0) or 0)
+            if status < 400:
+                return
+            request = getattr(response, "request", None)
+            kind = str(getattr(request, "resource_type", "") or "")
+            if kind in _MANUAL_SKIP_TYPES:
+                return
+            method = str(getattr(request, "method", "") or "")
+            url = getattr(response, "url", "") or ""
+        except Exception:
+            return
+        result = " ".join(bit for bit in (str(status), method, kind) if bit)
+        self._add(url, result, result)
+
+
 class ApiSink:
     """XHR и fetch. Тела JSON держим для разбора, в журнал уходит урезанный кусок."""
 
@@ -2736,12 +2813,48 @@ class PlaywrightCabinet:
             _log("client hints " + type(e).__name__)
 
     def _apply_ozon_hints(self, context, page, mode):
+        """Тот же UA на странице и на фрейме входа. Подмена только первой вкладки оставляет id.ozon.ru чужим."""
         payload = ozon_cdp((self._hints or {}).get("version") or "", mode)
+        bound = set()
+
+        def apply(target):
+            marker = id(target) if target is not None else None
+            if marker is not None and marker in bound:
+                return
+            if marker is not None:
+                bound.add(marker)
+            try:
+                cdp = context.new_cdp_session(target)
+                cdp.send("Emulation.setUserAgentOverride", payload)
+            except Exception as e:
+                _log("ozon hints " + type(e).__name__)
+
+        apply(page)
+        if page is None:
+            return
         try:
-            cdp = context.new_cdp_session(page)
-            cdp.send("Emulation.setUserAgentOverride", payload)
+            frames = list(getattr(page, "frames", []) or [])
+        except Exception:
+            frames = []
+        main = getattr(page, "main_frame", None)
+        for frame in frames:
+            if frame is page or frame is main:
+                continue
+            apply(frame)
+        if getattr(page, "_jarvis_ua_listening", False):
+            return
+        try:
+            page._jarvis_ua_listening = True
+        except Exception:
+            return
+
+        def on_frame(frame):
+            apply(frame)
+
+        try:
+            page.on("frameattached", on_frame)
         except Exception as e:
-            _log("ozon hints " + type(e).__name__)
+            _log("ozon frame " + type(e).__name__)
 
     def _prepare_context(self, context, shop, mode):
         try:
@@ -3332,6 +3445,12 @@ class PlaywrightCabinet:
                 self._goto_logged(page, start, sid, "manual")
                 profile = PIXEL7_PROFILE
             self._manual = {"context": context, "page": page, "touched": time.time(), "shop": sid}
+            self._watch_manual(page, sid)
+            if hasattr(context, "on"):
+                try:
+                    context.on("page", lambda popup, sid=sid: self._watch_manual(popup, sid))
+                except Exception as e:
+                    _log("manual watch page " + type(e).__name__)
             _set_manual_open(True, sid)
             vp = profile["viewport"]
             return {
@@ -3359,12 +3478,76 @@ class PlaywrightCabinet:
             return bytes(blob)
         return b""
 
-    def _manual_tap(self, page, pt):
+    def _watch_manual(self, page, shop):
+        if page is None or getattr(page, "_jarvis_manual_watch", False):
+            return
+        try:
+            page._jarvis_manual_watch = True
+        except Exception:
+            pass
+        if not hasattr(page, "on"):
+            return
+        trace = ManualTrace(shop)
+        try:
+            page.on("framenavigated", trace.on_frame)
+            page.on("response", trace.on_response)
+        except Exception as e:
+            _log("manual watch " + type(e).__name__)
+
+    def _touch_tap(self, page, pt):
+        """Касание по очереди: пауза и радиус пальца. Playwright шлёт start и end одновременно."""
+        x, y = float(pt[0]), float(pt[1])
+        point = {"x": x, "y": y, "radiusX": 8, "radiusY": 8, "force": 0.5, "id": 1}
+        context = getattr(page, "context", None)
+        if context is not None and hasattr(context, "new_cdp_session"):
+            try:
+                cdp = context.new_cdp_session(page)
+                cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [point], "modifiers": 0})
+                time.sleep(0.07)
+                cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": [], "modifiers": 0})
+                return "touch"
+            except Exception as e:
+                _log("touch tap " + type(e).__name__)
         touch = getattr(page, "touchscreen", None)
         if touch is not None and hasattr(touch, "tap"):
-            touch.tap(pt[0], pt[1])
+            touch.tap(x, y)
+            return "touch"
+        page.mouse.click(x, y)
+        return "mouse"
+
+    def _mouse_click(self, page, pt):
+        page.mouse.move(pt[0], pt[1])
+        page.mouse.down()
+        time.sleep(0.05)
+        page.mouse.up()
+        return "mouse"
+
+    def _manual_tap(self, page, pt, touch=True):
+        if touch:
+            return self._touch_tap(page, pt)
+        return self._mouse_click(page, pt)
+
+    def _manual_note(self, shop, url, summary, result, title=""):
+        if shop not in SHOPS:
             return
-        page.mouse.click(pt[0], pt[1])
+        try:
+            note_step(shop, "manual", url or "", summary, result, title=title)
+        except Exception as e:
+            _log("manual note " + type(e).__name__)
+
+    def _manual_glance(self, page, shop):
+        try:
+            page.wait_for_timeout(int(MANUAL_TAP_LOOK * 1000))
+        except Exception:
+            time.sleep(MANUAL_TAP_LOOK)
+        try:
+            info = self._snapshot(page)
+        except Exception:
+            return
+        kind = classify_page(info)
+        if kind not in ("offline", "challenge", "login"):
+            return
+        self._manual_note(shop, info.get("url") or "", page_face(info), "экран", title=info.get("title") or "")
 
     def _manual_input(self, payload) -> dict:
         payload = payload if isinstance(payload, dict) else {}
@@ -3373,12 +3556,16 @@ class PlaywrightCabinet:
             return {"ok": False, "error": "Ручной вход не открыт."}
         action = str(payload.get("action") or "")
         page = session["page"]
+        shop = session.get("shop") if session.get("shop") in SHOPS else ""
+        mode = getattr(session.get("context"), "_jarvis_mode", "") or ""
         try:
             if action == "click":
                 pt = manual_point(payload.get("x"), payload.get("y"), payload.get("viewW"), payload.get("viewH"))
                 if pt is None:
                     return {"ok": False, "error": "Нет координат."}
-                self._manual_tap(page, pt)
+                how = self._manual_tap(page, pt, manual_uses_touch(shop, mode))
+                self._manual_note(shop, getattr(page, "url", "") or "", how or "", "тап")
+                self._manual_glance(page, shop)
             elif action == "scroll":
                 pt = manual_point(payload.get("x"), payload.get("y"), payload.get("viewW"), payload.get("viewH"))
                 dy = manual_delta(payload.get("dy"), payload.get("viewH"))
