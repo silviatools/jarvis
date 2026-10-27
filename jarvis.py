@@ -122,7 +122,7 @@ try:
     import mail_skill
 except Exception as _e:
     mail_skill = None
-    print(f"NOTE: mail_skill disabled: {_e}")
+    print(f"NOTE: mail_skill disabled: {_e}", flush=True)
 try:
     import tg_bot
 except Exception as _e:
@@ -6124,8 +6124,9 @@ def _mail_notify(acc: dict, metas: list):
     """Новые письма ящика → бот (получатели из маршрутизации, категория «mail:<id>»)
     и, если включено у ящика, Web Push в приложение Джарвис."""
     app = load_app_data() or {}
+    sent = {"tg": 0, "push": 0}
     if not mail_skill.skill_on(app.get("telegramSkills"), mail_skill.NOTIFY_ID):
-        return
+        return sent
     shown, extra = metas[-mail_skill.MAX_NOTIFY_PER_POLL:], max(0, len(metas) - mail_skill.MAX_NOTIFY_PER_POLL)
     box = acc.get("title") or acc["email"]
     token = get_token()
@@ -6139,14 +6140,17 @@ def _mail_notify(acc: dict, metas: list):
                                        "\n\n<i>Ответьте на это сообщение — открою письмо.</i>")
                 tg_bot.remember_anchor(cid, ids, "Почта: " + (meta.get("subject") or "письмо")[:40],
                                        "Что за письмо пришло?", mail_skill.notification_context(acc, meta))
+                sent["tg"] += 1
         except Exception as e:
-            print(f"  mail notify {cid}: {e.__class__.__name__}")
+            print(f"  mail notify {cid}: {e.__class__.__name__}", flush=True)
     if webpush and acc.get("push"):
         for meta in shown:
             try:
-                webpush.send_text("📬 " + box, mail_skill.push_body(meta), tag=f"mail-{acc['id']}-{meta['uid']}")
+                r = webpush.send_text("📬 " + box, mail_skill.push_body(meta), tag=f"mail-{acc['id']}-{meta['uid']}")
+                sent["push"] += (r or {}).get("sent") or 0
             except Exception as e:
-                print(f"  mail push: {webpush.redact(str(e))}")
+                print(f"  mail push: {webpush.redact(str(e))}", flush=True)
+    return sent
 
 
 def _assistant_tool_list(app, with_tg: bool) -> list:
@@ -6717,6 +6721,11 @@ def notifier_loop():
             weather_cal_tick(load_app_data(), now_msk().strftime("%H:%M"), today_msk().isoformat())
         except Exception as e:
             print(f"Weather calendar tick error: {e}")
+        if mail_skill:
+            try:
+                mail_skill.ensure_poller()
+            except Exception as e:
+                print(f"mail watchdog error: {e.__class__.__name__}", flush=True)
         now = datetime.now()
         time.sleep(60 - now.second)
 
@@ -11603,6 +11612,18 @@ def _tg_watch_loop():
         time.sleep(delay)
 
 
+def _start_mail_poller():
+    """При каждом старте процесса: уведомления о письмах и фоновая проверка ящиков."""
+    if not mail_skill:
+        print("mail: навык недоступен, фоновая проверка не запущена", flush=True)
+        return
+    try:
+        mail_skill.add_notifier(_mail_notify)
+        mail_skill.start_poller()
+    except Exception as e:
+        print(f"mail: poller не запустился: {e.__class__.__name__}: {e}", flush=True)
+
+
 def main():
     import argparse
     p = argparse.ArgumentParser(description="Jarvis — server + Telegram notifier")
@@ -11623,9 +11644,7 @@ def main():
     threading.Thread(target=updates_loop, daemon=True).start()
     if tg_watch_skill:
         threading.Thread(target=_tg_watch_loop, daemon=True).start()
-    if mail_skill:
-        mail_skill.add_notifier(_mail_notify)
-        mail_skill.start_poller()
+    _start_mail_poller()
 
     server = JarvisServer(("0.0.0.0", args.port), JarvisHandler)
     print(f"Jarvis is running → http://localhost:{args.port}")

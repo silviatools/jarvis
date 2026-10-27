@@ -48,6 +48,11 @@ MAX_RAW_BYTES = 30 * 1024 * 1024
 MAX_TEXT = 12000
 MAX_IMAGE_BYTES = 4_500_000
 MAX_NOTIFY_PER_POLL = 8
+POLL_STALE_SECONDS = 300         # дольше без проверки — поток считается мёртвым или зависшим
+SYNC_DEADLINE = 240              # одна проверка ящика дольше — рвём соединение и идём дальше
+LOCK_WAIT = 60                   # ящик занят поиском или «Проверить» — пропускаем до следующего круга
+NOTIFY_WAIT = 60
+ABORT_WAIT = 15                  # после сброса соединения ждём, пока проверка выйдет с ошибкой
 MSK = timezone(timedelta(hours=3))
 
 READ_ID = "mail"
@@ -276,7 +281,15 @@ def redact(text, extra=()) -> str:
 
 
 def _log(msg):
-    print("mail: " + redact(msg))
+    try:
+        print("mail: " + redact(msg), flush=True)
+    except Exception:
+        pass
+
+
+def mask_email(addr: str) -> str:
+    local, _, domain = str(addr or "").partition("@")
+    return (local[:1] + "***@" + domain) if domain else "***"
 
 
 # ── IMAP ─────────────────────────────────────────────────────────────────────
@@ -737,77 +750,202 @@ def _sync_folder(acc: dict, m, f: dict, st: dict, now: float) -> list:
     return fresh
 
 
-def sync_account(acc: dict, notify: bool = True) -> dict:
-    """Один проход по ящику: папки, STATUS, новые письма. Вызывается фоновой проверкой."""
-    with _acc_lock(acc["id"]):
-        now = time.time()
-        idx = _index(acc["id"])
-        first = not idx.get("synced_at")
-        try:
-            m = _conn(acc)
-            folders = _list_folders(m)
-            alive = {f["raw"] for f in folders}
-            for raw in list(idx["folders"]):
-                if raw not in alive:
-                    idx["folders"].pop(raw)
-            fresh = []
-            for f in folders:
-                st = _status(m, f["raw"])
-                got = _sync_folder(acc, m, f, st, now)
-                if f["raw"] in (acc.get("notifyFolders") or ["INBOX"]):
-                    fresh += [dict(x, folder=f["display"], folder_raw=f["raw"]) for x in got]
-            idx["synced_at"] = now
-            _save_index(acc["id"])
-            _update_account(acc["id"], status="ok", lastError="", lastSyncAt=int(now * 1000))
-        except MailError as e:
-            _drop_conn(acc["id"])
-            _update_account(acc["id"], status="error", lastError=str(e), lastSyncAt=int(now * 1000))
-            return {"ok": False, "error": str(e)}
-        except (imaplib.IMAP4.abort, OSError) as e:
-            _drop_conn(acc["id"])
-            err = classify_login_error(e) if isinstance(e, OSError) else "Соединение с Mail.ru оборвалось, повторю на следующей проверке."
-            _update_account(acc["id"], status="error", lastError=err, lastSyncAt=int(now * 1000))
-            return {"ok": False, "error": err}
-        except Exception as e:
-            _drop_conn(acc["id"])
-            _log(f"sync {acc['id']}: {e.__class__.__name__}: {e}")
-            _update_account(acc["id"], status="error", lastError=redact(f"{e.__class__.__name__}: {e}"), lastSyncAt=int(now * 1000))
-            return {"ok": False, "error": str(e)}
-    fresh.sort(key=lambda x: x.get("ts", 0))
-    if notify and not first and fresh:
+def _sync_locked(acc: dict):
+    now = time.time()
+    idx = _index(acc["id"])
+    first = not idx.get("synced_at")
+    try:
+        m = _conn(acc)
+        folders = _list_folders(m)
+        alive = {f["raw"] for f in folders}
+        for raw in list(idx["folders"]):
+            if raw not in alive:
+                idx["folders"].pop(raw)
+        fresh = []
+        for f in folders:
+            st = _status(m, f["raw"])
+            got = _sync_folder(acc, m, f, st, now)
+            if f["raw"] in (acc.get("notifyFolders") or ["INBOX"]):
+                fresh += [dict(x, folder=f["display"], folder_raw=f["raw"]) for x in got]
+        idx["synced_at"] = now
+        _save_index(acc["id"])
+        _update_account(acc["id"], status="ok", lastError="", lastSyncAt=int(now * 1000))
+    except MailError as e:
+        _drop_conn(acc["id"])
+        _update_account(acc["id"], status="error", lastError=str(e), lastSyncAt=int(now * 1000))
+        return {"ok": False, "error": str(e)}, []
+    except (imaplib.IMAP4.abort, OSError) as e:
+        _drop_conn(acc["id"])
+        err = classify_login_error(e) if isinstance(e, OSError) else "Соединение с Mail.ru оборвалось, повторю на следующей проверке."
+        _update_account(acc["id"], status="error", lastError=err, lastSyncAt=int(now * 1000))
+        return {"ok": False, "error": err}, []
+    except Exception as e:
+        _drop_conn(acc["id"])
+        _update_account(acc["id"], status="error", lastError=redact(f"{e.__class__.__name__}: {e}"), lastSyncAt=int(now * 1000))
+        return {"ok": False, "error": e.__class__.__name__}, []
+    return {"ok": True, "new": len(fresh), "first": first}, fresh
+
+
+def _count(v) -> int:
+    if isinstance(v, bool) or v is None:
+        return 0
+    if isinstance(v, int):
+        return v
+    if isinstance(v, dict):
+        return sum(_count(x) for x in v.values())
+    return 0
+
+
+def _run_notifiers(acc: dict, fresh: list) -> int:
+    """Уведомители — в своём потоке: зависший Telegram или пуш не останавливает проверку почты."""
+    sent = []
+
+    def run():
         for fn in list(_notifiers):
             try:
-                fn(acc, fresh)
+                sent.append(_count(fn(acc, fresh)))
             except Exception as e:
-                _log(f"notifier: {e.__class__.__name__}: {e}")
-    return {"ok": True, "new": len(fresh), "first": first}
+                _log(f"notifier {mask_email(acc.get('email'))}: {e.__class__.__name__}")
+
+    t = threading.Thread(target=run, daemon=True, name="mail-notify")
+    t.start()
+    t.join(NOTIFY_WAIT)
+    if t.is_alive():
+        _log(f"notifier {mask_email(acc.get('email'))}: не уложился в {NOTIFY_WAIT} с, дошлёт в фоне")
+    return sum(sent)
+
+
+def sync_account(acc: dict, notify: bool = True, wait=None) -> dict:
+    """Один проход по ящику: папки, STATUS, новые письма. wait — сколько ждать, если ящик занят."""
+    lock = _acc_lock(acc["id"])
+    if not lock.acquire(timeout=-1 if wait is None else wait):
+        return {"ok": False, "busy": True, "error": "ящик занят другой операцией"}
+    try:
+        res, fresh = _sync_locked(acc)
+    finally:
+        lock.release()
+    if res.get("ok"):
+        fresh.sort(key=lambda x: x.get("ts", 0))
+        res["notified"] = _run_notifiers(acc, fresh) if notify and not res["first"] and fresh else 0
+    return res
 
 
 def add_notifier(fn):
-    """fn(account, [письма]) вызывается после проверки, если пришли новые непрочитанные письма."""
+    """fn(account, [письма]) вызывается после проверки, если пришли новые непрочитанные письма.
+    Может вернуть число отправленных уведомлений (или словарь чисел) — оно попадёт в лог проверки."""
     if fn not in _notifiers:
         _notifiers.append(fn)
 
 
+_poller_state = {"gen": 0, "beat": 0.0, "startedAt": 0.0, "lastRoundAt": 0.0, "rounds": 0, "interval": POLL_SECONDS}
+
+
+def _abort_conn(acc_id: str):
+    m = _conns.get(acc_id)
+    sock = getattr(m, "sock", None)
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+
+
+def _sync_with_deadline(acc: dict, notify: bool) -> dict:
+    box = {}
+
+    def run():
+        try:
+            box["res"] = sync_account(acc, notify, wait=LOCK_WAIT)
+        except BaseException as e:
+            box["res"] = {"ok": False, "error": e.__class__.__name__}
+
+    t = threading.Thread(target=run, daemon=True, name="mail-sync")
+    t.start()
+    t.join(SYNC_DEADLINE)
+    if t.is_alive():
+        _abort_conn(acc["id"])
+        t.join(ABORT_WAIT)
+    return box.get("res") or {"ok": False, "error": f"проверка дольше {SYNC_DEADLINE} с — соединение сброшено"}
+
+
+def _poll_line(acc: dict, res: dict, secs: float) -> str:
+    box = mask_email(acc.get("email"))
+    if res.get("busy"):
+        return f"{box}: пропуск — ящик занят"
+    if not res.get("ok"):
+        return f"{box}: ошибка — {str(res.get('error') or '')[:120]} ({secs:.1f} с)"
+    first = ", первая синхронизация" if res.get("first") else ""
+    return f"{box}: новых {res.get('new', 0)}, уведомлений {res.get('notified', 0)}{first} ({secs:.1f} с)"
+
+
 def poll_once(notify=True) -> list:
-    return [dict(sync_account(a, notify), id=a["id"]) for a in load_config()["accounts"]]
+    """Круг фоновой проверки: каждый ящик отдельно — ошибка или зависание одного не трогает остальные."""
+    out = []
+    try:
+        accounts = load_config()["accounts"]
+    except Exception as e:
+        _log(f"poll: конфиг не прочитан: {e.__class__.__name__}")
+        return out
+    for acc in accounts:
+        _poller_state["beat"] = time.time()
+        t0 = time.time()
+        try:
+            res = _sync_with_deadline(acc, notify)
+        except Exception as e:
+            res = {"ok": False, "error": e.__class__.__name__}
+        try:
+            _update_account(acc["id"], lastPollAt=int(time.time() * 1000))
+        except Exception as e:
+            _log(f"poll: lastPollAt не записан: {e.__class__.__name__}")
+        _log(_poll_line(acc, res, time.time() - t0))
+        out.append(dict(res, id=acc["id"]))
+    _poller_state["beat"] = time.time()
+    return out
 
 
-def start_poller(interval: int = POLL_SECONDS):
+def _poll_loop(gen: int, interval: int):
+    while _poller_state["gen"] == gen:
+        _poller_state["beat"] = time.time()
+        try:
+            poll_once()
+            _poller_state["rounds"] += 1
+            _poller_state["lastRoundAt"] = time.time()
+        except BaseException as e:   # поток проверки не должен умирать ни от чего
+            _log(f"poll: {e.__class__.__name__}")
+        _poller_state["beat"] = time.time()
+        time.sleep(interval)
+
+
+def poller_alive() -> bool:
+    return (_poller is not None and _poller.is_alive()
+            and time.time() - _poller_state["beat"] < POLL_STALE_SECONDS)
+
+
+def start_poller(interval: int = POLL_SECONDS) -> bool:
+    """Запустить фоновую проверку; если поток умер или завис — запустить новый. True — если запустили."""
     global _poller
-    if _poller is not None:
-        return
+    with _cfg_lock:
+        if poller_alive():
+            return False
+        why = "" if _poller is None else (" (прежний поток завис)" if _poller.is_alive() else " (прежний поток умер)")
+        _poller_state["gen"] += 1
+        _poller_state.update(beat=time.time(), startedAt=time.time(), interval=interval)
+        _poller = threading.Thread(target=_poll_loop, args=(_poller_state["gen"], interval), daemon=True,
+                                   name=f"mail-poller-{_poller_state['gen']}")
+        _poller.start()
+    try:
+        n = len(load_config()["accounts"])
+    except Exception:
+        n = "?"
+    _log(f"poller {'restarted' if why else 'started'}{why}, {n} ящиков, раз в {interval} с")
+    return True
 
-    def loop():
-        while True:
-            try:
-                poll_once()
-            except Exception as e:
-                _log(f"poll: {e.__class__.__name__}: {e}")
-            time.sleep(interval)
 
-    _poller = threading.Thread(target=loop, daemon=True, name="mail-poller")
-    _poller.start()
+def ensure_poller() -> bool:
+    """Сторож: вызывается из минутного цикла сервера и при открытии вкладки «Почта»."""
+    if not _poller_state["gen"]:
+        return False
+    return start_poller(_poller_state["interval"])
 
 
 # ── ящики: добавить, проверить, удалить ──────────────────────────────────────
@@ -825,12 +963,21 @@ def _public(acc: dict) -> dict:
             "password_mask": ("•" * 8 + f" ({len(pw)} симв.)") if pw else "не задан",
             "status": acc.get("status") or "new", "lastError": acc.get("lastError") or "",
             "lastCheckAt": acc.get("lastCheckAt") or 0, "lastSyncAt": acc.get("lastSyncAt") or 0,
+            "lastPollAt": acc.get("lastPollAt") or 0, "addedAt": acc.get("addedAt") or 0,
             "notifyFolders": acc.get("notifyFolders") or ["INBOX"], "push": bool(acc.get("push")), "folders": folders,
             "indexed": sum(f["indexed"] for f in folders), "synced": bool(idx.get("synced_at"))}
 
 
 def public_status() -> dict:
-    return {"ok": True, "host": IMAP_HOST, "poll_seconds": POLL_SECONDS,
+    try:
+        ensure_poller()
+    except Exception as e:
+        _log(f"watchdog: {e.__class__.__name__}")
+    ms = lambda t: int(t * 1000) if t else 0
+    return {"ok": True, "host": IMAP_HOST, "poll_seconds": POLL_SECONDS, "now": int(time.time() * 1000),
+            "stale_seconds": POLL_STALE_SECONDS,
+            "poller": {"alive": poller_alive(), "startedAt": ms(_poller_state["startedAt"]),
+                       "lastRoundAt": ms(_poller_state["lastRoundAt"]), "beatAt": ms(_poller_state["beat"])},
             "accounts": [_public(a) for a in load_config()["accounts"]]}
 
 

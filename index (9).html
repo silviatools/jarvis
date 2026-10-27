@@ -6568,6 +6568,15 @@ const MAIL_STATUS = {
   ok: { label: 'Работает', cls: 'text-green-600' },
   error: { label: 'Ошибка', cls: 'text-red-600' },
   new: { label: 'Новый', cls: 'text-[var(--text-subtle)]' },
+  stale: { label: 'Фоновая проверка не идёт', cls: 'text-red-600' },
+};
+
+// Фоновая проверка ящика не отмечалась дольше stale_seconds (сервер: 5 мин) — поток проверки стоит.
+const mailPollStale = (st, acc) => {
+  if (!st || !st.now) return false;
+  const limit = (st.stale_seconds || 300) * 1000;
+  const since = Math.max(acc.lastPollAt || 0, acc.addedAt || 0, (st.poller && st.poller.startedAt) || 0);
+  return (st.poller && st.poller.alive === false) || !acc.lastPollAt && st.now - since > limit || !!acc.lastPollAt && st.now - acc.lastPollAt > limit;
 };
 
 function MailSettings({ data, setData }) {
@@ -6678,7 +6687,8 @@ function MailSettings({ data, setData }) {
       {st && !accounts.length && <div className="text-sm text-[var(--text-subtle)] px-1">Ящиков пока нет.</div>}
 
       {accounts.map(acc => {
-        const s = MAIL_STATUS[acc.status] || MAIL_STATUS.new;
+        const stale = mailPollStale(st, acc);
+        const s = stale ? MAIL_STATUS.stale : (MAIL_STATUS[acc.status] || MAIL_STATUS.new);
         const nf = acc.notifyFolders || ['INBOX'];
         return (
           <div key={acc.id} className={card} data-testid={'mail-box-' + acc.id}>
@@ -6691,6 +6701,10 @@ function MailSettings({ data, setData }) {
             </div>
             <div className="text-xs text-[var(--text-subtle)] space-y-0.5 mb-3">
               <div>Пароль приложения: <span className="font-mono" data-testid={'mail-pw-' + acc.id}>{acc.password_mask}</span></div>
+              <div data-testid={'mail-poll-' + acc.id} className={stale ? 'text-red-600' : ''}>
+                Фоновая проверка: {acc.lastPollAt ? when(acc.lastPollAt) : 'ещё не было'}
+                {stale ? ' — дольше 5 минут нет, новые письма не приходят' : ''}
+              </div>
               <div>Проверка входа: {when(acc.lastCheckAt)} · последняя синхронизация: {when(acc.lastSyncAt)}</div>
               <div>{acc.synced ? `В индексе ${acc.indexed} писем в ${acc.folders.length} папках` : 'Индекс писем строится…'}</div>
             </div>
