@@ -590,5 +590,128 @@ class HttpTest(Base):
         self.assertIn("mail", [s["id"] for s in skills["skills"]])
 
 
+class PollerTest(Base):
+    """Фоновая проверка: старт процесса, ошибки и зависания ящиков, сторож, строки лога."""
+
+    def setUp(self):
+        super().setUp()
+        self.acc_id = self.add()
+        mail_skill.sync_account(mail_skill._find_account(self.acc_id))
+        jarvis.save_app_data({"settings": {"notifyRouting": {"111": ["mail:" + self.acc_id]}}, "telegramSkills": {}})
+        jarvis.save_subscribers({"offset": 0, "chat_ids": [111]})
+        self.calls = []
+        self._api, self._tok = tg_bot.api, jarvis.get_token
+        tg_bot.api = lambda token, method, payload=None, files=None, timeout=30: (
+            self.calls.append((method, payload)) or {"message_id": len(self.calls)})
+        jarvis.get_token = lambda: "TOKEN"
+
+    def tearDown(self):
+        mail_skill._poller_state["gen"] += 1
+        tg_bot.api, jarvis.get_token = self._api, self._tok
+        super().tearDown()
+
+    def wait(self, cond, sec=10):
+        import time
+        end = time.time() + sec
+        while time.time() < end:
+            if cond():
+                return True
+            time.sleep(0.05)
+        return False
+
+    def sent_texts(self):
+        return [p["text"] for m, p in self.calls if m == "sendMessage"]
+
+    def test_restart_syncs_and_notifies(self):
+        import importlib
+        import webpush
+        pushed = []
+        webpush.set_deliver(lambda sub, data, key: pushed.append(json.loads(data)))
+        try:
+            self.assertTrue(webpush.save_subscription({"endpoint": "https://push.example/s",
+                                                       "keys": {"p256dh": "p" * 20, "auth": "a" * 10}})["ok"])
+            mail_skill.update_account(self.acc_id, {"push": True})
+            # Пока процесс лежал, во Входящие пришло непрочитанное письмо.
+            FakeIMAP.boxes["INBOX"][4] = (make_msg("Silvia tools", "Сильвия <s@silvia.ru>", ADDR, text="Тест"), set())
+            importlib.reload(mail_skill)          # новый процесс: пустая память, всё с диска
+            self.assertEqual(mail_skill._poller_state["gen"], 0)
+            jarvis._start_mail_poller()           # то же, что делает main() при старте
+            self.assertTrue(self.wait(lambda: self.sent_texts()), "уведомление не пришло")
+            self.assertIn("Silvia tools", self.sent_texts()[0])
+            self.assertEqual([p["chat_id"] for m, p in self.calls if m == "sendMessage"], [111])
+            self.assertTrue(self.wait(lambda: pushed))
+            self.assertIn("Silvia tools", pushed[0]["body"])
+            self.assertTrue(self.wait(lambda: any("новых 1" in l for l in self.logs)), self.logs)
+            st = mail_skill.public_status()
+            self.assertTrue(st["poller"]["alive"])
+            acc = st["accounts"][0]
+            self.assertGreater(acc["lastPollAt"], 0)
+            self.assertIn("4", {str(u) for u in mail_skill._index(self.acc_id)["folders"]["INBOX"]["msgs"]})
+        finally:
+            webpush.set_deliver(None)
+        self.assertIn("mail: poller started, 1 ящиков, раз в 90 с", self.logs)
+        line = next(l for l in self.logs if "новых 1" in l)
+        self.assertEqual(line.split(" (")[0], "mail: u***@mail.ru: новых 1, уведомлений 2")
+        for l in self.logs:
+            self.assertNotIn(APP_PW, l)
+            self.assertNotIn("Silvia tools", l)
+            self.assertNotIn(ADDR, l)
+
+    def test_error_on_one_box_does_not_stop_others_or_loop(self):
+        FakeIMAP.accounts["second@mail.ru"] = "SecondPass12345"
+        second = mail_skill.add_account("second@mail.ru", "SecondPass12345", "Вторая")["account"]["id"]
+        mail_skill.sync_account(mail_skill._find_account(second))
+        jarvis.save_app_data({"settings": {"notifyRouting": {"111": ["mail:" + self.acc_id, "mail:" + second]}},
+                              "telegramSkills": {}})
+        mail_skill.add_notifier(jarvis._mail_notify)
+        orig = mail_skill._sync_locked
+
+        def broken(acc):
+            if acc["id"] == self.acc_id:
+                raise SystemExit("ящик сломал проверку")
+            return orig(acc)
+
+        mail_skill._sync_locked = broken
+        try:
+            FakeIMAP.boxes["INBOX"][4] = (make_msg("Во второй", "a@b.ru", ADDR, text="x"), set())
+            mail_skill.start_poller(interval=0.1)
+            self.assertTrue(self.wait(lambda: self.sent_texts()))
+            self.assertTrue(self.wait(lambda: sum("u***@mail.ru: ошибка" in l for l in self.logs) >= 2),
+                            "после ошибки цикл продолжает круги")
+        finally:
+            mail_skill._sync_locked = orig
+        self.assertTrue(mail_skill._poller.is_alive())
+        self.assertTrue(any(l.startswith("mail: s***@mail.ru: новых 1, уведомлений 1") for l in self.logs), self.logs)
+
+    def test_hung_box_is_cut_and_dead_thread_restarted(self):
+        import time
+        orig_deadline, orig_abort, orig = mail_skill.SYNC_DEADLINE, mail_skill.ABORT_WAIT, mail_skill._sync_locked
+        release = threading.Event()
+
+        def hang(acc):
+            release.wait(5)
+            return {"ok": False, "error": "x"}, []
+
+        mail_skill.SYNC_DEADLINE, mail_skill.ABORT_WAIT, mail_skill._sync_locked = 0.2, 0.2, hang
+        try:
+            t0 = time.time()
+            res = mail_skill.poll_once()
+            self.assertLess(time.time() - t0, 3)
+            self.assertIn("соединение сброшено", res[0]["error"])
+            self.assertGreater(mail_skill._find_account(self.acc_id)["lastPollAt"], 0)
+        finally:
+            release.set()
+            mail_skill.SYNC_DEADLINE, mail_skill.ABORT_WAIT, mail_skill._sync_locked = orig_deadline, orig_abort, orig
+        self.assertTrue(mail_skill.start_poller(interval=0.1))
+        self.assertFalse(mail_skill.start_poller(interval=0.1), "живой поток второй раз не запускается")
+        mail_skill._poller_state["gen"] += 1     # поток вышел из цикла — как будто умер
+        self.assertTrue(self.wait(lambda: not mail_skill._poller.is_alive()))
+        self.assertTrue(mail_skill.ensure_poller())
+        self.assertTrue(any("poller restarted (прежний поток умер)" in l for l in self.logs), self.logs)
+        mail_skill._poller_state["gen"] += 1
+        self.assertTrue(self.wait(lambda: not mail_skill._poller.is_alive()))
+        self.assertTrue(mail_skill.public_status()["poller"]["alive"], "открытие вкладки «Почта» тоже поднимает поток")
+
+
 if __name__ == "__main__":
     unittest.main()
