@@ -12,4 +12,5 @@ jarvis_anchors.json
 jarvis_market.json
 jarvis_webpush.json
 jarvis_tg_watch.json
+market_shots/
 ms-playwright/

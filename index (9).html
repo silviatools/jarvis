@@ -5599,6 +5599,7 @@ const MARKET_STATUS_CLS = {
   awaiting_code: 'text-amber-600',
   active: 'text-green-600',
   expired: 'text-red-600',
+  blocked: 'text-red-600',
 };
 const marketPhoneDigits = (value) => {
   let d = String(value || '').replace(/\D/g, '');
@@ -5800,7 +5801,11 @@ function MarketplaceSettings() {
                 {' · '}{row.result || ''}
               </div>
               {row.url ? <div className="font-mono break-all">{row.url}</div> : null}
+              {row.title ? <div>{row.title}</div> : null}
               {row.summary ? <div>{row.summary}</div> : null}
+              {row.shot ? (
+                <a className="underline" href={'/api/market/shot/' + row.shot} target="_blank" rel="noreferrer">скриншот</a>
+              ) : null}
             </div>
           )) : <div className="text-xs text-[var(--text-subtle)] mt-2">Пока пусто</div>}
         </div>
