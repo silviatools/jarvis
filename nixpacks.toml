@@ -46,5 +46,5 @@ aptPkgs = [
 [phases.install]
 cmds = [
   "...",
-  ". /opt/venv/bin/activate && python -m playwright install chromium",
+  ". /opt/venv/bin/activate && python -m playwright install --no-shell chromium && python -m patchright install --no-shell chromium",
 ]

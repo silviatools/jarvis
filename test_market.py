@@ -137,6 +137,41 @@ class MarketSkillTest(unittest.TestCase):
         self.assertIn("Mobile", hints["user_agent"])
         self.assertIn("Pixel 7", hints["headers"]["sec-ch-ua-model"])
         self.assertEqual(hints["headers"]["sec-ch-ua-mobile"], "?1")
+        ozon = market_skill.ozon_hints("140.0.6723.59", "android")
+        self.assertEqual(ozon["metadata"]["model"], "Pixel 7")
+        self.assertEqual(ozon["metadata"]["platformVersion"], "14.0.0")
+        self.assertNotIn("Pixel 7", ozon["user_agent"])
+        self.assertIn("Android 10; K", ozon["user_agent"])
+        self.assertIn("Chrome/140.0.0.0 Mobile", ozon["user_agent"])
+        brands = [item["brand"] for item in ozon["metadata"]["brands"]]
+        self.assertEqual(brands, ["Chromium", "Not_A Brand"])
+        self.assertEqual(ozon["metadata"]["brands"][1]["version"], "8")
+        self.assertEqual(ozon["metadata"]["fullVersion"], "140.0.6723.59")
+        cdp = market_skill.ozon_cdp("140.0.6723.59", "android")
+        self.assertEqual(cdp["platform"], "Linux armv81")
+        self.assertEqual(cdp["acceptLanguage"], "ru-RU,ru;q=0.9")
+        self.assertNotIn("Google Chrome", brands)
+        desk = market_skill.ozon_cdp("140.0.6723.59", "desktop")
+        self.assertIn("X11; Linux x86_64", desk["userAgent"])
+        self.assertNotIn("Mobile", desk["userAgent"])
+        self.assertEqual(desk["platform"], "Linux x86_64")
+        self.assertEqual(desk["userAgentMetadata"]["architecture"], "x86")
+        self.assertEqual(desk["userAgentMetadata"]["bitness"], "64")
+        self.assertFalse(desk["userAgentMetadata"]["mobile"])
+        self.assertFalse(market_skill.hide_webdriver("ozon", "android"))
+        self.assertFalse(market_skill.hide_webdriver("ozon", "desktop"))
+        self.assertTrue(market_skill.hide_webdriver("wb", "android"))
+        proxy = {"scheme": "http", "host": "h", "port": 8080, "username": "u", "password": "p a"}
+        launch = market_skill.chromium_launch_kwargs(proxy, "")
+        self.assertEqual(launch["channel"], "chromium")
+        self.assertNotIn("executable_path", launch)
+        self.assertEqual(launch["args"], market_skill.LAUNCH_ARGS)
+        self.assertEqual(launch["proxy"]["server"], "http://h:8080")
+        self.assertEqual(launch["proxy"]["password"], "p a")
+        own = market_skill.chromium_launch_kwargs(proxy, "/opt/google/chrome/chrome")
+        self.assertNotIn("channel", own)
+        self.assertEqual(own["executable_path"], "/opt/google/chrome/chrome")
+        self.assertNotIn("startScreencast", Path("market_skill.py").read_text(encoding="utf-8"))
 
     def test_proxy_mask_and_store(self):
         res = self._proxy()
@@ -150,6 +185,12 @@ class MarketSkillTest(unittest.TestCase):
         self.assertNotIn(SECRET, "\n".join(market_skill._logs))
         self.assertFalse(market_skill.save_proxy("socks5://a:b@h:1")["ok"])
         self.assertFalse(market_skill.save_proxy("http://h")["ok"])
+        quad = market_skill.parse_proxy("10.0.0.1:8080:user:p:a")
+        self.assertEqual(quad["host"], "10.0.0.1")
+        self.assertEqual(quad["port"], 8080)
+        self.assertEqual(quad["username"], "user")
+        self.assertEqual(quad["password"], "p:a")
+        self.assertEqual(quad["scheme"], "http")
 
     def test_login_requires_proxy_and_hides_cookie(self):
         res = market_skill.begin_login("ozon", "+79001234579")
@@ -326,9 +367,22 @@ class MarketSkillTest(unittest.TestCase):
         seen = {}
         cab = market_skill.PlaywrightCabinet()
 
-        def new_context(proxy, storage=None, mode="android"):
+        def new_context(proxy, storage=None, mode="android", shop="wb"):
             seen["mode"] = mode
+            seen["shop"] = shop
+            ctx._jarvis_mode = mode
             return ctx
+
+        def storage_state():
+            return {
+                "cookies": [
+                    {"name": "sid", "value": COOKIE, "domain": ".ozon.ru"},
+                    {"name": "other", "value": "nope", "domain": ".wildberries.ru"},
+                ],
+                "origins": [{"origin": "https://evil.example"}],
+            }
+
+        ctx.storage_state = storage_state
 
         cab._new_context = new_context
         cab._open = lambda context, mode="android": page
@@ -336,7 +390,9 @@ class MarketSkillTest(unittest.TestCase):
         opened = cab._manual_open(market_skill._proxy(), "ozon")
         self.assertTrue(opened["ok"])
         self.assertEqual(seen["mode"], "android")
+        self.assertEqual(seen["shop"], "ozon")
         self.assertEqual(page.gotos, [market_skill.OZON_HOME])
+        self.assertEqual(market_skill.load_ozon_mode(), "android")
         self.assertEqual(market_skill.public_status()["manual"]["shop"], "ozon")
         other = cab._manual_open(market_skill._proxy(), "wb")
         self.assertFalse(other["ok"])
@@ -354,6 +410,8 @@ class MarketSkillTest(unittest.TestCase):
         self.assertEqual(market_skill.session_from_page(proved)["session"], "active")
         abt = market_skill.load_abt(market_skill._proxy(), "android")
         self.assertEqual(abt["cookies"][0]["value"], COOKIE)
+        self.assertEqual(abt["origins"], [])
+        self.assertEqual(len(abt["cookies"]), 1)
         self.drv.read_result = {"ok": False, "session": "public", **proved}
         out = market_skill.execute("market_orders", {"shop": "ozon"}, None)
         self.assertTrue(out["ok"])
@@ -915,7 +973,10 @@ class MarketSkillTest(unittest.TestCase):
         blocked = {"title": "Похоже, нет соединения", "text": "Выключите VPN, перезагрузите роутер"}
         self.assertFalse(market_skill.ozon_home_clear(blocked))
         self.assertTrue(market_skill.ozon_home_clear({"title": "OZON — интернет-магазин", "text": "каталог"}))
-        self.assertFalse(market_skill.ozon_home_clear({
+        self.assertTrue(market_skill.ozon_home_clear({"title": "Озон", "text": ""}))
+        self.assertFalse(market_skill.ozon_home_clear({"title": "", "text": "OZON каталог"}))
+        self.assertFalse(market_skill.ozon_home_clear({"title": "Ozon Access denied", "text": "каталог"}))
+        self.assertTrue(market_skill.ozon_home_clear({
             "title": "OZON", "text": "Похоже, нет соединения",
         }))
 
@@ -950,6 +1011,78 @@ class MarketSkillTest(unittest.TestCase):
         self.assertEqual([ev.get("action") for ev in opened["events"] if ev.get("action") != "see"], ["reload", "reload", "settle"])
         self.assertAlmostEqual(reloads[0], 10, delta=0.5)
         self.assertAlmostEqual(reloads[1], 18, delta=0.5)
+        self.assertEqual(market_skill.ozon_mode_order(""), ("android", "desktop", "patchright"))
+        self.assertEqual(market_skill.ozon_mode_order("desktop")[0], "desktop")
+        self.assertEqual(market_skill.ozon_mode_order("desktop"), ("desktop", "android", "patchright"))
+        self._proxy()
+        proxy = market_skill._proxy()
+        market_skill.save_abt(proxy, "android", {"cookies": [{"name": "abt", "value": COOKIE, "domain": ".ozon.ru"}]})
+        market_skill.forget_abt(proxy, "android")
+        self.assertIsNone(market_skill.load_abt(proxy, "android"))
+        kept = market_skill.ozon_cookie_state({
+            "cookies": [
+                {"name": "a", "domain": ".ozon.ru"},
+                {"name": "b", "domain": "wb.ru"},
+            ],
+            "origins": [{"origin": "https://ozon.ru"}],
+        })
+        self.assertEqual(kept["origins"], [])
+        self.assertEqual([item["name"] for item in kept["cookies"]], ["a"])
+        cab = market_skill.PlaywrightCabinet()
+        cab._hints = market_skill.build_hints("140.0.0.0")
+
+        class Ctx:
+            def __init__(self):
+                self.scripts = []
+                self.events = []
+
+            def add_init_script(self, script):
+                self.scripts.append(script)
+
+            def on(self, event, callback):
+                self.events.append(event)
+
+            def set_default_navigation_timeout(self, timeout):
+                self.timeout = timeout
+
+        oz = Ctx()
+        cab._prepare_context(oz, "ozon", "android")
+        self.assertEqual(oz.scripts, [])
+        self.assertIn("page", oz.events)
+        wb = Ctx()
+        cab._prepare_context(wb, "wb", "android")
+        self.assertTrue(any("webdriver" in script for script in wb.scripts))
+        kw = cab._context_kwargs({"scheme": "http", "host": "h", "port": 1}, None, "android", shop="ozon")
+        self.assertNotIn("proxy", kw)
+        self.assertEqual(kw["screen"]["width"], 412)
+        desk = cab._context_kwargs({"scheme": "http", "host": "h", "port": 1}, None, "desktop", shop="ozon")
+        self.assertEqual(desk["viewport"], {"width": 1366, "height": 900})
+        self.assertNotIn("proxy", desk)
+
+        class Sent:
+            def __init__(self):
+                self.calls = []
+
+            def send(self, method, params):
+                self.calls.append((method, params))
+
+        class HintCtx:
+            def __init__(self):
+                self.cdp = Sent()
+
+            def new_cdp_session(self, page):
+                return self.cdp
+
+        hint_ctx = HintCtx()
+        cab._apply_ozon_hints(hint_ctx, None, "android")
+        self.assertEqual(hint_ctx.cdp.calls[0][0], "Emulation.setUserAgentOverride")
+        self.assertNotIn("Emulation.setTouchEmulationEnabled", [item[0] for item in hint_ctx.cdp.calls])
+        failed = market_skill.PlaywrightCabinet()
+        failed._warm_ozon = lambda proxy: (None, None, [])
+        closed = failed._manual_open(proxy, "ozon")
+        self.assertFalse(closed["ok"])
+        self.assertIn("android", closed["error"])
+        self.assertFalse(market_skill.manual_is_open())
 
     def test_exit_128_is_beeline_broadband(self):
         fields = json.loads(Path("tests/fixtures/market/exit-128.71.38.20.json").read_text(encoding="utf-8"))
@@ -1317,7 +1450,9 @@ class AssistantLoopTest(unittest.TestCase):
         self.assertIn("playwright", Path("requirements.txt").read_text(encoding="utf-8"))
         nix = Path("nixpacks.toml").read_text(encoding="utf-8")
         self.assertIn("libnss3", nix)
-        self.assertIn("playwright install chromium", nix)
+        self.assertIn("playwright install --no-shell chromium", nix)
+        self.assertIn("patchright install --no-shell chromium", nix)
+        self.assertIn('"..."', nix)
 
         html = Path("index (9).html").read_text(encoding="utf-8")
         self.assertIn("Маркетплейсы", html)

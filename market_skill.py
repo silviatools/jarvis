@@ -117,15 +117,36 @@ PROMPT = (
     "Телефон в профиле уже замаскирован, не восстанавливай его.\n\n"
 )
 
-# Профиль, который проходил антибот Ozon (Variti) на мобильном прокси: Pixel 7.
+# Профиль телефона для Ozon: экран и вьюпорт 412×915. Модель Pixel 7 — в Client Hints, не в строке UA.
 PIXEL7_PROFILE = {
     "viewport": {"width": 412, "height": 915},
+    "screen": {"width": 412, "height": 915},
     "device_scale_factor": 2.625,
     "is_mobile": True,
     "has_touch": True,
     "locale": "ru-RU",
     "timezone_id": "Europe/Moscow",
 }
+DESKTOP_PROFILE = {
+    "viewport": {"width": 1366, "height": 900},
+    "screen": {"width": 1366, "height": 900},
+    "locale": "ru-RU",
+    "timezone_id": "Europe/Moscow",
+    "is_mobile": False,
+    "has_touch": False,
+}
+LAUNCH_ARGS = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-blink-features=AutomationControlled",
+]
+_WEBDRIVER_SCRIPT = (
+    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+    "Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 5});"
+    "Object.defineProperty(navigator, 'language', {get: () => 'ru-RU'});"
+    "Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru']});"
+)
 
 _SECTION = {
     "market_orders": "orders",
@@ -346,6 +367,132 @@ def pixel7_user_agent(version: str) -> str:
     return build_hints(version)["user_agent"]
 
 
+def _chrome_version(version: str) -> str:
+    version = (version or "").strip()
+    if not re.match(r"^\d+\.\d+", version):
+        return "140.0.0.0"
+    return version
+
+
+def ozon_hints(version: str, mode: str = "android") -> dict:
+    """UA и Client Hints Ozon. В строке Chrome/{major}.0.0.0, в metadata — версия браузера."""
+    version = _chrome_version(version)
+    major = version.split(".")[0]
+    brands = [
+        {"brand": "Chromium", "version": major},
+        {"brand": "Not_A Brand", "version": "8"},
+    ]
+    full = [
+        {"brand": "Chromium", "version": version},
+        {"brand": "Not_A Brand", "version": "8.0.0.0"},
+    ]
+    sec = ", ".join(f'"{b["brand"]}";v="{b["version"]}"' for b in brands)
+    sec_full = ", ".join(f'"{b["brand"]}";v="{b["version"]}"' for b in full)
+    mobile = mode == "android"
+    if mobile:
+        ua = (
+            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Mobile Safari/537.36"
+        )
+        metadata = {
+            "brands": brands,
+            "fullVersionList": full,
+            "fullVersion": version,
+            "platform": "Android",
+            "platformVersion": "14.0.0",
+            "architecture": "",
+            "model": "Pixel 7",
+            "mobile": True,
+            "bitness": "",
+            "wow64": False,
+        }
+        headers = {
+            "sec-ch-ua": sec,
+            "sec-ch-ua-mobile": "?1",
+            "sec-ch-ua-platform": '"Android"',
+            "sec-ch-ua-platform-version": '"14.0.0"',
+            "sec-ch-ua-model": '"Pixel 7"',
+            "sec-ch-ua-full-version-list": sec_full,
+            "accept-language": "ru-RU,ru;q=0.9",
+        }
+    else:
+        ua = (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+        )
+        metadata = {
+            "brands": brands,
+            "fullVersionList": full,
+            "fullVersion": version,
+            "platform": "Linux",
+            "platformVersion": "",
+            "architecture": "x86",
+            "model": "",
+            "mobile": False,
+            "bitness": "64",
+            "wow64": False,
+        }
+        headers = {
+            "sec-ch-ua": sec,
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Linux"',
+            "sec-ch-ua-full-version-list": sec_full,
+            "accept-language": "ru-RU,ru;q=0.9",
+        }
+    return {"user_agent": ua, "metadata": metadata, "headers": headers, "version": version}
+
+
+def ozon_cdp(version: str, mode: str = "android") -> dict:
+    hints = ozon_hints(version, mode)
+    platform = "Linux armv81" if mode == "android" else "Linux x86_64"
+    return {
+        "userAgent": hints["user_agent"],
+        "acceptLanguage": "ru-RU,ru;q=0.9",
+        "platform": platform,
+        "userAgentMetadata": hints["metadata"],
+    }
+
+
+def hide_webdriver(shop: str, mode: str) -> bool:
+    """Подмена navigator.webdriver для Ozon не используется. У WB на телефоне остаётся."""
+    return shop != "ozon" and mode == "android"
+
+
+def chromium_launch_kwargs(proxy=None, executable: str = "") -> dict:
+    """Полный Chromium. Свой бинарник — без channel. Прокси на launch, не на контекст."""
+    kwargs = {"headless": True, "args": list(LAUNCH_ARGS)}
+    exe = (executable or "").strip()
+    if exe:
+        kwargs["executable_path"] = exe
+    else:
+        kwargs["channel"] = "chromium"
+    if proxy:
+        kwargs["proxy"] = _pw_proxy(proxy)
+    return kwargs
+
+
+def ozon_mode_order(remembered: str = "") -> tuple:
+    order = []
+    if remembered in OZON_MODES:
+        order.append(remembered)
+    for mode in OZON_MODES:
+        if mode not in order:
+            order.append(mode)
+    return tuple(order)
+
+
+def ozon_cookie_state(storage) -> dict:
+    cookies = []
+    raw = storage.get("cookies") if isinstance(storage, dict) else None
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        host = str(item.get("domain") or "").lstrip(".").lower()
+        if host == "ozon.ru" or host.endswith(".ozon.ru"):
+            cookies.append(item)
+    return {"cookies": cookies, "origins": []}
+
+
 def mask_proxy(proxy) -> str:
     if not proxy or not proxy.get("host"):
         return ""
@@ -421,7 +568,15 @@ def parse_proxy(raw: str) -> dict:
         raise ValueError("Введите прокси")
     if any(c in text for c in "\n\r\t "):
         raise ValueError("Прокси должен быть одной строкой без пробелов")
-    if "://" not in text:
+    if "://" not in text and "@" not in text:
+        parts = text.split(":")
+        if len(parts) >= 4 and parts[1].isdigit():
+            host, port, user = parts[0], parts[1], parts[2]
+            password = ":".join(parts[3:])
+            text = f"http://{quote(user, safe='')}:{quote(password, safe='')}@{host}:{port}"
+        else:
+            text = "http://" + text
+    elif "://" not in text:
         text = "http://" + text
     parsed = urlparse(text)
     if parsed.scheme not in ("http", "https"):
@@ -484,6 +639,7 @@ def _empty() -> dict:
         "proxy": None,
         "journal": [],
         "abt": {},
+        "ozon_browser_mode": "",
         "wb_check": {"fails": 0, "until": 0},
         "shops": {sid: {"status": "none", "auth": "", "phone_mask": "", "updated": 0, "storage": None} for sid in SHOPS},
     }
@@ -522,6 +678,8 @@ def _load() -> dict:
         }
     base["journal"] = _clean_journal(data.get("journal"))
     base["abt"] = _clean_abt(data.get("abt"))
+    mode = data.get("ozon_browser_mode")
+    base["ozon_browser_mode"] = mode if mode in OZON_MODES else ""
     base["wb_check"] = _clean_wb_check(data.get("wb_check"))
     return base
 
@@ -702,6 +860,7 @@ def save_proxy(raw: str) -> dict:
         data = _load()
         data["proxy"] = parsed
         if changed:
+            data["ozon_browser_mode"] = ""
             for sid in SHOPS:
                 if data["shops"][sid].get("status") != "none" or data["shops"][sid].get("storage"):
                     reset = True
@@ -723,9 +882,52 @@ def save_proxy(raw: str) -> dict:
     return {"ok": True, "mask": mask_proxy(parsed), "message": message}
 
 
+def proxy_connection(proxy) -> str:
+    proxy = proxy or {}
+    scheme = proxy.get("scheme") or "http"
+    host = proxy.get("host") or ""
+    port = proxy.get("port") or ""
+    user = proxy.get("username") or ""
+    password = proxy.get("password") or ""
+    auth = ""
+    if user or password:
+        auth = quote(str(user), safe="") + ":" + quote(str(password), safe="") + "@"
+    return f"{scheme}://{auth}{host}:{port}"
+
+
 def proxy_hash(proxy) -> str:
-    raw = "|".join(str((proxy or {}).get(k) or "") for k in ("scheme", "host", "port", "username", "password"))
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+    return hashlib.sha256(proxy_connection(proxy).encode()).hexdigest()[:16]
+
+
+def load_ozon_mode() -> str:
+    mode = (_load().get("ozon_browser_mode") or "")
+    return mode if mode in OZON_MODES else ""
+
+
+def remember_ozon_mode(mode: str):
+    if mode not in OZON_MODES:
+        return
+    with _lock:
+        data = _load()
+        data["ozon_browser_mode"] = mode
+        _write(data)
+
+
+def forget_abt(proxy, mode):
+    if mode not in ABT_MODES:
+        return
+    with _lock:
+        data = _load()
+        key = proxy_hash(proxy)
+        row = (data.get("abt") or {}).get(key)
+        if not isinstance(row, dict) or mode not in row:
+            return
+        row.pop(mode, None)
+        if row:
+            data["abt"][key] = row
+        else:
+            data.get("abt", {}).pop(key, None)
+        _write(data)
 
 
 def describe_exit(fields) -> dict:
@@ -796,13 +998,24 @@ def lookup_exit(ip: str) -> dict:
     return describe_exit(fields)
 
 
+_OZON_TITLE_BLOCK = (
+    "доступ ограничен",
+    "нет соединения",
+    "access denied",
+    "antibot",
+    "captcha",
+    "робот",
+)
+
+
 def ozon_home_clear(info) -> bool:
-    """Заголовок с ozon и без стены антибота. Тело тоже смотрим на метки блокировки."""
+    """document.title: непустой, ozon или озон, без стены. Тело страницы не смотрим."""
     title = _norm_text((info or {}).get("title") or "")
-    blob = title + "\n" + _norm_text((info or {}).get("text") or "")
-    if "ozon" not in title:
+    if not title:
         return False
-    if any(s in blob for s in _OFFLINE_MARKERS) or any(s in blob for s in _CHALLENGE_MARKERS):
+    if "ozon" not in title and "озон" not in title:
+        return False
+    if any(marker in title for marker in _OZON_TITLE_BLOCK):
         return False
     return True
 
@@ -841,7 +1054,7 @@ def ozon_warm_pass(snapshot, reload, sleep, now=None) -> dict:
             events.append({"elapsed": elapsed, "action": "reload", "at": mark})
             reload()
             continue
-        sleep(0.4)
+        sleep(1)
 
 
 def wb_keep_waiting(info, elapsed, has_phone) -> bool:
@@ -2408,7 +2621,8 @@ class PlaywrightCabinet:
         return self._worker.call(self._cancel, shop, order_id, proxy, storage, timeout=70)
 
     def manual_open(self, proxy, shop="wb") -> dict:
-        return self._worker.call(self._manual_open, proxy, shop, timeout=60)
+        timeout = 300 if shop == "ozon" else 60
+        return self._worker.call(self._manual_open, proxy, shop, timeout=timeout)
 
     def manual_frame(self):
         return self._worker.call(self._manual_frame, timeout=15)
@@ -2422,33 +2636,65 @@ class PlaywrightCabinet:
     def manual_cancel(self) -> dict:
         return self._worker.call(self._manual_cancel, timeout=20)
 
-    def _ensure_browser(self):
+    def _custom_chromium(self) -> str:
+        for key in ("CHROMIUM_EXECUTABLE", "CHROMIUM_PATH"):
+            env = (os.environ.get(key) or "").strip()
+            if env and os.path.isfile(env):
+                return env
+        return ""
+
+    def _close_main_browser(self):
+        self._drop_warm()
+        browser = self._browser
+        self._browser = None
+        self._browser_proxy = None
+        try:
+            if browser:
+                browser.close()
+        except Exception:
+            pass
+
+    def _close_patchright(self):
+        browser = getattr(self, "_prt_browser", None)
+        self._prt_browser = None
+        self._prt_proxy = None
+        try:
+            if browser:
+                browser.close()
+        except Exception:
+            pass
+
+    def _ensure_browser(self, proxy=None):
+        sig = proxy_hash(proxy) if proxy else ""
         if self._browser is not None:
             try:
-                if self._browser.is_connected():
+                if self._browser.is_connected() and getattr(self, "_browser_proxy", "") == sig:
                     return self._browser
             except Exception:
                 self._browser = None
+        self._close_patchright()
+        self._close_main_browser()
         from playwright.sync_api import sync_playwright
-        self._pw = sync_playwright().start()
-        kwargs = {"headless": True, "args": ["--disable-blink-features=AutomationControlled"]}
-        exe = (os.environ.get("CHROMIUM_PATH") or "").strip()
-        if exe and os.path.isfile(exe):
-            kwargs["executable_path"] = exe
-        self._browser = self._pw.chromium.launch(**kwargs)
+        if self._pw is None:
+            self._pw = sync_playwright().start()
+        self._browser = self._pw.chromium.launch(**chromium_launch_kwargs(proxy, self._custom_chromium()))
+        self._browser_proxy = sig
         self._hints = build_hints(getattr(self._browser, "version", "") or "")
         _log("browser started " + self._hints["version"])
         return self._browser
 
-    def _context_kwargs(self, proxy, storage=None, mode="android") -> dict:
-        if mode == "android":
+    def _context_kwargs(self, proxy, storage=None, mode="android", shop="wb") -> dict:
+        if shop == "ozon":
+            hints = ozon_hints((self._hints or {}).get("version") or "", mode)
+            kw = dict(PIXEL7_PROFILE if mode == "android" else DESKTOP_PROFILE)
+            kw["user_agent"] = hints["user_agent"]
+            kw["extra_http_headers"] = dict(hints["headers"])
+        elif mode == "android":
             kw = dict(PIXEL7_PROFILE)
             kw["user_agent"] = self._hints["user_agent"]
             kw["extra_http_headers"] = dict(self._hints["headers"])
         else:
-            # Desktop и Patchright — без подмены UA, вьюпорта и Client Hints.
             kw = {}
-        kw["proxy"] = _pw_proxy(proxy)
         if storage:
             kw["storage_state"] = storage
         return kw
@@ -2467,57 +2713,73 @@ class PlaywrightCabinet:
         except Exception as e:
             _log("client hints " + type(e).__name__)
 
-    def _chromium_exe(self) -> str:
-        env = (os.environ.get("CHROMIUM_PATH") or "").strip()
-        if env and os.path.isfile(env):
-            return env
-        root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or ""
-        if root and os.path.isdir(root):
-            found = sorted(Path(root).glob("chromium-*/chrome-linux*/chrome"))
-            if found:
-                return str(found[-1])
-        if os.path.isfile("/opt/google/chrome/chrome"):
-            return "/opt/google/chrome/chrome"
-        return ""
+    def _apply_ozon_hints(self, context, page, mode):
+        payload = ozon_cdp((self._hints or {}).get("version") or "", mode)
+        try:
+            cdp = context.new_cdp_session(page)
+            cdp.send("Emulation.setUserAgentOverride", payload)
+        except Exception as e:
+            _log("ozon hints " + type(e).__name__)
 
-    def _new_context(self, proxy, storage=None, mode="android"):
+    def _prepare_context(self, context, shop, mode):
+        try:
+            context._jarvis_shop = shop
+            context._jarvis_mode = mode
+        except Exception:
+            pass
+        if hide_webdriver(shop, mode):
+            context.add_init_script(_WEBDRIVER_SCRIPT)
+        if shop == "ozon":
+            def on_page(page, mode=mode):
+                self._apply_ozon_hints(context, page, mode)
+            try:
+                context.on("page", on_page)
+            except Exception:
+                pass
+        try:
+            context.set_default_navigation_timeout(35000)
+        except Exception:
+            pass
+
+    def _new_context(self, proxy, storage=None, mode="android", shop="wb"):
         if mode == "patchright":
             return self._patchright_context(proxy, storage)
-        browser = self._ensure_browser()
-        context = browser.new_context(**self._context_kwargs(proxy, storage, mode))
-        if mode == "android":
-            context.add_init_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-                "Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 5});"
-                "Object.defineProperty(navigator, 'language', {get: () => 'ru-RU'});"
-                "Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru']});"
-            )
-        context.set_default_navigation_timeout(35000)
+        browser = self._ensure_browser(proxy)
+        context = browser.new_context(**self._context_kwargs(proxy, storage, mode, shop))
+        self._prepare_context(context, shop, mode)
         return context
 
     def _patchright_context(self, proxy, storage):
         from patchright.sync_api import sync_playwright
+        sig = proxy_hash(proxy) if proxy else ""
+        self._close_main_browser()
         if getattr(self, "_prt", None) is None:
             self._prt = sync_playwright().start()
-        if getattr(self, "_prt_browser", None) is not None:
+        alive = False
+        browser = getattr(self, "_prt_browser", None)
+        if browser is not None and getattr(self, "_prt_proxy", "") == sig:
             try:
-                if not self._prt_browser.is_connected():
-                    self._prt_browser = None
+                alive = browser.is_connected()
             except Exception:
-                self._prt_browser = None
-        if getattr(self, "_prt_browser", None) is None:
-            kwargs = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
-            exe = self._chromium_exe()
-            if exe:
-                kwargs["executable_path"] = exe
-            self._prt_browser = self._prt.chromium.launch(**kwargs)
-        context = self._prt_browser.new_context(**self._context_kwargs(proxy, storage, "patchright"))
-        context.set_default_navigation_timeout(35000)
+                alive = False
+        if not alive:
+            self._close_patchright()
+            self._prt_browser = self._prt.chromium.launch(**chromium_launch_kwargs(proxy, self._custom_chromium()))
+            self._prt_proxy = sig
+            version = getattr(self._prt_browser, "version", "") or ""
+            if version:
+                self._hints = build_hints(version)
+        context = self._prt_browser.new_context(**self._context_kwargs(proxy, storage, "patchright", shop="ozon"))
+        self._prepare_context(context, "ozon", "patchright")
         return context
 
     def _open(self, context, mode="android"):
         page = context.new_page()
-        if mode == "android":
+        shop = getattr(context, "_jarvis_shop", "wb")
+        mode = getattr(context, "_jarvis_mode", mode)
+        if shop == "ozon":
+            self._apply_ozon_hints(context, page, mode)
+        elif mode == "android":
             self._apply_hints(context, page)
         return page
 
@@ -2764,21 +3026,21 @@ class PlaywrightCabinet:
         return " · ".join(bits)
 
     def _warm_ozon(self, proxy):
-        """Сначала главная. Android, при отказе desktop без подмен, затем Patchright."""
+        """Главная тем же режимом, что прошёл в прошлый раз, иначе android → desktop → patchright."""
         steps = []
         last_info = {"url": OZON_HOME, "title": "", "text": ""}
-        for mode in OZON_MODES:
+        for mode in ozon_mode_order(load_ozon_mode()):
             context = None
             try:
-                context = self._new_context(proxy, load_abt(proxy, mode), mode)
+                context = self._new_context(proxy, load_abt(proxy, mode), mode, shop="ozon")
                 page = self._open(context, mode)
                 try:
-                    page.goto(OZON_HOME, wait_until="domcontentloaded", timeout=40000)
+                    page.goto(OZON_HOME, wait_until="domcontentloaded", timeout=60000)
                 except Exception as e:
                     _log("ozon home " + mode + " " + type(e).__name__)
                 result = ozon_warm_pass(
                     lambda: self._snapshot(page),
-                    lambda: page.reload(wait_until="domcontentloaded", timeout=20000),
+                    lambda: page.reload(wait_until="domcontentloaded", timeout=30000),
                     time.sleep,
                 )
                 info = result.get("info") or self._snapshot(page)
@@ -2786,12 +3048,15 @@ class PlaywrightCabinet:
                 steps.append(self._page_step(page, "warm", self._warm_summary(mode, result), info))
                 if result.get("ok"):
                     try:
-                        save_abt(proxy, mode, context.storage_state())
+                        save_abt(proxy, mode, ozon_cookie_state(context.storage_state()))
                     except Exception as e:
                         _log("abt save " + mode + " " + type(e).__name__)
+                    remember_ozon_mode(mode)
                     return context, page, steps
+                forget_abt(proxy, mode)
             except Exception as e:
                 _log("ozon warm " + mode + " " + type(e).__name__)
+                forget_abt(proxy, mode)
                 steps.append({
                     "step": "warm", "result": mode + " · не запустился",
                     "url": OZON_HOME, "title": "", "summary": mode + " · " + type(e).__name__,
@@ -2834,7 +3099,10 @@ class PlaywrightCabinet:
                 steps.extend(warm_steps)
                 if context is None:
                     info = steps[-1] if steps else {"url": OZON_HOME, "title": "", "text": ""}
-                    return self._blocked_result(info if isinstance(info, dict) else {"url": OZON_HOME}, steps)
+                    modes = ", ".join(ozon_mode_order(load_ozon_mode()))
+                    decision = self._blocked_result(info if isinstance(info, dict) else {"url": OZON_HOME}, steps)
+                    decision["error"] = "Главная Ozon не открылась. Режимы: " + modes + ". Если стена осталась, смените IP прокси и войдите ещё раз."
+                    return decision
                 try:
                     page.goto(_CABINET_URLS[shop]["login"], wait_until="domcontentloaded", timeout=40000)
                 except Exception as e:
@@ -3016,18 +3284,34 @@ class PlaywrightCabinet:
         context = None
         try:
             if sid == "ozon":
-                # Как в обходе витрины: Android Pixel 7 и cookies этого режима, старт с главной.
-                context = self._new_context(proxy, load_abt(proxy, "android"), "android")
-                page = self._open(context, "android")
-                start = OZON_HOME
+                context, page, warm_steps = self._warm_ozon(proxy)
+                for item in warm_steps:
+                    note_step(
+                        sid, item.get("step") or "warm", item.get("url") or "",
+                        _step_summary(item), item.get("result") or "",
+                        title=item.get("title") or "", shot=item.get("shot") or "",
+                    )
+                if context is None or page is None:
+                    self._drop(context)
+                    self._manual = None
+                    _set_manual_open(False)
+                    modes = ", ".join(ozon_mode_order(load_ozon_mode()))
+                    return {
+                        "ok": False,
+                        "error": "Главная Ozon не открылась. Режимы: " + modes + ". Если стена осталась, смените IP прокси и откройте ещё раз.",
+                    }
+                mode = getattr(context, "_jarvis_mode", "android")
+                profile = PIXEL7_PROFILE if mode == "android" else DESKTOP_PROFILE
+                start = getattr(page, "url", "") or OZON_HOME
             else:
                 context = self._new_context(proxy, load_abt(proxy, "wb"))
                 page = self._open(context)
                 start = _CABINET_URLS["wb"]["login"]
-            self._goto_logged(page, start, sid, "manual")
+                self._goto_logged(page, start, sid, "manual")
+                profile = PIXEL7_PROFILE
             self._manual = {"context": context, "page": page, "touched": time.time(), "shop": sid}
             _set_manual_open(True, sid)
-            vp = PIXEL7_PROFILE["viewport"]
+            vp = profile["viewport"]
             return {
                 "ok": True,
                 "width": vp["width"],
@@ -3139,7 +3423,13 @@ class PlaywrightCabinet:
             return {"ok": False, "error": "Кабинет открылся, но сессия не сохранилась."}
         self._close_manual_context()
         self._close_login(shop)
-        save_abt(proxy, "android" if shop == "ozon" else "wb", storage)
+        if shop == "ozon":
+            mode = getattr(context, "_jarvis_mode", "") or load_ozon_mode() or "android"
+            if mode not in OZON_MODES:
+                mode = "android"
+            save_abt(proxy, mode, ozon_cookie_state(storage))
+        else:
+            save_abt(proxy, "wb", storage)
         _set_shop(shop, "active", storage=storage, auth="manual", why="ручной вход завершён")
         note_step(shop, "manual", url, "ручной вход завершён", "кабинет открылся")
         return {"ok": True, "status": "active", "message": "Сессия сохранена."}
@@ -3513,10 +3803,11 @@ class PlaywrightCabinet:
                     title=item.get("title") or "", shot=item.get("shot") or "",
                 )
             if context is None:
+                modes = ", ".join(ozon_mode_order(load_ozon_mode()))
                 return {
                     "ok": False, "session": "blocked", "url": OZON_HOME,
                     "title": "", "text": "главная не открылась", "text_len": 0, "apis": "", "shot": "",
-                    "error": BLOCKED_ERROR,
+                    "error": "Главная Ozon не открылась. Режимы: " + modes + ". Если стена осталась, смените IP прокси и войдите ещё раз.",
                 }
         else:
             context = self._new_context(proxy, storage)
@@ -3566,9 +3857,11 @@ class PlaywrightCabinet:
                     title=item.get("title") or "", shot=item.get("shot") or "",
                 )
             if context is None:
+                modes = ", ".join(ozon_mode_order(load_ozon_mode()))
                 return {
                     "ok": False, "cancelled": False, "session": "blocked",
-                    "error": BLOCKED_ERROR, "url": OZON_HOME, "text": "главная не открылась",
+                    "error": "Главная Ozon не открылась. Режимы: " + modes + ". Если стена осталась, смените IP прокси и войдите ещё раз.",
+                    "url": OZON_HOME, "text": "главная не открылась",
                 }
         else:
             context = self._new_context(proxy, storage)
