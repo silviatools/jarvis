@@ -618,6 +618,7 @@ class AssistantLoopTest(unittest.TestCase):
         self.assertIn("{!active && !waiting && (", market_html)
         self.assertIn("Код в приложении Wildberries (уведомление или колокольчик)", market_html)
         self.assertIn("Код из СМС", market_html)
+        self.assertIn("Подтвердить код", market_html)
         self.assertIn("Выйти", market_html)
         self.assertIn("market-journal", market_html)
         self.assertIn("/api/market/shot/", market_html)
@@ -823,6 +824,40 @@ class MarketFixtureHtmlTest(unittest.TestCase):
         }, True)
         self.assertIn("СМС", ozon["message"])
 
+    def test_wb_consent_accept_then_cabinet(self):
+        self._open("wb-oauth-consent.html")
+        info = self._info("https://id.wb.ru/login/oauth2/authorize")
+        self.assertIn("Принять", info["text"])
+        self.assertIn("Отклонить", info["text"])
+        self.assertIn("Wildberries получит доступ к данным WB ID", info["text"])
+        self.assertTrue(market_skill.is_wb_consent(info))
+        self.assertEqual(market_skill.page_face(info), "согласие")
+        self.assertEqual(market_skill.interpret_after_code("wb", info), "consent")
+        self.assertFalse(market_skill.code_was_rejected(info))
+        self.assertFalse(market_skill.cabinet_open(info))
+        self.assertNotEqual(market_skill.interpret_after_code("wb", info), "rejected")
+        self._page.evaluate("""() => {
+          document.documentElement.dataset.hit = '';
+          document.querySelectorAll('button').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              const name = btn.innerText.trim();
+              document.documentElement.dataset.hit += name + ';';
+            });
+          });
+        }""")
+        self.assertTrue(market_skill.click_accept(self._page))
+        hit = self._page.evaluate("() => document.documentElement.dataset.hit")
+        self.assertEqual(hit, "Принять;")
+        self.assertFalse(market_skill.is_accept_button("Отклонить"))
+        self._page.set_content(
+            "<!DOCTYPE html><html><head><title>Заказы</title></head><body><main><h1>Мои заказы</h1><p>Доставка</p></main></body></html>",
+            wait_until="domcontentloaded",
+        )
+        cabinet = self._info("https://www.wildberries.ru/lk/myorders/delivery")
+        self.assertTrue(market_skill.cabinet_open(cabinet))
+        self.assertEqual(market_skill.interpret_after_code("wb", cabinet), "cabinet")
+        self.assertEqual(market_skill.page_face(cabinet), "кабинет")
+
 
 class WbCodeWaitTest(unittest.TestCase):
     def setUp(self):
@@ -968,6 +1003,111 @@ class WbCodeWaitTest(unittest.TestCase):
         blob = json.dumps(market_skill.public_status()["journal"], ensure_ascii=False)
         self.assertIn("5 минут", blob)
         self.assertEqual(page.gotos, [])
+
+    def test_consent_page_is_not_a_rejected_code(self):
+        html = Path("tests/fixtures/market/wb-oauth-consent.html").read_text(encoding="utf-8")
+        self.assertIn("Принять", html)
+        self.assertIn("Отклонить", html)
+        self.assertIn("Wildberries получит доступ к данным WB ID", html)
+        consent = {
+            "url": "https://id.wb.ru/login/oauth2/authorize",
+            "title": "ID",
+            "text": (
+                "Войти в другое приложение через WB.ID\n"
+                "Wildberries получит доступ к данным WB ID\n"
+                "Что входит в эти данные\nПринять\nОтклонить"
+            ),
+        }
+        self.assertEqual(market_skill.interpret_after_code("wb", consent), "consent")
+        self.assertEqual(market_skill.page_face(consent), "согласие")
+        self.assertFalse(market_skill.code_was_rejected(consent))
+        self.assertFalse(market_skill.cabinet_open(consent))
+        waiting = {
+            "url": "https://id.wb.ru/login/",
+            "title": "Введите код из уведомления",
+            "text": "Введите код из уведомления. Получить новый код через 0:42",
+        }
+        self.assertEqual(market_skill.classify_page(waiting), "code")
+        self.assertEqual(market_skill.interpret_after_code("wb", waiting), "wait")
+        self.assertFalse(market_skill.code_was_rejected(waiting))
+        bad = dict(waiting, text=waiting["text"] + "\nНеверный код")
+        self.assertTrue(market_skill.code_was_rejected(bad))
+        self.assertEqual(market_skill.interpret_after_code("wb", bad), "rejected")
+        self.assertTrue(market_skill.is_accept_button("Принять"))
+        self.assertFalse(market_skill.is_accept_button("Отклонить"))
+        ui = Path("index (9).html").read_text(encoding="utf-8")
+        self.assertIn("Подтвердить код", ui)
+        self.assertIn(market_skill.WB_CODE_HINT, ui)
+
+    def test_oauth_accept_then_cabinet_becomes_active(self):
+        state = {
+            "url": "https://id.wb.ru/login/oauth2/authorize",
+            "title": "ID",
+            "text": (
+                "Войти в другое приложение через WB.ID\n"
+                "Wildberries получит доступ к данным WB ID\n"
+                "Что входит в эти данные\nПринять\nОтклонить"
+            ),
+        }
+
+        class Page:
+            def title(self):
+                return state["title"]
+
+            def evaluate(self, script):
+                return state["text"]
+
+            def goto(self, url, **kwargs):
+                state["url"] = url
+                state["title"] = "Заказы"
+                state["text"] = "Мои заказы"
+
+            def wait_for_timeout(self, ms):
+                pass
+
+            @property
+            def url(self):
+                return state["url"]
+
+        class Ctx:
+            def __init__(self, page):
+                self.pages = [page]
+                self.closed = False
+
+            def storage_state(self):
+                return {"cookies": [{"name": "sid", "value": COOKIE}], "origins": []}
+
+            def close(self):
+                self.closed = True
+
+        page = Page()
+        ctx = Ctx(page)
+        cab = market_skill.PlaywrightCabinet()
+        cab._live["wb"] = ctx
+
+        def accept(target):
+            self.assertIs(target, page)
+            state["url"] = "https://www.wildberries.ru/"
+            state["title"] = "Wildberries"
+            state["text"] = "Главная"
+            return True
+
+        orig = market_skill.click_accept
+        market_skill.click_accept = accept
+        try:
+            result = cab._submit_code("wb", "1234", {"scheme": "http", "host": "h", "port": 1})
+        finally:
+            market_skill.click_accept = orig
+        blob = json.dumps(result.get("steps"), ensure_ascii=False)
+        self.assertNotIn("код не принят", blob)
+        self.assertNotIn("поле кода не найдено", blob)
+        self.assertIn("нажали принять", blob)
+        self.assertIn("/lk/myorders", blob)
+        self.assertIn("кабинет открылся", blob)
+        self.assertEqual(result.get("status"), "active")
+        self.assertTrue(result.get("authenticated"))
+        self.assertTrue(ctx.closed)
+        self.assertNotIn(COOKIE, blob)
 
 
 if __name__ == "__main__":
