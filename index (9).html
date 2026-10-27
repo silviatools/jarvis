@@ -5763,6 +5763,9 @@ function MarketplaceSettings() {
               Кабинет покупателя. Сессия одна на этот прокси: выйти можно кнопкой ниже.
               {row.phone_mask ? ' Номер ' + row.phone_mask + '.' : ''}
             </p>
+            {row.notice ? (
+              <p className="text-sm text-amber-600 mb-3" data-testid={'market-notice-' + shop.id}>{row.notice}</p>
+            ) : null}
             {!active && !waiting && (
               <label className="block mb-2">
                 <div className="text-xs text-[var(--text-subtle)] mb-1">Телефон</div>

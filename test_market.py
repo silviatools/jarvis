@@ -524,6 +524,76 @@ class MarketSkillTest(unittest.TestCase):
         self.assertIn(COOKIE, raw)
         self.assertEqual(market_skill.load_abt(market_skill._proxy(), "android")["cookies"][0]["value"], COOKIE)
 
+    def test_wb_shell_clock_and_retry_copy(self):
+        shell = {
+            "url": "https://www.wildberries.ru/security/login",
+            "title": "Wildberries",
+            "text": "Лови лучшие цены\nОткрыть",
+        }
+        self.assertTrue(market_skill.wb_shell(shell))
+        self.assertFalse(market_skill.wb_shell({
+            "url": "https://www.wildberries.ru/security/login",
+            "title": "",
+            "text": "Проверяем браузер",
+        }))
+        self.assertTrue(market_skill.wb_keep_waiting(shell, 39, False))
+        self.assertFalse(market_skill.wb_keep_waiting(shell, 40, False))
+        line = market_skill.wb_wait_line(39.4, shell, False)
+        self.assertIn("39", line)
+        self.assertIn("от страницы", line)
+        self.assertIn("оболочка со спиннером", line)
+        self.assertNotIn("поле не найдено", line)
+        pending = market_skill.wb_wait_line(40, {
+            "url": "https://www.wildberries.ru/security/login",
+            "title": "",
+            "text": "Проверяем браузер",
+        }, False)
+        self.assertIn("40", pending)
+        self.assertIn("всё ещё проверка", pending)
+        self.assertIn("поле телефона", market_skill.wb_wait_line(8, shell, True))
+        ident = {"url": "https://id.wb.ru/login/", "title": "WB ID", "text": "Войти"}
+        self.assertTrue(market_skill.wb_on_id(ident))
+        self.assertIn("id.wb.ru без поля", market_skill.wb_wait_line(12, ident, False))
+        first = market_skill.wb_check_message(40, 1)
+        second = market_skill.wb_check_message(40, 2)
+        self.assertEqual(first, "WB проверяет браузер. Ждали 40 с, страница входа не открылась.")
+        self.assertEqual(second, "WB проверяет браузер, попробуйте через 5 минут")
+        self.assertNotIn("поле не найдено", first)
+        self.assertNotIn("поле не найдено", second)
+        self.assertEqual(market_skill.wb_retry_message(61), "WB проверяет браузер, попробуйте через 2 минуты")
+        self.assertEqual(market_skill.wb_retry_message(1), "WB проверяет браузер, попробуйте через 1 минуту")
+
+    def test_wb_check_streak_skips_browser(self):
+        self._proxy()
+        self.drv.calls.clear()
+        market_skill.mark_wb_check(False)
+        self.assertEqual(market_skill.wb_cooldown_remaining(), 0)
+        market_skill.mark_wb_check(False)
+        self.assertGreater(market_skill.wb_cooldown_remaining(), 250)
+        res = market_skill.begin_login("wb", "+7 900 123 45 79")
+        self.assertFalse(res["ok"])
+        self.assertIn("через 5 минут", res["error"])
+        self.assertNotIn("поле не найдено", res["error"])
+        self.assertEqual(self.drv.calls, [])
+        notice = market_skill.public_status()["shops"]["wb"].get("notice") or ""
+        self.assertIn("через 5 минут", notice)
+        market_skill.mark_wb_check(True)
+        self.assertEqual(market_skill.wb_cooldown_remaining(), 0)
+        self.assertNotIn("notice", market_skill.public_status()["shops"]["wb"])
+
+    def test_wb_abt_kept_after_failed_check(self):
+        self._proxy()
+        market_skill.save_abt(market_skill._proxy(), "wb", {"cookies": [{"name": "abt", "value": COOKIE}]})
+        market_skill.mark_wb_check(False)
+        loaded = market_skill.load_abt(market_skill._proxy(), "wb")
+        self.assertEqual(loaded["cookies"][0]["value"], COOKIE)
+        market_skill.save_abt(market_skill._proxy(), "nope", {"cookies": [{"name": "x", "value": "nope-secret"}]})
+        raw = (Path(self.tmp.name) / "jarvis_market.json").read_text(encoding="utf-8")
+        self.assertIn(COOKIE, raw)
+        self.assertNotIn("nope-secret", raw)
+        blob = json.dumps(market_skill.public_status(), ensure_ascii=False)
+        self.assertNotIn(COOKIE, blob)
+
 
 class AssistantLoopTest(unittest.TestCase):
     def _run(self, provider, skills):
@@ -611,6 +681,8 @@ class AssistantLoopTest(unittest.TestCase):
         self.assertIn("name.startsWith('market_')", html)
         self.assertIn("/api/market/tool", html)
         self.assertIn("data-testid=\"market-settings\"", html)
+        self.assertIn("market-notice-", html)
+        self.assertIn("row.notice", html)
         market_html = html.split("МАРКЕТПЛЕЙСЫ")[1].split("SETTINGS VIEW")[0]
         self.assertNotIn("+79991234567", market_html)
         self.assertIn("const active = row.status === 'active'", market_html)
@@ -772,11 +844,21 @@ class MarketFixtureHtmlTest(unittest.TestCase):
         self.assertEqual(self._page.locator("input[type='tel']").count(), 0)
 
     def test_wb_shell_has_no_phone_field(self):
-        self._open("wb-login-shell.html")
-        info = self._info("https://www.wildberries.ru/security/login")
-        self.assertEqual(market_skill.classify_page(info), "unknown")
-        self.assertEqual(market_skill.page_face(info), "не форма входа")
-        self.assertEqual(self._page.locator("#wb-phone-number").count(), 0)
+        self._page.set_viewport_size({"width": 412, "height": 915})
+        try:
+            html = self._open("wb-login-shell.html")
+            info = self._info("https://www.wildberries.ru/security/login")
+            self.assertIn("Лови лучшие цены", html)
+            self.assertIn("general-preloader", html)
+            self.assertGreater(self._page.locator(".general-preloader, .j-initial-preloader").count(), 0)
+            self.assertTrue(market_skill.wb_shell(info))
+            self.assertIn("Лови лучшие цены", info["text"])
+            self.assertEqual(market_skill.classify_page(info), "unknown")
+            self.assertEqual(market_skill.page_face(info), "не форма входа")
+            self.assertEqual(self._page.locator("#wb-phone-number").count(), 0)
+            self.assertEqual(self._page.locator("input#wb-phone-number").count(), 0)
+        finally:
+            self._page.set_viewport_size({"width": 1280, "height": 720})
         for sel in ("input[type='tel']", "input[name='phone']", "input[autocomplete='tel']", "input[inputmode='tel']"):
             self.assertEqual(self._page.locator(sel).count(), 0, sel)
         self.assertGreater(self._page.locator("#blockedVpn").count(), 0)

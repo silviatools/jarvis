@@ -212,10 +212,16 @@ _SHOT_RE = re.compile(r"^m[0-9a-f]{16}\.jpg$")
 # Прогрев Ozon: главная, перезагрузки на 10-й и 18-й секунде, до 25 с, затем 3 с на cookies.
 OZON_HOME = "https://www.ozon.ru/"
 OZON_MODES = ("android", "desktop", "patchright")
+ABT_MODES = OZON_MODES + ("wb",)
 OZON_WARM_LIMIT = 25
 OZON_WARM_RELOADS = (10, 18)
 OZON_WARM_SETTLE = 3
 WB_WAIT_S = 40
+WB_HOME = "https://www.wildberries.ru/"
+# Оболочка главной со спиннером — отдельно от 40 с проверки на странице входа.
+WB_SHELL_S = 25
+WB_COOLDOWN_S = 300
+WB_CHECK_STREAK = 2
 # Страница кода WB остаётся открытой, пока человек не введёт код или не выйдут 5 минут.
 CODE_WAIT_S = 300
 # После ввода кода страница может уйти на согласие OAuth не сразу. Это не отказ кода.
@@ -462,6 +468,7 @@ def _empty() -> dict:
         "proxy": None,
         "journal": [],
         "abt": {},
+        "wb_check": {"fails": 0, "until": 0},
         "shops": {sid: {"status": "none", "auth": "", "phone_mask": "", "updated": 0, "storage": None} for sid in SHOPS},
     }
 
@@ -499,6 +506,7 @@ def _load() -> dict:
         }
     base["journal"] = _clean_journal(data.get("journal"))
     base["abt"] = _clean_abt(data.get("abt"))
+    base["wb_check"] = _clean_wb_check(data.get("wb_check"))
     return base
 
 
@@ -511,15 +519,30 @@ def _clean_abt(raw) -> dict:
             continue
         kept = {}
         for mode, storage in modes.items():
-            if mode in OZON_MODES and isinstance(storage, dict):
+            if mode in ABT_MODES and isinstance(storage, dict):
                 kept[mode] = storage
         if kept:
             out[str(key)] = kept
     return out
 
 
+def _clean_wb_check(raw) -> dict:
+    fails = 0
+    until = 0
+    if isinstance(raw, dict):
+        try:
+            fails = int(raw.get("fails") or 0)
+        except (TypeError, ValueError):
+            fails = 0
+        try:
+            until = int(raw.get("until") or 0)
+        except (TypeError, ValueError):
+            until = 0
+    return {"fails": max(0, fails), "until": max(0, until)}
+
+
 def load_abt(proxy, mode):
-    if mode not in OZON_MODES:
+    if mode not in ABT_MODES:
         return None
     row = (_load().get("abt") or {}).get(proxy_hash(proxy)) or {}
     storage = row.get(mode)
@@ -527,7 +550,7 @@ def load_abt(proxy, mode):
 
 
 def save_abt(proxy, mode, storage):
-    if mode not in OZON_MODES or not isinstance(storage, dict):
+    if mode not in ABT_MODES or not isinstance(storage, dict):
         return
     with _lock:
         data = _load()
@@ -631,6 +654,10 @@ def public_status() -> dict:
             "label": STATUS_LABEL.get(status, STATUS_LABEL["none"]),
             "phone_mask": row.get("phone_mask") or "",
         }
+        if sid == "wb":
+            left = wb_cooldown_remaining()
+            if left > 0:
+                shops[sid]["notice"] = wb_retry_message(left)
     journal = list(reversed(data.get("journal") or []))[:30]
     return {
         "ok": True,
@@ -812,6 +839,84 @@ def wb_keep_waiting(info, elapsed, has_phone) -> bool:
     return True
 
 
+def wb_cooldown_remaining(now=None) -> int:
+    now = time.time() if now is None else now
+    until = int((_load().get("wb_check") or {}).get("until") or 0)
+    left = int(until - now)
+    return left if left > 0 else 0
+
+
+def mark_wb_check(passed) -> dict:
+    """Успех — поле телефона открылось. Два отказа подряд включают паузу."""
+    with _lock:
+        data = _load()
+        row = _clean_wb_check(data.get("wb_check"))
+        if passed:
+            row = {"fails": 0, "until": 0}
+        else:
+            row["fails"] += 1
+            if row["fails"] >= WB_CHECK_STREAK:
+                row["until"] = int(time.time()) + WB_COOLDOWN_S
+        data["wb_check"] = row
+        _write(data)
+        return dict(row)
+
+
+def wb_shell(info) -> bool:
+    """Главная-оболочка со спиннером и баннером. Это не страница «Проверяем браузер»."""
+    text = _page_text(info)
+    return "лови лучшие цены" in text and "проверяем браузер" not in text
+
+
+def wb_on_id(info) -> bool:
+    host = (urlparse((info or {}).get("url") or "").hostname or "").lower()
+    return host == "id.wb.ru" or host.endswith(".id.wb.ru")
+
+
+def _ru_minutes(n) -> str:
+    n = max(0, int(n))
+    n10, n100 = n % 10, n % 100
+    if n10 == 1 and n100 != 11:
+        unit = "минуту"
+    elif n10 in (2, 3, 4) and n100 not in (12, 13, 14):
+        unit = "минуты"
+    else:
+        unit = "минут"
+    return f"{n} {unit}"
+
+
+def wb_retry_message(seconds) -> str:
+    minutes = max(1, (int(seconds) + 59) // 60)
+    return "WB проверяет браузер, попробуйте через " + _ru_minutes(minutes)
+
+
+def wb_check_message(elapsed, streak) -> str:
+    if int(streak or 0) >= WB_CHECK_STREAK:
+        return wb_retry_message(WB_COOLDOWN_S)
+    sec = max(0, int(round(elapsed or 0)))
+    return f"WB проверяет браузер. Ждали {sec} с, страница входа не открылась."
+
+
+def wb_wait_line(elapsed, info, has_phone, shell=False) -> str:
+    """Секунды от открытия этой страницы, не от запуска браузера."""
+    sec = max(0, int(round(elapsed or 0)))
+    if has_phone:
+        outcome = "поле телефона"
+    else:
+        kind = classify_page(info or {})
+        if kind == "pending":
+            outcome = "всё ещё проверка"
+        elif shell or wb_shell(info):
+            outcome = "оболочка со спиннером"
+        elif kind in ("offline", "challenge"):
+            outcome = "антибот"
+        elif wb_on_id(info):
+            outcome = "id.wb.ru без поля"
+        else:
+            outcome = page_face(info)
+    return f"ждали {sec} с от страницы, итог: {outcome}"
+
+
 def check_ip() -> dict:
     proxy = _proxy()
     if not proxy:
@@ -871,6 +976,12 @@ def begin_login(shop: str, phone: str) -> dict:
     proxy = _proxy()
     if not proxy:
         return _no_proxy_error()
+    if sid == "wb":
+        left = wb_cooldown_remaining()
+        if left > 0:
+            msg = wb_retry_message(left)
+            note_step(sid, "login", "", msg, "cooldown")
+            return {"ok": False, "error": msg}
     if _status(sid) == "awaiting_code":
         opened = False
         try:
@@ -1943,7 +2054,58 @@ class PlaywrightCabinet:
 
     def _close_login(self, shop):
         self._watch.pop(shop, None)
-        self._drop(self._live.pop(shop, None))
+        context = self._live.pop(shop, None)
+        if shop == "wb":
+            self._save_wb_abt(_proxy(), context)
+        self._drop(context)
+
+    def _save_wb_abt(self, proxy, context):
+        """Cookies антибота WB между попытками. Сессия кабинета сюда не пишется."""
+        if not proxy or context is None:
+            return
+        state = getattr(context, "storage_state", None)
+        if not callable(state):
+            return
+        try:
+            save_abt(proxy, "wb", state())
+        except Exception as e:
+            _log("abt save wb " + type(e).__name__)
+
+    def _release_login(self, shop, proxy, context, keep=False):
+        if shop == "wb":
+            self._save_wb_abt(proxy, context)
+        if not keep:
+            self._drop(context)
+
+    def _wb_preloader(self, page) -> bool:
+        try:
+            return bool(page.evaluate(
+                """() => {
+                  const el = document.querySelector('.general-preloader, .j-initial-preloader');
+                  if (!el) return false;
+                  const st = window.getComputedStyle(el);
+                  return st.display !== 'none' && st.visibility !== 'hidden';
+                }"""
+            ))
+        except Exception:
+            return False
+
+    def _await_wb_shell(self, page):
+        """До 25 с на оболочку главной. Часы проверки входа здесь не идут."""
+        started = time.time()
+        info = self._snapshot(page)
+        while time.time() - started < WB_SHELL_S:
+            if self._phone_ready(page) or wb_on_id(info):
+                break
+            # Баннер «Лови лучшие цены» остаётся и на уже открытой главной. Ждём сам спиннер.
+            if not self._wb_preloader(page):
+                break
+            try:
+                page.wait_for_timeout(400)
+            except Exception:
+                time.sleep(0.4)
+            info = self._snapshot(page)
+        return info, time.time() - started
 
     def _click_fresh_code(self, page) -> bool:
         """Жмёт первую отправку кода. «Получить новый код» на странице ожидания не трогает."""
@@ -2051,8 +2213,8 @@ class PlaywrightCabinet:
             info = self._snapshot(page)
         return info
 
-    def _await_wb(self, page) -> dict:
-        """До 40 с: проверка браузера и оболочка не отказ. Конец — id.wb.ru и поле телефона."""
+    def _await_wb(self, page):
+        """До 40 с с момента вызова: проверка браузера и оболочка не отказ."""
         started = time.time()
         info = self._snapshot(page)
         while wb_keep_waiting(info, time.time() - started, self._phone_ready(page)):
@@ -2061,7 +2223,29 @@ class PlaywrightCabinet:
             except Exception:
                 time.sleep(0.4)
             info = self._snapshot(page)
-        return info
+        return info, time.time() - started
+
+    def _goto_logged(self, page, url, shop, label):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=40000)
+        except Exception as e:
+            info = self._snapshot(page)
+            if not str(info.get("url") or "").startswith("http"):
+                raise
+            _log(shop + " " + label + " " + type(e).__name__)
+
+    def _wb_login_round(self, page, steps, profile, phone):
+        """Путь, который в 19:23 дошёл до id.wb.ru: /security/login, затем 40 с от этой страницы."""
+        self._goto_logged(page, _CABINET_URLS["wb"]["login"], "wb", "login")
+        self._settle(page)
+        opened = self._snapshot(page)
+        steps.append(self._page_step(page, "opened", profile, opened))
+        _log_page("wb", opened, mask_phone_value(phone))
+        info, elapsed = self._await_wb(page)
+        ready = self._phone_ready(page)
+        spinning = (not ready) and (wb_shell(info) or self._wb_preloader(page))
+        steps.append(self._page_step(page, "check", wb_wait_line(elapsed, info, ready, shell=spinning), info))
+        return info, elapsed, ready
 
     def _warm_summary(self, mode, result) -> str:
         marks = [str(ev.get("at")) for ev in result.get("events") or [] if ev.get("action") == "reload"]
@@ -2145,64 +2329,108 @@ class PlaywrightCabinet:
                 if context is None:
                     info = steps[-1] if steps else {"url": OZON_HOME, "title": "", "text": ""}
                     return self._blocked_result(info if isinstance(info, dict) else {"url": OZON_HOME}, steps)
-            else:
-                context = self._new_context(proxy)
-                page = self._open(context)
-            try:
-                page.goto(_CABINET_URLS[shop]["login"], wait_until="domcontentloaded", timeout=40000)
-            except Exception as e:
+                try:
+                    page.goto(_CABINET_URLS[shop]["login"], wait_until="domcontentloaded", timeout=40000)
+                except Exception as e:
+                    info = self._snapshot(page)
+                    if not str(info.get("url") or "").startswith("http"):
+                        raise
+                    _log(shop + " goto " + type(e).__name__)
+                self._settle(page)
                 info = self._snapshot(page)
-                if not str(info.get("url") or "").startswith("http"):
-                    raise
-                _log(shop + " goto " + type(e).__name__)
-            self._settle(page)
-            info = self._snapshot(page)
-            steps.append(self._page_step(page, "opened", "opened", info))
-            _log_page(shop, info, mask_phone_value(phone))
-            if classify_page(info) in ("offline", "challenge"):
-                self._drop(context)
-                return self._blocked_result(info, steps)
-            if classify_page(info) == "cabinet":
-                self._drop(context)
-                return self._with_page({
-                    "ok": True,
-                    "status": "awaiting_code",
-                    "message": (
-                        "Кабинет на экране, но код из приложения не вводился. Сессия не активна."
-                        if shop == "wb" else
-                        "Кабинет на экране, но код из СМС не вводился. Сессия не активна."
-                    ),
-                }, info, steps)
-            if shop == "wb":
-                info = self._await_wb(page)
-            else:
-                info = self._await_surface(page, 20)
-            if classify_page(info) in ("offline", "challenge"):
-                steps.append(self._page_step(page, "opened", "blocked", info))
-                self._drop(context)
-                return self._blocked_result(info, steps)
-            if self._phone_ready(page):
-                steps.append(self._page_step(page, "button", "поле телефона", info))
-            elif shop != "wb":
-                clicked = _click_label(page, [r"^войти$", r"войти", r"^вход$"])
-                steps.append(self._page_step(page, "button", "нажали вход" if clicked else "кнопки входа нет", info))
-                info = self._await_surface(page, 12)
+                steps.append(self._page_step(page, "opened", "opened", info))
+                _log_page(shop, info, mask_phone_value(phone))
                 if classify_page(info) in ("offline", "challenge"):
                     self._drop(context)
                     return self._blocked_result(info, steps)
-            if not self._phone_ready(page):
-                steps.append(self._page_step(page, "phone", "поле не найдено", info))
-                self._drop(context)
-                return self._with_page(
-                    {"ok": False, "error": "Поле телефона не найдено. Вход не выполнен."},
-                    info, steps,
-                )
+                if classify_page(info) == "cabinet":
+                    self._drop(context)
+                    return self._with_page({
+                        "ok": True,
+                        "status": "awaiting_code",
+                        "message": "Кабинет на экране, но код из СМС не вводился. Сессия не активна.",
+                    }, info, steps)
+                info = self._await_surface(page, 20)
+                if classify_page(info) in ("offline", "challenge"):
+                    steps.append(self._page_step(page, "opened", "blocked", info))
+                    self._drop(context)
+                    return self._blocked_result(info, steps)
+                if self._phone_ready(page):
+                    steps.append(self._page_step(page, "button", "поле телефона", info))
+                else:
+                    clicked = _click_label(page, [r"^войти$", r"войти", r"^вход$"])
+                    steps.append(self._page_step(page, "button", "нажали вход" if clicked else "кнопки входа нет", info))
+                    info = self._await_surface(page, 12)
+                    if classify_page(info) in ("offline", "challenge"):
+                        self._drop(context)
+                        return self._blocked_result(info, steps)
+                if not self._phone_ready(page):
+                    steps.append(self._page_step(page, "phone", "поле не найдено", info))
+                    self._drop(context)
+                    return self._with_page(
+                        {"ok": False, "error": "Поле телефона не найдено. Вход не выполнен."},
+                        info, steps,
+                    )
+            else:
+                saved = load_abt(proxy, "wb")
+                profile = "cookies антибота: сохранённые" if saved else "cookies антибота: новый профиль"
+                context = self._new_context(proxy, saved)
+                page = self._open(context)
+                self._goto_logged(page, WB_HOME, "wb", "home")
+                home, shell_elapsed = self._await_wb_shell(page)
+                spinning = wb_shell(home) or self._wb_preloader(page)
+                steps.append(self._page_step(
+                    page, "home",
+                    wb_wait_line(shell_elapsed, home, self._phone_ready(page), shell=spinning),
+                    home,
+                ))
+                if self._phone_ready(page) and wb_on_id(home):
+                    info, elapsed, ready = home, 0, True
+                    steps.append(self._page_step(page, "check", wb_wait_line(0, home, True), home))
+                else:
+                    info, elapsed, ready = self._wb_login_round(page, steps, profile, phone)
+                    # Вторую проверку на 40 с не запускаем, если всё ещё «Проверяем браузер».
+                    if (
+                        not ready and not wb_on_id(info) and classify_page(info) != "pending"
+                        and self._wb_preloader(page)
+                    ):
+                        home, shell_elapsed = self._await_wb_shell(page)
+                        spinning = wb_shell(home) or self._wb_preloader(page)
+                        steps.append(self._page_step(
+                            page, "home",
+                            wb_wait_line(shell_elapsed, home, self._phone_ready(page), shell=spinning),
+                            home,
+                        ))
+                        info, elapsed, ready = self._wb_login_round(page, steps, profile, phone)
+                if classify_page(info) in ("offline", "challenge"):
+                    steps.append(self._page_step(page, "opened", "blocked", info))
+                    self._save_wb_abt(proxy, context)
+                    self._drop(context)
+                    return self._blocked_result(info, steps)
+                if ready:
+                    mark_wb_check(True)
+                    steps.append(self._page_step(page, "button", "поле телефона", info))
+                elif not wb_on_id(info):
+                    row = mark_wb_check(False)
+                    err = wb_check_message(elapsed, row.get("fails") or 0)
+                    steps.append(self._page_step(page, "phone", err, info))
+                    self._save_wb_abt(proxy, context)
+                    self._drop(context)
+                    return self._with_page({"ok": False, "error": err}, info, steps)
+                else:
+                    steps.append(self._page_step(page, "phone", "поле не найдено", info))
+                    self._save_wb_abt(proxy, context)
+                    self._drop(context)
+                    return self._with_page(
+                        {"ok": False, "error": "Поле телефона не найдено. Вход не выполнен."},
+                        info, steps,
+                    )
             got = _type_phone(page, phone)
             info = self._snapshot(page)
             steps.append(self._page_step(page, "phone", "введён " + (mask_phone_value(got) or "пусто"), info))
             national = _phone_digits(phone)[-10:]
             if not got or not phone_landed(national, got):
-                self._drop(context)
+                self._release_login(shop, proxy, context)
                 return self._with_page({
                     "ok": False,
                     "error": (
@@ -2220,7 +2448,7 @@ class PlaywrightCabinet:
             info = self._snapshot(page)
             if classify_page(info) in ("offline", "challenge"):
                 steps.append(self._page_step(page, "wait_code", "blocked", info))
-                self._drop(context)
+                self._release_login(shop, proxy, context)
                 return self._blocked_result(info, steps)
             code_field = _first_locator(page, ", ".join(_CODE_INPUTS)) is not None
             decision = decide_after_phone(shop, info, code_field)
@@ -2229,11 +2457,12 @@ class PlaywrightCabinet:
             if decision.get("ok") and decision.get("status") == "awaiting_code":
                 self._live[shop] = context
                 self._watch[shop] = {"until": time.time() + CODE_WAIT_S, "sig": page_sig(info)}
+                self._release_login(shop, proxy, context, keep=True)
                 return self._with_page(decision, info, steps)
-            self._drop(context)
+            self._release_login(shop, proxy, context)
             return self._with_page(decision, info, steps)
         except Exception:
-            self._drop(context)
+            self._release_login(shop, proxy, context)
             raise
 
     def _fill_code(self, page, code) -> bool:
