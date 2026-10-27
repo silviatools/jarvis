@@ -22,7 +22,7 @@ class FakeDriver:
         self.boom = ""
         self.login_result = {"ok": True, "status": "awaiting_code", "message": "Открылась форма кода."}
         self.code_result = {
-            "ok": True, "status": "active",
+            "ok": True, "status": "active", "authenticated": True, "auth": "code",
             "storage": {"cookies": [{"name": "sid", "value": COOKIE}], "origins": []},
             "message": "Сессия сохранена.",
         }
@@ -87,7 +87,11 @@ class MarketSkillTest(unittest.TestCase):
     def _active(self, shop="ozon"):
         self._proxy()
         self.drv.calls.clear()
-        market_skill._set_shop(shop, "active", phone_mask="79…67", storage={"cookies": [{"name": "sid", "value": COOKIE}]})
+        market_skill._set_shop(
+            shop, "active", phone_mask="79…67", auth="code",
+            storage={"cookies": [{"name": "sid", "value": COOKIE}]},
+            why="тест: код уже был",
+        )
 
     def test_profile_and_hints(self):
         self.assertEqual(market_skill.PIXEL7_PROFILE["viewport"], {"width": 412, "height": 915})
@@ -191,8 +195,8 @@ class MarketSkillTest(unittest.TestCase):
 
         self.drv.read_result = {"ok": False, "session": "expired", "url": "https://id.ozon.ru/login"}
         dead = market_skill.execute("market_orders", {"shop": "ozon"}, None)
-        self.assertIn("слетела", dead["error"])
-        self.assertIn("СМС", dead["error"])
+        self.assertIn("не активна", dead["error"])
+        self.assertNotIn("VPN", dead["error"])
         self.assertEqual(market_skill.public_status()["shops"]["ozon"]["status"], "expired")
         self.assertFalse(any(c[0] == "read" and False for c in []))
 
@@ -200,8 +204,8 @@ class MarketSkillTest(unittest.TestCase):
         self._active()
         self.drv.read_result = {"ok": False, "session": "public", "url": "https://www.ozon.ru/product/x"}
         out = market_skill.execute("market_favorites", {"shop": "ozon"}, None)
-        self.assertIn("витрин", out["error"])
-        self.assertEqual(market_skill.public_status()["shops"]["ozon"]["status"], "active")
+        self.assertIn("не активна", out["error"])
+        self.assertEqual(market_skill.public_status()["shops"]["ozon"]["status"], "expired")
 
     def test_cancel_needs_confirmation(self):
         self._active()
@@ -252,19 +256,40 @@ class MarketSkillTest(unittest.TestCase):
         }
         self.assertEqual(market_skill.classify_page(offline), "offline")
         self.assertNotEqual(market_skill.classify_page(offline), "cabinet")
+        self.assertEqual(market_skill.classify_page({
+            "url": "https://www.ozon.ru/my/orderlist", "title": "", "text": "Похоже, нет\u00a0соединения",
+        }), "offline")
 
     def test_phone_without_code_is_not_active(self):
         self._proxy()
         self.drv.login_result = {
-            "ok": True, "status": "active",
+            "ok": True, "status": "active", "authenticated": True, "auth": "code",
             "storage": {"cookies": [{"name": "sid", "value": COOKIE}]},
             "message": "Кабинет открыт",
         }
-        res = market_skill.begin_login("ozon", "+79001234579")
-        self.assertEqual(res["status"], "awaiting_code")
-        self.assertNotEqual(market_skill.public_status()["shops"]["ozon"]["status"], "active")
-        self.assertIsNone(market_skill._storage("ozon"))
+        for shop, phone in (("ozon", "+79001234579"), ("wb", "89001234579")):
+            res = market_skill.begin_login(shop, phone)
+            self.assertNotEqual(res.get("status"), "active")
+            self.assertNotEqual(market_skill.public_status()["shops"][shop]["status"], "active")
+            self.assertIsNone(market_skill._storage(shop))
         self.assertNotIn(COOKIE, json.dumps(market_skill.public_status(), ensure_ascii=False))
+        self.assertNotIn(SECRET, json.dumps(market_skill.public_status()["journal"], ensure_ascii=False))
+
+    def test_unproved_active_is_cleared_and_journal_has_step(self):
+        self._proxy()
+        path = Path(self.tmp.name) / "jarvis_market.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["shops"]["ozon"]["status"] = "active"
+        raw["shops"]["ozon"]["storage"] = {"cookies": [{"name": "sid", "value": COOKIE}]}
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        status = market_skill.public_status()
+        self.assertEqual(status["shops"]["ozon"]["status"], "expired")
+        self.assertIsNone(market_skill._storage("ozon"))
+        blob = json.dumps(status["journal"], ensure_ascii=False)
+        self.assertIn("status", blob)
+        self.assertNotIn(COOKIE, blob)
+        self.assertNotIn(SECRET, blob)
+        self.assertNotIn("79001234579", blob)
 
     def test_offline_page_is_not_active_and_resets(self):
         info = {
@@ -278,7 +303,8 @@ class MarketSkillTest(unittest.TestCase):
         self.assertEqual(decision.get("status"), "offline")
         flagged = market_skill.session_from_page(info)
         self.assertEqual(flagged["session"], "expired")
-        self.assertIn("соединен", flagged["error"])
+        self.assertIn("не активна", flagged["error"])
+        self.assertNotIn("VPN", flagged["error"])
 
         self._proxy()
         self.drv.login_result = {"ok": False, "status": "offline", "error": market_skill.OFFLINE_ERROR}
@@ -287,11 +313,24 @@ class MarketSkillTest(unittest.TestCase):
         self.assertNotEqual(market_skill.public_status()["shops"]["ozon"]["status"], "active")
 
         self._active()
-        self.drv.read_result = {"ok": False, "session": "expired", "error": market_skill.OFFLINE_ERROR}
+        self.drv.read_result = {
+            "ok": True, "session": "active",
+            "url": "https://www.ozon.ru/my/orderlist?token=hide",
+            "title": "Ozon",
+            "text": "Похоже, нет соединения. Выключите VPN или смените сеть",
+        }
         out = market_skill.execute("market_orders", {"shop": "ozon"}, None)
         self.assertEqual(market_skill.public_status()["shops"]["ozon"]["status"], "expired")
-        self.assertIn("соединен", out["error"].lower())
-        self.assertIn("VPN", out["error"])
+        self.assertIn("не активна", out["error"])
+        self.assertNotIn("VPN", out["error"])
+        self.assertNotIn("выключить", out["error"].lower())
+        journal = market_skill.public_status()["journal"]
+        self.assertTrue(any(row.get("step") == "read" for row in journal))
+        dumped = json.dumps(journal, ensure_ascii=False)
+        self.assertNotIn(SECRET, dumped)
+        self.assertNotIn(COOKIE, dumped)
+        self.assertNotIn("token=hide", dumped)
+        self.assertNotIn("79991234567", dumped)
 
     def test_placeholder_not_saved_or_sent_to_wb(self):
         self._proxy()
@@ -442,6 +481,7 @@ class AssistantLoopTest(unittest.TestCase):
         self.assertIn("const active = row.status === 'active'", market_html)
         self.assertIn("{!active && (", market_html)
         self.assertIn("Выйти", market_html)
+        self.assertIn("market-journal", market_html)
 
 
 class MarketHttpTest(unittest.TestCase):

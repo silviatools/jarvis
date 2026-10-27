@@ -99,8 +99,9 @@ PROMPT = (
     "Отмена заказа — только после явного «да»: первый вызов без confirmed вернёт needs_confirmation, опиши заказ и спроси, "
     "повтор с confirmed:true только следующим сообщением. Если на странице нет кнопки отмены или страница не подтвердила отмену — "
     "так и скажи, не говори, что заказ отменён. Если инструмент вернул, что нет прокси, нет сессии или сессия слетела — "
-    "так и скажи, не выдумывай заказы. Если инструмент говорит, что открылась страница «нет соединения» "
-    "или просит выключить VPN — сессия слетела, так и скажи. Новый вход — код из СМС в Настройки → Маркетплейсы. "
+    "так и скажи, не выдумывай заказы. Если кабинет не открылся или сессия не активна — так и скажи "
+    "и направь в Настройки → Маркетплейсы. Не советуй выключать VPN: это текст страницы магазина, не наш шаг. "
+    "Новый вход — код из СМС в Настройки → Маркетплейсы. "
     "Телефон в профиле уже замаскирован, не восстанавливай его.\n\n"
 )
 
@@ -162,9 +163,10 @@ _OFFLINE_MARKERS = (
     "нет подключения к интернету",
 )
 OFFLINE_ERROR = (
-    "Сессия слетела: открылась страница «нет соединения» "
-    "(сайт просит выключить VPN или сменить сеть). Заказы не прочитаны, нужен повторный вход."
+    "Кабинет не открылся, сессия не активна. Войти заново: Настройки → Маркетплейсы."
 )
+_JOURNAL_MAX = 40
+_AUTH_OK = ("code", "password")
 _lock = threading.Lock()
 _driver = None
 _logs = []
@@ -400,7 +402,8 @@ def _same_proxy(a, b) -> bool:
 def _empty() -> dict:
     return {
         "proxy": None,
-        "shops": {sid: {"status": "none", "phone_mask": "", "updated": 0, "storage": None} for sid in SHOPS},
+        "journal": [],
+        "shops": {sid: {"status": "none", "auth": "", "phone_mask": "", "updated": 0, "storage": None} for sid in SHOPS},
     }
 
 
@@ -426,12 +429,15 @@ def _load() -> dict:
         raw = shops.get(sid) if isinstance(shops.get(sid), dict) else {}
         status = raw.get("status") if raw.get("status") in STATUS_LABEL else "none"
         storage = raw.get("storage") if isinstance(raw.get("storage"), dict) else None
+        auth = raw.get("auth") if raw.get("auth") in _AUTH_OK else ""
         base["shops"][sid] = {
             "status": status,
+            "auth": auth,
             "phone_mask": str(raw.get("phone_mask") or "")[:16],
             "updated": int(raw.get("updated") or 0),
             "storage": storage,
         }
+    base["journal"] = _clean_journal(data.get("journal"))
     return base
 
 
@@ -452,16 +458,30 @@ def _shop_row(data, shop):
     return data["shops"][shop]
 
 
-def _set_shop(shop, status, phone_mask=None, storage="__keep__"):
+def _set_shop(shop, status, phone_mask=None, storage="__keep__", auth="__keep__", why=""):
     with _lock:
         data = _load()
         row = _shop_row(data, shop)
-        row["status"] = status if status in STATUS_LABEL else "none"
+        prev = row.get("status") or "none"
+        new_status = status if status in STATUS_LABEL else "none"
+        new_auth = row.get("auth") if auth == "__keep__" else auth
+        if new_auth not in _AUTH_OK:
+            new_auth = ""
+        if new_status == "active" and new_auth not in _AUTH_OK:
+            new_status = "expired"
+            storage = None
+            why = why or "Активна без кода и пароля"
+        if new_status != "active":
+            new_auth = ""
+        row["status"] = new_status
+        row["auth"] = new_auth
         if phone_mask is not None:
             row["phone_mask"] = phone_mask
         if storage != "__keep__":
             row["storage"] = storage
         row["updated"] = int(time.time())
+        if new_status != prev or why:
+            _append_journal(data, shop, "status", "", why or new_status, new_status)
         _write(data)
 
 
@@ -469,12 +489,21 @@ def _proxy():
     return _load().get("proxy")
 
 
+def _load_live() -> dict:
+    """Читает файл и снимает «Активна», если не было кода или пароля."""
+    with _lock:
+        data = _load()
+        if _heal_unproved(data):
+            _write(data)
+        return data
+
+
 def _storage(shop):
-    return (_load()["shops"][shop] or {}).get("storage")
+    return (_load_live()["shops"][shop] or {}).get("storage")
 
 
 def _status(shop) -> str:
-    return (_load()["shops"][shop] or {}).get("status") or "none"
+    return (_load_live()["shops"][shop] or {}).get("status") or "none"
 
 
 def storage_usable(storage) -> bool:
@@ -489,7 +518,7 @@ def storage_usable(storage) -> bool:
 
 
 def public_status() -> dict:
-    data = _load()
+    data = _load_live()
     proxy = data.get("proxy")
     shops = {}
     for sid in SHOPS:
@@ -502,11 +531,13 @@ def public_status() -> dict:
             "label": STATUS_LABEL.get(status, STATUS_LABEL["none"]),
             "phone_mask": row.get("phone_mask") or "",
         }
+    journal = list(reversed(data.get("journal") or []))[:30]
     return {
         "ok": True,
         "has_proxy": bool(proxy and proxy.get("host")),
         "proxy": mask_proxy(proxy),
         "shops": shops,
+        "journal": journal,
     }
 
 
@@ -531,6 +562,7 @@ def save_proxy(raw: str) -> dict:
                 if data["shops"][sid].get("status") != "none" or data["shops"][sid].get("storage"):
                     reset = True
                 data["shops"][sid]["status"] = "none"
+                data["shops"][sid]["auth"] = ""
                 data["shops"][sid]["storage"] = None
                 data["shops"][sid]["updated"] = int(time.time())
         _write(data)
@@ -624,47 +656,75 @@ def submit_code(shop: str, code: str) -> dict:
     return _finish_login(sid, "", result, proxy, code=code)
 
 
+def _proved_auth(result, code) -> str:
+    """Второй шаг: код из СМС или пароль. Телефон сам по себе сюда не попадает."""
+    if not (result or {}).get("authenticated"):
+        return ""
+    kind = (result or {}).get("auth") or ""
+    if kind == "code" and code:
+        return "code"
+    if kind == "password":
+        return "password"
+    return ""
+
+
 def _finish_login(sid, phone, result, proxy, code="") -> dict:
     result = result or {}
     status = result.get("status")
+    step = "code" if code else "login"
+    page_url = result.get("url") or ""
+    summary = result.get("summary") or result.get("message") or result.get("error") or ""
     if status == "offline":
         if _status(sid) in ("active", "awaiting_code"):
-            _set_shop(sid, "expired", storage=None)
+            _set_shop(sid, "expired", storage=None, why="страница «нет соединения», кабинет не открыт")
             _log(sid + " offline, session dropped")
         else:
             _log(sid + " offline, not active")
-        err = redact(result.get("error") or OFFLINE_ERROR, proxy, [code])
+        err = OFFLINE_ERROR
+        note_step(sid, step, page_url, summary, "expired")
         return {"ok": False, "error": err, "status": _status(sid)}
-    # Телефон без кода и без пароля сессию не открывает, даже если страница похожа на кабинет.
-    if not code and status == "active" and result.get("ok") is not False:
-        _set_shop(sid, "awaiting_code", phone_mask=mask_phone_value(phone) or None, storage=None)
+    proved = _proved_auth(result, code)
+    if status == "active" and not proved:
+        _set_shop(sid, "awaiting_code", phone_mask=mask_phone_value(phone) or None, storage=None, auth="",
+                  why="введён только телефон, кода или пароля не было")
         _log(sid + " phone without code, not active")
+        note_step(sid, step, page_url, summary, "awaiting_code")
         return {
             "ok": True,
             "status": "awaiting_code",
-            "message": result.get("message") or "Введён только телефон. Введите код из СМС — без него сессия не активна.",
+            "message": "Введён только телефон. Введите код из СМС — без него сессия не активна.",
         }
     if result.get("ok") is False or result.get("lost"):
         err = redact(result.get("error") or "Вход не выполнен.", proxy, [code])
+        if "vpn" in err.lower():
+            err = OFFLINE_ERROR
         _log(sid + " login not finished")
+        note_step(sid, step, page_url, summary, err)
         return {"ok": False, "error": err, "status": status or _status(sid)}
-    if status == "active" and storage_usable(result.get("storage")):
-        _set_shop(sid, "active", phone_mask=mask_phone_value(phone) or None, storage=result.get("storage"))
+    if status == "active" and proved and storage_usable(result.get("storage")):
+        why = "код из СМС принят, кабинет открыт" if proved == "code" else "пароль принят, кабинет открыт"
+        _set_shop(sid, "active", phone_mask=mask_phone_value(phone) or None, storage=result.get("storage"), auth=proved, why=why)
         try:
             get_driver().close_login(sid)
         except Exception as e:
             _log("close after login " + redact(e, proxy, [code]))
         _log(sid + " session active")
+        note_step(sid, step, page_url, summary, "active")
         return {"ok": True, "status": "active", "message": result.get("message") or "Сессия сохранена."}
     if status == "active":
         _log(sid + " cabinet without storage")
+        note_step(sid, step, page_url, summary, "not active")
         return {"ok": False, "error": "Кабинет открылся, но сессия не сохранилась. Вход не засчитан."}
     if status == "awaiting_code":
-        _set_shop(sid, "awaiting_code", phone_mask=mask_phone_value(phone) or None, storage=None)
+        _set_shop(sid, "awaiting_code", phone_mask=mask_phone_value(phone) or None, storage=None, auth="",
+                  why="открылась форма кода, сессия ещё не активна")
         _log(sid + " awaiting code")
+        note_step(sid, step, page_url, summary, "awaiting_code")
         return {"ok": True, "status": "awaiting_code", "message": result.get("message") or "Открылась форма кода. Введите код из СМС."}
     _log(sid + " login not finished")
-    return {"ok": False, "error": redact(result.get("error") or "Вход не выполнен.", proxy, [code])}
+    err = redact(result.get("error") or "Вход не выполнен.", proxy, [code])
+    note_step(sid, step, page_url, summary, err)
+    return {"ok": False, "error": err}
 
 
 def logout(shop: str) -> dict:
@@ -694,20 +754,39 @@ def _require_session(shop) -> dict:
     return {}
 
 
+def _drop_reason(result) -> str:
+    """Пусто, если страницу можно читать как кабинет. Иначе offline, challenge или closed."""
+    result = result or {}
+    info = {
+        "url": result.get("url") or "",
+        "title": result.get("title") or "",
+        "text": result.get("text") or "",
+    }
+    kind = classify_page(info) if any(info.values()) else ""
+    if kind == "offline":
+        return "offline"
+    if kind == "challenge" or result.get("session") == "challenge":
+        return "challenge"
+    if result.get("session") in ("expired", "public") or kind in ("login", "code", "password", "public"):
+        return "closed"
+    if not result.get("ok") and result.get("session") != "active":
+        return "closed"
+    return ""
+
+
 def _apply_read_session(shop, result) -> dict:
-    flag = (result or {}).get("session")
-    if flag == "expired":
-        _set_shop(shop, "expired", storage=None)
-        _log(shop + " session expired")
-        err = result.get("error") or "Сессия слетела, нужен повторный вход (код из СМС)."
-        return {"error": err, "shop": shop, "status": "expired"}
-    if flag == "challenge":
-        return {"error": "Антибот не пустил в кабинет. Заказы не прочитаны.", "shop": shop}
-    if flag == "public":
-        return {"error": "Открылась не страница кабинета. Данные витрины не читаю.", "shop": shop}
-    if not result.get("ok"):
-        return {"error": result.get("error") or "Кабинет не открылся.", "shop": shop}
-    return {}
+    reason = _drop_reason(result)
+    if not reason:
+        return {}
+    why = {
+        "offline": "страница «нет соединения», кабинет не открыт",
+        "challenge": "антибот, кабинет не открыт",
+        "closed": "открылась не страница кабинета",
+    }[reason]
+    _set_shop(shop, "expired", storage=None, why=why)
+    _log(shop + " session expired " + reason)
+    note_step(shop, "read", (result or {}).get("url") or "", (result or {}).get("text") or (result or {}).get("title") or why, "expired")
+    return {"error": OFFLINE_ERROR, "shop": shop, "status": "expired"}
 
 
 def _read(shop, section, order_id, state) -> dict:
@@ -731,6 +810,7 @@ def _read(shop, section, order_id, state) -> dict:
     failed = _apply_read_session(sid, result)
     if failed:
         return failed
+    note_step(sid, "read", result.get("url") or "", result.get("text") or result.get("title") or "", "ok")
     text = mask_phones(result.get("text") or "")
     if section == "profile":
         text = text[:1800]
@@ -749,6 +829,69 @@ def _safe_url(url: str) -> str:
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return ""
     return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+
+def _norm_text(text: str) -> str:
+    return re.sub(r"[\u00a0\u2007\u202f]+", " ", text or "").lower()
+
+
+def _append_journal(data, shop, step, url, summary, result):
+    data.setdefault("journal", [])
+    data["journal"].append({
+        "t": int(time.time()),
+        "shop": shop if shop in SHOPS else "",
+        "step": str(step or "")[:24],
+        "url": _safe_url(url)[:200],
+        "summary": _journal_text(summary),
+        "result": _journal_text(result),
+    })
+    data["journal"] = data["journal"][-_JOURNAL_MAX:]
+
+
+def _journal_text(text) -> str:
+    return page_snippet({"text": text}, 180)[:180]
+
+
+def _clean_journal(raw) -> list:
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw[-_JOURNAL_MAX:]:
+        if not isinstance(item, dict):
+            continue
+        out.append({
+            "t": int(item.get("t") or 0),
+            "shop": item.get("shop") if item.get("shop") in SHOPS else "",
+            "step": str(item.get("step") or "")[:24],
+            "url": _safe_url(str(item.get("url") or "")),
+            "summary": _journal_text(item.get("summary") or ""),
+            "result": _journal_text(item.get("result") or ""),
+        })
+    return out
+
+
+def _heal_unproved(data) -> bool:
+    changed = False
+    for sid in SHOPS:
+        row = data["shops"][sid]
+        if row.get("status") == "active" and row.get("auth") not in _AUTH_OK:
+            row["status"] = "expired"
+            row["auth"] = ""
+            row["storage"] = None
+            row["updated"] = int(time.time())
+            _append_journal(data, sid, "status", "", "Активна без кода и пароля", "expired")
+            changed = True
+    return changed
+
+
+def note_step(shop, step, url, summary, result):
+    proxy = _proxy()
+    summary = redact(_journal_text(summary), proxy)
+    result = redact(_journal_text(result), proxy)
+    with _lock:
+        data = _load()
+        _append_journal(data, shop, step, url, summary, result)
+        _write(data)
 
 
 def page_snippet(info, limit=160) -> str:
@@ -1014,7 +1157,7 @@ def classify_page(info: dict) -> str:
     url = (info.get("url") or "")
     path = (urlparse(url).path or "").lower()
     host = (urlparse(url).hostname or "").lower()
-    text = ((info.get("title") or "") + "\n" + (info.get("text") or "")).lower()
+    text = _norm_text((info.get("title") or "") + "\n" + (info.get("text") or ""))
     if "/product/" in path or path.endswith("detail.aspx") or ("/catalog/" in path and not path.startswith("/lk") and not path.startswith("/my")):
         return "public"
     # «Нет соединения» часто остаётся на /my/orderlist. Это не кабинет.
@@ -1278,7 +1421,11 @@ class PlaywrightCabinet:
         if kind == "cabinet":
             storage = context.storage_state()
             self._close_login(shop)
-            return {"ok": True, "status": "active", "authenticated": True, "storage": storage, "message": "Сессия сохранена."}
+            return {
+                "ok": True, "status": "active", "authenticated": True, "auth": "code",
+                "storage": storage, "url": info.get("url") or "", "summary": page_snippet(info),
+                "message": "Сессия сохранена.",
+            }
         if kind == "challenge":
             return {"ok": False, "error": "Антибот не пропустил после кода. Вход не выполнен."}
         if kind == "code":
