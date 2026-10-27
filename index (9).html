@@ -2908,6 +2908,87 @@ const getPlannerSubFromPath = () => PLANNER_SUB_BY_PATH[currentPathname()] || 'p
 // '' — домашний экран «Прочего» с иконками; открывается по умолчанию на /misc.
 const getMiscSubFromPath = () => MISC_SUB_BY_PATH[currentPathname()] || '';
 
+function jarvisPushHome() {
+  const ua = navigator.userAgent || '';
+  const ios = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  let standalone = false;
+  try {
+    standalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+  } catch (e) {}
+  return { ios, standalone };
+}
+
+function jarvisPushStatusLabel() {
+  const home = jarvisPushHome();
+  if (home.ios && !home.standalone) return 'сайт не на домашнем экране';
+  if (typeof Notification === 'undefined' || !('PushManager' in window) || Notification.permission !== 'granted') return 'нет';
+  return 'разрешены';
+}
+
+function jarvisPushKey(base64) {
+  const pad = '='.repeat((4 - base64.length % 4) % 4);
+  const raw = atob((base64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function jarvisPushEnable() {
+  const home = jarvisPushHome();
+  if (home.ios && !home.standalone) {
+    return { status: 'сайт не на домашнем экране' };
+  }
+  if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+    return { status: 'нет', error: 'Этот браузер не умеет Web Push.' };
+  }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') return { status: 'нет' };
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.ready;
+    const cfg = await (await fetch('/api/push/status')).json();
+    if (!cfg.publicKey) return { status: 'разрешены', error: cfg.error || 'Сервер не выдал ключ пуша.' };
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: jarvisPushKey(cfg.publicKey),
+    });
+    const saved = await (await fetch('/api/push/subscribe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sub.toJSON()),
+    })).json();
+    if (!saved.ok) return { status: 'разрешены', error: saved.error || 'Подписка не сохранилась.' };
+    return { status: 'разрешены', subscriptions: saved.subscriptions };
+  } catch (e) {
+    const raw = (e && e.message) ? String(e.message) : String(e || '');
+    const error = /permission denied|not allowed/i.test(raw)
+      ? 'Браузер не дал разрешение на пуш.'
+      : ('Не удалось подписаться: ' + raw);
+    return { status: jarvisPushStatusLabel(), error };
+  }
+}
+
+async function ensureJarvisPush() {
+  try {
+    if (!('serviceWorker' in navigator)) return;
+    await navigator.serviceWorker.register('/sw.js');
+    const home = jarvisPushHome();
+    if (home.ios && !home.standalone) return;
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted' || !('PushManager' in window)) return;
+    const reg = await navigator.serviceWorker.ready;
+    const cfg = await (await fetch('/api/push/status')).json();
+    if (!cfg.publicKey) return;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: jarvisPushKey(cfg.publicKey),
+      });
+    }
+    await fetch('/api/push/subscribe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sub.toJSON()),
+    });
+  } catch (e) {}
+}
+
 function App() {
   const [data, setRawData] = useState(loadData());
   // Every setData() call is auto-stamped (see stampUpdatedAt) so a changed
@@ -2937,6 +3018,8 @@ function App() {
   const [budgetPlansDirty, setBudgetPlansDirty] = useState(false);
   // Word base в English: несохранённые правки таблицы — не уходить молча.
   const [engWordBaseDirty, setEngWordBaseDirty] = useState(false);
+
+  useEffect(() => { ensureJarvisPush(); }, []);
 
   // On mount: try to load from server, merge with localStorage to prevent data loss
   useEffect(() => {
@@ -6095,6 +6178,59 @@ function WeatherSettings({ data, setData }) {
   );
 }
 
+function PushNotifyCard() {
+  const [status, setStatus] = React.useState('');
+  const [subs, setSubs] = React.useState(0);
+  const [err, setErr] = React.useState('');
+  const [info, setInfo] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+
+  const refresh = React.useCallback(async () => {
+    setStatus(jarvisPushStatusLabel());
+    try {
+      const j = await (await fetch('/api/push/status')).json();
+      setSubs(j.subscriptions || 0);
+    } catch (e) {}
+  }, []);
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  const onEnable = async () => {
+    setBusy(true); setErr(''); setInfo('');
+    try {
+      const r = await jarvisPushEnable();
+      setStatus(r.status || jarvisPushStatusLabel());
+      if (r.error) setErr(r.error);
+      if (r.info) setInfo(r.info);
+      if (r.subscriptions != null) setSubs(r.subscriptions);
+      else refresh();
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-3" data-testid="push-settings">
+      <h3 className="font-display text-lg">Уведомления на этот телефон</h3>
+      <p className="text-sm text-[var(--text-muted)]">
+        Сюда приходят временные пуши из личного Telegram. Это уведомления приложения Джарвис, не Telegram.
+        На iPhone нужен iOS 16.4 или новее, сайт на экране «Домой» и открытие с этой иконки. Потом кнопка ниже.
+      </p>
+      <div className="text-sm">
+        Статус: <b data-testid="push-status">{status || '…'}</b>
+        {subs > 0 ? <span className="text-[var(--text-subtle)]"> · подписок на сервере: {subs}</span> : null}
+      </div>
+      {status === 'сайт не на домашнем экране' && (
+        <p className="text-sm text-amber-700" data-testid="push-home-hint">
+          Safari → Поделиться → На экран «Домой». Откройте Джарвис с иконки и нажмите кнопку здесь.
+        </p>
+      )}
+      <button type="button" onClick={onEnable} disabled={busy} className="btn-primary text-sm px-4 py-2" data-testid="push-enable">
+        {busy ? 'Запрашиваю…' : 'Разрешить уведомления'}
+      </button>
+      {err ? <div className="text-sm text-red-600" data-testid="push-error">{err}</div> : null}
+      {info ? <div className="text-sm text-[var(--text-muted)]">{info}</div> : null}
+    </div>
+  );
+}
+
 function GeneralSettings({ data, setData }) {
   const settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
 
@@ -6107,6 +6243,7 @@ function GeneralSettings({ data, setData }) {
 
   return (
     <div className="space-y-3">
+      <PushNotifyCard />
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
         <div className="flex items-start justify-between gap-4 mb-1">
           <div className="flex-1 min-w-0">
@@ -6475,6 +6612,7 @@ function AssistantSkillsCard({ data, setData }) {
     setData(d => ({ ...d, telegramSkills: { ...(d.telegramSkills || {}), [sk.id]: !skillOn(sk) }, telegramSkillsUpdatedAt: Date.now() }));
     tgToolsLoadedAt = 0; // ассистент подхватит новый набор инструментов
     marketToolsLoadedAt = 0;
+    watchToolsLoadedAt = 0;
   };
   const riskLabel = { read: 'чтение', create: 'создаёт файлы', write: 'действия с подтверждением', danger: 'опасно' };
   const riskCls = {
@@ -14636,6 +14774,19 @@ async function loadMarketTools(force) {
   } catch (e) { /* без кабинетов ассистент работает как раньше */ }
 }
 
+let WATCH_AGENT_TOOLS = [];
+let WATCH_AGENT_PROMPT = '';
+let watchToolsLoadedAt = 0;
+async function loadWatchTools(force) {
+  if (!force && Date.now() - watchToolsLoadedAt < 20000) return;
+  try {
+    const j = await (await fetch('/api/push/tools')).json();
+    WATCH_AGENT_TOOLS = j.tools || [];
+    WATCH_AGENT_PROMPT = j.prompt || '';
+    watchToolsLoadedAt = Date.now();
+  } catch (e) { /* без пушей ассистент работает как раньше */ }
+}
+
 
 function buildVoiceAgentSystemPrompt(data) {
   // «База данных» — то, что пользователь рассказал о себе. Подмешиваем в
@@ -14683,7 +14834,7 @@ ${writeList}
 
 9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй.
 
-${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
+${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
@@ -14776,6 +14927,17 @@ async function executeVoiceTool(name, input, nav, data) {
   input = input || {};
   const noop = (output) => ({ output, data });
   if (APPLE_TOOL_NAMES.has(name)) return noop(await executeAppleTool(name, input));
+  if (name.startsWith('tg_watch_')) {
+    try {
+      const res = await fetch('/api/push/tool', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, input }),
+      });
+      return noop(await res.json());
+    } catch (e) {
+      return noop({ error: 'Сервер не ответил по пушу: ' + e.message });
+    }
+  }
   if (name.startsWith('tg_')) {
     try {
       const res = await fetch('/api/tg/tool', {
@@ -14935,6 +15097,7 @@ async function runVoiceAgent(messages, settings, data, nav, maxSteps = 6) {
 async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
   await loadTgTools();
   await loadMarketTools();
+  await loadWatchTools();
   const system = buildVoiceAgentSystemPrompt(data);
   let pendingConfirmation = false;
   for (let step = 0; step < maxSteps; step++) {
@@ -14946,7 +15109,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS] }),
+      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS] }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -14983,8 +15146,9 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
 async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps) {
   await loadTgTools();
   await loadMarketTools();
+  await loadWatchTools();
   const system = buildVoiceAgentSystemPrompt(data);
-  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS].map(t => ({
+  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS].map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.input_schema },
   }));

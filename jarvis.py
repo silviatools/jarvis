@@ -109,6 +109,16 @@ except Exception as _e:
     market_skill = None
     print(f"NOTE: market_skill disabled: {_e}")
 try:
+    import webpush
+except Exception as _e:
+    webpush = None
+    print(f"NOTE: webpush disabled: {_e}")
+try:
+    import tg_watch_skill
+except Exception as _e:
+    tg_watch_skill = None
+    print(f"NOTE: tg_watch_skill disabled: {_e}")
+try:
     import tg_bot
 except Exception as _e:
     tg_bot = None
@@ -235,6 +245,7 @@ AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 * 10
 AUTH_PUBLIC_FILES  = {
     "/manifest.json", "/favicon.ico", "/icon-192.png", "/icon-512.png",
     "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png",
+    "/sw.js",
     # Подключается тегом <script> со страниц /e/<token> и /trip/<token> —
     # без него у гостя без пароля падает расчёт взаиморасчётов, а вместе с
     # ним и остальной рендер (например, пропадает нижнее меню событий).
@@ -1134,7 +1145,8 @@ def build_backup_zip() -> bytes:
             zf.write(path, arcname=arcname)
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
-                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json"}
+                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json",
+                      "jarvis_webpush.json", "jarvis_tg_watch.json"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
@@ -5597,6 +5609,7 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
         + (deck_skill.prompt_section((app or {}).get("telegramSkills")) if deck_skill else "")
         + (study_skills.prompt_section((app or {}).get("telegramSkills")) if study_skills else "")
         + (market_skill.prompt_section((app or {}).get("telegramSkills")) if market_skill else "")
+        + (tg_watch_skill.prompt_section((app or {}).get("telegramSkills")) if tg_watch_skill and with_tg else "")
         + (tg_tools.prompt_section((app or {}).get("telegramSkills")) if with_tg else "") +
         "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
         "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
@@ -5623,6 +5636,10 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
         return tg_bot.execute_tool(name, inp)
     if market_skill and name in market_skill.TOOL_NAMES:
         return market_skill.execute(name, inp, (app or {}).get("telegramSkills"))
+    if tg_watch_skill and name in tg_watch_skill.TOOL_NAMES:
+        if not with_tg:
+            return {"error": "Личный Telegram в этом чате недоступен."}
+        return tg_watch_skill.execute(name, inp, (app or {}).get("telegramSkills"))
     if deck_skill and name in deck_skill.TOOL_NAMES:
         def _study_attach(x):
             r = study_attach_file(app, x)
@@ -6070,11 +6087,18 @@ def _market_skill_tools(app) -> list:
     return market_skill.TOOLS
 
 
+def _watch_skill_tools(app, with_tg: bool) -> list:
+    """Временные пуши личного Telegram — в боте только у владельца, на сайте тем же набором через /api/push/tools."""
+    if not with_tg or not tg_watch_skill or not tg_watch_skill.skill_on((app or {}).get("telegramSkills")):
+        return []
+    return tg_watch_skill.TOOLS
+
+
 def _assistant_tool_list(app, with_tg: bool) -> list:
     return ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
         (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + \
-        _study_skill_tools(app) + _market_skill_tools(app)
+        _study_skill_tools(app) + _market_skill_tools(app) + _watch_skill_tools(app, with_tg)
 
 
 def assistant_skills_catalog() -> list:
@@ -6083,6 +6107,7 @@ def assistant_skills_catalog() -> list:
         + (study_skills.SKILLS if study_skills else [])
         + (tg_tools.skills_catalog() if tg_tools else [])
         + (market_skill.SKILLS if market_skill else [])
+        + (tg_watch_skill.SKILLS if tg_watch_skill else [])
     )
 
 
@@ -9477,6 +9502,13 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._serve_track(self.path[len("/api/music/"):].split("?", 1)[0])
         elif route.startswith("/api/apple/"):
             self._apple_get(route)
+        elif route == "/sw.js":
+            self._serve_sw()
+        elif route == "/api/push/status":
+            self._json(200, webpush.public_status() if webpush else {"ok": False, "error": "Web Push на сервере недоступен.", "subscriptions": 0})
+        elif route == "/api/push/tools":
+            state = (load_app_data() or {}).get("telegramSkills")
+            self._json(200, tg_watch_skill.voice_payload(state) if tg_watch_skill else {"tools": [], "prompt": ""})
         elif route == "/api/tg/status":
             self._json(200, tg_user.status() if tg_user else {"library": False})
         elif route == "/api/tg/skills":
@@ -9677,6 +9709,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._apple_post(route)
         elif route.startswith("/api/tg/"):
             self._tg_post(route)
+        elif route.startswith("/api/push/"):
+            self._push_post(route)
         elif route.startswith("/api/market/"):
             self._market_post(route)
         elif route == "/api/student/check":
@@ -11079,6 +11113,55 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         except Exception as e:
             self._json(500, {"error": str(e)})
 
+    def _serve_sw(self):
+        path = DIR / "sw.js"
+        try:
+            data = path.read_bytes()
+        except OSError:
+            self._json(404, {"error": "not found"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Service-Worker-Allowed", "/")
+        self.send_header("Cache-Control", "no-cache")
+        self._cors()
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    def _push_post(self, route: str):
+        if webpush is None:
+            self._json(200, {"ok": False, "error": "Web Push на сервере недоступен."})
+            return
+        length = self._content_length() or 0
+        if length > 16 * 1024:
+            self._json(413, {"error": "body too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except Exception:
+            self._json(400, {"error": "bad json"})
+            return
+        if not isinstance(payload, dict):
+            payload = {}
+        try:
+            if route == "/api/push/subscribe":
+                self._json(200, webpush.save_subscription(payload))
+            elif route == "/api/push/unsubscribe":
+                self._json(200, webpush.drop_subscription(payload.get("endpoint") or ""))
+            elif route == "/api/push/tool":
+                name = payload.get("name")
+                if not tg_watch_skill or name not in tg_watch_skill.TOOL_NAMES:
+                    self._json(400, {"error": "unknown tool"})
+                else:
+                    app = load_app_data() or {}
+                    self._json(200, execute_assistant_tool(name, payload.get("input") or {}, app, "", True))
+            else:
+                self._json(404, {"error": "not found"})
+        except Exception as e:
+            self._json(200, {"ok": False, "error": webpush.redact(str(e))})
+
     def _market_post(self, route: str):
         """Прокси, вход в кабинеты Ozon/WB и вызов их инструментов голосовым ассистентом."""
         if market_skill is None:
@@ -11400,6 +11483,22 @@ class JarvisServer(ThreadingHTTPServer):
 
 # ── main ───────────────────────────────────────────────────────────────────
 
+def _tg_watch_loop():
+    """Пока есть активные окна — проверяет личный Telegram чаще минутного цикла."""
+    while True:
+        delay = 15
+        try:
+            app = load_app_data() or {}
+            enabled = tg_watch_skill.skill_on(app.get("telegramSkills"))
+            result = tg_watch_skill.poll(enabled=enabled)
+            if result.get("active"):
+                delay = 4
+        except Exception as e:
+            text = webpush.redact(str(e)) if webpush else str(e)
+            print("tg-watch:", text)
+        time.sleep(delay)
+
+
 def main():
     import argparse
     p = argparse.ArgumentParser(description="Jarvis — server + Telegram notifier")
@@ -11418,6 +11517,8 @@ def main():
 
     threading.Thread(target=notifier_loop, daemon=True).start()
     threading.Thread(target=updates_loop, daemon=True).start()
+    if tg_watch_skill:
+        threading.Thread(target=_tg_watch_loop, daemon=True).start()
 
     server = JarvisServer(("0.0.0.0", args.port), JarvisHandler)
     print(f"Jarvis is running → http://localhost:{args.port}")

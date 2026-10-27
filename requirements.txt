@@ -8,3 +8,4 @@ pypdf
 xlrd
 fpdf2
 playwright
+pywebpush
