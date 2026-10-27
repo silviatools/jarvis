@@ -5639,7 +5639,7 @@ const marketPhoneDigits = (value) => {
   return d;
 };
 
-function MarketManual({ onHide, onDone, onCancel }) {
+function MarketManual({ shop, onHide, onDone, onCancel }) {
   const boxRef = React.useRef(null);
   const sendRef = React.useRef(() => {});
   const [frame, setFrame] = React.useState('');
@@ -5778,7 +5778,7 @@ function MarketManual({ onHide, onDone, onCancel }) {
     <div className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center p-2 sm:p-4" data-testid="market-manual">
       <div className="bg-[var(--bg)] w-full max-w-md rounded-2xl p-3 sm:p-4 max-h-[100vh] overflow-y-auto">
         <div className="flex items-center justify-between gap-2 mb-2">
-          <h3 className="font-display text-lg">Wildberries — ручной вход</h3>
+          <h3 className="font-display text-lg">{shop === 'ozon' ? 'Ozon — ручной вход' : 'Wildberries — ручной вход'}</h3>
           <button className="p-2 text-[var(--text-muted)]" onClick={onHide} data-testid="market-manual-hide">✕</button>
         </div>
         <p className="text-xs text-[var(--text-subtle)] mb-2">Тап по экрану, сдвиг — прокрутка. Текст уходит в поле на сайте.</p>
@@ -5851,6 +5851,7 @@ function MarketplaceSettings() {
   const [phones, setPhones] = React.useState({ ozon: '', wb: '' });
   const [codes, setCodes] = React.useState({ ozon: '', wb: '' });
   const [manual, setManual] = React.useState(false);
+  const [manualShop, setManualShop] = React.useState('wb');
   const manualResume = React.useRef(false);
 
   const load = React.useCallback(() => {
@@ -5860,7 +5861,7 @@ function MarketplaceSettings() {
       .catch(e => setErr('Сервер не ответил: ' + e.message));
   }, []);
 
-  const startManual = async () => {
+  const startManual = async (shopId) => {
     setBusy('manual');
     setErr('');
     setInfo('');
@@ -5868,11 +5869,11 @@ function MarketplaceSettings() {
       const res = await fetch('/api/market/manual/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: '{}',
+        body: JSON.stringify({ shop: shopId }),
       });
       const j = await res.json();
       if (!res.ok || j.ok === false) setErr(j.error || 'Не получилось');
-      else setManual(true);
+      else { setManualShop(shopId); setManual(true); }
       load();
     } catch (e) {
       setErr('Сервер не ответил: ' + e.message);
@@ -5889,6 +5890,7 @@ function MarketplaceSettings() {
   React.useEffect(() => {
     if (manualResume.current || !st || !st.manual || !st.manual.open) return;
     manualResume.current = true;
+    setManualShop(st.manual.shop || 'wb');
     setManual(true);
   }, [st]);
 
@@ -5975,8 +5977,8 @@ function MarketplaceSettings() {
       {err && <div className="text-sm text-red-600" data-testid="market-error">{err}</div>}
       {info && <div className="text-sm text-[var(--text-muted)]" data-testid="market-info">{info}</div>}
       {st && st.manual && st.manual.open && !manual && (
-        <button className="text-sm text-amber-600" data-testid="market-manual-resume" onClick={() => setManual(true)}>
-          К экрану WB
+        <button className="text-sm text-amber-600" data-testid="market-manual-resume" onClick={() => { setManualShop(st.manual.shop || 'wb'); setManual(true); }}>
+          {st.manual.shop === 'ozon' ? 'К экрану Ozon' : 'К экрану WB'}
         </button>
       )}
 
@@ -6037,19 +6039,21 @@ function MarketplaceSettings() {
                   Выйти
                 </button>
               )}
-              {shop.id === 'wb' && (
-                <button
-                  className="btn-secondary text-sm px-4 py-2"
-                  data-testid="market-manual-wb"
-                  disabled={!!busy || !hasProxy}
-                  onClick={() => {
-                    if (st && st.manual && st.manual.open) { setManual(true); return; }
-                    startManual();
-                  }}
-                >
-                  {busy === 'manual' ? 'Открываю…' : 'Войти вручную'}
-                </button>
-              )}
+              <button
+                className="btn-secondary text-sm px-4 py-2"
+                data-testid={'market-manual-' + shop.id}
+                disabled={!!busy || !hasProxy}
+                onClick={() => {
+                  if (st && st.manual && st.manual.open && st.manual.shop && st.manual.shop !== shop.id) {
+                    setErr('Уже открыт ручной вход в другой магазин.');
+                    return;
+                  }
+                  if (st && st.manual && st.manual.open) { setManualShop(st.manual.shop || shop.id); setManual(true); return; }
+                  startManual(shop.id);
+                }}
+              >
+                {busy === 'manual' ? 'Открываю…' : 'Войти вручную'}
+              </button>
             </div>
             {row.status === 'awaiting_code' && (
               <div className="mt-3 flex flex-col sm:flex-row gap-2 sm:items-end">
@@ -6100,6 +6104,7 @@ function MarketplaceSettings() {
       </details>
       {manual && (
         <MarketManual
+          shop={manualShop}
           onHide={() => setManual(false)}
           onDone={(message) => { setManual(false); setInfo(message || 'Сессия сохранена.'); load(); }}
           onCancel={() => { setManual(false); setInfo('Ручной вход отменён.'); load(); }}

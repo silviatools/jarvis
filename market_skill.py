@@ -237,7 +237,7 @@ _TIMER_RE = re.compile(r"\d{1,2}:\d{2}")
 _lock = threading.Lock()
 _driver = None
 _logs = []
-_manual_pub = {"open": False}
+_manual_pub = {"open": False, "shop": ""}
 
 
 def skill_on(state) -> bool:
@@ -669,7 +669,7 @@ def public_status() -> dict:
         "proxy": mask_proxy(proxy),
         "shops": shops,
         "journal": journal,
-        "manual": {"open": manual_is_open(), "shop": "wb" if manual_is_open() else ""},
+        "manual": {"open": manual_is_open(), "shop": manual_shop()},
     }
 
 
@@ -922,14 +922,20 @@ def wb_wait_line(elapsed, info, has_phone, shell=False) -> str:
     return f"ждали {sec} с от страницы, итог: {outcome}"
 
 
-def _set_manual_open(flag):
+def _set_manual_open(flag, shop=""):
     with _lock:
         _manual_pub["open"] = bool(flag)
+        _manual_pub["shop"] = shop if flag and shop in SHOPS else ""
 
 
 def manual_is_open() -> bool:
     with _lock:
         return bool(_manual_pub["open"])
+
+
+def manual_shop() -> str:
+    with _lock:
+        return _manual_pub["shop"] if _manual_pub["open"] else ""
 
 
 def manual_point(x, y, view_w, view_h, page_w=None, page_h=None):
@@ -1161,7 +1167,7 @@ def logout(shop: str) -> dict:
         get_driver().close_login(sid)
     except Exception as e:
         _log("logout " + sid + " " + redact(e, _proxy()))
-    if sid == "wb" and manual_is_open():
+    if manual_is_open() and manual_shop() == sid:
         try:
             get_driver().manual_cancel()
         except Exception as e:
@@ -1171,20 +1177,23 @@ def logout(shop: str) -> dict:
     return {"ok": True, "status": "none", "message": "Сессия удалена."}
 
 
-def manual_start() -> dict:
-    """Живой экран входа WB. Тот же Chromium, профиль Pixel 7 и прокси."""
+def manual_start(shop="wb") -> dict:
+    """Живой экран входа. Тот же Chromium, профиль Pixel 7 и прокси. Ozon — режим Android."""
+    sid = _known_shop(shop)
+    if not sid:
+        return {"ok": False, "error": "Неизвестный магазин"}
     proxy = _proxy()
     if not proxy:
         return _no_proxy_error()
     try:
-        result = get_driver().manual_open(proxy) or {}
+        result = get_driver().manual_open(proxy, sid) or {}
     except Exception as e:
         _log("manual open " + type(e).__name__)
         return {"ok": False, "error": "Ручной вход не открылся."}
     if not result.get("ok"):
         return {"ok": False, "error": result.get("error") or "Ручной вход не открылся."}
     if not result.get("already"):
-        note_step("wb", "manual", result.get("url") or "", "ручной вход начат", "ручной вход начат")
+        note_step(sid, "manual", result.get("url") or "", "ручной вход начат", "ручной вход начат")
     vp = PIXEL7_PROFILE["viewport"]
     return {
         "ok": True,
@@ -1282,14 +1291,14 @@ def _drop_reason(result) -> str:
         return "pending"
     if kind in ("offline", "challenge") or result.get("session") in ("blocked", "challenge"):
         return "blocked"
-    # Список «Заказы / Доставки» — кабинет. Несовпадение фразы сессию не стирает.
-    if _wb_cabinet_readable(info):
+    if cabinet_open(info):
         return ""
-    if result.get("session") in ("expired", "public") or kind in ("login", "code", "password", "public"):
+    # Стираем cookies только когда сайт явно вернул на вход. Чужой текст страницы — не повод.
+    if login_redirect(info):
         return "closed"
-    if not result.get("ok") and result.get("session") != "active":
-        return "closed"
-    return ""
+    if result.get("session") == "active" or result.get("ok"):
+        return ""
+    return "keep"
 
 
 def _apply_read_session(shop, result) -> dict:
@@ -1321,7 +1330,20 @@ def _apply_read_session(shop, result) -> dict:
             shot=(result or {}).get("shot") or "",
         )
         return {"error": BLOCKED_ERROR, "shop": shop, "status": "blocked"}
-    why = "открылась не страница кабинета"
+    if reason == "keep":
+        note_step(
+            shop, "read", (result or {}).get("url") or "",
+            (result or {}).get("text") or (result or {}).get("title") or "кабинет не открылся",
+            "kept",
+            title=(result or {}).get("title") or "",
+            shot=(result or {}).get("shot") or "",
+        )
+        return {
+            "error": "Кабинет не открылся. Сессия сохранена.",
+            "shop": shop,
+            "status": _status(shop),
+        }
+    why = "редирект на вход"
     _set_shop(shop, "expired", storage=None, why=why)
     _log(shop + " session expired closed")
     note_step(
@@ -1644,9 +1666,9 @@ def session_from_page(info) -> dict:
         return {"ok": False, "session": "pending", "url": url}
     if kind in ("offline", "challenge"):
         return {"ok": False, "session": "blocked", "error": BLOCKED_ERROR, "url": url, "face": page_face(info)}
-    if kind in ("login", "code", "password"):
+    if login_redirect(info):
         return {"ok": False, "session": "expired", "url": url}
-    if kind == "cabinet" or _wb_cabinet_readable(info):
+    if cabinet_open(info):
         return {"ok": True, "session": "active", "url": url}
     return {"ok": False, "session": "public", "url": url}
 
@@ -1893,35 +1915,46 @@ def on_wildberries(url) -> bool:
 
 
 _WB_CABINET_PREFIXES = ("/lk/myorders", "/lk/details", "/lk/myrefunds", "/lk/favorites")
+_OZON_CABINET_PREFIXES = ("/my/order", "/my/returns", "/my/favorites", "/my/settings")
+# Одна планка и для «Готово, я вошёл», и для чтения. «Заказы» и «Доставки» тоже кабинет.
+_CABINET_MARKERS = ("заказ", "доставк", "профиль", "личн", "покупк", "возврат", "избран")
 
 
-def _wb_cabinet_path(url) -> bool:
+def on_ozon(url) -> bool:
+    host = (urlparse(url or "").hostname or "").lower()
+    return host.endswith("ozon.ru") and not host.startswith("id.")
+
+
+def buyer_cabinet_path(url) -> bool:
     path = (urlparse(url or "").path or "").lower()
-    return on_wildberries(url) and any(path.startswith(prefix) for prefix in _WB_CABINET_PREFIXES)
+    if on_wildberries(url):
+        return any(path.startswith(prefix) for prefix in _WB_CABINET_PREFIXES)
+    if on_ozon(url):
+        return any(path.startswith(prefix) for prefix in _OZON_CABINET_PREFIXES)
+    return False
 
 
-def _wb_cabinet_readable(info) -> bool:
-    """Страница раздела ЛК WB, это не вход и не антибот. Текст может быть без фразы «мои заказы»."""
+def login_redirect(info) -> bool:
+    """Явный вход: форма телефона, кода или пароля. Проверка браузера сюда не входит."""
     info = info or {}
     if is_wb_consent(info):
         return False
-    kind = classify_page(info)
-    if kind in ("offline", "challenge", "pending", "login", "code", "password", "public"):
-        return False
-    return _wb_cabinet_path(info.get("url") or "")
+    return classify_page(info) in ("login", "code", "password")
 
 
 def cabinet_open(info) -> bool:
-    """Кабинет покупателя: страница заказов или профиля, не вход и не согласие."""
+    """Кабинет покупателя. Та же функция при «Готово» и при чтении заказов."""
     if is_wb_consent(info):
         return False
     kind = classify_page(info or {})
+    if kind in ("offline", "challenge", "pending", "login", "code", "password", "public"):
+        return False
     if kind == "cabinet":
         return True
-    if not _wb_cabinet_readable(info):
+    if not buyer_cabinet_path((info or {}).get("url") or ""):
         return False
     text = _page_text(info)
-    return any(marker in text for marker in ("заказ", "доставк", "профиль", "личн", "покупк", "возврат", "избран"))
+    return any(marker in text for marker in _CABINET_MARKERS)
 
 
 def interpret_after_code(shop, info) -> str:
@@ -2064,8 +2097,8 @@ class PlaywrightCabinet:
     def cancel_order(self, shop, order_id, proxy, storage) -> dict:
         return self._worker.call(self._cancel, shop, order_id, proxy, storage, timeout=70)
 
-    def manual_open(self, proxy) -> dict:
-        return self._worker.call(self._manual_open, proxy, timeout=60)
+    def manual_open(self, proxy, shop="wb") -> dict:
+        return self._worker.call(self._manual_open, proxy, shop, timeout=60)
 
     def manual_frame(self):
         return self._worker.call(self._manual_frame, timeout=15)
@@ -2639,35 +2672,51 @@ class PlaywrightCabinet:
             self._drop(session.get("context"))
 
     def _close_manual(self, reason):
-        if not self._manual:
+        session = self._manual
+        if not session:
             _set_manual_open(False)
             return False
+        shop = session.get("shop") if session.get("shop") in SHOPS else "wb"
         self._close_manual_context()
         if reason == "timeout":
-            note_step("wb", "manual", "", "10 минут без действий", "ручной вход отменён")
+            note_step(shop, "manual", "", "10 минут без действий", "ручной вход отменён")
         elif reason == "cancel":
-            note_step("wb", "manual", "", "ручной вход отменён", "ручной вход отменён")
+            note_step(shop, "manual", "", "ручной вход отменён", "ручной вход отменён")
         return True
 
-    def _manual_open(self, proxy) -> dict:
-        if self._manual_session() is not None:
-            self._manual["touched"] = time.time()
-            _set_manual_open(True)
+    def _manual_open(self, proxy, shop="wb") -> dict:
+        sid = shop if shop in SHOPS else ""
+        if not sid:
+            return {"ok": False, "error": "Неизвестный магазин"}
+        current = self._manual_session()
+        if current is not None:
+            if current.get("shop") not in (None, "", sid):
+                return {"ok": False, "error": "Уже открыт ручной вход в другой магазин."}
+            current["shop"] = sid
+            current["touched"] = time.time()
+            _set_manual_open(True, sid)
             vp = PIXEL7_PROFILE["viewport"]
             return {"ok": True, "already": True, "width": vp["width"], "height": vp["height"]}
         context = None
         try:
-            context = self._new_context(proxy, load_abt(proxy, "wb"))
-            page = self._open(context)
-            self._goto_logged(page, _CABINET_URLS["wb"]["login"], "wb", "manual")
-            self._manual = {"context": context, "page": page, "touched": time.time()}
-            _set_manual_open(True)
+            if sid == "ozon":
+                # Как в обходе витрины: Android Pixel 7 и cookies этого режима, старт с главной.
+                context = self._new_context(proxy, load_abt(proxy, "android"), "android")
+                page = self._open(context, "android")
+                start = OZON_HOME
+            else:
+                context = self._new_context(proxy, load_abt(proxy, "wb"))
+                page = self._open(context)
+                start = _CABINET_URLS["wb"]["login"]
+            self._goto_logged(page, start, sid, "manual")
+            self._manual = {"context": context, "page": page, "touched": time.time(), "shop": sid}
+            _set_manual_open(True, sid)
             vp = PIXEL7_PROFILE["viewport"]
             return {
                 "ok": True,
                 "width": vp["width"],
                 "height": vp["height"],
-                "url": getattr(page, "url", "") or _CABINET_URLS["wb"]["login"],
+                "url": getattr(page, "url", "") or start,
             }
         except Exception as e:
             _log("manual open " + type(e).__name__)
@@ -2737,13 +2786,13 @@ class PlaywrightCabinet:
         session["touched"] = time.time()
         return {"ok": True}
 
-    def _manual_prove(self, page):
+    def _manual_prove(self, page, shop):
         info = self._snapshot(page)
         if cabinet_open(info):
             return info
         for section in ("orders", "profile"):
             try:
-                page.goto(_CABINET_URLS["wb"][section], wait_until="domcontentloaded", timeout=20000)
+                page.goto(_CABINET_URLS[shop][section], wait_until="domcontentloaded", timeout=20000)
             except Exception as e:
                 _log("manual cabinet " + type(e).__name__)
             self._settle(page)
@@ -2756,12 +2805,13 @@ class PlaywrightCabinet:
         session = self._manual_session()
         if session is None:
             return {"ok": False, "error": "Ручной вход не открыт."}
+        shop = session.get("shop") if session.get("shop") in SHOPS else "wb"
         page = session["page"]
         context = session["context"]
-        info = self._manual_prove(page)
+        info = self._manual_prove(page, shop)
         url = (info or {}).get("url") or ""
         if not cabinet_open(info):
-            note_step("wb", "manual", url, "кабинет не открылся", "кабинет не открылся")
+            note_step(shop, "manual", url, "кабинет не открылся", "кабинет не открылся")
             session["touched"] = time.time()
             return {"ok": False, "error": "Кабинет не открылся. Сессия не активна. Экран ещё открыт."}
         try:
@@ -2769,13 +2819,13 @@ class PlaywrightCabinet:
         except Exception:
             storage = None
         if not storage_usable(storage):
-            note_step("wb", "manual", url, "кабинет открылся, сессия не сохранилась", "кабинет не открылся")
+            note_step(shop, "manual", url, "кабинет открылся, сессия не сохранилась", "кабинет не открылся")
             return {"ok": False, "error": "Кабинет открылся, но сессия не сохранилась."}
         self._close_manual_context()
-        self._close_login("wb")
-        save_abt(proxy, "wb", storage)
-        _set_shop("wb", "active", storage=storage, auth="manual", why="ручной вход завершён")
-        note_step("wb", "manual", url, "ручной вход завершён", "кабинет открылся")
+        self._close_login(shop)
+        save_abt(proxy, "android" if shop == "ozon" else "wb", storage)
+        _set_shop(shop, "active", storage=storage, auth="manual", why="ручной вход завершён")
+        note_step(shop, "manual", url, "ручной вход завершён", "кабинет открылся")
         return {"ok": True, "status": "active", "message": "Сессия сохранена."}
 
     def _manual_cancel(self) -> dict:

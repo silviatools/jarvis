@@ -11283,7 +11283,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             elif route == "/api/market/logout":
                 self._json(200, market_skill.logout(payload.get("shop") or ""))
             elif route == "/api/market/manual/start":
-                self._json(200, market_skill.manual_start())
+                self._json(200, market_skill.manual_start((payload or {}).get("shop") or "wb"))
             elif route == "/api/market/manual/input":
                 self._json(200, market_skill.manual_input(payload))
             elif route == "/api/market/manual/finish":

@@ -71,8 +71,8 @@ class FakeDriver:
         self.calls.append(("cancel", shop, order_id))
         return dict(self.cancel_result)
 
-    def manual_open(self, proxy):
-        self.calls.append(("manual-open",))
+    def manual_open(self, proxy, shop="wb"):
+        self.calls.append(("manual-open", shop))
         return {"ok": True, "width": 412, "height": 915, "url": "https://www.wildberries.ru/security/login"}
 
     def manual_frame(self):
@@ -233,8 +233,10 @@ class MarketSkillTest(unittest.TestCase):
         self._active()
         self.drv.read_result = {"ok": False, "session": "public", "url": "https://www.ozon.ru/product/x"}
         out = market_skill.execute("market_favorites", {"shop": "ozon"}, None)
-        self.assertIn("не активна", out["error"])
-        self.assertEqual(market_skill.public_status()["shops"]["ozon"]["status"], "expired")
+        self.assertIn("Сессия сохранена", out["error"])
+        self.assertNotIn("не активна", out["error"])
+        self.assertEqual(market_skill.public_status()["shops"]["ozon"]["status"], "active")
+        self.assertIsNotNone(market_skill._storage("ozon"))
 
     def test_wb_orders_list_keeps_session(self):
         """Список «Заказы / Доставки» без фразы «мои заказы» — кабинет, сессию не стираем."""
@@ -263,6 +265,101 @@ class MarketSkillTest(unittest.TestCase):
         dead = market_skill.execute("market_orders", {"shop": "wb"}, None)
         self.assertIn("не активна", dead["error"])
         self.assertEqual(market_skill.public_status()["shops"]["wb"]["status"], "expired")
+
+    def test_orders_delivery_same_check_keeps_session(self):
+        """«Заказы / Доставки» — кабинет и для «Готово», и для чтения. Чужая страница cookies не стирает."""
+        info = {
+            "url": "https://www.wildberries.ru/lk/myorders/delivery",
+            "title": "Доставки",
+            "text": "Заказы\nДоставки\nВ пути",
+        }
+        self.assertNotEqual(market_skill.classify_page(info), "login")
+        self.assertTrue(market_skill.cabinet_open(info))
+        self.assertEqual(market_skill.session_from_page(info)["session"], "active")
+        self.assertEqual(market_skill._drop_reason({"ok": False, "session": "public", **info}), "")
+        self._proxy()
+        page, ctx = self._manual_page()
+        page.url = info["url"]
+        page._title = info["title"]
+        page._text = info["text"]
+        cab = market_skill.PlaywrightCabinet()
+        cab._manual = {"context": ctx, "page": page, "touched": time.time(), "shop": "wb"}
+        done = cab._manual_finish(market_skill._proxy())
+        self.assertTrue(done["ok"])
+        self.assertEqual(done["status"], "active")
+        self.assertEqual(page.gotos, [])
+        saved = market_skill._storage("wb")
+        self.drv.read_result = {"ok": False, "session": "public", **info}
+        out = market_skill.execute("market_orders", {"shop": "wb"}, None)
+        self.assertTrue(out["ok"])
+        self.assertIn("Доставки", out["text"])
+        self.assertEqual(market_skill._storage("wb"), saved)
+        self.assertEqual(market_skill.public_status()["shops"]["wb"]["status"], "active")
+        odd = {
+            "url": "https://www.wildberries.ru/lk/basket",
+            "title": "Корзина",
+            "text": "Пока пусто",
+        }
+        self.assertFalse(market_skill.cabinet_open(odd))
+        self.assertFalse(market_skill.login_redirect(odd))
+        self.drv.read_result = {"ok": False, "session": "public", **odd}
+        kept = market_skill.execute("market_orders", {"shop": "wb"}, None)
+        self.assertIn("Сессия сохранена", kept["error"])
+        self.assertEqual(market_skill.public_status()["shops"]["wb"]["status"], "active")
+        self.assertEqual(market_skill._storage("wb"), saved)
+
+    def test_ozon_manual_android_and_orders_read(self):
+        self._proxy()
+        page, ctx = self._manual_page()
+        page.url = "https://www.ozon.ru/"
+        page._title = "Ozon"
+        page._text = "Главная"
+
+        def goto(url, **kwargs):
+            page.gotos.append(url)
+            if "orderlist" in url:
+                page.url = "https://www.ozon.ru/my/orderlist"
+                page._title = "Заказы"
+                page._text = "Заказы\nДоставка"
+
+        page.goto = goto
+        seen = {}
+        cab = market_skill.PlaywrightCabinet()
+
+        def new_context(proxy, storage=None, mode="android"):
+            seen["mode"] = mode
+            return ctx
+
+        cab._new_context = new_context
+        cab._open = lambda context, mode="android": page
+        cab._goto_logged = lambda p, url, shop, step: p.goto(url)
+        opened = cab._manual_open(market_skill._proxy(), "ozon")
+        self.assertTrue(opened["ok"])
+        self.assertEqual(seen["mode"], "android")
+        self.assertEqual(page.gotos, [market_skill.OZON_HOME])
+        self.assertEqual(market_skill.public_status()["manual"]["shop"], "ozon")
+        other = cab._manual_open(market_skill._proxy(), "wb")
+        self.assertFalse(other["ok"])
+        self.assertIn("другой магазин", other["error"])
+        done = cab._manual_finish(market_skill._proxy())
+        self.assertTrue(done["ok"])
+        self.assertEqual(market_skill.public_status()["shops"]["ozon"]["status"], "active")
+        self.assertEqual(market_skill._load_live()["shops"]["ozon"]["auth"], "manual")
+        proved = {
+            "url": "https://www.ozon.ru/my/orderlist",
+            "title": "Заказы",
+            "text": "Заказы\nДоставка",
+        }
+        self.assertTrue(market_skill.cabinet_open(proved))
+        self.assertEqual(market_skill.session_from_page(proved)["session"], "active")
+        abt = market_skill.load_abt(market_skill._proxy(), "android")
+        self.assertEqual(abt["cookies"][0]["value"], COOKIE)
+        self.drv.read_result = {"ok": False, "session": "public", **proved}
+        out = market_skill.execute("market_orders", {"shop": "ozon"}, None)
+        self.assertTrue(out["ok"])
+        self.assertIn("Доставка", out["text"])
+        self.assertEqual(market_skill.public_status()["shops"]["ozon"]["status"], "active")
+        self.assertIsNotNone(market_skill._storage("ozon"))
 
     def test_cancel_needs_confirmation(self):
         self._active()
@@ -923,11 +1020,13 @@ class AssistantLoopTest(unittest.TestCase):
         self.assertIn("market-notice-", html)
         self.assertIn("row.notice", html)
         self.assertIn("Войти вручную", html)
-        self.assertIn("market-manual-wb", html)
+        self.assertIn("market-manual-' + shop.id", html)
+        self.assertEqual(html.count("market-manual-' + shop.id"), 1)
+        self.assertIn("Ozon — ручной вход", html)
         self.assertIn("Готово, я вошёл", html)
         self.assertIn("/api/market/manual/start", html)
         self.assertIn("market-manual-screen", html)
-        self.assertEqual(html.count("data-testid=\"market-manual-wb\""), 1)
+        self.assertIn("JSON.stringify({ shop: shopId })", html)
         market_html = html.split("МАРКЕТПЛЕЙСЫ")[1].split("SETTINGS VIEW")[0]
         self.assertNotIn("+79991234567", market_html)
         self.assertIn("const active = row.status === 'active'", market_html)
