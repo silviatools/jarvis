@@ -17,6 +17,7 @@ import json
 import os
 import queue
 import re
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -36,6 +37,7 @@ STATUS_LABEL = {
     "awaiting_code": "Ждём код",
     "active": "Активна",
     "expired": "Слетела",
+    "blocked": "Заблокировано антиботом",
 }
 
 SKILLS = [
@@ -45,7 +47,8 @@ SKILLS = [
          "избранное и краткий профиль (телефон маской). Это не кабинет продавца и не цены с витрины. "
          "Нужен сохранённый мобильный HTTP(S)-прокси с липким IP (Настройки → Маркетплейсы) и живая сессия: "
          "без прокси кабинет с сервера не открывается, смена IP сессию сбрасывает. Если сессия слетела, "
-         "инструменты так и скажут — нужен новый вход и код из СМС. Отмена заказа, если кнопка есть на странице, "
+         "инструменты так и скажут — нужен новый вход и код из СМС. Если антибот не пускает, статус "
+         "«Заблокировано антиботом»: это не «сессия слетела». Отмена заказа, если кнопка есть на странице, "
          "только после вашего подтверждения."
      ),
      "tools": [
@@ -100,7 +103,8 @@ PROMPT = (
     "повтор с confirmed:true только следующим сообщением. Если на странице нет кнопки отмены или страница не подтвердила отмену — "
     "так и скажи, не говори, что заказ отменён. Если инструмент вернул, что нет прокси, нет сессии или сессия слетела — "
     "так и скажи, не выдумывай заказы. Если кабинет не открылся или сессия не активна — так и скажи "
-    "и направь в Настройки → Маркетплейсы. Не советуй выключать VPN: это текст страницы магазина, не наш шаг. "
+    "и направь в Настройки → Маркетплейсы. Если ответ «заблокировано антиботом» — так и скажи, "
+    "это не слетевшая сессия. Не советуй выключать VPN: это текст страницы магазина, не наш шаг. "
     "Новый вход — код из СМС в Настройки → Маркетплейсы. "
     "Телефон в профиле уже замаскирован, не восстанавливай его.\n\n"
 )
@@ -162,10 +166,43 @@ _OFFLINE_MARKERS = (
     "проверьте подключение",
     "нет подключения к интернету",
 )
+_CHALLENGE_MARKERS = (
+    "antibot",
+    "abt-challenge",
+    "challenge page",
+    "не робот",
+    "variti",
+    "captcha",
+    "капча",
+    "доступ ограничен",
+    "проверка браузера",
+    "подтвердите, что вы человек",
+)
+_CODE_MARKERS = (
+    "введите код",
+    "код из смс",
+    "код из sms",
+    "код подтверждения",
+    "код из приложения",
+    "код отправлен",
+    "мы отправили код",
+)
+_LOGIN_TEXT = (
+    "введите номер телефона",
+    "войти или зарегистрироваться",
+    "войдите, чтобы",
+    "войдите с wb id",
+    "войти в wb.id",
+)
 OFFLINE_ERROR = (
     "Кабинет не открылся, сессия не активна. Войти заново: Настройки → Маркетплейсы."
 )
+BLOCKED_ERROR = (
+    "Заблокировано антиботом. Кабинет не открылся. Войти заново: Настройки → Маркетплейсы."
+)
 _JOURNAL_MAX = 40
+_SHOT_MAX = 24
+_SHOT_RE = re.compile(r"^m[0-9a-f]{16}\.jpg$")
 _AUTH_OK = ("code", "password")
 _lock = threading.Lock()
 _driver = None
@@ -672,23 +709,18 @@ def _finish_login(sid, phone, result, proxy, code="") -> dict:
     result = result or {}
     status = result.get("status")
     step = "code" if code else "login"
-    page_url = result.get("url") or ""
-    summary = result.get("summary") or result.get("message") or result.get("error") or ""
-    if status == "offline":
-        if _status(sid) in ("active", "awaiting_code"):
-            _set_shop(sid, "expired", storage=None, why="страница «нет соединения», кабинет не открыт")
-            _log(sid + " offline, session dropped")
-        else:
-            _log(sid + " offline, not active")
-        err = OFFLINE_ERROR
-        note_step(sid, step, page_url, summary, "expired")
-        return {"ok": False, "error": err, "status": _status(sid)}
+    if status in ("offline", "blocked", "challenge"):
+        _set_shop(sid, "blocked", phone_mask=mask_phone_value(phone) or None, storage=None,
+                  why=result.get("face") or "антибот, кабинет не открыт")
+        _log(sid + " blocked by antibot")
+        _record_steps(sid, result, step, "blocked")
+        return {"ok": False, "error": BLOCKED_ERROR, "status": "blocked"}
     proved = _proved_auth(result, code)
     if status == "active" and not proved:
         _set_shop(sid, "awaiting_code", phone_mask=mask_phone_value(phone) or None, storage=None, auth="",
                   why="введён только телефон, кода или пароля не было")
         _log(sid + " phone without code, not active")
-        note_step(sid, step, page_url, summary, "awaiting_code")
+        _record_steps(sid, result, step, "awaiting_code")
         return {
             "ok": True,
             "status": "awaiting_code",
@@ -696,10 +728,12 @@ def _finish_login(sid, phone, result, proxy, code="") -> dict:
         }
     if result.get("ok") is False or result.get("lost"):
         err = redact(result.get("error") or "Вход не выполнен.", proxy, [code])
-        if "vpn" in err.lower():
-            err = OFFLINE_ERROR
+        if "vpn" in err.lower() or "нет соединения" in err.lower():
+            err = BLOCKED_ERROR
+            _set_shop(sid, "blocked", phone_mask=mask_phone_value(phone) or None, storage=None, why="антибот в тексте страницы")
+            status = "blocked"
         _log(sid + " login not finished")
-        note_step(sid, step, page_url, summary, err)
+        _record_steps(sid, result, step, "blocked" if status == "blocked" else err)
         return {"ok": False, "error": err, "status": status or _status(sid)}
     if status == "active" and proved and storage_usable(result.get("storage")):
         why = "код из СМС принят, кабинет открыт" if proved == "code" else "пароль принят, кабинет открыт"
@@ -709,21 +743,21 @@ def _finish_login(sid, phone, result, proxy, code="") -> dict:
         except Exception as e:
             _log("close after login " + redact(e, proxy, [code]))
         _log(sid + " session active")
-        note_step(sid, step, page_url, summary, "active")
+        _record_steps(sid, result, step, "active")
         return {"ok": True, "status": "active", "message": result.get("message") or "Сессия сохранена."}
     if status == "active":
         _log(sid + " cabinet without storage")
-        note_step(sid, step, page_url, summary, "not active")
+        _record_steps(sid, result, step, "not active")
         return {"ok": False, "error": "Кабинет открылся, но сессия не сохранилась. Вход не засчитан."}
     if status == "awaiting_code":
         _set_shop(sid, "awaiting_code", phone_mask=mask_phone_value(phone) or None, storage=None, auth="",
                   why="открылась форма кода, сессия ещё не активна")
         _log(sid + " awaiting code")
-        note_step(sid, step, page_url, summary, "awaiting_code")
+        _record_steps(sid, result, step, "awaiting_code")
         return {"ok": True, "status": "awaiting_code", "message": result.get("message") or "Открылась форма кода. Введите код из СМС."}
     _log(sid + " login not finished")
     err = redact(result.get("error") or "Вход не выполнен.", proxy, [code])
-    note_step(sid, step, page_url, summary, err)
+    _record_steps(sid, result, step, err)
     return {"ok": False, "error": err}
 
 
@@ -747,6 +781,8 @@ def _require_session(shop) -> dict:
     status = _status(shop)
     if status == "awaiting_code":
         return {"error": "Вход не закончен: нужен код из СМС.", "status": status}
+    if status == "blocked":
+        return {"error": BLOCKED_ERROR, "status": "blocked"}
     if status == "expired":
         return {"error": "Сессия слетела, нужен повторный вход (код из СМС).", "status": "expired"}
     if status != "active" or not storage_usable(_storage(shop)):
@@ -755,7 +791,7 @@ def _require_session(shop) -> dict:
 
 
 def _drop_reason(result) -> str:
-    """Пусто, если страницу можно читать как кабинет. Иначе offline, challenge или closed."""
+    """Пусто, если страницу можно читать как кабинет. Иначе blocked или closed."""
     result = result or {}
     info = {
         "url": result.get("url") or "",
@@ -763,10 +799,8 @@ def _drop_reason(result) -> str:
         "text": result.get("text") or "",
     }
     kind = classify_page(info) if any(info.values()) else ""
-    if kind == "offline":
-        return "offline"
-    if kind == "challenge" or result.get("session") == "challenge":
-        return "challenge"
+    if kind in ("offline", "challenge") or result.get("session") in ("blocked", "challenge"):
+        return "blocked"
     if result.get("session") in ("expired", "public") or kind in ("login", "code", "password", "public"):
         return "closed"
     if not result.get("ok") and result.get("session") != "active":
@@ -778,14 +812,32 @@ def _apply_read_session(shop, result) -> dict:
     reason = _drop_reason(result)
     if not reason:
         return {}
-    why = {
-        "offline": "страница «нет соединения», кабинет не открыт",
-        "challenge": "антибот, кабинет не открыт",
-        "closed": "открылась не страница кабинета",
-    }[reason]
+    if reason == "blocked":
+        why = (result or {}).get("face") or page_face({
+            "url": (result or {}).get("url") or "",
+            "title": (result or {}).get("title") or "",
+            "text": (result or {}).get("text") or "",
+        })
+        _set_shop(shop, "blocked", storage=None, why=why or "антибот, кабинет не открыт")
+        _log(shop + " blocked by antibot")
+        note_step(
+            shop, "read", (result or {}).get("url") or "",
+            ((result or {}).get("text") or "") + " · " + (why or ""),
+            "blocked",
+            title=(result or {}).get("title") or "",
+            shot=(result or {}).get("shot") or "",
+        )
+        return {"error": BLOCKED_ERROR, "shop": shop, "status": "blocked"}
+    why = "открылась не страница кабинета"
     _set_shop(shop, "expired", storage=None, why=why)
-    _log(shop + " session expired " + reason)
-    note_step(shop, "read", (result or {}).get("url") or "", (result or {}).get("text") or (result or {}).get("title") or why, "expired")
+    _log(shop + " session expired closed")
+    note_step(
+        shop, "read", (result or {}).get("url") or "",
+        (result or {}).get("text") or (result or {}).get("title") or why,
+        "expired",
+        title=(result or {}).get("title") or "",
+        shot=(result or {}).get("shot") or "",
+    )
     return {"error": OFFLINE_ERROR, "shop": shop, "status": "expired"}
 
 
@@ -835,15 +887,17 @@ def _norm_text(text: str) -> str:
     return re.sub(r"[\u00a0\u2007\u202f]+", " ", text or "").lower()
 
 
-def _append_journal(data, shop, step, url, summary, result):
+def _append_journal(data, shop, step, url, summary, result, title="", shot=""):
     data.setdefault("journal", [])
     data["journal"].append({
         "t": int(time.time()),
         "shop": shop if shop in SHOPS else "",
         "step": str(step or "")[:24],
         "url": _safe_url(url)[:200],
+        "title": _journal_text(title)[:120],
         "summary": _journal_text(summary),
         "result": _journal_text(result),
+        "shot": shot if _SHOT_RE.fullmatch(shot or "") else "",
     })
     data["journal"] = data["journal"][-_JOURNAL_MAX:]
 
@@ -859,13 +913,16 @@ def _clean_journal(raw) -> list:
     for item in raw[-_JOURNAL_MAX:]:
         if not isinstance(item, dict):
             continue
+        shot = str(item.get("shot") or "")
         out.append({
             "t": int(item.get("t") or 0),
             "shop": item.get("shop") if item.get("shop") in SHOPS else "",
             "step": str(item.get("step") or "")[:24],
             "url": _safe_url(str(item.get("url") or "")),
+            "title": _journal_text(item.get("title") or "")[:120],
             "summary": _journal_text(item.get("summary") or ""),
             "result": _journal_text(item.get("result") or ""),
+            "shot": shot if _SHOT_RE.fullmatch(shot) else "",
         })
     return out
 
@@ -884,14 +941,82 @@ def _heal_unproved(data) -> bool:
     return changed
 
 
-def note_step(shop, step, url, summary, result):
+def note_step(shop, step, url, summary, result, title="", shot=""):
     proxy = _proxy()
     summary = redact(_journal_text(summary), proxy)
     result = redact(_journal_text(result), proxy)
+    title = redact(_journal_text(title), proxy)
     with _lock:
         data = _load()
-        _append_journal(data, shop, step, url, summary, result)
+        _append_journal(data, shop, step, url, summary, result, title=title, shot=shot)
         _write(data)
+
+
+def shots_dir() -> Path:
+    path = data_dir() / "market_shots"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def save_jpeg(blob: bytes) -> str:
+    """Маленький jpeg шага входа. Не jpeg и слишком большой кадр не храним."""
+    if not blob or len(blob) > 400_000 or not blob.startswith(b"\xff\xd8"):
+        return ""
+    name = "m" + secrets.token_hex(8) + ".jpg"
+    (shots_dir() / name).write_bytes(blob)
+    _prune_shots()
+    return name
+
+
+def shot_path(name: str):
+    if not _SHOT_RE.fullmatch(name or ""):
+        return None
+    path = shots_dir() / name
+    return path if path.is_file() else None
+
+
+def _prune_shots():
+    files = sorted(shots_dir().glob("m*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in files[_SHOT_MAX:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
+def _step_summary(item) -> str:
+    summary = (item or {}).get("summary") or ""
+    face = (item or {}).get("face") or ""
+    if face and face not in summary:
+        summary = (summary + " · " + face).strip(" ·")
+    return summary
+
+
+def _record_steps(sid, result, fallback_step, fallback_result):
+    steps = (result or {}).get("steps")
+    if isinstance(steps, list) and steps:
+        for item in steps:
+            if not isinstance(item, dict):
+                continue
+            note_step(
+                sid,
+                item.get("step") or fallback_step,
+                item.get("url") or "",
+                _step_summary(item),
+                item.get("result") or fallback_result,
+                title=item.get("title") or "",
+                shot=item.get("shot") or "",
+            )
+        return
+    note_step(
+        sid,
+        fallback_step,
+        (result or {}).get("url") or "",
+        _step_summary(result or {"summary": (result or {}).get("summary") or (result or {}).get("message") or (result or {}).get("error") or "", "face": (result or {}).get("face") or ""}),
+        fallback_result,
+        title=(result or {}).get("title") or "",
+        shot=(result or {}).get("shot") or "",
+    )
 
 
 def page_snippet(info, limit=160) -> str:
@@ -931,10 +1056,14 @@ def _log_page(sid, info, phone_mask="", form_mask=""):
 def decide_after_phone(shop, info, code_field=False) -> dict:
     """После ввода телефона сессия не бывает активной: нужен код или пароль и живой кабинет."""
     kind = classify_page(info)
-    if kind == "offline":
-        return {"ok": False, "status": "offline", "error": OFFLINE_ERROR}
-    if kind == "challenge":
-        return {"ok": False, "error": "Антибот не пропустил на страницу входа. Вход не выполнен."}
+    if kind in ("offline", "challenge"):
+        return {
+            "ok": False, "status": "blocked", "error": BLOCKED_ERROR,
+            "url": (info or {}).get("url") or "",
+            "title": (info or {}).get("title") or "",
+            "summary": page_snippet(info),
+            "face": page_face(info),
+        }
     if _NOT_FOUND_RE.search((info or {}).get("text") or ""):
         return {"ok": False, "error": login_fail_message(shop, info)}
     if kind == "code" or (code_field and kind not in ("login", "password")):
@@ -956,12 +1085,10 @@ def decide_after_phone(shop, info, code_field=False) -> dict:
 def session_from_page(info) -> dict:
     kind = classify_page(info or {})
     url = (info or {}).get("url") or ""
-    if kind == "offline":
-        return {"ok": False, "session": "expired", "error": OFFLINE_ERROR, "url": url}
+    if kind in ("offline", "challenge"):
+        return {"ok": False, "session": "blocked", "error": BLOCKED_ERROR, "url": url, "face": page_face(info)}
     if kind in ("login", "code", "password"):
         return {"ok": False, "session": "expired", "url": url}
-    if kind == "challenge":
-        return {"ok": False, "session": "challenge", "url": url}
     if kind != "cabinet":
         return {"ok": False, "session": "public", "url": url}
     return {"ok": True, "session": "active", "url": url}
@@ -1139,17 +1266,22 @@ def _type_phone(page, value) -> str:
 
 
 _PHONE_INPUTS = (
+    "input#wb-phone-number",
+    "input[data-test-id='field_phone_input']",
+    "input[placeholder='000 000-00-00']",
+    "input.FieldInput.phone",
     "input[type='tel']",
     "input[name='phone']",
     "input[name='phoneNumber']",
     "input[autocomplete='tel']",
     "input[inputmode='tel']",
 )
+# numeric на WB ID — это телефон (#wb-phone-number), не код из СМС.
 _CODE_INPUTS = (
     "input[autocomplete='one-time-code']",
     "input[name='code']",
     "input[name='otp']",
-    "input[inputmode='numeric']",
+    "input[inputmode='numeric']:not(#wb-phone-number):not([data-test-id='field_phone_input'])",
 )
 
 
@@ -1160,26 +1292,47 @@ def classify_page(info: dict) -> str:
     text = _norm_text((info.get("title") or "") + "\n" + (info.get("text") or ""))
     if "/product/" in path or path.endswith("detail.aspx") or ("/catalog/" in path and not path.startswith("/lk") and not path.startswith("/my")):
         return "public"
-    # «Нет соединения» часто остаётся на /my/orderlist. Это не кабинет.
+    # «Нет соединения» часто остаётся на /my/orderlist. Это антибот, не кабинет.
     if any(s in text for s in _OFFLINE_MARKERS):
         return "offline"
-    if any(s in text for s in ("variti", "не робот", "captcha", "доступ ограничен", "проверка браузера", "подтвердите, что вы человек")):
+    if any(s in text for s in _CHALLENGE_MARKERS):
         return "challenge"
-    if any(s in text for s in ("введите код", "код из смс", "код из sms", "код подтверждения")):
+    if any(s in text for s in _CODE_MARKERS):
         return "code"
     if any(s in text for s in ("введите пароль", "пароль от аккаунта")):
         return "password"
-    login_url = any(s in url.lower() for s in ("/security/login", "/signin")) or "id.ozon.ru" in host
-    login_text = any(s in text for s in ("введите номер телефона", "войти или зарегистрироваться", "войдите, чтобы"))
+    login_host = "id.ozon.ru" in host or "id.wb.ru" in host
+    login_url = any(s in url.lower() for s in ("/security/login", "/signin")) or login_host
+    login_text = any(s in text for s in _LOGIN_TEXT)
     cabinet = path.startswith("/my") or path.startswith("/lk")
     proof = any(s in text for s in ("мои заказы", "покупки", "номер заказа", "профиль", "личные данные", "мои данные"))
-    if login_url:
-        return "code" if "код" in text else "login"
-    if login_text:
+    # «Получить код» на форме телефона WB — ещё не ввод кода. Голый «код» форму кода не делает.
+    if login_host or login_text:
+        return "login"
+    if login_url and ("телефон" in text or "получить код" in text):
         return "login"
     if cabinet and proof:
         return "cabinet"
     return "unknown"
+
+
+def page_face(info) -> str:
+    """Короткая пометка для журнала: антибот это или форма входа."""
+    kind = classify_page(info or {})
+    text = _norm_text(((info or {}).get("title") or "") + "\n" + ((info or {}).get("text") or ""))
+    if kind == "offline":
+        return "антибот: нет соединения"
+    if kind == "challenge":
+        if "доступ ограничен" in text:
+            return "антибот: доступ ограничен"
+        return "антибот"
+    return {
+        "login": "форма входа",
+        "code": "форма кода",
+        "password": "форма пароля",
+        "cabinet": "кабинет",
+        "public": "не кабинет",
+    }.get(kind, "не форма входа")
 
 
 class PlaywrightCabinet:
@@ -1196,7 +1349,7 @@ class PlaywrightCabinet:
         return self._worker.call(self._exit_ip, proxy)
 
     def begin_login(self, shop, phone, proxy) -> dict:
-        return self._worker.call(self._begin_login, shop, phone, proxy, timeout=70)
+        return self._worker.call(self._begin_login, shop, phone, proxy, timeout=90)
 
     def submit_code(self, shop, code, proxy) -> dict:
         return self._worker.call(self._submit_code, shop, code, proxy, timeout=70)
@@ -1319,66 +1472,137 @@ class PlaywrightCabinet:
         finally:
             self._drop(context)
 
+    def _shot(self, page) -> str:
+        try:
+            blob = page.screenshot(type="jpeg", quality=32, full_page=False)
+        except Exception:
+            return ""
+        return save_jpeg(blob)
+
+    def _page_step(self, page, step, result, info=None) -> dict:
+        info = info or self._snapshot(page)
+        return {
+            "step": step,
+            "url": info.get("url") or "",
+            "title": (info.get("title") or "")[:120],
+            "summary": page_snippet(info, 160),
+            "face": page_face(info),
+            "result": result,
+            "shot": self._shot(page),
+        }
+
+    def _phone_ready(self, page) -> bool:
+        return _first_locator(page, ", ".join(_PHONE_INPUTS)) is not None
+
+    def _await_surface(self, page, seconds) -> dict:
+        """Ждём поле телефона или стену антибота. Оболочка WB без поля — ещё не отказ."""
+        deadline = time.time() + seconds
+        info = self._snapshot(page)
+        while time.time() < deadline:
+            if classify_page(info) in ("offline", "challenge") or self._phone_ready(page):
+                return info
+            try:
+                page.wait_for_timeout(400)
+            except Exception:
+                time.sleep(0.4)
+            info = self._snapshot(page)
+        return info
+
+    def _with_page(self, decision, info, steps) -> dict:
+        decision = dict(decision)
+        decision.setdefault("url", (info or {}).get("url") or "")
+        decision.setdefault("title", (info or {}).get("title") or "")
+        decision.setdefault("summary", page_snippet(info))
+        decision.setdefault("face", page_face(info))
+        decision["steps"] = steps
+        return decision
+
+    def _blocked_result(self, info, steps) -> dict:
+        return self._with_page({"ok": False, "status": "blocked", "error": BLOCKED_ERROR}, info, steps)
+
     def _begin_login(self, shop, phone, proxy) -> dict:
         self._close_login(shop)
         context = None
+        steps = []
         try:
             context = self._new_context(proxy)
             page = self._open(context)
-            page.goto(_CABINET_URLS[shop]["login"], wait_until="domcontentloaded", timeout=40000)
+            try:
+                page.goto(_CABINET_URLS[shop]["login"], wait_until="domcontentloaded", timeout=40000)
+            except Exception as e:
+                info = self._snapshot(page)
+                if not str(info.get("url") or "").startswith("http"):
+                    raise
+                _log(shop + " goto " + type(e).__name__)
             self._settle(page)
             info = self._snapshot(page)
-            kind = classify_page(info)
-            if kind in ("offline", "challenge"):
-                _log_page(shop, info, mask_phone_value(phone))
+            steps.append(self._page_step(page, "opened", "opened", info))
+            _log_page(shop, info, mask_phone_value(phone))
+            if classify_page(info) in ("offline", "challenge"):
                 self._drop(context)
-                return decide_after_phone(shop, info, False)
-            if kind == "cabinet":
-                _log_page(shop, info, mask_phone_value(phone))
+                return self._blocked_result(info, steps)
+            if classify_page(info) == "cabinet":
                 self._drop(context)
-                return {
+                return self._with_page({
                     "ok": True,
                     "status": "awaiting_code",
                     "message": "Кабинет на экране, но код из СМС не вводился. Сессия не активна.",
-                }
+                }, info, steps)
+            info = self._await_surface(page, 22)
+            if classify_page(info) in ("offline", "challenge"):
+                steps.append(self._page_step(page, "opened", "blocked", info))
+                self._drop(context)
+                return self._blocked_result(info, steps)
+            if self._phone_ready(page):
+                steps.append(self._page_step(page, "button", "поле телефона", info))
+            else:
+                clicked = _click_label(page, [r"^войти$", r"войти", r"^вход$"])
+                steps.append(self._page_step(page, "button", "нажали вход" if clicked else "кнопки входа нет", info))
+                info = self._await_surface(page, 12)
+                if classify_page(info) in ("offline", "challenge"):
+                    self._drop(context)
+                    return self._blocked_result(info, steps)
+            if not self._phone_ready(page):
+                steps.append(self._page_step(page, "phone", "поле не найдено", info))
+                self._drop(context)
+                return self._with_page(
+                    {"ok": False, "error": "Поле телефона не найдено. Вход не выполнен."},
+                    info, steps,
+                )
             got = _type_phone(page, phone)
-            if not got:
-                _click_label(page, [r"войти", r"вход"])
-                self._settle(page)
-                got = _type_phone(page, phone)
-            if not got:
-                info = self._snapshot(page)
-                _log_page(shop, info, mask_phone_value(phone))
-                self._drop(context)
-                return {"ok": False, "error": "Поле телефона не найдено. Вход не выполнен."}
+            info = self._snapshot(page)
+            steps.append(self._page_step(page, "phone", "введён " + (mask_phone_value(got) or "пусто"), info))
             national = _phone_digits(phone)[-10:]
-            if not phone_landed(national, got):
-                info = self._snapshot(page)
-                _log_page(shop, info, mask_phone_value(phone), mask_phone_value(got))
+            if not got or not phone_landed(national, got):
                 self._drop(context)
-                return {
+                return self._with_page({
                     "ok": False,
                     "error": (
                         f"В форму ушёл номер {mask_phone_value(got) or 'пусто'}, "
                         f"ждали {mask_phone_value(national)}. "
                         + login_fail_message(shop, info)
                     ),
-                }
-            _click_label(page, [r"получить код", r"выслать код", r"отправить код", r"продолжить", r"далее", r"войти"])
+                }, info, steps)
+            _click_label(page, [r"получить код", r"выслать код", r"отправить код", r"продолжить", r"далее"])
             self._settle(page)
             try:
                 page.wait_for_selector(", ".join(_CODE_INPUTS), timeout=8000)
             except Exception:
                 pass
             info = self._snapshot(page)
+            if classify_page(info) in ("offline", "challenge"):
+                steps.append(self._page_step(page, "wait_code", "blocked", info))
+                self._drop(context)
+                return self._blocked_result(info, steps)
             code_field = _first_locator(page, ", ".join(_CODE_INPUTS)) is not None
             decision = decide_after_phone(shop, info, code_field)
+            steps.append(self._page_step(page, "wait_code", decision.get("status") or "stopped", info))
             _log_page(shop, info, mask_phone_value(phone), mask_phone_value(got))
             if decision.get("ok") and decision.get("status") == "awaiting_code":
                 self._live[shop] = context
-                return decision
+                return self._with_page(decision, info, steps)
             self._drop(context)
-            return decision
+            return self._with_page(decision, info, steps)
         except Exception:
             self._drop(context)
             raise
@@ -1409,28 +1633,41 @@ class PlaywrightCabinet:
         if context is None:
             return {"ok": False, "lost": True, "error": "Окно ввода кода закрыто — начните вход заново."}
         page = context.pages[0] if context.pages else self._open(context)
+        steps = []
         if not self._fill_code(page, code):
-            return {"ok": False, "status": "awaiting_code", "error": "Поле кода не найдено. Вход не выполнен."}
+            info = self._snapshot(page)
+            steps.append(self._page_step(page, "code", "поле кода не найдено", info))
+            return self._with_page(
+                {"ok": False, "status": "awaiting_code", "error": "Поле кода не найдено. Вход не выполнен."},
+                info, steps,
+            )
         _click_label(page, [r"подтвердить", r"войти", r"готово", r"продолжить"])
         self._settle(page)
         info = self._snapshot(page)
         kind = classify_page(info)
-        if kind == "offline":
+        if kind in ("offline", "challenge"):
             _log_page(shop, info)
-            return {"ok": False, "status": "offline", "error": OFFLINE_ERROR}
+            steps.append(self._page_step(page, "code", "blocked", info))
+            return self._blocked_result(info, steps)
         if kind == "cabinet":
             storage = context.storage_state()
+            steps.append(self._page_step(page, "cabinet", "active", info))
             self._close_login(shop)
-            return {
+            return self._with_page({
                 "ok": True, "status": "active", "authenticated": True, "auth": "code",
-                "storage": storage, "url": info.get("url") or "", "summary": page_snippet(info),
-                "message": "Сессия сохранена.",
-            }
-        if kind == "challenge":
-            return {"ok": False, "error": "Антибот не пропустил после кода. Вход не выполнен."}
+                "storage": storage, "message": "Сессия сохранена.",
+            }, info, steps)
         if kind == "code":
-            return {"ok": False, "status": "awaiting_code", "error": "Код не принят. Можно ввести его ещё раз или начать вход заново."}
-        return {"ok": False, "error": "После кода кабинет не открылся. Вход не выполнен."}
+            steps.append(self._page_step(page, "code", "код не принят", info))
+            return self._with_page(
+                {"ok": False, "status": "awaiting_code", "error": "Код не принят. Можно ввести его ещё раз или начать вход заново."},
+                info, steps,
+            )
+        steps.append(self._page_step(page, "code", "кабинет не открылся", info))
+        return self._with_page(
+            {"ok": False, "error": "После кода кабинет не открылся. Вход не выполнен."},
+            info, steps,
+        )
 
     def _goto_section(self, page, shop, section, order_id):
         url = _CABINET_URLS[shop][section]
@@ -1459,12 +1696,15 @@ class PlaywrightCabinet:
             self._goto_section(page, shop, section, order_id)
             info = self._snapshot(page)
             base = session_from_page(info)
+            base["title"] = info.get("title") or ""
+            base["text"] = info.get("text") or ""
             if not base.get("ok"):
-                if base.get("session") == "expired" and base.get("error"):
+                base["shot"] = self._shot(page)
+                if base.get("session") in ("blocked", "expired") and base.get("error"):
                     _log_page(shop, info)
                 return base
             if order_id and section == "order" and order_id not in ((info.get("text") or "") + (info.get("url") or "")):
-                return {"ok": False, "session": "active", "error": "Карточка этого заказа не открылась."}
+                return {"ok": False, "session": "active", "error": "Карточка этого заказа не открылась.", "url": info.get("url") or "", "title": info.get("title") or "", "text": info.get("text") or ""}
             return {"ok": True, "session": "active", "url": info["url"], "title": info["title"], "text": info["text"]}
         finally:
             self._drop(context)
@@ -1492,7 +1732,7 @@ class PlaywrightCabinet:
             self._settle(page)
             after = self._snapshot(page)
             base = session_from_page(after)
-            if not base.get("ok") and base.get("session") == "expired":
+            if not base.get("ok") and base.get("session") in ("expired", "blocked"):
                 out = {"ok": False, "cancelled": False, "session": "expired"}
                 if base.get("error"):
                     out["error"] = base["error"]

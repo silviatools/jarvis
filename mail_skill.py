@@ -64,7 +64,8 @@ SKILLS = [
      "tools": ["mail_accounts", "mail_search", "mail_read", "mail_attachment"]},
     {"id": NOTIFY_ID, "title": "Уведомления о новых письмах", "risk": "read", "default": True,
      "desc": ("Сервер проверяет ящики Mail.ru раз в 1–2 минуты (мгновенного push по IMAP у Mail.ru нет) и присылает "
-              "в бот новое письмо: ящик, отправитель, тема и начало текста. Кому и с каких ящиков — "
+              "в бот новое письмо: ящик, отправитель, тема и начало текста; если у ящика включён пуш — ещё и уведомление "
+              "приложения Джарвис на iPhone (Настройки → Общее → «Уведомления на этот телефон»). Кому и с каких ящиков — "
               "Настройки → Общее → «Маршрутизация уведомлений» или карточка ящика во вкладке «Почта»; папки — во вкладке «Почта». "
               "Ответьте на уведомление, чтобы ассистент открыл письмо. Старые письма при подключении не присылаются."),
      "tools": []},
@@ -824,7 +825,7 @@ def _public(acc: dict) -> dict:
             "password_mask": ("•" * 8 + f" ({len(pw)} симв.)") if pw else "не задан",
             "status": acc.get("status") or "new", "lastError": acc.get("lastError") or "",
             "lastCheckAt": acc.get("lastCheckAt") or 0, "lastSyncAt": acc.get("lastSyncAt") or 0,
-            "notifyFolders": acc.get("notifyFolders") or ["INBOX"], "folders": folders,
+            "notifyFolders": acc.get("notifyFolders") or ["INBOX"], "push": bool(acc.get("push")), "folders": folders,
             "indexed": sum(f["indexed"] for f in folders), "synced": bool(idx.get("synced_at"))}
 
 
@@ -907,6 +908,8 @@ def update_account(acc_id: str, patch: dict) -> dict:
     upd = {}
     if "title" in patch:
         upd["title"] = str(patch.get("title") or "").strip()[:60]
+    if "push" in patch:
+        upd["push"] = bool(patch.get("push"))
     if isinstance(patch.get("notifyFolders"), list):
         upd["notifyFolders"] = [str(x) for x in patch["notifyFolders"]][:50]
     if patch.get("password"):
@@ -1225,6 +1228,11 @@ def notification_text(acc: dict, meta: dict) -> str:
     if meta.get("att"):
         lines.append("📎 есть вложения")
     return "\n".join(lines)
+
+
+def push_body(meta: dict) -> str:
+    parts = [meta.get("from") or "—", meta.get("subject") or "(без темы)", _snippet(meta.get("body"), 160)]
+    return "\n".join(p for p in parts if p)
 
 
 def notification_context(acc: dict, meta: dict) -> str:

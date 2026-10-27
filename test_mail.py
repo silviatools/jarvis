@@ -507,6 +507,30 @@ class JarvisIntegrationTest(Base):
             tg_bot.api = orig
             jarvis.get_token = orig_tok
 
+    def test_web_push_per_box(self):
+        import webpush
+        pushed = []
+        webpush.set_deliver(lambda sub, data, key: pushed.append(json.loads(data)))
+        orig_tok = jarvis.get_token
+        jarvis.get_token = lambda: ""
+        mail_skill.add_notifier(jarvis._mail_notify)
+        try:
+            self.assertTrue(webpush.save_subscription({"endpoint": "https://push.example/sub1",
+                                                       "keys": {"p256dh": "p" * 20, "auth": "a" * 10}})["ok"])
+            FakeIMAP.boxes["INBOX"][4] = (make_msg("Без пуша", "a@b.ru", ADDR, text="x"), set())
+            mail_skill.sync_account(mail_skill._find_account(self.acc_id))
+            self.assertEqual(pushed, [])
+            self.assertTrue(mail_skill.update_account(self.acc_id, {"push": True})["account"]["push"])
+            FakeIMAP.boxes["INBOX"][5] = (make_msg("С пушем", "Олег <oleg@corp.ru>", ADDR, text="Текст письма"), set())
+            mail_skill.sync_account(mail_skill._find_account(self.acc_id))
+            self.assertEqual(len(pushed), 1)
+            self.assertEqual(pushed[0]["title"], "📬 Личная")
+            self.assertIn("С пушем", pushed[0]["body"])
+            self.assertEqual(pushed[0]["tag"], f"mail-{self.acc_id}-5")
+        finally:
+            webpush.set_deliver(None)
+            jarvis.get_token = orig_tok
+
     def test_bot_chat_sees_only_routed_boxes(self):
         tg_bot.set_ctx(tg_bot.Ctx("TOKEN", 222))
         try:

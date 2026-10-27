@@ -259,6 +259,20 @@ class MarketSkillTest(unittest.TestCase):
         self.assertEqual(market_skill.classify_page({
             "url": "https://www.ozon.ru/my/orderlist", "title": "", "text": "Похоже, нет\u00a0соединения",
         }), "offline")
+        self.assertEqual(market_skill.page_face(offline), "антибот: нет соединения")
+        challenge = {"url": "https://id.ozon.ru/", "title": "Antibot Challenge Page", "text": ""}
+        self.assertEqual(market_skill.classify_page(challenge), "challenge")
+        self.assertEqual(market_skill.page_face(challenge), "антибот")
+        wb_phone = {
+            "url": "https://id.wb.ru/login/",
+            "title": "Войти в WB.ID",
+            "text": "Войдите с WB ID\n+7\nПолучить код",
+        }
+        self.assertEqual(market_skill.classify_page(wb_phone), "login")
+        self.assertEqual(market_skill.page_face(wb_phone), "форма входа")
+        shell = {"url": "https://www.wildberries.ru/security/login", "title": "", "text": "Лови лучшие цены\nОткрыть"}
+        self.assertEqual(market_skill.classify_page(shell), "unknown")
+        self.assertEqual(market_skill.page_face(shell), "не форма входа")
 
     def test_phone_without_code_is_not_active(self):
         self._proxy()
@@ -300,17 +314,45 @@ class MarketSkillTest(unittest.TestCase):
         decision = market_skill.decide_after_phone("ozon", info, code_field=True)
         self.assertFalse(decision.get("ok"))
         self.assertNotEqual(decision.get("status"), "active")
-        self.assertEqual(decision.get("status"), "offline")
+        self.assertEqual(decision.get("status"), "blocked")
+        self.assertEqual(decision.get("face"), "антибот: нет соединения")
         flagged = market_skill.session_from_page(info)
-        self.assertEqual(flagged["session"], "expired")
-        self.assertIn("не активна", flagged["error"])
+        self.assertEqual(flagged["session"], "blocked")
+        self.assertIn("антибот", flagged["error"].lower())
         self.assertNotIn("VPN", flagged["error"])
 
         self._proxy()
-        self.drv.login_result = {"ok": False, "status": "offline", "error": market_skill.OFFLINE_ERROR}
+        shot = "m" + "ab" * 8 + ".jpg"
+        self.drv.login_result = {
+            "ok": False, "status": "offline", "error": market_skill.OFFLINE_ERROR,
+            "url": "https://www.ozon.ru/my/orderlist?__rr=1&token=hide",
+            "title": "Похоже, нет соединения",
+            "summary": "Похоже, нет соединения",
+            "face": "антибот: нет соединения",
+            "steps": [{
+                "step": "opened",
+                "url": "https://www.ozon.ru/my/orderlist?__rr=1&token=hide",
+                "title": "Похоже, нет соединения",
+                "summary": "Похоже, нет соединения",
+                "face": "антибот: нет соединения",
+                "result": "blocked",
+                "shot": shot,
+            }],
+        }
         started = market_skill.begin_login("ozon", "+79001234579")
         self.assertFalse(started["ok"])
-        self.assertNotEqual(market_skill.public_status()["shops"]["ozon"]["status"], "active")
+        self.assertEqual(started["status"], "blocked")
+        self.assertIn("антибот", started["error"].lower())
+        card = market_skill.public_status()
+        self.assertEqual(card["shops"]["ozon"]["status"], "blocked")
+        self.assertEqual(card["shops"]["ozon"]["label"], "Заблокировано антиботом")
+        opened = next(row for row in card["journal"] if row.get("step") == "opened")
+        self.assertEqual(opened["url"], "https://www.ozon.ru/my/orderlist")
+        self.assertIn("нет соединения", opened["title"])
+        self.assertIn("антибот", opened["summary"])
+        self.assertEqual(opened["shot"], shot)
+        self.assertNotIn("token=hide", json.dumps(card["journal"], ensure_ascii=False))
+        self.assertNotIn("79001234579", json.dumps(card["journal"], ensure_ascii=False))
 
         self._active()
         self.drv.read_result = {
@@ -320,8 +362,8 @@ class MarketSkillTest(unittest.TestCase):
             "text": "Похоже, нет соединения. Выключите VPN или смените сеть",
         }
         out = market_skill.execute("market_orders", {"shop": "ozon"}, None)
-        self.assertEqual(market_skill.public_status()["shops"]["ozon"]["status"], "expired")
-        self.assertIn("не активна", out["error"])
+        self.assertEqual(market_skill.public_status()["shops"]["ozon"]["status"], "blocked")
+        self.assertIn("антибот", out["error"].lower())
         self.assertNotIn("VPN", out["error"])
         self.assertNotIn("выключить", out["error"].lower())
         journal = market_skill.public_status()["journal"]
@@ -482,6 +524,8 @@ class AssistantLoopTest(unittest.TestCase):
         self.assertIn("{!active && (", market_html)
         self.assertIn("Выйти", market_html)
         self.assertIn("market-journal", market_html)
+        self.assertIn("/api/market/shot/", market_html)
+        self.assertIn("blocked:", market_html)
 
 
 class MarketHttpTest(unittest.TestCase):
@@ -538,6 +582,126 @@ class MarketHttpTest(unittest.TestCase):
         tools = self._req(opener, "GET", "/api/market/tools")
         self.assertIn("market_orders", [t["name"] for t in tools["tools"]])
         self.assertNotIn(SECRET, "\n".join(market_skill._logs))
+
+    def test_shot_route_is_private(self):
+        import urllib.error
+        import urllib.request
+        blob = bytes.fromhex(
+            "ffd8ffe000104a46494600010100000100010000ffdb004300080606070605080707070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c1c2837292c30313434341f27393d38323c2e333432ffc0000b080001000101011100ffc40014100100000000000000000000000000000000ffda00080001000100003f00fbffd9"
+        )
+        name = market_skill.save_jpeg(blob)
+        self.assertTrue(market_skill._SHOT_RE.fullmatch(name))
+        self.assertEqual(market_skill.save_jpeg(b"not-a-jpeg"), "")
+        opener = self._opener()
+        bare = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/market/shot/{name}")
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            opener.open(bare, timeout=10)
+        self.assertEqual(raised.exception.code, 401)
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/market/shot/{name}",
+            headers={"Cookie": f"jarvis_auth={jarvis.AUTH_COOKIE_VALUE}"},
+        )
+        with opener.open(req, timeout=10) as resp:
+            body = resp.read()
+            self.assertEqual(resp.headers.get("Content-Type"), "image/jpeg")
+        self.assertEqual(body, blob)
+        missing = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/market/shot/m{'cd' * 8}.jpg",
+            headers={"Cookie": f"jarvis_auth={jarvis.AUTH_COOKIE_VALUE}"},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            opener.open(missing, timeout=10)
+        self.assertEqual(raised.exception.code, 404)
+
+
+class MarketFixtureHtmlTest(unittest.TestCase):
+    """Селекторы на сохранённом HTML живых шагов, без сети и без прокси."""
+
+    @classmethod
+    def setUpClass(cls):
+        chrome = "/opt/google/chrome/chrome"
+        if not os.path.isfile(chrome):
+            raise unittest.SkipTest("нет Chrome для разбора фикстур")
+        from playwright.sync_api import sync_playwright
+        cls._pw = sync_playwright().start()
+        cls._browser = cls._pw.chromium.launch(
+            executable_path=chrome, headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        cls._page = cls._browser.new_page()
+
+    @classmethod
+    def tearDownClass(cls):
+        browser = getattr(cls, "_browser", None)
+        if browser:
+            browser.close()
+        pw = getattr(cls, "_pw", None)
+        if pw:
+            pw.stop()
+
+    def _open(self, name):
+        html = Path("tests/fixtures/market", name).read_text(encoding="utf-8")
+        self._page.set_content(html, wait_until="domcontentloaded")
+        return html
+
+    def _info(self, url):
+        return {
+            "url": url,
+            "title": self._page.title(),
+            "text": self._page.inner_text("body"),
+        }
+
+    def test_ozon_antibot_fixture_is_not_a_login_form(self):
+        html = self._open("ozon-antibot.html")
+        self.assertIn("token=REDACTED", html)
+        self.assertNotRegex(html, r"token=[A-Za-z0-9_\-]{20,}")
+        info = self._info("https://www.ozon.ru/my/orderlist")
+        self.assertIn("нет соединения", info["title"].lower() + info["text"].lower())
+        self.assertEqual(market_skill.classify_page(info), "offline")
+        self.assertEqual(market_skill.page_face(info), "антибот: нет соединения")
+        self.assertEqual(self._page.locator("input").count(), 0)
+        self.assertEqual(self._page.locator("#wb-phone-number").count(), 0)
+        self.assertGreater(self._page.locator("div.title").count(), 0)
+        self.assertGreater(self._page.locator("button.btn.rb").count(), 0)
+
+    def test_ozon_challenge_fixture_is_antibot(self):
+        html = self._open("ozon-id-challenge.html")
+        self.assertNotRegex(html, r'value="[^"]{8,}"')
+        info = self._info("https://id.ozon.ru/")
+        self.assertEqual(info["title"], "Antibot Challenge Page")
+        self.assertEqual(market_skill.classify_page(info), "challenge")
+        self.assertEqual(market_skill.page_face(info), "антибот")
+        self.assertEqual(self._page.locator("#wb-phone-number").count(), 0)
+        self.assertEqual(self._page.locator("input[type='tel']").count(), 0)
+
+    def test_wb_shell_has_no_phone_field(self):
+        self._open("wb-login-shell.html")
+        info = self._info("https://www.wildberries.ru/security/login")
+        self.assertEqual(market_skill.classify_page(info), "unknown")
+        self.assertEqual(market_skill.page_face(info), "не форма входа")
+        self.assertEqual(self._page.locator("#wb-phone-number").count(), 0)
+        for sel in ("input[type='tel']", "input[name='phone']", "input[autocomplete='tel']", "input[inputmode='tel']"):
+            self.assertEqual(self._page.locator(sel).count(), 0, sel)
+        self.assertGreater(self._page.locator("#blockedVpn").count(), 0)
+
+    def test_wb_id_phone_matches_new_selector_not_old_ones(self):
+        self._open("wb-id-phone.html")
+        info = self._info("https://id.wb.ru/login/")
+        self.assertEqual(market_skill.classify_page(info), "login")
+        self.assertNotEqual(market_skill.classify_page(info), "code")
+        self.assertEqual(market_skill.page_face(info), "форма входа")
+        # На живой форме id висит и на ui-field-phone, и на input. Берём input.
+        self.assertEqual(self._page.locator("#wb-phone-number").count(), 2)
+        field = self._page.locator("input#wb-phone-number")
+        self.assertEqual(field.count(), 1)
+        self.assertEqual(field.get_attribute("inputmode"), "numeric")
+        self.assertEqual(field.get_attribute("placeholder"), "000 000-00-00")
+        self.assertEqual(field.get_attribute("data-test-id"), "field_phone_input")
+        self.assertIn("input#wb-phone-number", [sel for sel in market_skill._PHONE_INPUTS if self._page.locator(sel).count()])
+        for sel in ("input[type='tel']", "input[name='phone']", "input[name='phoneNumber']", "input[autocomplete='tel']", "input[inputmode='tel']"):
+            self.assertEqual(self._page.locator(sel).count(), 0, sel)
+        for sel in market_skill._CODE_INPUTS:
+            self.assertEqual(self._page.locator(sel).count(), 0, sel)
+        self.assertGreater(self._page.locator("button[type='submit']").count(), 0)
 
 
 if __name__ == "__main__":
