@@ -109,6 +109,11 @@ except Exception as _e:
     market_skill = None
     print(f"NOTE: market_skill disabled: {_e}")
 try:
+    import mail_skill
+except Exception as _e:
+    mail_skill = None
+    print(f"NOTE: mail_skill disabled: {_e}")
+try:
     import tg_bot
 except Exception as _e:
     tg_bot = None
@@ -1134,7 +1139,7 @@ def build_backup_zip() -> bytes:
             zf.write(path, arcname=arcname)
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
-                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json"}
+                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_mail.json"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
@@ -5597,6 +5602,7 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
         + (deck_skill.prompt_section((app or {}).get("telegramSkills")) if deck_skill else "")
         + (study_skills.prompt_section((app or {}).get("telegramSkills")) if study_skills else "")
         + (market_skill.prompt_section((app or {}).get("telegramSkills")) if market_skill else "")
+        + (mail_skill.prompt_section((app or {}).get("telegramSkills")) if mail_skill else "")
         + (tg_tools.prompt_section((app or {}).get("telegramSkills")) if with_tg else "") +
         "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
         "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
@@ -5623,6 +5629,10 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
         return tg_bot.execute_tool(name, inp)
     if market_skill and name in market_skill.TOOL_NAMES:
         return market_skill.execute(name, inp, (app or {}).get("telegramSkills"))
+    if mail_skill and name in mail_skill.TOOL_NAMES:
+        ctx = tg_bot.get_ctx() if tg_bot else None
+        return mail_skill.execute(name, inp, (app or {}).get("telegramSkills"), _mail_allowed_accounts(app, ctx),
+                                  ctx, tg_bot)
     if deck_skill and name in deck_skill.TOOL_NAMES:
         def _study_attach(x):
             r = study_attach_file(app, x)
@@ -6070,11 +6080,50 @@ def _market_skill_tools(app) -> list:
     return market_skill.TOOLS
 
 
+def _mail_skill_tools(app) -> list:
+    """Инструменты навыка «Почта», если он включён. Те же схемы уходят голосовому помощнику и чату на сайте."""
+    if not mail_skill or not mail_skill.skill_on((app or {}).get("telegramSkills")):
+        return []
+    return mail_skill.TOOLS
+
+
+def _mail_allowed_accounts(app, ctx):
+    """Какие ящики читает ассистент. Сайт (вход по cookie) и владелец в боте — все;
+    другой чат бота — только ящики, уведомления которых ему включены в маршрутизации."""
+    if ctx is None or (tg_user and tg_user.is_owner_chat(ctx.chat_id)):
+        return None
+    routed = ((app or {}).get("settings") or {}).get("notifyRouting", {}).get(str(ctx.chat_id)) or []
+    return {c.split(":", 1)[1] for c in routed if c.startswith("mail:")}
+
+
+def _mail_notify(acc: dict, metas: list):
+    """Новые письма ящика → бот, получателям из маршрутизации («mail:<id>»)."""
+    app = load_app_data() or {}
+    if not mail_skill.skill_on(app.get("telegramSkills"), mail_skill.NOTIFY_ID):
+        return
+    token = get_token()
+    if not token or not tg_bot:
+        return
+    chats = recipients_for(app, load_subscribers(), "mail:" + acc["id"])
+    shown, extra = metas[-mail_skill.MAX_NOTIFY_PER_POLL:], max(0, len(metas) - mail_skill.MAX_NOTIFY_PER_POLL)
+    for cid in chats:
+        if extra:
+            tg_bot.send_text(token, cid, f"📬 <b>{html.escape(acc.get('title') or acc['email'])}</b>: ещё {extra} новых писем.")
+        for meta in shown:
+            try:
+                ids = tg_bot.send_text(token, cid, mail_skill.notification_text(acc, meta) +
+                                       "\n\n<i>Ответьте на это сообщение — открою письмо.</i>")
+                tg_bot.remember_anchor(cid, ids, "Почта: " + (meta.get("subject") or "письмо")[:40],
+                                       "Что за письмо пришло?", mail_skill.notification_context(acc, meta))
+            except Exception as e:
+                print(f"  mail notify {cid}: {e.__class__.__name__}")
+
+
 def _assistant_tool_list(app, with_tg: bool) -> list:
     return ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
         (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + \
-        _study_skill_tools(app) + _market_skill_tools(app)
+        _study_skill_tools(app) + _market_skill_tools(app) + _mail_skill_tools(app)
 
 
 def assistant_skills_catalog() -> list:
@@ -6083,6 +6132,7 @@ def assistant_skills_catalog() -> list:
         + (study_skills.SKILLS if study_skills else [])
         + (tg_tools.skills_catalog() if tg_tools else [])
         + (market_skill.SKILLS if market_skill else [])
+        + (mail_skill.SKILLS if mail_skill else [])
     )
 
 
@@ -9486,6 +9536,11 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif route == "/api/market/tools":
             state = (load_app_data() or {}).get("telegramSkills")
             self._json(200, market_skill.voice_payload(state) if market_skill else {"tools": [], "prompt": ""})
+        elif route == "/api/mail/status":
+            self._json(200, mail_skill.public_status() if mail_skill else {"ok": False, "error": "Почта на сервере недоступна."})
+        elif route == "/api/mail/tools":
+            state = (load_app_data() or {}).get("telegramSkills")
+            self._json(200, mail_skill.voice_payload(state) if mail_skill else {"tools": [], "prompt": ""})
         elif route == "/api/tg/tools":
             # Схемы инструментов и кусок промпта для браузерного ассистента: только
             # если аккаунт подключён и только включённые навыки.
@@ -9672,6 +9727,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._tg_post(route)
         elif route.startswith("/api/market/"):
             self._market_post(route)
+        elif route.startswith("/api/mail/"):
+            self._mail_post(route)
         elif route == "/api/student/check":
             try:
                 self._json(200, student_check())
@@ -11111,6 +11168,46 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         except Exception as e:
             self._json(200, {"ok": False, "error": market_skill.redact(e, market_skill._proxy())})
 
+    def _mail_post(self, route: str):
+        """Ящики Mail.ru (добавить, проверить, изменить, удалить) и инструменты почты для голоса и чата на сайте."""
+        if mail_skill is None:
+            self._json(200, {"ok": False, "error": "Почта на сервере недоступна."})
+            return
+        length = self._content_length() or 0
+        if length > 32 * 1024:
+            self._json(413, {"error": "body too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except Exception as e:
+            self._json(400, {"error": str(e)})
+            return
+        if not isinstance(payload, dict):
+            payload = {}
+        try:
+            if route == "/api/mail/account":
+                self._json(200, mail_skill.add_account(payload.get("email") or "", payload.get("password") or "",
+                                                       payload.get("title") or ""))
+            elif route == "/api/mail/check":
+                self._json(200, mail_skill.check_account(payload.get("id") or ""))
+            elif route == "/api/mail/update":
+                self._json(200, mail_skill.update_account(payload.get("id") or "", payload))
+            elif route == "/api/mail/delete":
+                self._json(200, mail_skill.delete_account(payload.get("id") or ""))
+            elif route == "/api/mail/tool":
+                name = payload.get("name")
+                if name not in mail_skill.TOOL_NAMES:
+                    self._json(400, {"error": "unknown tool"})
+                else:
+                    out = execute_assistant_tool(name, payload.get("input") or {}, load_app_data() or {}, "", False)
+                    if isinstance(out, dict) and out.pop("_image", None):
+                        out["note"] = "Картинку посмотреть могу только в Telegram-боте; здесь — имя и размер файла."
+                    self._json(200, out)
+            else:
+                self._json(404, {"error": "not found"})
+        except Exception as e:
+            self._json(200, {"ok": False, "error": mail_skill.redact(f"{e.__class__.__name__}: {e}")})
+
     def _tg_post(self, route: str):
         """Вход в личный Telegram и вызов его инструментов браузерным ассистентом."""
         length = self._content_length() or 0
@@ -11411,6 +11508,9 @@ def main():
 
     threading.Thread(target=notifier_loop, daemon=True).start()
     threading.Thread(target=updates_loop, daemon=True).start()
+    if mail_skill:
+        mail_skill.add_notifier(_mail_notify)
+        mail_skill.start_poller()
 
     server = JarvisServer(("0.0.0.0", args.port), JarvisHandler)
     print(f"Jarvis is running → http://localhost:{args.port}")

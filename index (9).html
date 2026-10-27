@@ -5784,6 +5784,15 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
         >
           Маркетплейсы
         </button>
+        <button
+          onClick={() => setSettingsTab('mail')}
+          data-testid="settings-tab-mail"
+          className={`px-2.5 sm:px-5 py-2.5 rounded-lg text-[13px] sm:text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${
+            settingsTab === 'mail' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+          }`}
+        >
+          Почта
+        </button>
       </div>
 
       {settingsTab === 'general' && <GeneralSettings data={data} setData={setData} />}
@@ -5792,6 +5801,7 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
       {settingsTab === 'study' && <StudySettings data={data} setData={setData} />}
       {settingsTab === 'telegram' && <TelegramSettings data={data} setData={setData} />}
       {settingsTab === 'market' && <MarketplaceSettings />}
+      {settingsTab === 'mail' && <MailSettings data={data} setData={setData} />}
     </div>
   );
 }
@@ -6343,9 +6353,221 @@ function BackupSettings({ data, setData }) {
   );
 }
 
+// ============== ПОЧТА MAIL.RU ==============
+// Ящики живут на сервере (mail_skill.py): адрес и подпись — jarvis_mail.json,
+// пароль приложения — отдельный файл с правами 600, в браузер приходит только маска.
+// Кому слать уведомления о письмах — общая маршрутизация (data.settings.notifyRouting,
+// категория «mail:<id ящика>»), её же показывает «Маршрутизация уведомлений».
+function toggleNotifyRoute(setData, chatId, catId) {
+  setData(d => {
+    const r = { ...((d.settings || {}).notifyRouting || {}) };
+    const current = r[chatId] ? [...r[chatId]] : [];
+    const idx = current.indexOf(catId);
+    if (idx >= 0) current.splice(idx, 1); else current.push(catId);
+    r[chatId] = current;
+    return { ...d, settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), notifyRouting: r, updatedAt: Date.now() } };
+  });
+}
+
+const MAIL_STATUS = {
+  ok: { label: 'Работает', cls: 'text-green-600' },
+  error: { label: 'Ошибка', cls: 'text-red-600' },
+  new: { label: 'Новый', cls: 'text-[var(--text-subtle)]' },
+};
+
+function MailSettings({ data, setData }) {
+  const [st, setSt] = React.useState(null);
+  const [subs, setSubs] = React.useState(null);
+  const [form, setForm] = React.useState({ email: '', password: '', title: '' });
+  const [newPw, setNewPw] = React.useState({});
+  const [busy, setBusy] = React.useState('');
+  const [msg, setMsg] = React.useState({});
+
+  const load = React.useCallback(() => {
+    fetch('/api/mail/status').then(r => r.json()).then(setSt)
+      .catch(e => setSt({ ok: false, error: 'Сервер не ответил: ' + e.message, accounts: [] }));
+  }, []);
+  React.useEffect(load, [load]);
+  React.useEffect(() => {
+    fetch('/api/subscribers').then(r => r.json()).then(j => setSubs(j.subscribers || [])).catch(() => setSubs([]));
+  }, []);
+  const accounts = (st && st.accounts) || [];
+  const building = accounts.some(a => !a.synced && a.status !== 'error');
+  React.useEffect(() => {
+    const id = setInterval(load, building ? 4000 : 30000);
+    return () => clearInterval(id);
+  }, [load, building]);
+
+  const post = async (path, body, key) => {
+    setBusy(key);
+    setMsg(m => ({ ...m, [key]: null }));
+    try {
+      const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+      const j = await res.json();
+      setMsg(m => ({ ...m, [key]: j.ok === false || !res.ok ? { err: j.error || 'Не получилось' } : (j.message ? { ok: j.message } : null) }));
+      load();
+      return j;
+    } catch (e) {
+      setMsg(m => ({ ...m, [key]: { err: 'Сервер не ответил: ' + e.message } }));
+      return { ok: false };
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const addBox = async () => {
+    const j = await post('/api/mail/account', form, 'add');
+    if (j && j.ok) setForm({ email: '', password: '', title: '' });
+  };
+  const removeBox = async (acc) => {
+    if (!confirm(`Отключить ${acc.email}? Пароль приложения и индекс писем удалятся с сервера. Сам ящик не изменится.`)) return;
+    const j = await post('/api/mail/delete', { id: acc.id }, 'del-' + acc.id);
+    if (j && j.ok) {
+      setData(d => {
+        const r = { ...((d.settings || {}).notifyRouting || {}) };
+        Object.keys(r).forEach(k => { r[k] = (r[k] || []).filter(c => c !== 'mail:' + acc.id); });
+        return { ...d, settings: { ...DEFAULT_SETTINGS, ...(d.settings || {}), notifyRouting: r, updatedAt: Date.now() } };
+      });
+    }
+  };
+  const toggleFolder = (acc, fid) => {
+    const cur = acc.notifyFolders || ['INBOX'];
+    const next = cur.includes(fid) ? cur.filter(x => x !== fid) : [...cur, fid];
+    post('/api/mail/update', { id: acc.id, notifyFolders: next }, 'folders-' + acc.id);
+  };
+  const routing = (data.settings || {}).notifyRouting || {};
+  const routed = (chatId, accId) => (routing[String(chatId)] || []).includes('mail:' + accId);
+  const when = (ms) => ms ? new Date(ms).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+  const input = 'w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm';
+  const card = 'bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5';
+  const chip = (on) => `px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${on ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`;
+  const Note = ({ k }) => msg[k] ? <div className={'text-sm mt-2 ' + (msg[k].err ? 'text-red-600' : 'text-green-600')} data-testid={'mail-msg-' + k}>{msg[k].err || msg[k].ok}</div> : null;
+
+  return (
+    <div className="space-y-3" data-testid="mail-settings">
+      <div className={card}>
+        <h3 className="font-display text-lg mb-1">Почта Mail.ru</h3>
+        <p className="text-sm text-[var(--text-muted)] mb-3">
+          Джарвис читает ящики по IMAP — только чтение: ничего не отправляет, не удаляет и не снимает «непрочитано».
+          Новые письма проверяет раз в {Math.round(((st && st.poll_seconds) || 90) / 6) / 10} мин: мгновенного push по IMAP у Mail.ru нет.
+        </p>
+        <details className="text-sm text-[var(--text-muted)] mb-4">
+          <summary className="cursor-pointer font-medium text-[var(--text)]">Где взять пароль приложения</summary>
+          <ol className="list-decimal pl-5 mt-2 space-y-1">
+            <li>К ящику должен быть привязан телефон.</li>
+            <li>Почта Mail.ru → Настройки → Все настройки → Безопасность → <b>Пароли для внешних приложений</b> → Создать, название «Джарвис», тип «Полный доступ к Почте».</li>
+            <li>Там же, в «Внешние сервисы», должен быть включён «Доступ к почте по IMAP, POP и SMTP».</li>
+            <li>Обычный пароль от почты не подойдёт. Пароль приложения показывается один раз — вставьте его сюда.</li>
+          </ol>
+        </details>
+        <div className="grid sm:grid-cols-3 gap-2">
+          <input className={input} data-testid="mail-add-email" placeholder="name@mail.ru" autoComplete="off" spellCheck={false}
+            value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
+          <input className={input} data-testid="mail-add-password" type="password" placeholder="Пароль приложения" autoComplete="new-password"
+            value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} />
+          <input className={input} data-testid="mail-add-title" placeholder="Подпись (необязательно)" autoComplete="off"
+            value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} />
+        </div>
+        <button className="btn-primary text-sm px-4 py-2 mt-3" data-testid="mail-add"
+          disabled={!!busy || !form.email.trim() || !form.password.trim()} onClick={addBox}>
+          {busy === 'add' ? 'Вхожу в ящик…' : 'Добавить и проверить'}
+        </button>
+        <Note k="add" />
+      </div>
+
+      {st && st.ok === false && <div className="text-sm text-red-600">{st.error}</div>}
+      {st && !accounts.length && <div className="text-sm text-[var(--text-subtle)] px-1">Ящиков пока нет.</div>}
+
+      {accounts.map(acc => {
+        const s = MAIL_STATUS[acc.status] || MAIL_STATUS.new;
+        const nf = acc.notifyFolders || ['INBOX'];
+        return (
+          <div key={acc.id} className={card} data-testid={'mail-box-' + acc.id}>
+            <div className="flex items-start justify-between gap-3 mb-1">
+              <div className="min-w-0">
+                <h3 className="font-display text-lg break-all">{acc.email}</h3>
+                {acc.title && <div className="text-sm text-[var(--text-muted)]">{acc.title}</div>}
+              </div>
+              <div className={'text-sm font-medium shrink-0 ' + s.cls} data-testid={'mail-status-' + acc.id}>{s.label}</div>
+            </div>
+            <div className="text-xs text-[var(--text-subtle)] space-y-0.5 mb-3">
+              <div>Пароль приложения: <span className="font-mono" data-testid={'mail-pw-' + acc.id}>{acc.password_mask}</span></div>
+              <div>Проверка входа: {when(acc.lastCheckAt)} · последняя синхронизация: {when(acc.lastSyncAt)}</div>
+              <div>{acc.synced ? `В индексе ${acc.indexed} писем в ${acc.folders.length} папках` : 'Индекс писем строится…'}</div>
+            </div>
+            {acc.lastError && <div className="text-sm text-red-600 mb-3" data-testid={'mail-error-' + acc.id}>{acc.lastError}</div>}
+            <div className="flex flex-col sm:flex-row flex-wrap gap-2">
+              <button className="btn-secondary text-sm px-4 py-2" data-testid={'mail-check-' + acc.id} disabled={!!busy}
+                onClick={() => post('/api/mail/check', { id: acc.id }, 'check-' + acc.id)}>
+                {busy === 'check-' + acc.id ? 'Проверяю…' : 'Проверить'}
+              </button>
+              <button className="btn-secondary text-sm px-4 py-2" disabled={!!busy}
+                onClick={() => setNewPw(p => ({ ...p, [acc.id]: p[acc.id] === undefined ? '' : undefined }))}>
+                Сменить пароль
+              </button>
+              <button className="btn-secondary text-sm px-4 py-2 text-red-600" data-testid={'mail-delete-' + acc.id} disabled={!!busy}
+                onClick={() => removeBox(acc)}>
+                Удалить
+              </button>
+            </div>
+            {newPw[acc.id] !== undefined && (
+              <div className="flex flex-col sm:flex-row gap-2 mt-2">
+                <input className={input} type="password" autoComplete="new-password" placeholder="Новый пароль приложения"
+                  value={newPw[acc.id]} onChange={e => setNewPw(p => ({ ...p, [acc.id]: e.target.value }))} />
+                <button className="btn-primary text-sm px-4 py-2" disabled={!!busy || !newPw[acc.id].trim()}
+                  onClick={async () => { const j = await post('/api/mail/update', { id: acc.id, password: newPw[acc.id] }, 'check-' + acc.id); if (j && j.ok) setNewPw(p => ({ ...p, [acc.id]: undefined })); }}>
+                  Сохранить
+                </button>
+              </div>
+            )}
+            <Note k={'check-' + acc.id} />
+            <Note k={'del-' + acc.id} />
+
+            <div className="mt-4">
+              <div className="text-xs text-[var(--text-subtle)] mb-1.5">Уведомлять о письмах в папках</div>
+              <div className="flex flex-wrap gap-1.5" data-testid={'mail-folders-' + acc.id}>
+                {(acc.folders.length ? acc.folders : [{ id: 'INBOX', name: 'Входящие', unseen: 0 }]).map(f => (
+                  <button key={f.id} className={chip(nf.includes(f.id))} disabled={!!busy} onClick={() => toggleFolder(acc, f.id)}>
+                    {f.name}{f.unseen ? ` · ${f.unseen}` : ''}
+                  </button>
+                ))}
+              </div>
+              <Note k={'folders-' + acc.id} />
+            </div>
+            <div className="mt-4">
+              <div className="text-xs text-[var(--text-subtle)] mb-1.5">Кому присылать в Telegram</div>
+              {subs === null && <div className="text-xs text-[var(--text-subtle)]">Загрузка…</div>}
+              {subs && !subs.length && <div className="text-xs text-[var(--text-subtle)]">Подписчиков нет — напишите боту в Telegram любое сообщение.</div>}
+              <div className="flex flex-wrap gap-1.5" data-testid={'mail-recipients-' + acc.id}>
+                {(subs || []).map(sb => (
+                  <button key={sb.chatId} className={chip(routed(sb.chatId, acc.id))}
+                    onClick={() => toggleNotifyRoute(setData, String(sb.chatId), 'mail:' + acc.id)}>
+                    {sb.name || `Без имени (${sb.chatId})`}
+                  </button>
+                ))}
+              </div>
+              <div className="text-[11px] text-[var(--text-subtle)] mt-1.5">
+                Тот же выбор — в Общее → «Маршрутизация уведомлений». В боте ассистент читает этот ящик только у владельца и у выбранных здесь получателей.
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function NotifyRoutingSettings({ data, setData }) {
   const [subs, setSubs] = useState(null); // null = loading, [] = loaded empty
   const [error, setError] = useState(false);
+  const [mailBoxes, setMailBoxes] = useState([]);
+  useEffect(() => {
+    fetch('/api/mail/status').then(r => r.json()).then(j => setMailBoxes(j.accounts || [])).catch(() => setMailBoxes([]));
+  }, []);
+  const categories = [
+    ...NOTIFICATION_CATEGORIES,
+    ...mailBoxes.map(b => ({ id: 'mail:' + b.id, label: 'Почта · ' + (b.title || b.email) })),
+  ];
 
   const routing = (data.settings || {}).notifyRouting || {};
 
@@ -6426,7 +6648,7 @@ function NotifyRoutingSettings({ data, setData }) {
                 </button>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {NOTIFICATION_CATEGORIES.map(cat => {
+                {categories.map(cat => {
                   const on = isAllowed(String(s.chatId), cat.id);
                   return (
                     <button key={cat.id} onClick={() => toggle(String(s.chatId), cat.id)}
@@ -6470,6 +6692,7 @@ function AssistantSkillsCard({ data, setData }) {
     setData(d => ({ ...d, telegramSkills: { ...(d.telegramSkills || {}), [sk.id]: !skillOn(sk) }, telegramSkillsUpdatedAt: Date.now() }));
     tgToolsLoadedAt = 0; // ассистент подхватит новый набор инструментов
     marketToolsLoadedAt = 0;
+    mailToolsLoadedAt = 0;
   };
   const riskLabel = { read: 'чтение', create: 'создаёт файлы', write: 'действия с подтверждением', danger: 'опасно' };
   const riskCls = {
@@ -14631,6 +14854,20 @@ async function loadMarketTools(force) {
   } catch (e) { /* без кабинетов ассистент работает как раньше */ }
 }
 
+// Почта Mail.ru: те же схемы и тот же текст промпта, что у серверных циклов ассистента.
+let MAIL_AGENT_TOOLS = [];
+let MAIL_AGENT_PROMPT = '';
+let mailToolsLoadedAt = 0;
+async function loadMailTools(force) {
+  if (!force && Date.now() - mailToolsLoadedAt < 20000) return;
+  try {
+    const j = await (await fetch('/api/mail/tools')).json();
+    MAIL_AGENT_TOOLS = j.tools || [];
+    MAIL_AGENT_PROMPT = j.prompt || '';
+    mailToolsLoadedAt = Date.now();
+  } catch (e) { /* без почты ассистент работает как раньше */ }
+}
+
 
 function buildVoiceAgentSystemPrompt(data) {
   // «База данных» — то, что пользователь рассказал о себе. Подмешиваем в
@@ -14678,7 +14915,7 @@ ${writeList}
 
 9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй.
 
-${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
+${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${MAIL_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
@@ -14780,6 +15017,17 @@ async function executeVoiceTool(name, input, nav, data) {
       return noop(await res.json());
     } catch (e) {
       return noop({ error: 'Сервер не ответил по Telegram: ' + e.message });
+    }
+  }
+  if (name.startsWith('mail_')) {
+    try {
+      const res = await fetch('/api/mail/tool', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, input }),
+      });
+      return noop(await res.json());
+    } catch (e) {
+      return noop({ error: 'Сервер не ответил по почте: ' + e.message });
     }
   }
   if (name.startsWith('market_')) {
@@ -14930,6 +15178,7 @@ async function runVoiceAgent(messages, settings, data, nav, maxSteps = 6) {
 async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
   await loadTgTools();
   await loadMarketTools();
+  await loadMailTools();
   const system = buildVoiceAgentSystemPrompt(data);
   let pendingConfirmation = false;
   for (let step = 0; step < maxSteps; step++) {
@@ -14941,7 +15190,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS] }),
+      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...MAIL_AGENT_TOOLS] }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -14978,8 +15227,9 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
 async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps) {
   await loadTgTools();
   await loadMarketTools();
+  await loadMailTools();
   const system = buildVoiceAgentSystemPrompt(data);
-  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS].map(t => ({
+  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...MAIL_AGENT_TOOLS].map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.input_schema },
   }));
