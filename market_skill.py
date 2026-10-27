@@ -218,6 +218,9 @@ OZON_WARM_SETTLE = 3
 WB_WAIT_S = 40
 # Страница кода WB остаётся открытой, пока человек не введёт код или не выйдут 5 минут.
 CODE_WAIT_S = 300
+# После ввода кода страница может уйти на согласие OAuth не сразу. Это не отказ кода.
+CODE_AFTER_S = 20
+CONSENT_REDIRECT_S = 25
 WB_CODE_HINT = "Код в приложении Wildberries (уведомление или колокольчик)"
 _AUTH_OK = ("code", "password")
 _BOOT = secrets.token_hex(8)
@@ -1609,6 +1612,115 @@ _CODE_INPUTS = (
     "input[name='otp']",
     "input[inputmode='numeric']:not(#wb-phone-number):not([data-test-id='field_phone_input'])",
 )
+# «Код не принят» — только если сайт прямо так пишет и форма кода ещё на экране.
+_CODE_ERROR_MARKERS = (
+    "неверный код",
+    "неправильный код",
+    "код неверный",
+    "код не подходит",
+    "код истёк",
+    "код истек",
+    "ошибка кода",
+    "введён неверный код",
+    "введен неверный код",
+)
+
+
+def _page_text(info) -> str:
+    info = info or {}
+    return _norm_text((info.get("title") or "") + "\n" + (info.get("text") or ""))
+
+
+def is_wb_consent(info) -> bool:
+    """Экран «Принять / Отклонить» после кода WB. Это не ошибка кода и не форма входа."""
+    url = ((info or {}).get("url") or "")
+    path = (urlparse(url).path or "").lower()
+    if "/oauth2/authorize" in path:
+        return True
+    text = _page_text(info)
+    return "принять" in text and "отклонить" in text
+
+
+def code_was_rejected(info) -> bool:
+    """Форма кода осталась и WB прямо пишет, что код неверный."""
+    if is_wb_consent(info) or classify_page(info or {}) != "code":
+        return False
+    text = _page_text(info)
+    return any(marker in text for marker in _CODE_ERROR_MARKERS)
+
+
+def on_wildberries(url) -> bool:
+    host = (urlparse(url or "").hostname or "").lower()
+    return host.endswith("wildberries.ru") and "id.wb.ru" not in host
+
+
+def cabinet_open(info) -> bool:
+    """Кабинет покупателя: страница заказов или профиля, не вход и не согласие."""
+    if is_wb_consent(info):
+        return False
+    kind = classify_page(info or {})
+    if kind == "cabinet":
+        return True
+    if kind in ("offline", "challenge", "pending", "login", "code", "password", "public"):
+        return False
+    url = (info or {}).get("url") or ""
+    path = (urlparse(url).path or "").lower()
+    if not on_wildberries(url):
+        return False
+    if not (path.startswith("/lk/myorders") or path.startswith("/lk/details")):
+        return False
+    text = _page_text(info)
+    return any(marker in text for marker in ("заказ", "доставк", "профиль", "личн", "покупк"))
+
+
+def interpret_after_code(shop, info) -> str:
+    """consent, cabinet, rejected, wait или other. rejected — только текст ошибки на форме кода."""
+    info = info or {}
+    if shop == "wb":
+        if is_wb_consent(info):
+            return "consent"
+        if on_wildberries(info.get("url") or "") and cabinet_open(info):
+            return "cabinet"
+        if code_was_rejected(info):
+            return "rejected"
+        if classify_page(info) == "code":
+            return "wait"
+        return "other"
+    if classify_page(info) == "cabinet":
+        return "cabinet"
+    if classify_page(info) == "code":
+        return "rejected"
+    return "other"
+
+
+def is_accept_button(label: str) -> bool:
+    name = re.sub(r"\s+", " ", (label or "")).strip().casefold()
+    return name == "принять"
+
+
+def click_accept(page) -> bool:
+    """Только кнопка «Принять». «Отклонить» не нажимаем."""
+    for frame in _frames(page):
+        for role in ("button", "link"):
+            try:
+                loc = frame.get_by_role(role)
+                n = loc.count()
+            except Exception:
+                continue
+            for i in range(min(n, 40)):
+                item = loc.nth(i)
+                try:
+                    name = item.inner_text(timeout=1000) or ""
+                except Exception:
+                    continue
+                if not is_accept_button(name):
+                    continue
+                try:
+                    item.click(timeout=4000)
+                    return True
+                except Exception:
+                    continue
+    return False
 
 
 def classify_page(info: dict) -> str:
@@ -1647,6 +1759,8 @@ def classify_page(info: dict) -> str:
 
 def page_face(info) -> str:
     """Короткая пометка для журнала: антибот это или форма входа."""
+    if is_wb_consent(info):
+        return "согласие"
     kind = classify_page(info or {})
     text = _norm_text(((info or {}).get("title") or "") + "\n" + ((info or {}).get("text") or ""))
     if kind == "pending":
@@ -1687,7 +1801,7 @@ class PlaywrightCabinet:
         return bool(self._worker.call(lambda: shop in self._live, timeout=10))
 
     def submit_code(self, shop, code, proxy) -> dict:
-        return self._worker.call(self._submit_code, shop, code, proxy, timeout=70)
+        return self._worker.call(self._submit_code, shop, code, proxy, timeout=90)
 
     def close_login(self, shop):
         return self._worker.call(self._close_login, shop, timeout=20)
@@ -2143,46 +2257,161 @@ class PlaywrightCabinet:
                 continue
         return False
 
-    def _submit_code(self, shop, code, proxy) -> dict:
-        context = self._live.get(shop)
-        if context is None:
-            return {"ok": False, "lost": True, "error": "Окно ввода кода закрыто — начните вход заново."}
-        page = context.pages[0] if context.pages else self._open(context)
-        steps = []
-        if not self._fill_code(page, code):
-            info = self._snapshot(page)
-            steps.append(self._page_step(page, "code", "поле кода не найдено", info))
-            return self._with_page(
-                {"ok": False, "status": "awaiting_code", "error": "Поле кода не найдено. Вход не выполнен."},
-                info, steps,
-            )
-        _click_label(page, [r"подтвердить", r"войти", r"готово", r"продолжить"])
-        self._settle(page)
+    def _pause(self, page, ms=400):
+        try:
+            page.wait_for_timeout(ms)
+        except Exception:
+            time.sleep(ms / 1000)
+
+    def _watch_after_code(self, page, shop, seconds, steps) -> dict:
+        """Ждёт уход с формы кода. Пока форма на месте и ошибки нет — это не «код не принят»."""
+        deadline = time.time() + seconds
         info = self._snapshot(page)
+        last = None
+        while time.time() < deadline:
+            action = interpret_after_code(shop, info)
+            sig = page_sig(info)
+            if sig != last:
+                last = sig
+                if action == "wait":
+                    if not steps or steps[-1].get("result") != "форма кода на месте":
+                        steps.append(self._page_step(page, "code", "форма кода на месте", info))
+                elif action not in ("consent", "cabinet", "rejected"):
+                    steps.append(self._page_step(page, "code", "страница изменилась", info))
+            if action in ("consent", "cabinet", "rejected"):
+                return info
+            self._pause(page)
+            info = self._snapshot(page)
+        return info
+
+    def _decide_after_code(self, shop, context, page, steps, info) -> dict:
+        if shop == "wb" and is_wb_consent(info):
+            return self._enter_after_consent(shop, context, page, steps, info)
         kind = classify_page(info)
         if kind in ("offline", "challenge"):
             _log_page(shop, info)
             steps.append(self._page_step(page, "code", "blocked", info))
             return self._blocked_result(info, steps)
-        if kind == "cabinet":
-            storage = context.storage_state()
+        action = interpret_after_code(shop, info)
+        if action == "cabinet":
+            try:
+                storage = context.storage_state()
+            except Exception:
+                storage = None
             steps.append(self._page_step(page, "cabinet", "active", info))
             self._close_login(shop)
             return self._with_page({
                 "ok": True, "status": "active", "authenticated": True, "auth": "code",
                 "storage": storage, "message": "Сессия сохранена.",
             }, info, steps)
-        if kind == "code":
+        if action == "rejected":
             steps.append(self._page_step(page, "code", "код не принят", info))
-            return self._with_page(
-                {"ok": False, "status": "awaiting_code", "error": "Код не принят. Можно ввести его ещё раз или начать вход заново."},
-                info, steps,
-            )
+            return self._with_page({
+                "ok": False, "status": "awaiting_code",
+                "error": "Код не принят. Можно ввести его ещё раз или начать вход заново.",
+            }, info, steps)
+        if action == "wait":
+            if not steps or steps[-1].get("result") != "форма кода на месте":
+                steps.append(self._page_step(page, "code", "форма кода на месте", info))
+            return self._with_page({
+                "ok": False, "status": "awaiting_code",
+                "error": "Форма кода ещё открыта. Если код неверный, на странице будет текст ошибки.",
+            }, info, steps)
         steps.append(self._page_step(page, "code", "кабинет не открылся", info))
         return self._with_page(
             {"ok": False, "error": "После кода кабинет не открылся. Вход не выполнен."},
             info, steps,
         )
+
+    def _enter_after_consent(self, shop, context, page, steps, info) -> dict:
+        """На экране согласия жмём только «Принять» и проверяем кабинет на wildberries.ru."""
+        steps.append(self._page_step(page, "consent", "экран согласия", info))
+        clicked = click_accept(page)
+        info = self._snapshot(page)
+        steps.append(self._page_step(page, "consent", "нажали принять" if clicked else "кнопки «Принять» нет", info))
+        if not clicked:
+            return self._with_page({
+                "ok": False, "status": "awaiting_code",
+                "error": "На экране согласия нет кнопки «Принять». Код уже отправлен, новый не запрашиваем.",
+            }, info, steps)
+        deadline = time.time() + CONSENT_REDIRECT_S
+        last = page_sig(info)
+        while time.time() < deadline:
+            info = self._snapshot(page)
+            sig = page_sig(info)
+            if sig != last:
+                last = sig
+                steps.append(self._page_step(page, "redirect", "страница изменилась", info))
+            if on_wildberries(info.get("url") or "") or cabinet_open(info):
+                break
+            self._pause(page)
+        else:
+            info = self._snapshot(page)
+        if not on_wildberries(info.get("url") or ""):
+            steps.append(self._page_step(page, "redirect", "редиректа на wildberries.ru нет", info))
+            return self._with_page({
+                "ok": False, "status": "awaiting_code",
+                "error": "После «Принять» редиректа на wildberries.ru не было. Сессия не активна.",
+            }, info, steps)
+        if not cabinet_open(info):
+            for section in ("orders", "profile"):
+                try:
+                    page.goto(_CABINET_URLS[shop][section], wait_until="domcontentloaded", timeout=20000)
+                except Exception as e:
+                    _log(shop + " cabinet " + section + " " + type(e).__name__)
+                self._settle(page)
+                info = self._snapshot(page)
+                opened = cabinet_open(info)
+                steps.append(self._page_step(
+                    page, section, "кабинет открылся" if opened else "кабинет не открылся", info,
+                ))
+                if opened:
+                    break
+        if not cabinet_open(info):
+            return self._with_page({
+                "ok": False, "status": "awaiting_code",
+                "error": "После согласия кабинет не открылся. Сессия не активна.",
+            }, info, steps)
+        try:
+            storage = context.storage_state()
+        except Exception:
+            storage = None
+        steps.append(self._page_step(page, "cabinet", "active", info))
+        self._close_login(shop)
+        return self._with_page({
+            "ok": True, "status": "active", "authenticated": True, "auth": "code",
+            "storage": storage, "message": "Сессия сохранена.",
+        }, info, steps)
+
+    def _submit_code(self, shop, code, proxy) -> dict:
+        context = self._live.get(shop)
+        if context is None:
+            return {"ok": False, "lost": True, "error": "Окно ввода кода закрыто — начните вход заново."}
+        page = context.pages[0] if context.pages else self._open(context)
+        steps = []
+        info = self._snapshot(page)
+        if shop == "wb" and is_wb_consent(info):
+            return self._enter_after_consent(shop, context, page, steps, info)
+        if not self._fill_code(page, code):
+            info = self._snapshot(page)
+            if shop == "wb" and is_wb_consent(info):
+                return self._enter_after_consent(shop, context, page, steps, info)
+            if classify_page(info) != "code":
+                steps.append(self._page_step(page, "code", "форма кода уже закрыта", info))
+                info = self._watch_after_code(page, shop, CODE_AFTER_S, steps)
+                return self._decide_after_code(shop, context, page, steps, info)
+            steps.append(self._page_step(page, "code", "поле кода не найдено", info))
+            return self._with_page(
+                {"ok": False, "status": "awaiting_code", "error": "Поле кода не найдено. Вход не выполнен."},
+                info, steps,
+            )
+        if not (shop == "wb" and is_wb_consent(self._snapshot(page))):
+            _click_label(page, [r"^подтвердить$", r"подтвердить", r"^войти$", r"готово", r"продолжить"])
+        self._settle(page)
+        info = self._snapshot(page)
+        if interpret_after_code(shop, info) not in ("consent", "cabinet", "rejected"):
+            info = self._watch_after_code(page, shop, CODE_AFTER_S, steps)
+        return self._decide_after_code(shop, context, page, steps, info)
 
     def _goto_section(self, page, shop, section, order_id):
         url = _CABINET_URLS[shop][section]

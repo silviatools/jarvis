@@ -5816,7 +5816,7 @@ function MarketplaceSettings() {
                   disabled={!!busy || !codes[shop.id].trim()}
                   onClick={() => post('/api/market/code', { shop: shop.id, code: codes[shop.id] }, 'code-' + shop.id)}
                 >
-                  {busy === 'code-' + shop.id ? 'Проверяю…' : codeLabel}
+                  {busy === 'code-' + shop.id ? 'Проверяю…' : 'Подтвердить код'}
                 </button>
               </div>
             )}
