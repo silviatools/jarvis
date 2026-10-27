@@ -1416,6 +1416,10 @@ class MarketSkillTest(unittest.TestCase):
                 self._jarvis_shop = "ozon"
 
             def new_cdp_session(self, target):
+                if getattr(target, "parent_frame", None) is not None and not getattr(target, "_jarvis_oopif", False):
+                    raise RuntimeError(
+                        "This frame does not have a separate CDP session, it is a part of the parent frame's session"
+                    )
                 cdp = Sent()
                 sessions.append((target, cdp))
                 return cdp
@@ -1428,17 +1432,33 @@ class MarketSkillTest(unittest.TestCase):
             handlers.setdefault(event, []).append(callback)
 
         page.on = on
-        child = type("Frame", (), {"url": "https://id.ozon.ru/ozonid?token=hide", "parent_frame": page})()
+        child = type("Frame", (), {"url": "https://www.ozon.ru/widget", "parent_frame": page})()
         page.frames = [page, child]
         page.main_frame = page
         cab = market_skill.PlaywrightCabinet()
         cab._apply_ozon_hints(browser, page, "android")
-        self.assertEqual(len(sessions), 2)
+        self.assertEqual(len(sessions), 1)
         self.assertEqual(sessions[0][1].calls[0][0], "Emulation.setUserAgentOverride")
+        self.assertTrue(any("separate CDP session" in line for line in market_skill._logs))
+        self.assertTrue(any("тот же процесс" in line for line in market_skill._logs))
         extra = type("Frame", (), {"url": "about:blank", "parent_frame": page})()
         handlers["frameattached"][0](extra)
         handlers["frameattached"][0](extra)
-        self.assertEqual(len(sessions), 3)
+        self.assertEqual(len(sessions), 1)
+        oopif = type("Frame", (), {
+            "url": "https://evil.example/login",
+            "parent_frame": page,
+            "_jarvis_oopif": True,
+        })()
+        handlers["frameattached"][0](oopif)
+        self.assertEqual(len(sessions), 2)
+        self.assertEqual(sessions[1][1].calls[0][0], "Emulation.setUserAgentOverride")
+        self.assertEqual(market_skill.ozon_login_top("https://www.ozon.ru/ozonid-lite?__rr=1"), "https://www.ozon.ru/ozonid-lite")
+        self.assertEqual(market_skill.ozon_login_top("https://www.ozon.ru/"), "")
+        self.assertEqual(
+            market_skill.ozon_ua_signature({"User-Agent": "UA1", "sec-ch-ua-model": '"Pixel 7"'}),
+            market_skill.ozon_ua_signature({"user-agent": "UA1", "sec-ch-ua-model": '"Pixel 7"'}),
+        )
 
         cab._manual = {"context": browser, "page": page, "touched": time.time(), "shop": "ozon"}
         opened = cab._manual_input({"action": "click", "x": 300, "y": 800, "viewW": 412, "viewH": 915})
@@ -1450,6 +1470,37 @@ class MarketSkillTest(unittest.TestCase):
         self.assertEqual(sessions[-1][1].calls[0][1]["touchPoints"][0]["radiusX"], 8)
         self.assertEqual(page.touchscreen.taps, [])
         self.assertNotIn("down", page.mouse.moved)
+        login_frame = type("Frame", (), {"url": "https://www.ozon.ru/ozonid-lite?__rr=1&abt_att=1", "parent_frame": page})()
+        page.frames = [page, login_frame]
+        self.assertEqual(cab._promote_ozon_login(page), "https://www.ozon.ru/ozonid-lite")
+        self.assertEqual(page.gotos[-1], "https://www.ozon.ru/ozonid-lite")
+        page.url = "https://www.ozon.ru/ozonid-lite"
+        self.assertEqual(cab._promote_ozon_login(page), "")
+        page.url = "https://www.ozon.ru/"
+        page.frames = [page, child]
+
+        home = type("Req", (), {})()
+        home.resource_type = "document"
+        home.url = "https://www.ozon.ru/"
+        home.headers = {
+            "user-agent": "UA1",
+            "sec-ch-ua-model": '"Pixel 7"',
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "none",
+            "sec-fetch-user": "?1",
+        }
+        home.frame = type("MainFrame", (), {"parent_frame": None, "url": home.url})()
+        cab._note_doc_headers(page, home)
+        iframe = type("Req", (), {})()
+        iframe.resource_type = "document"
+        iframe.url = "https://www.ozon.ru/ozonid-lite?token=hide"
+        iframe.headers = dict(home.headers)
+        iframe.headers["sec-fetch-dest"] = "iframe"
+        iframe.headers["sec-fetch-site"] = "same-origin"
+        iframe.headers.pop("sec-fetch-user", None)
+        iframe.frame = login_frame
+        cab._note_doc_headers(page, iframe)
 
         page._title = "Похоже, нет соединения"
         page._text = "Похоже, нет соединения\nВыключите VPN"
@@ -1482,7 +1533,10 @@ class MarketSkillTest(unittest.TestCase):
         self.assertIn("переход", blob)
         self.assertIn("https://www.ozon.ru/ozonid", blob)
         self.assertIn("фрейм", blob)
+        self.assertIn("UA и sec-ch-ua как у главной", blob)
+        self.assertIn("sec-fetch-dest=iframe", blob)
         self.assertNotIn("token=hide", blob)
+        self.assertNotIn("abt_att", blob)
         self.assertNotIn("code=secret", blob)
         self.assertNotIn("a.png", blob)
         self.assertEqual(sum("403 GET document" in (row.get("result") or "") for row in market_skill.public_status()["journal"]), 1)

@@ -453,6 +453,65 @@ def ozon_cdp(version: str, mode: str = "android") -> dict:
     }
 
 
+_OZON_UA_HEADERS = (
+    "user-agent",
+    "sec-ch-ua",
+    "sec-ch-ua-mobile",
+    "sec-ch-ua-platform",
+    "sec-ch-ua-platform-version",
+    "sec-ch-ua-model",
+    "sec-ch-ua-full-version-list",
+)
+_OZON_FETCH_HEADERS = (
+    "sec-fetch-dest",
+    "sec-fetch-mode",
+    "sec-fetch-site",
+    "sec-fetch-user",
+)
+
+
+def _header_map(headers) -> dict:
+    try:
+        pairs = dict(headers or {}).items()
+    except Exception:
+        return {}
+    return {str(key).lower(): str(value) for key, value in pairs if value}
+
+
+def ozon_header_bits(headers, keys) -> str:
+    data = _header_map(headers)
+    return " ".join(key + "=" + data[key] for key in keys if data.get(key))[:400]
+
+
+def ozon_ua_signature(headers) -> str:
+    return ozon_header_bits(headers, _OZON_UA_HEADERS)
+
+
+def ozon_fetch_signature(headers) -> str:
+    return ozon_header_bits(headers, _OZON_FETCH_HEADERS)
+
+
+def ozon_same_session_error(exc) -> bool:
+    """Фрейм того же процесса: своей CDP-сессии нет, UA страницы менять нельзя."""
+    text = str(exc or "").lower()
+    return "separate cdp session" in text or "part of the parent" in text
+
+
+def ozon_login_top(url) -> str:
+    """Адрес входа без query. Фрейм /ozonid-lite открываем как страницу www.ozon.ru."""
+    parsed = urlparse(url or "")
+    host = (parsed.hostname or "").lower()
+    path = parsed.path or ""
+    if not host.endswith("ozon.ru"):
+        return ""
+    low = path.lower()
+    if not low.startswith("/ozonid"):
+        return ""
+    if host == "www.ozon.ru" or low.startswith("/ozonid-lite"):
+        return "https://www.ozon.ru" + path
+    return "https://" + host + path
+
+
 def hide_webdriver(shop: str, mode: str) -> bool:
     """Подмена navigator.webdriver для Ozon не используется. У WB на телефоне остаётся."""
     return shop != "ozon" and mode == "android"
@@ -2812,24 +2871,94 @@ class PlaywrightCabinet:
         except Exception as e:
             _log("client hints " + type(e).__name__)
 
+    def _hint_fail(self, page, exc):
+        msg = str(exc or "").replace("\n", " ")[:200]
+        line = "ozon hints " + type(exc).__name__ + ": " + msg
+        if ozon_same_session_error(exc):
+            if getattr(page, "_jarvis_same_session_logged", False):
+                return
+            try:
+                page._jarvis_same_session_logged = True
+            except Exception:
+                pass
+            _log(line + " — тот же процесс, UA страницы не меняем")
+            return
+        _log(line)
+
+    def _note_doc_headers(self, page, request):
+        """Сравнивает UA и sec-ch-ua документа входа с главной. Cookie не пишет."""
+        try:
+            if str(getattr(request, "resource_type", "") or "") != "document":
+                return
+            url = getattr(request, "url", "") or ""
+            headers = getattr(request, "headers", None) or {}
+        except Exception:
+            return
+        ua = ozon_ua_signature(headers)
+        fetch = ozon_fetch_signature(headers)
+        frame = getattr(request, "frame", None)
+        main = frame is None or getattr(frame, "parent_frame", None) is None
+        login = bool(ozon_login_top(url))
+        if main and not login:
+            try:
+                page._jarvis_doc_ua = ua
+                page._jarvis_doc_fetch = fetch
+            except Exception:
+                pass
+            return
+        if not login:
+            return
+        base = getattr(page, "_jarvis_doc_ua", "") or ""
+        if base and ua == base:
+            verdict = "UA и sec-ch-ua как у главной"
+        elif base:
+            verdict = "UA или sec-ch-ua отличаются от главной"
+        else:
+            verdict = "заголовки главной ещё не сняты"
+        where = "главный документ" if main else "фрейм"
+        summary = verdict + " · " + where
+        if fetch:
+            summary += " · " + fetch
+        shop = getattr(getattr(page, "context", None), "_jarvis_shop", "") or ""
+        detail = ""
+        if base or ua:
+            detail = "главная: " + (base or "—") + "\nвход: " + (ua or "—")
+            home_fetch = getattr(page, "_jarvis_doc_fetch", "") or ""
+            if home_fetch or fetch:
+                detail += "\nsec-fetch главная: " + (home_fetch or "—") + "\nsec-fetch вход: " + (fetch or "—")
+        self._manual_note(shop, url, summary, "заголовки", apis=detail)
+
     def _apply_ozon_hints(self, context, page, mode):
-        """Тот же UA на странице и на фрейме входа. Подмена только первой вкладки оставляет id.ozon.ru чужим."""
+        """UA страницы. Фрейм того же процесса не трогаем: отдельной сессии у него нет."""
         payload = ozon_cdp((self._hints or {}).get("version") or "", mode)
         bound = set()
+        same = set()
 
-        def apply(target):
-            marker = id(target) if target is not None else None
-            if marker is not None and marker in bound:
+        def apply_target(target):
+            if target is None:
+                try:
+                    cdp = context.new_cdp_session(target)
+                    cdp.send("Emulation.setUserAgentOverride", payload)
+                except Exception as e:
+                    self._hint_fail(page, e)
                 return
-            if marker is not None:
-                bound.add(marker)
+            marker = id(target)
+            if marker in bound or marker in same:
+                return
             try:
                 cdp = context.new_cdp_session(target)
+            except Exception as e:
+                if ozon_same_session_error(e):
+                    same.add(marker)
+                self._hint_fail(page, e)
+                return
+            bound.add(marker)
+            try:
                 cdp.send("Emulation.setUserAgentOverride", payload)
             except Exception as e:
-                _log("ozon hints " + type(e).__name__)
+                self._hint_fail(page, e)
 
-        apply(page)
+        apply_target(page)
         if page is None:
             return
         try:
@@ -2838,23 +2967,28 @@ class PlaywrightCabinet:
             frames = []
         main = getattr(page, "main_frame", None)
         for frame in frames:
-            if frame is page or frame is main:
+            if frame is page or frame is main or getattr(frame, "parent_frame", None) is None:
                 continue
-            apply(frame)
-        if getattr(page, "_jarvis_ua_listening", False):
-            return
-        try:
-            page._jarvis_ua_listening = True
-        except Exception:
-            return
+            apply_target(frame)
+        if not getattr(page, "_jarvis_hint_watch", False):
+            try:
+                page._jarvis_hint_watch = True
+            except Exception:
+                pass
+            if hasattr(page, "on"):
+                def on_request(request, page=page):
+                    self._note_doc_headers(page, request)
 
-        def on_frame(frame):
-            apply(frame)
+                def on_frame(frame):
+                    if getattr(frame, "parent_frame", None) is None:
+                        return
+                    apply_target(frame)
 
-        try:
-            page.on("frameattached", on_frame)
-        except Exception as e:
-            _log("ozon frame " + type(e).__name__)
+                try:
+                    page.on("request", on_request)
+                    page.on("frameattached", on_frame)
+                except Exception as e:
+                    _log("ozon frame " + type(e).__name__ + ": " + str(e)[:160])
 
     def _prepare_context(self, context, shop, mode):
         try:
@@ -3527,19 +3661,49 @@ class PlaywrightCabinet:
             return self._touch_tap(page, pt)
         return self._mouse_click(page, pt)
 
-    def _manual_note(self, shop, url, summary, result, title=""):
+    def _manual_note(self, shop, url, summary, result, title="", apis=""):
         if shop not in SHOPS:
             return
         try:
-            note_step(shop, "manual", url or "", summary, result, title=title)
+            note_step(shop, "manual", url or "", summary, result, title=title, apis=apis)
         except Exception as e:
             _log("manual note " + type(e).__name__)
 
-    def _manual_glance(self, page, shop):
+    def _promote_ozon_login(self, page) -> str:
+        """Фрейм /ozonid-lite того же сайта. Открываем его переходом вкладки, не iframe."""
+        main = getattr(page, "main_frame", None)
+        for url in (getattr(page, "url", "") or "", getattr(main, "url", "") or ""):
+            if ozon_login_top(url):
+                return ""
         try:
-            page.wait_for_timeout(int(MANUAL_TAP_LOOK * 1000))
+            frames = list(getattr(page, "frames", []) or [])
         except Exception:
-            time.sleep(MANUAL_TAP_LOOK)
+            return ""
+        top = ""
+        for frame in frames:
+            if frame is page or frame is main or getattr(frame, "parent_frame", None) is None:
+                continue
+            top = ozon_login_top(getattr(frame, "url", "") or "")
+            if top:
+                break
+        if not top:
+            return ""
+        try:
+            page.goto(top, wait_until="domcontentloaded", timeout=30000)
+        except Exception as e:
+            _log("ozon login top " + type(e).__name__ + ": " + str(e)[:160])
+            return ""
+        return top
+
+    def _manual_glance(self, page, shop):
+        self._glance_wait(page)
+        if shop == "ozon":
+            top = self._promote_ozon_login(page)
+            if not top and self._blank_child_frame(page):
+                self._glance_wait(page, 0.4)
+                top = self._promote_ozon_login(page)
+            if top:
+                self._manual_note(shop, top, "вместо фрейма", "вход")
         try:
             info = self._snapshot(page)
         except Exception:
@@ -3548,6 +3712,27 @@ class PlaywrightCabinet:
         if kind not in ("offline", "challenge", "login"):
             return
         self._manual_note(shop, info.get("url") or "", page_face(info), "экран", title=info.get("title") or "")
+
+    def _glance_wait(self, page, seconds=None):
+        delay = MANUAL_TAP_LOOK if seconds is None else seconds
+        try:
+            page.wait_for_timeout(int(delay * 1000))
+        except Exception:
+            time.sleep(delay)
+
+    def _blank_child_frame(self, page) -> bool:
+        main = getattr(page, "main_frame", None)
+        try:
+            frames = list(getattr(page, "frames", []) or [])
+        except Exception:
+            return False
+        for frame in frames:
+            if frame is page or frame is main or getattr(frame, "parent_frame", None) is None:
+                continue
+            url = str(getattr(frame, "url", "") or "")
+            if not url or url == "about:blank" or url.startswith("about:"):
+                return True
+        return False
 
     def _manual_input(self, payload) -> dict:
         payload = payload if isinstance(payload, dict) else {}
