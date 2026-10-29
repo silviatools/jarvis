@@ -729,17 +729,74 @@ def topic_edit(action, peer, topic="", title="") -> dict:
     return _run(_go(), 30)
 
 
-def topic_delete(peer, topic) -> dict:
-    """Удалить тему вместе со всей её перепиской (необратимо)."""
-    async def _go():
+async def _wipe_topic(c, ent, tid):
+    """DeleteTopicHistory чистит порциями: повторяем, пока Telegram не вернёт offset = 0."""
+    for _ in range(500):
+        res = await c(functions.messages.DeleteTopicHistoryRequest(peer=ent, top_msg_id=tid))
+        if not getattr(res, "offset", 0):
+            return
+        await asyncio.sleep(0.3)
+
+
+def topic_delete(peer, topic="", topics=None, all_except=None, delete_all=False) -> dict:
+    """Удаляет темы вместе с перепиской (необратимо) фоновой задачей: одну (topic), список (topics)
+    или все, кроме перечисленных (delete_all + all_except). Основную тему не трогает."""
+    names = [str(t).strip() for t in (topics or []) if str(t).strip()]
+    if str(topic or "").strip():
+        names.append(str(topic).strip())
+    keep = [str(t).strip() for t in (all_except or []) if str(t).strip()]
+    if not names and not delete_all:
+        raise TgError("Укажите темы (topic / topics) или delete_all с all_except.")
+
+    async def _prep():
         c = await _get_client()
         ent = await _forum(c, peer)
-        tid = await _topic_id(c, ent, topic)
-        if not tid or tid == 1:
-            raise TgError("Укажите тему для удаления (основную тему удалить нельзя).")
-        await c(functions.messages.DeleteTopicHistoryRequest(peer=ent, top_msg_id=tid))
-        return {"ok": True, "chat": utils.get_display_name(ent), "deleted_topic_id": tid}
-    return _run(_go(), 60)
+        if delete_all:
+            keep_ids = {1}
+            for k in keep:
+                keep_ids.add(await _topic_id(c, ent, k))
+            rows = [t for t in await _fetch_topics(c, ent, limit=1000) if t.id not in keep_ids]
+            targets = [(t.id, t.title) for t in rows]
+        else:
+            targets = []
+            for n in names:
+                tid = await _topic_id(c, ent, n)
+                if not tid or tid == 1:
+                    raise TgError("Основную тему (General) удалить нельзя.")
+                targets.append((tid, n))
+        if not targets:
+            raise TgError("Нет тем для удаления.")
+        return c, ent, targets
+
+    c, ent, targets = _run(_prep(), 120)
+    job = {"id": f"del{int(time.time())}{len(_jobs)}", "kind": "delete", "status": "running",
+           "title": f"{utils.get_display_name(ent)}: удаление тем", "found": len(targets), "done": 0, "failed": 0,
+           "skipped": 0, "started": time.time(), "topics": [t for _, t in targets][:50]}
+    with _jobs_lock:
+        _jobs[job["id"]] = job
+
+    async def runner():
+        try:
+            for tid, title in targets:
+                try:
+                    await _with_flood_retry(job, lambda: _wipe_topic(c, ent, tid))
+                    job["done"] += 1
+                except errors.RPCError as e:
+                    job["failed"] += 1
+                    job["last_error"] = f"{title}: {e.__class__.__name__}"
+                await asyncio.sleep(0.3)
+            job["status"] = "done"
+        except asyncio.CancelledError:
+            job["status"] = "cancelled"
+        except Exception as e:
+            job["status"], job["error"] = "error", str(e)
+        finally:
+            job["finished"] = time.time()
+            _notify_job(job)
+
+    job["future"] = asyncio.run_coroutine_threadsafe(runner(), tg_user._ensure_loop())
+    return {"ok": True, "job_id": job["id"], "deleting": len(targets), "topics": [t for _, t in targets][:50],
+            "note": "Удаление идёт в фоне, итог пришлю в бот. Прогресс — tg_job_status."}
 
 
 # ── Перенос сообщений между темами / группами ────────────────────────────
@@ -965,7 +1022,10 @@ def _job_public(job) -> dict:
 
 def _job_summary(job) -> str:
     icon = {"done": "✅", "cancelled": "⏹", "error": "⚠️"}.get(job["status"], "…")
-    s = f"{icon} Перенос «{job['title']}»: перенесено {job['done']} из {job['found']}"
+    if job.get("kind") == "delete":
+        s = f"{icon} {job['title']}: удалено {job['done']} из {job['found']}"
+    else:
+        s = f"{icon} Перенос «{job['title']}»: перенесено {job['done']} из {job['found']}"
     if job["failed"]:
         s += f", не удалось {job['failed']}" + (f" ({job['last_error']})" if job.get("last_error") else "")
     if job["status"] == "error":
@@ -1590,6 +1650,8 @@ def _t(name, desc, props, required=()):
             d["enum"] = v[2]
         if v[0] == "array":
             d["items"] = {"type": "integer"}
+        elif v[0] == "array_str":
+            d["type"], d["items"] = "array", {"type": "string"}
         p[k] = d
     return {"name": name, "description": desc, "input_schema": {"type": "object", "properties": p, "required": list(required)}}
 
@@ -1640,11 +1702,16 @@ TG_TOOLS = [
        ["from_peer", "to_peer", "mode"]),
     _t("tg_job_status", "Прогресс фоновых переносов: найдено, перенесено, ошибки. Без job_id — последние задачи. cancel:true — остановить. Подтверждения не требует.",
        {"job_id": ("string", "id задачи из tg_topic_copy."), "cancel": ("boolean", "Остановить перенос.")}),
-    _t("tg_topic_edit", "Управление темами форума: create (title), rename (topic, title), close / reopen (topic), pin / unpin (topic). Только после согласия (confirmed:true).",
-       {"action": ("string", "Действие.", list(_TOPIC_ACTIONS)), "peer": PEER, "topic": ("string", "Тема (название или id)."),
-        "title": ("string", "Название для create/rename."), "confirmed": CONF}, ["action", "peer"]),
-    _t("tg_topic_delete", "УДАЛИТЬ тему форума вместе со всей перепиской в ней — необратимо. Только после явного согласия (confirmed:true), назови тему и группу.",
-       {"peer": PEER, "topic": ("string", "Тема (название или id)."), "confirmed": CONF}, ["peer", "topic"]),
+    _t("tg_topic_create", "СОЗДАТЬ тему в группе-форуме. Только после согласия (confirmed:true): назови группу и название.",
+       {"peer": PEER, "title": ("string", "Название темы."), "confirmed": CONF}, ["peer", "title"]),
+    _t("tg_topic_edit", "Изменить тему форума: rename (topic, title), close / reopen (topic), pin / unpin (topic). Только после согласия (confirmed:true).",
+       {"action": ("string", "Действие.", [x for x in _TOPIC_ACTIONS if x != "create"]), "peer": PEER,
+        "topic": ("string", "Тема (название или id)."), "title": ("string", "Новое название для rename."),
+        "confirmed": CONF}, ["action", "peer", "topic"]),
+    _t("tg_topic_delete", "УДАЛИТЬ темы форума вместе со всей перепиской — необратимо, одним вызовом и в фоне (итог придёт в бот). Одна тема: topic. Несколько: topics. Все темы, кроме нужных: delete_all:true + all_except (названия тем, которые оставить). Основная тема не удаляется. Не вызывай по одной теме в цикле — передай всё сразу. Сначала покажи список через tg_list_topics, получи «да», потом confirmed:true.",
+       {"peer": PEER, "topic": ("string", "Одна тема (название или id)."),
+        "topics": ("array_str", "Список тем (названия или id)."), "delete_all": ("boolean", "Удалить все темы, кроме all_except и основной."),
+        "all_except": ("array_str", "Темы, которые оставить."), "confirmed": CONF}, ["peer"]),
     _t("tg_read_messages", "Прочитать историю диалога: последние N, за период, конкретные сообщения по ids, ветку/тему (thread_id), только определённый тип (media_type) или от одного человека (from_user). Сообщения от старых к новым; «я» — сам пользователь. В сообщениях: текст, медиа (фото/голосовое/файл с именем и размером/опрос с результатами), реакции, просмотры, правки, пересылка, ответ. Если ответ содержит older_than_id — передай его как offset_id, чтобы читать глубже. Подтверждения не требует.",
        {"peer": PEER, "limit": ("integer", "До 50, по умолчанию 30."), "from": FROM, "to": TO,
         "offset_id": ("integer", "Вернуть сообщения старше этого id."), "ids": ("array", "Конкретные id сообщений."),
@@ -1715,6 +1782,7 @@ WRITE_VERBS = {
     "tg_folder_edit": "изменить папки Telegram",
     "tg_delete_messages": "УДАЛИТЬ сообщения",
     "tg_topic_copy": "перенести сообщения между темами/группами",
+    "tg_topic_create": "создать тему в группе",
     "tg_topic_edit": "изменить темы форума",
     "tg_topic_delete": "УДАЛИТЬ тему вместе с перепиской",
     "tg_join_chat": "вступить в чат",
@@ -1741,11 +1809,12 @@ TG_SKILLS = [
      "desc": "Контакты, участники и админы групп, темы форумов, поиск людей и каналов по всему Telegram.",
      "tools": ["tg_list_contacts", "tg_find_peer", "tg_list_members"]},
     {"id": "topics", "title": "Темы групп (топики)", "risk": "write", "default": True,
-     "desc": "Видит темы форумов, читает и пишет в конкретную тему, создаёт, переименовывает, закрывает и закрепляет их. "
+     "desc": "Видит темы форумов, читает и пишет в конкретную тему, создаёт, переименовывает, закрывает, закрепляет и удаляет (в том числе пачкой: «все, кроме…» — в фоне). "
              "Переносит сообщения (текст, фото, файлы, голосовые, альбомы) из темы в другую тему или группу за любой период "
              "и только нужного типа — копией без «Переслано от» или обычной пересылкой; перенос идёт в фоне, итог придёт в бот. "
-             "Переносы и правки — только после вашего «да»; из групп с защитой контента перенос невозможен.",
-     "tools": ["tg_list_topics", "tg_topic_scan", "tg_topic_copy", "tg_job_status", "tg_topic_edit"]},
+             "Переносы, правки и удаление — только после вашего «да»; из групп с защитой контента перенос невозможен.",
+     "tools": ["tg_list_topics", "tg_topic_scan", "tg_topic_copy", "tg_job_status", "tg_topic_create", "tg_topic_edit",
+               "tg_topic_delete"]},
     {"id": "read", "title": "Чтение переписки", "risk": "read", "default": True,
      "desc": "Читает историю любого диалога: по периоду, по людям, ветки и темы; видит файлы, опросы, реакции, просмотры.",
      "tools": ["tg_read_messages", "tg_get_replies"]},
@@ -1768,8 +1837,8 @@ TG_SKILLS = [
      "desc": "Прочитано, архив, мьют, закрепы чатов, создание и изменение папок. Только после вашего «да».",
      "tools": ["tg_mark_read", "tg_archive_chat", "tg_mute_chat", "tg_pin_chat", "tg_folder_edit"]},
     {"id": "danger", "title": "Опасные действия", "risk": "danger", "default": False,
-     "desc": "Удаление сообщений и тем форума, вступление и выход из чатов, блокировка пользователей. Необратимо — включайте осознанно.",
-     "tools": ["tg_delete_messages", "tg_join_chat", "tg_leave_chat", "tg_block_user", "tg_topic_delete"]},
+     "desc": "Удаление сообщений, вступление и выход из чатов, блокировка пользователей. Необратимо — включайте осознанно.",
+     "tools": ["tg_delete_messages", "tg_join_chat", "tg_leave_chat", "tg_block_user"]},
 ]
 _TOOL_SKILL = {t: s["id"] for s in TG_SKILLS for t in s["tools"]}
 assert set(_TOOL_SKILL) == TG_TOOL_NAMES, set(_TOOL_SKILL) ^ TG_TOOL_NAMES
@@ -1825,7 +1894,7 @@ def prompt_section(state=None) -> str:
            "«Переслано от», можно credit:true с автором и датой) или forward (обычная пересылка); 2) tg_topic_scan с теми же "
            "периодом и типом — покажи, сколько и чего будет перенесено; 3) после «да» tg_topic_copy(confirmed:true) — идёт в фоне, "
            "итог придёт в бот, прогресс — tg_job_status. Период — from/to, только фото и т.п. — media_type. Если и источник, "
-           "и получатель найдены неоднозначно — уточни. Группы с защитой контента переносу не поддаются. "
+           "и получатель найдены неоднозначно — уточни. Группы с защитой контента переносу не поддаются. УДАЛЕНИЕ ТЕМ: «удали все темы, кроме X и Y» — ОДИН вызов tg_topic_delete(delete_all:true, all_except:[X,Y]) после «да» (не по одной теме); перед этим покажи список через tg_list_topics. Создание — tg_topic_create. "
            if any(t["name"] == "tg_topic_copy" for t in tools) else "")
         + "Отвечай кратко, с датой и автором («я» — сам пользователь). Любое действие, которое что-то меняет "
         "(отправка, правка, пересылка, папки, архив, удаление, вступление/выход, блокировка) идёт ОТ ИМЕНИ пользователя: "
@@ -1854,7 +1923,10 @@ def _confirm_text(name: str, inp: dict) -> str:
     elif name == "tg_topic_edit":
         extra = f" (действие: {inp.get('action')}, тема: {inp.get('topic') or ''} {inp.get('title') or ''})"
     elif name == "tg_topic_delete":
-        extra = f" (тема: {inp.get('topic')})"
+        extra = (f" (все темы, кроме: {', '.join(inp.get('all_except') or []) or '—'})" if inp.get("delete_all")
+                 else f" (темы: {', '.join(inp.get('topics') or []) or inp.get('topic')})")
+    elif name == "tg_topic_create":
+        extra = f" (название: «{inp.get('title')}»)"
     elif name == "tg_folder_edit":
         extra = f" (действие: {inp.get('action')}, {inp.get('title') or ''})"
     return f"Нужно подтверждение пользователя, чтобы {what}: {target}{extra}."
@@ -1900,10 +1972,12 @@ def execute_tg_tool(name: str, inp: dict, state=None) -> dict:
                               g("after_id") or 0)
         if name == "tg_job_status":
             return job_status(g("job_id") or "", bool(g("cancel")))
+        if name == "tg_topic_create":
+            return topic_edit("create", g("peer"), "", g("title") or "")
         if name == "tg_topic_edit":
             return topic_edit(g("action"), g("peer"), g("topic") or "", g("title") or "")
         if name == "tg_topic_delete":
-            return topic_delete(g("peer"), g("topic"))
+            return topic_delete(g("peer"), g("topic") or "", g("topics"), g("all_except"), bool(g("delete_all")))
         if name == "tg_read_messages":
             return read_history(g("peer"), g("limit") or 30, g("from"), g("to"), g("offset_id") or 0,
                                 g("ids"), g("thread_id"), g("media_type") or "", g("from_user") or "")

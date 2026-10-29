@@ -40,6 +40,7 @@ class Fake:
     def __init__(self, messages, topics):
         self.messages, self.topics = messages, topics
         self.sent, self.files, self.requests, self.iter_kw = [], [], [], []
+        self.affected = {}
 
     async def iter_messages(self, ent, **kw):
         self.iter_kw.append(kw)
@@ -57,6 +58,9 @@ class Fake:
         if isinstance(req, functions.messages.GetForumTopicsRequest):
             return types.messages.ForumTopics(
                 count=len(self.topics), topics=self.topics, messages=[], chats=[], users=[], pts=0)
+        if isinstance(req, functions.messages.DeleteTopicHistoryRequest):
+            q = self.affected.setdefault(req.top_msg_id, [0])
+            return types.messages.AffectedHistory(pts=0, pts_count=0, offset=q.pop(0) if q else 0)
         return None
 
 
@@ -176,27 +180,44 @@ class TopicsTest(unittest.TestCase):
         r = tg_tools.execute_tg_tool("tg_topic_copy", {"from_peer": "src", "to_peer": "dst", "mode": "copy"})
         self.assertTrue(r.get("needs_confirmation"))
         self.assertFalse(self.fake.iter_kw)
-        r = tg_tools.execute_tg_tool("tg_topic_delete", {"peer": "src", "topic": "7"}, {"danger": True})
+        r = tg_tools.execute_tg_tool("tg_topic_delete", {"peer": "src", "delete_all": True, "all_except": ["Приёмка"]})
         self.assertTrue(r.get("needs_confirmation"))
-        r = tg_tools.execute_tg_tool("tg_topic_delete", {"peer": "src", "topic": "7", "confirmed": True})
-        self.assertIn("выключен", r["error"])                           # навык danger по умолчанию выключен
         names = {t["name"] for t in tg_tools.enabled_tools({"topics": False})}
-        self.assertFalse(names & {"tg_topic_copy", "tg_list_topics", "tg_topic_edit", "tg_job_status"})
-        self.assertIn("tg_topic_copy", {t["name"] for t in tg_tools.enabled_tools({})})
-        self.assertNotIn("tg_topic_delete", {t["name"] for t in tg_tools.enabled_tools({})})
+        self.assertFalse(names & {"tg_topic_copy", "tg_list_topics", "tg_topic_edit", "tg_job_status",
+                                  "tg_topic_create", "tg_topic_delete"})
+        on = {t["name"] for t in tg_tools.enabled_tools({})}
+        self.assertTrue({"tg_topic_copy", "tg_topic_create", "tg_topic_delete"} <= on)
         self.assertEqual(tg_tools.execute_tg_tool("tg_list_topics", {"peer": "src"}, {"topics": False})["error"][:11],
                          "Этот навык ")
 
-    def test_topic_edit_and_delete(self):
+    def test_topic_edit_create_delete(self):
         tg_tools.execute_tg_tool("tg_topic_edit", {"action": "close", "peer": "src", "topic": "Отгрузка", "confirmed": True})
         q = self.fake.requests[-1]
         self.assertIsInstance(q, functions.messages.EditForumTopicRequest)
         self.assertEqual((q.topic_id, q.closed), (9, True))
         tg_tools.execute_tg_tool("tg_topic_edit", {"action": "pin", "peer": "src", "topic": "9", "confirmed": True})
         self.assertIsInstance(self.fake.requests[-1], functions.messages.UpdatePinnedForumTopicRequest)
-        r = tg_tools.execute_tg_tool("tg_topic_delete", {"peer": "src", "topic": "9", "confirmed": True}, {"danger": True})
-        self.assertEqual(r["deleted_topic_id"], 9)
-        self.assertIsInstance(self.fake.requests[-1], functions.messages.DeleteTopicHistoryRequest)
+        tg_tools.execute_tg_tool("tg_topic_create", {"peer": "src", "title": "Новая", "confirmed": True})
+        q = self.fake.requests[-1]
+        self.assertIsInstance(q, functions.messages.CreateForumTopicRequest)
+        self.assertEqual(q.title, "Новая")
+
+    def test_delete_all_except_in_background(self):
+        self.fake.topics = [topic(1, "General"), topic(7, "Чат"), topic(8, "Поступления"), topic(9, "Склад"),
+                            topic(10, "Старое")]
+        self.fake.affected = {9: [5, 0], 10: [0]}       # у темы 9 удаление идёт двумя порциями
+        r = tg_tools.execute_tg_tool("tg_topic_delete", {"peer": "src", "delete_all": True,
+                                                         "all_except": ["чат", "Поступления"], "confirmed": True})
+        self.assertEqual((r["ok"], r["deleting"]), (True, 2), r)
+        st = self.wait(r["job_id"])
+        self.assertEqual((st["status"], st["done"], st["failed"]), ("done", 2, 0))
+        dels = [(q.top_msg_id) for q in self.fake.requests if isinstance(q, functions.messages.DeleteTopicHistoryRequest)]
+        self.assertEqual(dels, [9, 9, 10])
+        self.assertTrue(self.notified and "удалено 2 из 2" in self.notified[0])
+
+    def test_delete_refuses_general(self):
+        r = tg_tools.execute_tg_tool("tg_topic_delete", {"peer": "src", "topic": "General", "confirmed": True})
+        self.assertIn("Основную", r["error"])
 
     def test_cancel(self):
         class Slow(Fake):
