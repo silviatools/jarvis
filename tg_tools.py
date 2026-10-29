@@ -624,10 +624,11 @@ def list_topics(peer, limit=50) -> dict:
         ent = await _resolve(c, peer)
         if not (isinstance(ent, Channel) and getattr(ent, "forum", False)):
             raise TgError("Это не группа с темами (форум).")
-        res = await c(functions.channels.GetForumTopicsRequest(
-            channel=ent, offset_date=None, offset_id=0, offset_topic=0, limit=max(1, min(int(limit or 50), 100))))
+        res = await c(functions.messages.GetForumTopicsRequest(
+            peer=ent, offset_date=None, offset_id=0, offset_topic=0, limit=max(1, min(int(limit or 50), 100))))
         return {"chat": utils.get_display_name(ent), "topics": [
-            {"id": t.id, "title": t.title, "unread": t.unread_count, "closed": bool(t.closed), "pinned": bool(t.pinned)}
+            {"id": t.id, "title": t.title, "unread": getattr(t, "unread_count", 0),
+             "closed": bool(getattr(t, "closed", False)), "pinned": bool(getattr(t, "pinned", False))}
             for t in res.topics if hasattr(t, "title")]}
     return _run(_go(), 30)
 
