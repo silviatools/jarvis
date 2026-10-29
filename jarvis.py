@@ -6316,6 +6316,17 @@ def _study_targets(app, conf, with_tg: bool = True) -> tuple:
 
 
 _brief_scope = threading.local()   # чаты, к которым можно обращаться агенту сбора информации
+def _tg_job_notify(text: str):
+    """Итог фонового переноса сообщений между темами — владельцу в бот."""
+    token = get_token()
+    uid = (tg_user._load_cfg() or {}).get("user_id") if tg_user else None
+    if token and uid and tg_bot:
+        tg_bot.send_text(token, uid, text)
+
+
+if tg_tools:
+    tg_tools.job_notify = _tg_job_notify
+
 _study_brief_running = set()
 
 
