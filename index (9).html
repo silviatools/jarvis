@@ -109,6 +109,39 @@
     min-height: 0;
     align-content: stretch;
   }
+  /* «Прочее»: плашки с названием вместо иконок — одной высоты, ширина по тексту */
+  .misc-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 0.75rem;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0.15rem 0.15rem 1rem;
+  }
+  .misc-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 3.25rem;
+    padding: 0 1.5rem;
+    border-radius: 0.875rem;
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1;
+    white-space: nowrap;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+    transition: transform 0.12s ease, filter 0.12s ease;
+  }
+  .misc-chip:hover { filter: brightness(1.08); }
+  .misc-chip:active { transform: scale(0.97); }
+  .misc-chip.misc-app-drop-target {
+    outline: 2px solid var(--text);
+    outline-offset: 3px;
+  }
   .misc-app-cell {
     display: flex;
     flex-direction: column;
@@ -39203,55 +39236,31 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
           </button>
         </div>
         <div ref={gridWrapRef} className="flex-1 min-h-0 flex flex-col">
-          <div
-            className="misc-home-grid"
-            style={{ gridTemplateRows: `repeat(${layout.rows}, minmax(${MISC_CELL_MIN_PX}px, 1fr))` }}
-          >
+          <div className="misc-chips" data-testid="misc-chips">
             {layout.slots.map((id, slotIndex) => {
               const a = id ? byId[id] : null;
-              const isDrop = dropSlot === slotIndex;
-              if (a) {
-                return (
-                  <button
-                    key={a.id}
-                    type="button"
-                    data-misc-slot={slotIndex}
-                    data-misc-app={a.id}
-                    onClick={() => { if (!editMode) setSub(a.id); }}
-                    onPointerDown={e => onAppPointerDown(e, a.id)}
-                    onPointerMove={onAppPointerMove}
-                    onPointerUp={onAppPointerUp}
-                    onPointerCancel={onAppPointerUp}
-                    className={[
-                      'misc-app-cell',
-                      editMode ? 'misc-app-jiggle' : '',
-                      draggingId === a.id ? 'misc-app-dragging' : '',
-                      isDrop ? 'misc-app-drop-target' : '',
-                    ].filter(Boolean).join(' ')}
-                  >
-                    <div
-                      className="misc-app-icon w-16 h-16 rounded-2xl flex items-center justify-center text-white shadow-sm transition-transform active:scale-95 flex-shrink-0"
-                      style={{ background: a.color }}
-                    >
-                      <Icon name={a.icon} size={28} />
-                    </div>
-                    <span className="text-xs font-medium text-[var(--text-muted)] leading-tight">{a.label}</span>
-                  </button>
-                );
-              }
+              if (!a) return null;
               return (
-                <div
-                  key={`empty-${slotIndex}`}
+                <button
+                  key={a.id}
+                  type="button"
                   data-misc-slot={slotIndex}
+                  data-misc-app={a.id}
+                  onClick={() => { if (!editMode) setSub(a.id); }}
+                  onPointerDown={e => onAppPointerDown(e, a.id)}
+                  onPointerMove={onAppPointerMove}
+                  onPointerUp={onAppPointerUp}
+                  onPointerCancel={onAppPointerUp}
+                  style={{ background: a.color }}
                   className={[
-                    'misc-app-cell',
-                    isDrop ? 'misc-app-drop-target' : '',
+                    'misc-chip',
+                    editMode ? 'misc-app-jiggle' : '',
+                    draggingId === a.id ? 'misc-app-dragging' : '',
+                    dropSlot === slotIndex ? 'misc-app-drop-target' : '',
                   ].filter(Boolean).join(' ')}
-                  aria-hidden
                 >
-                  <div className={editMode ? 'misc-app-slot-empty' : 'misc-app-slot-spacer'} />
-                  {editMode && <span className="text-xs leading-tight invisible">.</span>}
-                </div>
+                  {a.label}
+                </button>
               );
             })}
           </div>
