@@ -110,16 +110,24 @@
     align-content: stretch;
   }
   /* «Прочее»: плашки с названием вместо иконок — одной высоты, ширина по тексту */
+  .misc-chips-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
   .misc-chips {
     display: flex;
     flex-wrap: wrap;
     align-content: flex-start;
     gap: 0.75rem;
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
     padding: 0.15rem 0.15rem 1rem;
   }
+  /* Свободная раскладка: плашки стоят там, где их оставили */
+  .misc-canvas { position: relative; width: 100%; }
+  .misc-canvas .misc-chip { position: absolute; }
+  .misc-canvas .misc-chip.misc-chip-edit { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
   .misc-chip {
     display: inline-flex;
     align-items: center;
@@ -1963,6 +1971,9 @@ const DEFAULT_DATA = () => ({
   // объект со штампом updatedAt — LWW между устройствами (как engStudyPlan).
   // Старый формат { ids: [...] } ещё читается в resolveMiscLayout.
   miscAppsOrder: { slots: [], cols: 4, updatedAt: 0 },
+  // Прочее: свободная раскладка плашек. Отдельно для телефона (compact) и компьютера (wide):
+  // { <id приложения>: { x: доля ширины 0..1, y: px сверху } }. Пусто — плашки идут подряд по miscAppsOrder.
+  miscChipPos: { compact: {}, wide: {}, updatedAt: 0 },
   // Музыка: сами треки лежат файлами на сервере, а плейлисты — обычный
   // id-массив со списком id треков внутри, поэтому синхронизируются как всё
   // остальное. Встроенные треки собраны в плейлист по умолчанию.
@@ -39044,6 +39055,16 @@ const MISC_MAX_ROWS = 8;
 
 const miscAppById = () => Object.fromEntries(MISC_APPS.map(a => [a.id, a]));
 
+// Плашку, брошенную на другую, сдвигаем вниз под неё, чтобы они не слипались.
+function miscResolveY(x, y, size, others, gap = 10) {
+  for (let i = 0; i < 40; i++) {
+    const hit = others.find(o => x < o.x + o.w + 4 && x + size.w + 4 > o.x && y < o.y + o.h + 4 && y + size.h + 4 > o.y);
+    if (!hit) break;
+    y = hit.y + hit.h + gap;
+  }
+  return y;
+}
+
 // Раскладка «Прочего»: slots длины cols*rows, элемент — id или null.
 // Старый формат { ids } мигрирует в плотную раскладку с начала сетки.
 // Новые приложения (которых ещё нет в slots) садятся в первые свободные
@@ -39118,7 +39139,6 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
   const app = MISC_APPS.find(a => a.id === sub);
   const [editMode, setEditMode] = useState(false);
   const [draggingId, setDraggingId] = useState(null);
-  const [dropSlot, setDropSlot] = useState(null);
   const [preferredRows, setPreferredRows] = useState(3);
   const dragRef = useRef(null);
   const gridWrapRef = useRef(null);
@@ -39158,66 +39178,129 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
     });
   }, [slotsLen, preferredRows, setData]);
 
-  const moveMiscToSlot = (fromId, toSlot) => {
-    if (!fromId || toSlot == null || toSlot < 0) return;
-    const maxSlot = MISC_GRID_COLS * MISC_MAX_ROWS - 1;
-    if (toSlot > maxSlot) return;
-    setData(d => {
-      const cur = resolveMiscLayout(d, preferredRows);
-      const slots = [...cur.slots];
-      while (toSlot >= slots.length && slots.length <= maxSlot) slots.push(null);
-      if (toSlot >= slots.length) return d;
-      const from = slots.indexOf(fromId);
-      if (from < 0 || from === toSlot) return d;
-      const tmp = slots[toSlot];
-      slots[toSlot] = fromId;
-      slots[from] = tmp;
-      return {
-        ...d,
-        miscAppsOrder: {
-          slots,
-          cols: cur.cols,
-          updatedAt: Date.now(),
-        },
-      };
+  // ── Свободная раскладка плашек ────────────────────────────────────────
+  const [bp, setBp] = useState(() => (window.innerWidth < 768 ? 'compact' : 'wide'));
+  const [livePos, setLivePos] = useState(null);   // плашка в руках: { id, x, y } в px
+  const [sizes, setSizes] = useState({});         // id → { w, h } (меряем по DOM)
+  const [canvasW, setCanvasW] = useState(0);
+  const canvasRef = useRef(null);
+  const saved = (data && data.miscChipPos && data.miscChipPos[bp]) || {};
+  const freeMode = Object.keys(saved).length > 0;
+
+  useEffect(() => {
+    const onResize = () => {
+      setBp(window.innerWidth < 768 ? 'compact' : 'wide');
+      if (canvasRef.current) setCanvasW(canvasRef.current.clientWidth);
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (app || !el || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(() => setCanvasW(prev => (prev === el.clientWidth ? prev : el.clientWidth)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [app]);
+
+  React.useLayoutEffect(() => {
+    const el = canvasRef.current;
+    if (app || !el) return;
+    const next = {};
+    el.querySelectorAll('[data-misc-app]').forEach(c => {
+      next[c.getAttribute('data-misc-app')] = { w: c.offsetWidth, h: c.offsetHeight };
     });
+    setSizes(prev => {
+      const ks = Object.keys(next);
+      return ks.length === Object.keys(prev).length && ks.every(k => prev[k] && prev[k].w === next[k].w && prev[k].h === next[k].h) ? prev : next;
+    });
+    setCanvasW(prev => (prev === el.clientWidth ? prev : el.clientWidth));
+  });
+
+  const sizeOf = (id) => sizes[id] || { w: 90, h: 52 };
+  const posOf = (id) => {
+    if (livePos && livePos.id === id) return { x: livePos.x, y: livePos.y };
+    const p = saved[id];
+    if (!p) return null;
+    const x = Math.max(0, Math.min(p.x * canvasW, Math.max(0, canvasW - sizeOf(id).w)));
+    return { x, y: Math.max(0, p.y) };
+  };
+  let chipsBottom = 0;
+  MISC_APPS.forEach(a => { const p = posOf(a.id); if (p) chipsBottom = Math.max(chipsBottom, p.y + sizeOf(a.id).h); });
+
+  const savePositions = (patch) => setData(d => {
+    const cur = d.miscChipPos || {};
+    return { ...d, miscChipPos: { ...cur, [bp]: patch, updatedAt: Date.now() } };
+  });
+
+  // Новое приложение, которого нет в сохранённой раскладке, ставим внизу.
+  useEffect(() => {
+    if (app || !freeMode || !canvasW) return;
+    const missing = MISC_APPS.filter(a => !saved[a.id]);
+    if (!missing.length) return;
+    let x = 0, y = chipsBottom + 12;
+    const add = {};
+    missing.forEach(a => {
+      const w = a.label.length * 10 + 48;
+      if (x + w > canvasW) { x = 0; y += 64; }
+      add[a.id] = { x: x / canvasW, y };
+      x += w + 12;
+    });
+    savePositions({ ...saved, ...add });
+  }, [app, freeMode, canvasW, bp]);
+
+  const toggleEdit = () => {
+    if (editMode) { setEditMode(false); return; }
+    // Первый вход: текущее расположение плашек становится исходным, дальше двигаем от него.
+    const el = canvasRef.current;
+    if (!freeMode && el) {
+      const box = el.getBoundingClientRect();
+      const snap = {};
+      el.querySelectorAll('[data-misc-app]').forEach(c => {
+        const r = c.getBoundingClientRect();
+        snap[c.getAttribute('data-misc-app')] = { x: (r.left - box.left) / (box.width || 1), y: r.top - box.top };
+      });
+      if (Object.keys(snap).length) savePositions(snap);
+    }
+    setEditMode(true);
   };
 
-  const onAppPointerDown = (e, id) => {
-    if (!editMode) return;
+  const resetPositions = () => { savePositions({}); setEditMode(false); };
+
+  const onChipDown = (e, id) => {
+    if (!editMode || !freeMode) return;
     if (e.button != null && e.button !== 0) return;
     e.preventDefault();
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
-    dragRef.current = { id, startX: e.clientX, startY: e.clientY, moved: false };
+    const p = posOf(id) || { x: 0, y: 0 };
+    dragRef.current = { id, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, last: { id, x: p.x, y: p.y } };
     setDraggingId(id);
-    setDropSlot(null);
+    setLivePos({ id, x: p.x, y: p.y });
   };
 
-  const onAppPointerMove = (e) => {
-    const drag = dragRef.current;
-    if (!drag || !editMode) return;
-    const dx = e.clientX - drag.startX;
-    const dy = e.clientY - drag.startY;
-    if (!drag.moved && Math.hypot(dx, dy) < 10) return;
-    drag.moved = true;
-    const prev = e.currentTarget.style.pointerEvents;
-    e.currentTarget.style.pointerEvents = 'none';
-    const under = document.elementFromPoint(e.clientX, e.clientY);
-    e.currentTarget.style.pointerEvents = prev;
-    const cell = under && under.closest ? under.closest('[data-misc-slot]') : null;
-    if (!cell) { setDropSlot(null); return; }
-    const toSlot = parseInt(cell.getAttribute('data-misc-slot'), 10);
-    if (Number.isNaN(toSlot)) { setDropSlot(null); return; }
-    const occ = cell.getAttribute('data-misc-app');
-    if (occ === drag.id) { setDropSlot(null); return; }
-    setDropSlot(toSlot);
-    moveMiscToSlot(drag.id, toSlot);
+  const onChipMove = (e) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const x = Math.max(0, Math.min(d.ox + e.clientX - d.sx, Math.max(0, canvasW - sizeOf(d.id).w)));
+    const y = Math.max(0, d.oy + e.clientY - d.sy);
+    d.last = { id: d.id, x, y };
+    setLivePos(d.last);
   };
 
-  const onAppPointerUp = () => {
+  const onChipUp = () => {
+    const d = dragRef.current;
     dragRef.current = null;
     setDraggingId(null);
-    setDropSlot(null);
+    setLivePos(null);
+    if (!d || !canvasW) return;
+    const { x, y } = d.last;
+    const size = sizeOf(d.id);
+    const others = MISC_APPS.filter(a => a.id !== d.id && saved[a.id]).map(a => {
+      const p = posOf(a.id);
+      return { x: p.x, y: p.y, ...sizeOf(a.id) };
+    });
+    savePositions({ ...saved, [d.id]: { x: x / canvasW, y: miscResolveY(x, y, size, others) } });
   };
 
   if (!app) {
@@ -39227,36 +39310,50 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
           <div className="font-display text-2xl">Прочее</div>
           <button
             type="button"
-            onClick={() => setEditMode(v => !v)}
+            onClick={toggleEdit}
             className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"
             title={editMode ? 'Готово' : 'Изменить расположение'}
             aria-label={editMode ? 'Готово' : 'Изменить расположение'}
           >
             <Icon name={editMode ? 'check' : 'edit'} size={16} />
           </button>
+          {editMode && freeMode && (
+            <button type="button" onClick={resetPositions}
+              className="ml-auto mr-1 text-xs px-2.5 py-1.5 rounded-lg text-[var(--text-muted)] hover:bg-black/5">
+              Сбросить
+            </button>
+          )}
         </div>
-        <div ref={gridWrapRef} className="flex-1 min-h-0 flex flex-col">
-          <div className="misc-chips" data-testid="misc-chips">
-            {layout.slots.map((id, slotIndex) => {
+        <div ref={gridWrapRef} className="misc-chips-scroll">
+          <div
+            ref={canvasRef}
+            className={freeMode ? 'misc-canvas' : 'misc-chips'}
+            style={freeMode ? { height: chipsBottom + (editMode ? 160 : 24) } : undefined}
+            data-testid="misc-chips"
+          >
+            {layout.slots.map((id) => {
               const a = id ? byId[id] : null;
               if (!a) return null;
+              const pos = freeMode ? posOf(a.id) : null;
               return (
                 <button
                   key={a.id}
                   type="button"
-                  data-misc-slot={slotIndex}
                   data-misc-app={a.id}
                   onClick={() => { if (!editMode) setSub(a.id); }}
-                  onPointerDown={e => onAppPointerDown(e, a.id)}
-                  onPointerMove={onAppPointerMove}
-                  onPointerUp={onAppPointerUp}
-                  onPointerCancel={onAppPointerUp}
-                  style={{ background: a.color }}
+                  onPointerDown={e => onChipDown(e, a.id)}
+                  onPointerMove={onChipMove}
+                  onPointerUp={onChipUp}
+                  onPointerCancel={onChipUp}
+                  style={{
+                    background: a.color,
+                    ...(freeMode ? (pos ? { left: pos.x, top: pos.y } : { visibility: 'hidden', left: 0, top: 0 }) : null),
+                  }}
                   className={[
                     'misc-chip',
                     editMode ? 'misc-app-jiggle' : '',
+                    editMode && freeMode ? 'misc-chip-edit' : '',
                     draggingId === a.id ? 'misc-app-dragging' : '',
-                    dropSlot === slotIndex ? 'misc-app-drop-target' : '',
                   ].filter(Boolean).join(' ')}
                 >
                   {a.label}
