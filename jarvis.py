@@ -124,6 +124,11 @@ except Exception as _e:
     mail_skill = None
     print(f"NOTE: mail_skill disabled: {_e}", flush=True)
 try:
+    import plan_skill
+except Exception as _e:
+    plan_skill = None
+    print(f"NOTE: plan_skill disabled: {_e}", flush=True)
+try:
     import tg_bot
 except Exception as _e:
     tg_bot = None
@@ -1151,7 +1156,7 @@ def build_backup_zip() -> bytes:
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
                       "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json",
-                      "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json"}
+                      "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
@@ -2624,7 +2629,7 @@ APPLE_TOOLS = [
         "description": ("Создать событие в Apple Календаре. ТОЛЬКО после явного согласия пользователя. "
                         "Если просят событие и напомнить о нём — передай alarmMinutesBefore "
                         "(минуты до начала; 0 = в момент старта). Это оповещение о событии, "
-                        "не Apple Напоминание. «Напомни купить X» — это reminders_create, не этот инструмент."),
+                        "не Apple Напоминание. Apple Напоминание («в Напоминания», «на айфон») — это reminders_create, не этот инструмент."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -5592,7 +5597,8 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
         "сначала коротко скажи, что именно собираешься записать (название, дату и время), и спроси подтверждение, "
         "потом повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple "
         "Календарь — разные места. «В календарь» / «создай событие» → calendar_create_event; если ещё и "
-        "напомнить о событии — alarmMinutesBefore. «Напомни …» / напоминание → только reminders_create "
+        "напомнить о событии — alarmMinutesBefore. Просто «напомни …» → плановая задача (см. п.12, plan_create), "
+        "а если пользователь прямо просит Apple Напоминание («в Напоминания», «на айфон») → только reminders_create "
         "(настоящее Apple Напоминание), никогда не подменяй его событием календаря. Если queued:true — "
         "скажи, что попадёт в Напоминания после синхронизации Быстрой команды, НЕ говори «создал». "
         "Если error — честно скажи, что не удалось, и почему.\n\n"
@@ -5616,6 +5622,7 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
         + (market_skill.prompt_section((app or {}).get("telegramSkills")) if market_skill else "")
         + (tg_watch_skill.prompt_section((app or {}).get("telegramSkills")) if tg_watch_skill and with_tg else "")
         + (mail_skill.prompt_section((app or {}).get("telegramSkills")) if mail_skill else "")
+        + (plan_skill.prompt_section((app or {}).get("telegramSkills")) if plan_skill else "")
         + (tg_tools.prompt_section((app or {}).get("telegramSkills")) if with_tg else "") +
         "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
         "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
@@ -5635,8 +5642,17 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
     )
 
 
+_plan_scope = threading.local()   # .on — идёт плановая задача без пользователя: подтвердить «да» некому
+
+
 def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_tg: bool = False) -> dict:
     inp = inp or {}
+    if getattr(_plan_scope, "on", False) and "confirmed" in inp:
+        inp = {k: v for k, v in inp.items() if k != "confirmed"}   # согласие не подделать: без пользователя его нет
+    if plan_skill and name in plan_skill.TOOL_NAMES:
+        ctx = tg_bot.get_ctx() if tg_bot else None
+        return plan_skill.execute(name, inp, (app or {}).get("telegramSkills"), getattr(ctx, "chat_id", None),
+                                  getattr(_plan_scope, "on", False), "bot" if ctx else "web")
     # Возможности бота (чеклисты, файлы, опросы…) — шлют в чат, где идёт диалог.
     if tg_bot and name in tg_bot.TOOL_NAMES:
         return tg_bot.execute_tool(name, inp)
@@ -6104,6 +6120,13 @@ def _watch_skill_tools(app, with_tg: bool) -> list:
     return tg_watch_skill.TOOLS
 
 
+def _plan_skill_tools(app) -> list:
+    """Инструменты навыка «Планирование», если он включён. Те же схемы уходят голосовому помощнику и чату на сайте."""
+    if not plan_skill or not plan_skill.skill_on((app or {}).get("telegramSkills")):
+        return []
+    return plan_skill.TOOLS
+
+
 def _mail_skill_tools(app) -> list:
     """Инструменты навыка «Почта», если он включён. Те же схемы уходят голосовому помощнику и чату на сайте."""
     if not mail_skill or not mail_skill.skill_on((app or {}).get("telegramSkills")):
@@ -6157,7 +6180,8 @@ def _assistant_tool_list(app, with_tg: bool) -> list:
     return ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
         (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + \
-        _study_skill_tools(app) + _market_skill_tools(app) + _watch_skill_tools(app, with_tg) + _mail_skill_tools(app)
+        _study_skill_tools(app) + _market_skill_tools(app) + _watch_skill_tools(app, with_tg) + _mail_skill_tools(app) + \
+        _plan_skill_tools(app)
 
 
 def assistant_skills_catalog() -> list:
@@ -6168,6 +6192,7 @@ def assistant_skills_catalog() -> list:
         + (market_skill.SKILLS if market_skill else [])
         + (tg_watch_skill.SKILLS if tg_watch_skill else [])
         + (mail_skill.SKILLS if mail_skill else [])
+        + (plan_skill.SKILLS if plan_skill else [])
     )
 
 
@@ -6326,6 +6351,85 @@ def _tg_job_notify(text: str):
 
 if tg_tools:
     tg_tools.job_notify = _tg_job_notify
+
+# ── Плановые задачи ассистента (plan_skill.py) ───────────────────────────────
+# Минутный цикл забирает наступившие задачи; напоминание — текст в бот, поручение — прогон ассистента
+# без пользователя (подтверждения отрезаны в execute_assistant_tool), отчёт в чат — если пользователь так решил.
+
+PLAN_RUN_PROMPT = (
+    "\n\nРЕЖИМ ПЛАНОВОЙ ЗАДАЧИ. Ты выполняешь поручение, которое пользователь поставил заранее; рядом его нет и спросить "
+    "его нельзя. Подтверждения («да») получить невозможно: всё, что их требует (отправка от имени пользователя, удаление, "
+    "финансы, изменения в Telegram), не выполняй — вместо этого в итоге напиши, что нужно сделать и почему не сделал. "
+    "Новые плановые задачи не ставь. Итог — короткий и по делу: это и есть результат задачи.")
+
+
+def _plan_chat(task: dict):
+    """Куда слать напоминание/отчёт: чат, где задачу поставили; иначе личный чат владельца; иначе первый подписчик."""
+    if task.get("chat_id"):
+        return task["chat_id"]
+    uid = (tg_user._load_cfg() or {}).get("user_id") if tg_user else None
+    if uid:
+        return uid
+    ids = load_subscribers().get("chat_ids") or []
+    return ids[0] if ids else None
+
+
+def _plan_run_task(task: dict, token: str, chat) -> str:
+    app = load_app_data()
+    conf = _ai_conf(app)
+    if not conf:
+        raise _AssistantError("Ассистенту не назначен ключ ИИ: Настройки → Ассистент.")
+    provider, api_key, model, site_url = conf
+    with_tg = bool(tg_user and chat and tg_user.is_owner_chat(chat))
+    ctx = tg_bot.Ctx(token, chat, None) if tg_bot and token and chat else None
+    if ctx:
+        ctx.openai_key = find_openai_key(app.get("settings") or {})
+    tg_bot.set_ctx(ctx) if tg_bot else None
+    _plan_scope.on = True
+    loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
+    try:
+        answer, _ = loop_fn([{"role": "user", "content": "Плановая задача «" + task["title"] + "»:\n" + task["text"]}],
+                            api_key, model, app, site_url, with_tg, extra_system=PLAN_RUN_PROMPT, max_steps=14)
+    finally:
+        _plan_scope.on = False
+        if tg_bot:
+            tg_bot.set_ctx(None)
+    if answer is None:
+        raise _AssistantError("Не уложился в отведённые шаги.")
+    return answer
+
+
+def _plan_worker(task: dict):
+    token, chat = get_token(), _plan_chat(task)
+    ok, result = True, ""
+    try:
+        if task["kind"] == "remind":
+            if not (token and chat and tg_bot):
+                raise RuntimeError("Нет Telegram-бота или чата, куда отправить напоминание.")
+            tg_bot.send_text(token, chat, "⏰ <b>Напоминание</b>\n\n" + task["text"])
+            result = "Напоминание отправлено в чат."
+        else:
+            result = _plan_run_task(task, token, chat)
+    except _AssistantError as e:
+        ok, result = False, str(e)
+    except Exception as e:
+        ok, result = False, f"{type(e).__name__}: {e}"
+        print(f"  plan task {task['id']}: {result}", flush=True)
+    plan_skill.finish(task["id"], ok, result)
+    if task["kind"] == "task" and token and chat and tg_bot and (task.get("report") or not ok):
+        try:   # ошибку сообщаем всегда, успех — только если пользователь просил отчёт
+            head = ("✅ <b>Плановая задача выполнена</b>" if ok else "⚠️ <b>Плановая задача не выполнена</b>")
+            tg_bot.send_text(token, chat, f"{head}\n«{html.escape(task['title'])}»\n\n" + (result if ok else html.escape(result)))
+        except Exception as e:
+            print(f"  plan report failed: {e}", flush=True)
+
+
+def _plan_tick():
+    if not plan_skill or not plan_skill.skill_on((load_app_data() or {}).get("telegramSkills")):
+        return
+    for task in plan_skill.claim_due():
+        threading.Thread(target=_plan_worker, args=(task,), daemon=True, name="plan-" + task["id"]).start()
+
 
 _study_brief_running = set()
 
@@ -6732,6 +6836,10 @@ def notifier_loop():
             weather_cal_tick(load_app_data(), now_msk().strftime("%H:%M"), today_msk().isoformat())
         except Exception as e:
             print(f"Weather calendar tick error: {e}")
+        try:
+            _plan_tick()
+        except Exception as e:
+            print(f"plan tick error: {e.__class__.__name__}: {e}", flush=True)
         if mail_skill:
             try:
                 mail_skill.ensure_poller()
@@ -9626,6 +9734,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif route == "/api/mail/tools":
             state = (load_app_data() or {}).get("telegramSkills")
             self._json(200, mail_skill.voice_payload(state) if mail_skill else {"tools": [], "prompt": ""})
+        elif route == "/api/plan/tools":
+            state = (load_app_data() or {}).get("telegramSkills")
+            self._json(200, plan_skill.voice_payload(state) if plan_skill else {"tools": [], "prompt": ""})
+        elif route == "/api/plan/tasks":
+            self._json(200, {"tasks": plan_skill.list_tasks(), **plan_skill.summary()} if plan_skill
+                       else {"tasks": [], "active": 0, "total": 0, "error": "Планирование на сервере недоступно."})
         elif route == "/api/tg/tools":
             # Схемы инструментов и кусок промпта для браузерного ассистента: только
             # если аккаунт подключён и только включённые навыки.
@@ -9816,6 +9930,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._market_post(route)
         elif route.startswith("/api/mail/"):
             self._mail_post(route)
+        elif route.startswith("/api/plan/"):
+            self._plan_post(route)
         elif route == "/api/student/check":
             try:
                 self._json(200, student_check())
@@ -11352,6 +11468,46 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(404, {"error": "not found"})
         except Exception as e:
             self._json(200, {"ok": False, "error": mail_skill.redact(f"{e.__class__.__name__}: {e}")})
+
+    def _plan_post(self, route: str):
+        """Плановые задачи: управление из настроек и вызов инструментов голосовым ассистентом."""
+        if plan_skill is None:
+            self._json(200, {"ok": False, "error": "Планирование на сервере недоступно."})
+            return
+        length = self._content_length() or 0
+        if length > 32 * 1024:
+            self._json(413, {"error": "body too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except Exception as e:
+            self._json(400, {"error": str(e)})
+            return
+        if not isinstance(payload, dict):
+            payload = {}
+        try:
+            tid = str(payload.get("id") or "")
+            if route == "/api/plan/tool":
+                name = payload.get("name")
+                if name not in plan_skill.TOOL_NAMES:
+                    self._json(400, {"error": "unknown tool"})
+                else:
+                    self._json(200, execute_assistant_tool(name, payload.get("input") or {}, load_app_data() or {}, "", False))
+            elif route == "/api/plan/cancel":
+                self._json(200, plan_skill.cancel({"id": tid}))
+            elif route == "/api/plan/delete":
+                self._json(200, plan_skill.delete(tid))
+            elif route == "/api/plan/run":
+                self._json(200, plan_skill.run_now(tid))
+                threading.Thread(target=_plan_tick, daemon=True).start()
+            elif route == "/api/plan/clear":
+                self._json(200, plan_skill.clear_finished())
+            else:
+                self._json(404, {"error": "not found"})
+        except plan_skill.PlanError as e:
+            self._json(200, {"ok": False, "error": str(e)})
+        except Exception as e:
+            self._json(200, {"ok": False, "error": f"{e.__class__.__name__}: {e}"})
 
     def _tg_post(self, route: str):
         """Вход в личный Telegram и вызов его инструментов браузерным ассистентом."""

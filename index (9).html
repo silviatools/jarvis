@@ -7161,9 +7161,163 @@ function NotifyRoutingSettings({ data, setData }) {
 // сервере (пароль приложения не должен попадать ни в браузер, ни в
 // синхронизируемые данные), поэтому здесь только состояние — что сервер видит
 // в iCloud прямо сейчас.
+// Сворачиваемый блок раздела «Ассистент»: по умолчанию закрыт, чтобы страница не превращалась в простыню.
+function AssistantBlock({ id, title, subtitle, badge, children }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <section className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl overflow-hidden" data-testid={`assistant-block-${id}`}>
+      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
+        className="w-full flex items-center gap-3 text-left px-4 sm:px-5 py-4 hover:bg-black/[0.02] transition-colors">
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="font-display text-base">{title}</h3>
+            {badge}
+          </div>
+          {subtitle && <p className="text-xs text-[var(--text-muted)] mt-0.5">{subtitle}</p>}
+        </div>
+        <span className={`flex-shrink-0 text-[var(--text-subtle)] transition-transform ${open ? 'rotate-180' : ''}`}>
+          <Icon name="chevronDown" size={18} />
+        </span>
+      </button>
+      {open && (
+        <div className="px-4 sm:px-5 pb-4 sm:pb-5 pt-4 border-t border-[var(--border)] space-y-4" data-testid={`assistant-block-${id}-body`}>
+          {children}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// Плановые задачи, которые ассистент ставит сам (plan_skill.py): напоминания и поручения.
+// Хранятся на сервере (DATA_DIR/jarvis_plan_tasks.json), здесь — список со статусом и результатом.
+const PLAN_STATUS = {
+  scheduled: ['ожидает', 'bg-sky-100 text-sky-800'],
+  running: ['выполняется', 'bg-amber-100 text-amber-800'],
+  done: ['выполнено', 'bg-green-100 text-green-800'],
+  failed: ['ошибка', 'bg-red-100 text-red-700'],
+  cancelled: ['отменена', 'bg-[var(--bg)] text-[var(--text-subtle)]'],
+  missed: ['пропущена', 'bg-amber-100 text-amber-800'],
+};
+const planDate = (s) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(0, 4)} ${s.slice(11, 16)}` : '');
+
+function PlannedTasksBlock({ data }) {
+  const [rows, setRows] = React.useState(null);
+  const [err, setErr] = React.useState('');
+  const [busy, setBusy] = React.useState('');
+  const [openRes, setOpenRes] = React.useState({});
+  const load = React.useCallback(() => {
+    fetch('/api/plan/tasks').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(j => { setRows(j.tasks || []); setErr(j.error || ''); })
+      .catch(e => { setRows(r => r || []); setErr('Не удалось загрузить задачи: ' + e.message); });
+  }, []);
+  React.useEffect(() => {
+    load();
+    const t = setInterval(() => { if (!document.hidden) load(); }, 20000);
+    return () => clearInterval(t);
+  }, [load]);
+  const act = async (route, id, confirmText) => {
+    if (confirmText && !confirm(confirmText)) return;
+    setBusy(id || route);
+    try {
+      const j = await (await fetch('/api/plan/' + route, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
+      })).json();
+      if (j.ok === false) setErr(j.error || 'Не получилось');
+      else setErr('');
+    } catch (e) { setErr('Сервер не ответил: ' + e.message); }
+    setBusy('');
+    load();
+  };
+  const active = (rows || []).filter(t => t.status === 'scheduled' || t.status === 'running').length;
+  const finished = (rows || []).length - active;
+  const skillOff = (data.telegramSkills || {}).plan === false;
+  const badge = (
+    <>
+      {active > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-sky-100 text-sky-800">{active} активн.</span>}
+      {skillOff && <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">навык выключен</span>}
+    </>
+  );
+  return (
+    <AssistantBlock id="plan" title="Плановые задачи" badge={badge}
+      subtitle="Напоминания и поручения, которые ассистент поставил себе по вашей просьбе">
+      <p className="text-sm text-[var(--text-muted)]">
+        Попросите ассистента в боте, в чате или голосом: «напомни завтра в 9:00 позвонить маме», «каждый день в 8:00 собирай сводку по учёбе».
+        Для поручения он сначала спросит, нужно ли отчитаться в чат. Время московское.
+      </p>
+      {err && <div className="text-sm text-amber-600">{err}</div>}
+      {rows === null && <p className="text-sm text-[var(--text-subtle)]">Загружаю…</p>}
+      {rows && rows.length === 0 && !err && (
+        <p className="text-sm text-[var(--text-subtle)]">Пока ни одной задачи.</p>
+      )}
+      <div className="divide-y divide-[var(--border)]">
+        {(rows || []).map(t => {
+          const [stLabel, stCls] = PLAN_STATUS[t.status] || [t.status, ''];
+          const long = (t.result || '').length > 220;
+          const expanded = !!openRes[t.id];
+          return (
+            <div key={t.id} className="py-3" data-testid="plan-task">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm" title={t.kind === 'remind' ? 'Напоминание' : 'Поручение ассистенту'}>{t.kind === 'remind' ? '⏰' : '🤖'}</span>
+                    <span className="font-medium text-sm break-words">{t.title}</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${stCls}`}>{stLabel}</span>
+                  </div>
+                  <div className="text-xs text-[var(--text-muted)] mt-1">
+                    {planDate(t.run_at)}
+                    {t.repeat && t.repeat !== 'none' && <span> · {t.repeat_ru}</span>}
+                    {t.kind === 'task' && <span> · отчёт в чат: {t.report ? 'да' : 'нет'}</span>}
+                    {t.finished_at && t.status !== 'scheduled' && <span> · завершено {planDate(t.finished_at)}</span>}
+                    {t.runs > 0 && t.repeat !== 'none' && <span> · запусков: {t.runs}</span>}
+                  </div>
+                  {t.text && (
+                    <p className="text-xs text-[var(--text-subtle)] mt-1 break-words" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                      {t.kind === 'remind' ? 'Текст: ' : 'Задание: '}{t.text}
+                    </p>
+                  )}
+                  {t.result && (
+                    <div className="mt-2 rounded-lg bg-[var(--bg)] px-3 py-2">
+                      <div className="text-[10px] uppercase tracking-wide text-[var(--text-subtle)] mb-0.5">Результат</div>
+                      <div className="text-xs whitespace-pre-wrap break-words">{expanded || !long ? t.result : t.result.slice(0, 220) + '…'}</div>
+                      {long && (
+                        <button className="text-[11px] text-[var(--text-subtle)] underline mt-1 py-1"
+                          onClick={() => setOpenRes(o => ({ ...o, [t.id]: !expanded }))}>
+                          {expanded ? 'Свернуть' : 'Показать полностью'}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 mt-2">
+                {t.status === 'scheduled' && (
+                  <>
+                    <button className="btn-secondary text-xs px-3 py-1.5" disabled={busy === t.id} onClick={() => act('run', t.id)}>Выполнить сейчас</button>
+                    <button className="btn-secondary text-xs px-3 py-1.5" disabled={busy === t.id} onClick={() => act('cancel', t.id)}>Отменить</button>
+                  </>
+                )}
+                {t.status !== 'running' && (
+                  <button className="text-xs px-3 py-1.5 rounded-lg text-[var(--text-muted)] hover:bg-red-50 hover:text-red-600"
+                    disabled={busy === t.id} onClick={() => act('delete', t.id)}>Удалить</button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {finished > 0 && (
+        <button className="btn-secondary text-sm px-3 py-1.5" disabled={busy === 'clear'}
+          onClick={() => act('clear', '', 'Убрать из списка все завершённые, отменённые и пропущенные задачи?')}>
+          Очистить завершённые ({finished})
+        </button>
+      )}
+    </AssistantBlock>
+  );
+}
+
 // Каталог навыков ассистента (презентации, учёба, личный Telegram…): название, описание, переключатель.
 // Показывается и в «Ассистент», и в «Телеграм» — состояние общее (data.telegramSkills).
-function AssistantSkillsCard({ data, setData }) {
+function AssistantSkillsCard({ data, setData, embedded }) {
   const [skills, setSkills] = React.useState(null);
   const [loadErr, setLoadErr] = React.useState('');
   const [openSkill, setOpenSkill] = React.useState('');
@@ -7185,6 +7339,7 @@ function AssistantSkillsCard({ data, setData }) {
     marketToolsLoadedAt = 0;
     watchToolsLoadedAt = 0;
     mailToolsLoadedAt = 0;
+    planToolsLoadedAt = 0;
   };
   const riskLabel = { read: 'чтение', create: 'создаёт файлы', write: 'действия с подтверждением', danger: 'опасно' };
   const riskCls = {
@@ -7195,8 +7350,8 @@ function AssistantSkillsCard({ data, setData }) {
   };
   const card = 'bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5';
   return (
-    <div className={card} data-testid="skills-card">
-      <h3 className="font-display text-lg mb-1">Навыки ассистента</h3>
+    <div className={embedded ? '' : card} data-testid="skills-card">
+      {!embedded && <h3 className="font-display text-lg mb-1">Навыки ассистента</h3>}
       <p className="text-sm text-[var(--text-muted)] mb-3">
         Что умеет Джарвис: от презентаций и учёбы до работы с вашим Telegram. Выключенный навык недоступен ни голосовому ассистенту,
         ни боту. Всё, что что-то меняет в вашем Telegram, выполняется только после вашего «да».
@@ -7244,7 +7399,7 @@ function AssistantSkillsCard({ data, setData }) {
   );
 }
 
-function AppleConnectionCard() {
+function AppleConnectionCard({ embedded }) {
   const [state, setState] = React.useState({ loading: true });
   const load = React.useCallback(() => {
     setState(s => ({ ...s, loading: true }));
@@ -7267,9 +7422,9 @@ function AppleConnectionCard() {
   };
 
   return (
-    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-3" data-apple-card>
+    <div className={embedded ? 'space-y-3' : 'bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-3'} data-apple-card>
       <div className="flex items-center justify-between gap-3">
-        <h3 className="font-display text-base">Apple Календарь и Напоминания</h3>
+        {embedded ? <span /> : <h3 className="font-display text-base">Apple Календарь и Напоминания</h3>}
         <button onClick={load} className="btn-secondary text-sm px-3 py-1.5" disabled={s.loading}>
           {s.loading ? 'Проверяю…' : 'Проверить'}
         </button>
@@ -8065,13 +8220,18 @@ function VoiceAssistantSettings({ data, setData }) {
         </p>
       </div>
 
-      <AppleConnectionCard />
+      <PlannedTasksBlock data={data} />
 
-      <AssistantSkillsCard data={data} setData={setData} />
+      <AssistantBlock id="skills" title="Навыки ассистента"
+        subtitle="Что умеет Джарвис — каждый навык можно включить или выключить">
+        <AssistantSkillsCard data={data} setData={setData} embedded />
+      </AssistantBlock>
 
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+      <AssistantBlock id="keys" title="Нейросети и ключи"
+        subtitle="Наборы ключей Claude / OpenAI и какой из них отвечает за ассистента">
+      <div className="space-y-4">
         <div className="flex items-center justify-between gap-3">
-          <h3 className="font-display text-base">Наборы ключей ИИ</h3>
+          <h3 className="font-display text-sm">Наборы ключей ИИ</h3>
           <button onClick={addPreset} className="btn-secondary flex items-center gap-1.5 text-sm px-3 py-1.5">
             <Icon name="plus" size={14} /> Добавить
           </button>
@@ -8127,8 +8287,8 @@ function VoiceAssistantSettings({ data, setData }) {
         ))}
       </div>
 
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
-        <h3 className="font-display text-base mb-1">Какой набор для какой функции</h3>
+      <div className="space-y-4 pt-4 border-t border-[var(--border)]">
+        <h3 className="font-display text-sm">Какой набор для какой функции</h3>
         {presets.length === 0 ? (
           <p className="text-sm text-[var(--text-subtle)]">Сначала добавьте хотя бы один набор ключей выше.</p>
         ) : AI_FUNCTIONS.map(f => (
@@ -8143,8 +8303,16 @@ function VoiceAssistantSettings({ data, setData }) {
           </div>
         ))}
       </div>
+      </AssistantBlock>
 
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+      <AssistantBlock id="apple" title="Apple Календарь и Напоминания"
+        subtitle="Подключение iCloud: ассистент читает календарь и напоминания">
+        <AppleConnectionCard embedded />
+      </AssistantBlock>
+
+      <AssistantBlock id="voice" title="Голос и ссылки"
+        subtitle="Публичный адрес сайта для ссылок в Telegram и голос озвучки">
+      <div className="space-y-4">
         <div>
           <label>Публичный адрес сайта (для ссылок в Telegram)</label>
           <input
@@ -8177,9 +8345,10 @@ function VoiceAssistantSettings({ data, setData }) {
           </p>
         </div>
       </div>
+      </AssistantBlock>
 
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-        <h3 className="font-display text-base mb-2">Как пользоваться</h3>
+      <AssistantBlock id="help" title="Как пользоваться" subtitle="Микрофон, Telegram-бот, примеры фраз">
+      <div>
         <ol className="text-sm text-[var(--text-muted)] space-y-1 list-decimal list-inside">
           <li>Нажмите кнопку микрофона (внизу справа)</li>
           <li>Скажите что нужно — вопрос, дело или «открой раздел ...»</li>
@@ -8197,7 +8366,11 @@ function VoiceAssistantSettings({ data, setData }) {
         <p className="text-xs text-[var(--text-subtle)] mt-3">
           Примеры: «Когда последний раз обслуживали машину?», «Добавь комментарий „тест“ к задаче про распродажу ПК», «Запиши визит к врачу вчера», «Удали карту Пятёрочки»
         </p>
+        <p className="text-xs text-[var(--text-subtle)] mt-3">
+          Планирование: «Напомни завтра в 9:00 позвонить маме», «В пятницу в 18:00 собери сводку по учёбе и пришли мне», «Каждый день в 8:00 проверяй почту». Все задачи — в блоке «Плановые задачи» выше.
+        </p>
       </div>
+      </AssistantBlock>
     </div>
   );
 }
@@ -15373,6 +15546,20 @@ async function loadMailTools(force) {
   } catch (e) { /* без почты ассистент работает как раньше */ }
 }
 
+// Планирование: напоминания и поручения, которые ассистент ставит себе (plan_skill.py).
+let PLAN_AGENT_TOOLS = [];
+let PLAN_AGENT_PROMPT = '';
+let planToolsLoadedAt = 0;
+async function loadPlanTools(force) {
+  if (!force && Date.now() - planToolsLoadedAt < 20000) return;
+  try {
+    const j = await (await fetch('/api/plan/tools')).json();
+    PLAN_AGENT_TOOLS = j.tools || [];
+    PLAN_AGENT_PROMPT = j.prompt || '';
+    planToolsLoadedAt = Date.now();
+  } catch (e) { /* без планирования ассистент работает как раньше */ }
+}
+
 
 function buildVoiceAgentSystemPrompt(data) {
   // «База данных» — то, что пользователь рассказал о себе. Подмешиваем в
@@ -15414,13 +15601,13 @@ ${writeList}
 
 6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и готового веса), cooking_plan_delete_ingredient.
 
-7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без спроса. ЛЮБАЯ ЗАПИСЬ — добавить, изменить, удалить — только после явного согласия пользователя: сначала коротко скажи, что именно запишешь (название, дату и время), и спроси подтверждение, а после согласия повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места. «В календарь» / «создай событие» → calendar_create_event; если ещё и напомнить о событии — alarmMinutesBefore. «Напомни …» → только reminders_create (настоящее Apple Напоминание), никогда не подменяй его событием календаря. Если queued:true — скажи, что попадёт в Напоминания после синхронизации Быстрой команды, НЕ говори «создал». Если error — честно скажи, что не удалось, и почему.
+7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без спроса. ЛЮБАЯ ЗАПИСЬ — добавить, изменить, удалить — только после явного согласия пользователя: сначала коротко скажи, что именно запишешь (название, дату и время), и спроси подтверждение, а после согласия повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места. «В календарь» / «создай событие» → calendar_create_event; если ещё и напомнить о событии — alarmMinutesBefore. Просто «напомни …» → плановая задача (plan_create, см. ниже), а если пользователь прямо просит Apple Напоминание («в Напоминания», «на айфон») → только reminders_create (настоящее Apple Напоминание), никогда не подменяй его событием календаря. Если queued:true — скажи, что попадёт в Напоминания после синхронизации Быстрой команды, НЕ говори «создал». Если error — честно скажи, что не удалось, и почему.
 
 8. get_weather(city?, date?, date_from?, date_to?) — погода для города. Раздел «Погода» тоже НЕ данные приложения (внешний сервис), а живой запрос — используй этот инструмент, а не navigate/get_data. Город можно не указывать — тогда берётся сохранённый в настройках (Погода → город). Без date — текущая погода и 3 дня вперёд. Для конкретного дня или диапазона («в субботу», «на следующей неделе») передай date или date_from/date_to в формате YYYY-MM-DD — вычисли даты сам от СЕГОДНЯ (прогноз доступен на 16 дней вперёд).
 
 9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй.
 
-${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
+${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
@@ -15544,6 +15731,17 @@ async function executeVoiceTool(name, input, nav, data) {
       return noop(await res.json());
     } catch (e) {
       return noop({ error: 'Сервер не ответил по почте: ' + e.message });
+    }
+  }
+  if (name.startsWith('plan_')) {
+    try {
+      const res = await fetch('/api/plan/tool', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, input }),
+      });
+      return noop(await res.json());
+    } catch (e) {
+      return noop({ error: 'Сервер не ответил по планированию: ' + e.message });
     }
   }
   if (name.startsWith('market_')) {
@@ -15696,6 +15894,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
   await loadMarketTools();
   await loadWatchTools();
   await loadMailTools();
+  await loadPlanTools();
   const system = buildVoiceAgentSystemPrompt(data);
   let pendingConfirmation = false;
   for (let step = 0; step < maxSteps; step++) {
@@ -15707,7 +15906,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS] }),
+      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS] }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -15746,8 +15945,9 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps) {
   await loadMarketTools();
   await loadWatchTools();
   await loadMailTools();
+  await loadPlanTools();
   const system = buildVoiceAgentSystemPrompt(data);
-  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS].map(t => ({
+  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS].map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.input_schema },
   }));
