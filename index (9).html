@@ -1867,6 +1867,8 @@ const DEFAULT_SETTINGS = {
   aiPresets: [],
   // functionKey (см. AI_FUNCTIONS) → id пресета из aiPresets.
   aiAssignments: {},
+  // Модели по ролям, рассуждения, эскалация, группы инструментов (см. AiCostBlocks); пусто — рекомендованные значения сервера.
+  aiModels: null,
   voiceTtsVoice: 'nova',
   gymVoice: true,        // озвучивание подходов и отдыха на тренировке
   gymBackgroundAudio: false, // звук с погашенным экраном (ценой чужой музыки)
@@ -1894,7 +1896,7 @@ const AI_FUNCTIONS = [
   { key: 'cashflowStatementExtract', label: 'ДДС — сверка счёта с банковской выпиской' },
 ];
 
-const AI_PROVIDER_DEFAULT_MODEL = { claude: 'claude-sonnet-5', openai: 'gpt-4o' };
+const AI_PROVIDER_DEFAULT_MODEL = { claude: 'claude-sonnet-5', openai: 'gpt-6.1-terra' };
 
 // Разовая миграция со старой единой пары voiceProvider/voiceApiKey/voiceModel:
 // если пресетов ещё нет, а старый ключ есть — заводим из него один пресет и
@@ -8476,6 +8478,346 @@ function StudySettings({ data, setData }) {
   );
 }
 
+// ── Модели, рассуждения и расход ИИ (ai_usage.py / tool_groups.py на сервере) ──────────────
+// Всё хранится в settings.aiModels (обычная синхронизация); роли работают только для наборов OpenAI.
+const AI_ROLE_ORDER = ['main', 'complex', 'background'];
+const AI_TASK_ORDER = ['studyBrief', 'triage', 'title', 'notesTargets'];
+const AI_FUNC_LABELS = {
+  chat: 'Чат в Telegram', voice: 'Голос в приложении', plan_task: 'Плановые поручения', study_brief: 'Сбор информации',
+  study_chats: 'Контроль учебных чатов', title: 'Название диалога', notes: 'Чаты из «Базы данных»', other: 'Прочее',
+};
+const aiFmtUsd = (v) => `$${(Number(v) || 0).toFixed(Number(v) >= 10 ? 2 : 3)}`;
+const aiFmtNum = (v) => (Number(v) || 0).toLocaleString('ru-RU');
+
+function useAiCatalog() {
+  const [cat, setCat] = React.useState(null);
+  const [err, setErr] = React.useState('');
+  React.useEffect(() => {
+    let alive = true;
+    fetch('/api/ai/models').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(c => { if (alive) setCat(c); })
+      .catch(e => { if (alive) setErr('Сервер не ответил: ' + e.message); });
+    return () => { alive = false; };
+  }, []);
+  return { cat, err };
+}
+
+function AiSwitch({ on, onChange, label }) {
+  return (
+    <button type="button" onClick={() => onChange(!on)} role="switch" aria-checked={!!on} aria-label={label}
+      className={`relative w-12 h-7 rounded-full transition-colors flex-shrink-0 ${on ? 'bg-[var(--text)]' : 'bg-[var(--border)]'}`}>
+      <span className={`absolute top-1 w-5 h-5 rounded-full bg-white transition-all ${on ? 'left-6' : 'left-1'}`} />
+    </button>
+  );
+}
+
+function AiSwitchRow({ title, desc, on, onChange, testid }) {
+  return (
+    <div className="flex items-start gap-3" data-testid={testid}>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium">{title}</div>
+        <p className="text-xs text-[var(--text-muted)] mt-0.5">{desc}</p>
+      </div>
+      <AiSwitch on={on} onChange={onChange} label={title} />
+    </div>
+  );
+}
+
+function AiCostBlocks({ data, setData, settings, presets, assignments }) {
+  const { cat, err } = useAiCatalog();
+  const defaults = (cat && cat.defaults) || null;
+  const cfg = React.useMemo(() => {
+    const base = defaults || { enabled: true, escalation: true, escalationDailyLimit: 40, toolGroups: false, promptCache: true, compactPrompt: true, turnLog: true };
+    const cur = (settings.aiModels && typeof settings.aiModels === 'object') ? settings.aiModels : {};
+    const out = { ...base, ...cur };
+    [...AI_ROLE_ORDER, ...AI_TASK_ORDER].forEach(k => { out[k] = { model: '', effort: '', ...((base || {})[k] || {}), ...(cur[k] || {}) }; });
+    return out;
+  }, [settings.aiModels, defaults]);
+
+  const preset = presets.find(p => p.id === assignments.voiceAssistant) || presets[0] || null;
+  const isOpenAI = !!preset && preset.provider === 'openai';
+  const presetModel = (preset && (preset.model || '').trim()) || AI_PROVIDER_DEFAULT_MODEL.openai;
+  const roles = (cat && cat.roles) || [];
+  const roleMeta = (k) => roles.find(r => r.key === k) || { key: k, label: k, hint: '', fallback: null };
+  const models = (cat && cat.models) || [];
+  const modelInfo = (id) => {
+    if (!id) return null;
+    const exact = models.find(m => m.id === id);
+    if (exact) return exact;
+    return models.filter(m => id.startsWith(m.id + '-')).sort((a, b) => b.id.length - a.id.length)[0] || null;
+  };
+  const effModel = (k) => {
+    const seen = new Set();
+    let key = k;
+    while (key && !seen.has(key)) {
+      seen.add(key);
+      if (cfg[key] && cfg[key].model) return cfg[key].model;
+      key = roleMeta(key).fallback;
+    }
+    return presetModel;
+  };
+  const effortsFor = (id) => {
+    const info = modelInfo(id);
+    if (info) return info.efforts;
+    return /^(gpt-([5-9]|\d\d)|o\d)/i.test(id || '') ? ['low', 'medium', 'high'] : [];
+  };
+  const effortLabel = (e) => ((cat && cat.effortLabels) || {})[e] || e;
+
+  const save = (patch, { remember = false } = {}) => {
+    const { prev, ...rest } = cfg;
+    const next = { ...rest, ...patch };
+    next.prev = remember ? rest : (cfg.prev || null);
+    updateAiSetting(setData, next);
+  };
+  const setRole = (k, patch) => save({ [k]: { ...cfg[k], ...patch } });
+  const setRoleModel = (k, model) => {
+    const e = cfg[k].effort;
+    const ok = !e || effortsFor(model || effModel(roleMeta(k).fallback || 'main')).includes(e);
+    setRole(k, { model, effort: ok ? e : '' });
+  };
+
+  const applyDefaults = () => { if (defaults) save({ ...defaults, prev: undefined }, { remember: true }); };
+  const applyLegacy = () => save({ enabled: false }, { remember: true });
+  const restore = () => { if (cfg.prev) updateAiSetting(setData, { ...cfg.prev, prev: null }); };
+
+  const managed = cfg.enabled !== false;
+  const modelOptions = (current) => {
+    const list = models.slice();
+    if (current && !modelInfo(current)) list.push({ id: current, title: `${current} (своя)` });
+    return list;
+  };
+  const priceLine = (id) => {
+    const i = modelInfo(id);
+    if (!i || i.in == null) return null;
+    return `вход $${i.in} · кэш $${i.cache ?? '—'} · выход $${i.out} за 1M токенов`;
+  };
+
+  const rolesBadge = !isOpenAI
+    ? <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">только OpenAI</span>
+    : managed
+      ? <span className="text-[11px] px-2 py-0.5 rounded-full bg-green-100 text-green-800">по ролям</span>
+      : <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--bg)] text-[var(--text-subtle)]">одна модель</span>;
+
+  const modelSelect = (k, allowInherit) => {
+    const v = cfg[k].model || '';
+    const fb = roleMeta(k).fallback;
+    return (
+      <select value={v} onChange={e => setRoleModel(k, e.target.value)} disabled={!managed || !cat} data-testid={`ai-model-${k}`}>
+        {allowInherit && <option value="">как «{roleMeta(fb || 'main').label}» ({effModel(fb || 'main')})</option>}
+        {modelOptions(v).map(m => <option key={m.id} value={m.id}>{m.title || m.id}</option>)}
+      </select>
+    );
+  };
+
+  const effortSelect = (k) => {
+    const model = effModel(k);
+    const opts = effortsFor(model);
+    const v = cfg[k].effort || '';
+    const shown = opts.includes(v) ? v : '';
+    return (
+      <select value={shown} onChange={e => setRole(k, { effort: e.target.value })} disabled={!managed || !cat || opts.length === 0}
+        data-testid={`ai-effort-${k}`}>
+        <option value="">{opts.length ? 'как у модели по умолчанию' : 'модель без рассуждений'}</option>
+        {opts.map(e => <option key={e} value={e}>{effortLabel(e)}</option>)}
+      </select>
+    );
+  };
+
+  return (
+    <>
+      <AssistantBlock id="ai-models" title="Модели по ролям"
+        subtitle="Какая модель OpenAI отвечает в чате, на сложных задачах и в фоне" badge={rolesBadge}>
+        {err && <p className="text-xs text-red-600">{err}</p>}
+        {!isOpenAI && (
+          <p className="text-xs text-amber-800 bg-amber-50 rounded-lg px-3 py-2">
+            Сейчас ассистенту назначен {preset ? 'набор Claude' : 'пустой набор'} — роли и рассуждения применяются только к наборам OpenAI.
+            Выберите набор OpenAI в блоке «Нейросети и ключи».
+          </p>
+        )}
+        <div className="grid gap-3">
+          {AI_ROLE_ORDER.map(k => (
+            <div key={k} className="space-y-1" data-testid={`ai-role-${k}`}>
+              <label>{roleMeta(k).label}</label>
+              {modelSelect(k, k !== 'main')}
+              <p className="text-[11px] text-[var(--text-subtle)] break-words">{roleMeta(k).hint}{priceLine(effModel(k)) ? ` · ${priceLine(effModel(k))}` : ''}</p>
+            </div>
+          ))}
+        </div>
+        <details className="border border-[var(--border)] rounded-xl px-3 py-2">
+          <summary className="text-sm cursor-pointer">Отдельные задачи ({AI_TASK_ORDER.length})</summary>
+          <div className="grid gap-3 mt-3">
+            {AI_TASK_ORDER.map(k => (
+              <div key={k} className="space-y-1">
+                <label>{roleMeta(k).label}</label>
+                {modelSelect(k, true)}
+                <p className="text-[11px] text-[var(--text-subtle)]">{roleMeta(k).hint}</p>
+              </div>
+            ))}
+          </div>
+        </details>
+        <div className="flex flex-wrap gap-2 pt-1">
+          <button type="button" className="btn-secondary text-sm px-3 py-1.5" onClick={applyDefaults} disabled={!cat} data-testid="ai-apply-defaults">Рекомендованные</button>
+          <button type="button" className="btn-secondary text-sm px-3 py-1.5" onClick={applyLegacy} disabled={!managed} data-testid="ai-apply-legacy">Одна модель, как раньше</button>
+          <button type="button" className="btn-secondary text-sm px-3 py-1.5" onClick={restore} disabled={!cfg.prev} data-testid="ai-restore">Вернуть как было</button>
+        </div>
+        <p className="text-[11px] text-[var(--text-subtle)]">
+          «Рекомендованные»: основная — Terra (низкое рассуждение), сложная — Sol, фон — Luna. «Одна модель» — все запросы идут на модель из набора ключей без уровней рассуждений. «Вернуть как было» отменяет последнее из этих переключений.
+        </p>
+      </AssistantBlock>
+
+      <AssistantBlock id="ai-effort" title="Рассуждения" subtitle="Насколько глубоко модель думает: дороже и медленнее при высоком уровне">
+        {!managed && <p className="text-xs text-[var(--text-subtle)]">Роли выключены («одна модель») — уровень не передаётся, модель решает сама.</p>}
+        <div className="grid gap-3">
+          {[...AI_ROLE_ORDER, ...AI_TASK_ORDER].map(k => (
+            <div key={k} className="space-y-1">
+              <label>{roleMeta(k).label} <span className="text-[var(--text-subtle)] font-normal">· {effModel(k)}</span></label>
+              {effortSelect(k)}
+            </div>
+          ))}
+        </div>
+        <p className="text-[11px] text-[var(--text-subtle)]">В списке только уровни, которые поддерживает выбранная модель; при смене модели недопустимый уровень сбрасывается.</p>
+      </AssistantBlock>
+
+      <AssistantBlock id="ai-escalation" title="Эскалация на сложную модель"
+        subtitle="Код, большие документы, многошаговые задачи и неудачи основной модели">
+        <AiSwitchRow testid="ai-escalation-switch" title="Переходить на сложную модель"
+          desc="Если запрос похож на сложный, а также после двух ошибок инструментов подряд или когда основной не хватило шагов, ход продолжает «Сложная» модель."
+          on={cfg.escalation !== false} onChange={v => save({ escalation: v })} />
+        <div>
+          <label>Лимит эскалаций в сутки</label>
+          <input type="number" min="0" max="500" value={cfg.escalationDailyLimit ?? 40}
+            onChange={e => save({ escalationDailyLimit: Math.max(0, parseInt(e.target.value || '0', 10) || 0) })} data-testid="ai-escalation-limit" />
+          <p className="text-[11px] text-[var(--text-subtle)] mt-1">Защита от неожиданного счёта: при достижении лимита всё остаётся на основной модели. 0 — без ограничения.</p>
+        </div>
+      </AssistantBlock>
+
+      <AssistantBlock id="ai-tools" title="Группы инструментов"
+        subtitle="Показывать модели только нужные навыки — запрос короче и дешевле">
+        <AiSwitchRow testid="ai-groups-switch" title="Подбирать инструменты по смыслу запроса"
+          desc="Ассистент получает только инструменты и разделы промпта, подходящие к сообщению (погода, учёба, почта…); остальное может запросить сам через tools_more. Выключено — всегда полный набор, как раньше."
+          on={!!cfg.toolGroups} onChange={v => save({ toolGroups: v })} />
+        <p className="text-[11px] text-[var(--text-subtle)]">
+          Отключённые в «Навыках ассистента» инструменты не возвращаются ни при каком режиме. Если ассистент стал «не находить» нужное — выключите переключатель.
+        </p>
+      </AssistantBlock>
+
+      <AssistantBlock id="ai-cache" title="Кэш и промпт" subtitle="Порядок запроса под кэш OpenAI и журнал ходов">
+        <AiSwitchRow testid="ai-cache-switch" title="Стабильное начало запроса (кэш)"
+          desc="Правила и инструменты идут первыми, дата и «База данных» — в конце: повторяющаяся часть берётся из кэша дешевле."
+          on={cfg.promptCache !== false} onChange={v => save({ promptCache: v })} />
+        <AiSwitchRow testid="ai-compact-switch" title="Короткий перечень возможностей"
+          desc="Убирает из промпта пересказ описаний инструментов — они и так передаются модели отдельно."
+          on={cfg.compactPrompt !== false} onChange={v => save({ compactPrompt: v })} />
+        <AiSwitchRow testid="ai-turnlog-switch" title="Журнал ходов (14 дней)"
+          desc="Хранит текст сообщения и вызванные инструменты, чтобы проверять подбор групп. Не входит в резервную копию."
+          on={cfg.turnLog !== false} onChange={v => save({ turnLog: v })} />
+      </AssistantBlock>
+
+      <AiUsageBlock />
+    </>
+  );
+}
+
+function updateAiSetting(setData, next) {
+  setData(d => ({
+    ...d,
+    settings: { ...DEFAULT_SETTINGS, ...ensureAiPresets(d.settings || {}), aiModels: next, updatedAt: Date.now() },
+  }));
+}
+
+function AiUsageBlock() {
+  const [days, setDays] = React.useState(7);
+  const [by, setBy] = React.useState('model');
+  const [res, setRes] = React.useState(null);
+  const [prevRes, setPrevRes] = React.useState(null);
+  const [err, setErr] = React.useState('');
+  const [open, setOpen] = React.useState(false);
+  React.useEffect(() => {
+    let alive = true;
+    const get = (d, b) => fetch(`/api/ai/usage?days=${d}&by=${b}`).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+    setErr('');
+    Promise.all([get(days, by), get(days * 2, 'day')])
+      .then(([cur, twice]) => {
+        if (!alive) return;
+        setRes(cur);
+        setPrevRes(twice);
+      })
+      .catch(e => { if (alive) setErr('Не удалось получить расход: ' + e.message); });
+    return () => { alive = false; };
+  }, [days, by]);
+
+  const t = (res && res.total) || {};
+  const q = (res && res.quality) || {};
+  const prevTotal = React.useMemo(() => {
+    if (!res || !prevRes) return null;
+    return Math.max(0, (prevRes.total.usd || 0) - (res.total.usd || 0));
+  }, [res, prevRes]);
+  const keyLabel = (k) => by === 'func' ? (AI_FUNC_LABELS[k] || k) : k;
+
+  return (
+    <AssistantBlock id="ai-usage" title="Расход ИИ" subtitle="Сколько стоят запросы ассистента и как это изменилось"
+      badge={res ? <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--bg)] text-[var(--text-muted)]">{aiFmtUsd(t.usd)} за {days} дн.</span> : null}>
+      <div className="flex flex-wrap gap-2">
+        {[1, 7, 30].map(d => (
+          <button key={d} type="button" onClick={() => setDays(d)}
+            className={`text-sm px-3 py-1.5 rounded-lg border ${days === d ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)]'}`}>
+            {d === 1 ? 'Сутки' : `${d} дней`}
+          </button>
+        ))}
+        <select value={by} onChange={e => setBy(e.target.value)} className="!w-auto" aria-label="Группировка" data-testid="ai-usage-by">
+          <option value="model">по моделям</option>
+          <option value="func">по задачам</option>
+          <option value="day">по дням</option>
+          <option value="role">по ролям</option>
+        </select>
+      </div>
+      {err && <p className="text-xs text-red-600">{err}</p>}
+      {res && (
+        <>
+          <div className="grid grid-cols-2 gap-2" data-testid="ai-usage-totals">
+            <div className="border border-[var(--border)] rounded-xl p-3"><div className="text-[11px] text-[var(--text-subtle)]">Стоимость</div><div className="text-lg font-display">{aiFmtUsd(t.usd)}</div></div>
+            <div className="border border-[var(--border)] rounded-xl p-3"><div className="text-[11px] text-[var(--text-subtle)]">Запросов</div><div className="text-lg font-display">{aiFmtNum(t.calls)}</div></div>
+            <div className="border border-[var(--border)] rounded-xl p-3"><div className="text-[11px] text-[var(--text-subtle)]">Из кэша</div><div className="text-lg font-display">{t.cachePct || 0}%</div></div>
+            <div className="border border-[var(--border)] rounded-xl p-3"><div className="text-[11px] text-[var(--text-subtle)]">Токенов на запрос</div><div className="text-lg font-display">{aiFmtNum(t.avgInPerCall)}</div></div>
+          </div>
+          {prevTotal !== null && (
+            <p className="text-xs text-[var(--text-muted)]" data-testid="ai-usage-compare">
+              Предыдущие {days} дн.: {aiFmtUsd(prevTotal)} → сейчас {aiFmtUsd(t.usd)}
+              {prevTotal > 0 ? ` (${t.usd <= prevTotal ? '−' : '+'}${Math.abs(Math.round(100 * (t.usd - prevTotal) / prevTotal))}%)` : ''}
+            </p>
+          )}
+          {(res.lines || []).length === 0 ? (
+            <p className="text-sm text-[var(--text-subtle)]">За этот период запросов к ИИ ещё не было — журнал начинает копиться с первого ответа ассистента.</p>
+          ) : (
+            <div className="space-y-2" data-testid="ai-usage-lines">
+              {res.lines.map(l => (
+                <div key={l.key} className="border border-[var(--border)] rounded-xl px-3 py-2 flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium break-words">{keyLabel(l.key)}</div>
+                    <div className="text-[11px] text-[var(--text-subtle)]">{aiFmtNum(l.calls)} запр. · вход {aiFmtNum(l.in)} · кэш {l.cachePct}% · выход {aiFmtNum(l.out)}</div>
+                  </div>
+                  <div className="text-sm font-display flex-shrink-0">{aiFmtUsd(l.usd)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          <button type="button" className="text-xs text-[var(--text-muted)] underline" onClick={() => setOpen(o => !o)}>
+            {open ? 'Скрыть качество ответов' : 'Качество ответов'}
+          </button>
+          {open && (
+            <div className="text-xs text-[var(--text-muted)] space-y-1" data-testid="ai-usage-quality">
+              <div>Ходов: {aiFmtNum(q.turns)} · не завершено: {aiFmtNum(q.notFinished)}</div>
+              <div>Ошибок инструментов: {aiFmtNum(q.toolErrors)} · эскалаций: {aiFmtNum(q.escalated)}</div>
+              <div>Запросов «tools_more»: {aiFmtNum(q.toolsMore)} · шагов на ход: {q.avgSteps || 0}</div>
+            </div>
+          )}
+        </>
+      )}
+      {!res && !err && <p className="text-sm text-[var(--text-subtle)]">Загрузка…</p>}
+    </AssistantBlock>
+  );
+}
+
 function VoiceAssistantSettings({ data, setData }) {
   const settings = ensureAiPresets({ ...DEFAULT_SETTINGS, ...(data.settings || {}) });
   const presets = settings.aiPresets || [];
@@ -8516,6 +8858,8 @@ function VoiceAssistantSettings({ data, setData }) {
       </div>
 
       <PlannedTasksBlock data={data} />
+
+      <AiCostBlocks data={data} setData={setData} settings={settings} presets={presets} assignments={assignments} />
 
       <AssistantBlock id="skills" title="Навыки ассистента"
         subtitle="Что умеет Джарвис — каждый навык можно включить или выключить">
@@ -16177,12 +16521,45 @@ async function executeVoiceTool(name, input, nav, data) {
 // Провайдер решает пресет, назначенный функции "voiceAssistant" в Настройках
 // → Ассистент — у Claude и OpenAI разный формат tool-calling, поэтому ниже
 // два отдельных цикла на общем наборе инструментов/executeVoiceTool.
+// Роли моделей в браузере — зеркало ai_usage.resolve_role на сервере: пусто в настройках = рекомендованные значения.
+const AI_ROLES_CLIENT_DEFAULT = {
+  main: { model: 'gpt-6.1-terra', effort: 'low' },
+  complex: { model: 'gpt-6.1-sol', effort: 'medium' },
+  background: { model: 'gpt-6-luna', effort: 'none' },
+};
+function fitAiEffortClient(model, effort) {
+  if (!effort) return '';
+  if (/^gpt-4/i.test(model || '') || !/^(gpt-([5-9]|\d\d)|o\d)/i.test(model || '')) return '';
+  if (effort === 'none' && /^gpt-6(\.\d+)?-(sol|astra)/i.test(model || '')) return 'low';
+  return effort;
+}
+function resolveAiRoleClient(settings, role, presetModel) {
+  const cfg = (settings && settings.aiModels && typeof settings.aiModels === 'object') ? settings.aiModels : {};
+  if (cfg.enabled === false) return { model: presetModel, effort: '', managed: false };
+  const own = { ...(AI_ROLES_CLIENT_DEFAULT[role] || {}), ...(cfg[role] || {}) };
+  const model = own.model || (cfg.main && cfg.main.model) || AI_ROLES_CLIENT_DEFAULT.main.model || presetModel;
+  return { model, effort: fitAiEffortClient(model, own.effort || ''), managed: true };
+}
+function reportAiUsage({ model, role, func, effort, usage, step, managed }) {
+  if (!usage) return;
+  try {
+    fetch('/api/ai/usage', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, role, func, effort: effort || '', usage, step, managed: !!managed }),
+    }).catch(() => {});
+  } catch (_) { /* журнал расхода не должен мешать ответу */ }
+}
+
 async function runVoiceAgent(messages, settings, data, nav, maxSteps = 6) {
   const preset = resolveAiPreset(settings, 'voiceAssistant');
   if (!preset || !preset.apiKey) throw new Error('no_key');
   const provider = preset.provider === 'openai' ? 'openai' : 'claude';
   const model = (preset.model || '').trim() || AI_PROVIDER_DEFAULT_MODEL[provider];
   const convo = messages.map(m => ({ role: m.role, content: m.content }));
+  if (provider === 'openai') {
+    const r = resolveAiRoleClient(settings, 'main', model);
+    return runVoiceAgentOpenAI(convo, preset.apiKey, r.model, data, nav, maxSteps, r.effort, r.managed);
+  }
   return provider === 'openai'
     ? runVoiceAgentOpenAI(convo, preset.apiKey, model, data, nav, maxSteps)
     : runVoiceAgentClaude(convo, preset.apiKey, model, data, nav, maxSteps);
@@ -16246,7 +16623,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
 // есть), но формат запроса/ответа function-calling у OpenAI другой: tool_calls
 // плечом к плечу с текстом в одном сообщении assistant, результаты — отдельными
 // сообщениями role:"tool" с tool_call_id, а не одним user-сообщением как у Claude.
-async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps) {
+async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps, effort = '', managed = false) {
   await loadTgTools();
   await loadMarketTools();
   await loadWatchTools();
@@ -16264,13 +16641,17 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps) {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, max_completion_tokens: 800, messages: oaiMessages, tools }),
+      body: JSON.stringify({
+        model, max_completion_tokens: effort ? 2000 : 800, messages: oaiMessages, tools,
+        ...(effort ? { reasoning_effort: effort } : {}),
+      }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err?.error?.message || `OpenAI API ${res.status}`);
     }
     const resp = await res.json();
+    reportAiUsage({ model, role: 'main', func: 'voice', effort, usage: resp.usage, step, managed });
     const message = resp.choices?.[0]?.message || {};
     const toolCalls = message.tool_calls || [];
 

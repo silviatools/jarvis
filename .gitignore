@@ -17,3 +17,5 @@ ms-playwright/
 jarvis_mail.json
 jarvis_mail/
 jarvis_plan_tasks.json
+jarvis_ai_usage.jsonl
+jarvis_ai_turns.jsonl

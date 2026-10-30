@@ -176,6 +176,8 @@ class PlanAssistantTest(unittest.TestCase):
         self.assertIn("Плановая задача выполнена", self.sent[0][1])
         self.assertIn("Всё проверил", self.sent[0][1])
         sys_prompt = seen[0]["system"]
+        if isinstance(sys_prompt, list):    # Claude: системный промпт блоками (кэш)
+            sys_prompt = "\n".join(b["text"] for b in sys_prompt)
         self.assertIn("РЕЖИМ ПЛАНОВОЙ ЗАДАЧИ", sys_prompt)
         self.assertIn("Проверь учебные чаты", seen[0]["messages"][0]["content"])
 

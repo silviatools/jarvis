@@ -129,6 +129,16 @@ except Exception as _e:
     plan_skill = None
     print(f"NOTE: plan_skill disabled: {_e}", flush=True)
 try:
+    import ai_usage
+except Exception as _e:
+    ai_usage = None
+    print(f"NOTE: ai_usage disabled: {_e}", flush=True)
+try:
+    import tool_groups
+except Exception as _e:
+    tool_groups = None
+    print(f"NOTE: tool_groups disabled: {_e}", flush=True)
+try:
     import tg_bot
 except Exception as _e:
     tg_bot = None
@@ -1156,13 +1166,13 @@ def build_backup_zip() -> bytes:
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
                       "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json",
-                      "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json"}
+                      "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
         #    skips data JSONs — when DATA_DIR == DIR they belong under data/ only)
         for p in sorted(DIR.iterdir()):
-            if p.is_file() and p.name not in data_names and p.name != "jarvis_tg_user.json" and p.suffix != ".tmp":
+            if p.is_file() and p.name not in data_names and p.name not in ("jarvis_tg_user.json", "jarvis_ai_turns.jsonl") and p.suffix != ".tmp":
                 add_file(p, f"code/{p.name}")
 
         # 2. Core data files
@@ -4372,7 +4382,7 @@ OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 # только "voiceAssistant" (общий с кнопкой-микрофоном в браузере), остальные
 # функции — распознавание документов и т.п. — работают на клиенте.
 AI_FUNCTIONS = ["voiceAssistant", "healthExtract", "gymExtract", "wishlistScreenshot"]
-AI_PROVIDER_DEFAULT_MODEL = {"claude": "claude-sonnet-5", "openai": "gpt-4o"}
+AI_PROVIDER_DEFAULT_MODEL = {"claude": "claude-sonnet-5", "openai": "gpt-6.1-terra"}
 
 
 def _ensure_ai_presets(settings: dict) -> dict:
@@ -5570,7 +5580,7 @@ def knowledge_for_prompt(app: dict) -> str:
     return "\n".join(rows)
 
 
-def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> str:
+def _prompt_pieces(app: dict = None, with_tg: bool = False) -> dict:
     domain_list = "\n".join(f"  • {k} — {label}" for k, (label, _) in ASSISTANT_DATA_DOMAINS.items())
     nav_list = "\n".join(f"  • {k} — {label}" for k, (label, _) in ASSISTANT_NAV_TARGETS.items())
     write_list = "\n".join(
@@ -5587,13 +5597,16 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
     # хотя это был вторник).
     today = today_msk()
     weekday_str = WEEKDAYS_RU_NOMINATIVE[today.weekday()]
-    return (
+    head = (
         "Ты ассистент приложения Jarvis, отвечаешь в Telegram. "
         "Отвечай кратко и по-русски, без JSON.\n\n"
-        + (tg_bot.PROMPT_SECTION if tg_bot else "Разметку (markdown, HTML) не используй — сообщение уходит как есть.\n\n") +
+        + (tg_bot.PROMPT_SECTION if tg_bot else "Разметку (markdown, HTML) не используй — сообщение уходит как есть.\n\n")
+    )
+    date_block = (
         f"СЕГОДНЯ: {today.isoformat()}, {weekday_str}. Используй эту дату и день недели как факт — не вычисляй "
         "день недели сам по числу, он уже дан.\n\n"
-        f"{about_block}"
+    )
+    items = (
         "У тебя есть инструменты, покрывающие весь проект — всё то же самое, что пользователь делает руками:\n\n"
         f"1. get_data(domain) — прочитать актуальные данные раздела. Разделы:\n{domain_list}\n\n"
         f"2. navigate(target) — дать пользователю ссылку на раздел сайта. Разделы:\n{nav_list}\n\n"
@@ -5633,13 +5646,8 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
         "get_data(study), найди предмет и задание (нет подходящего — спроси, какое; новое — create_if_missing), потом "
         "один вызов study_attach_file с готовым полным содержимым. Файл, который пользователь только что прислал, "
         "кладётся через use_received_file. После успеха скажи, куда именно положил (предмет → задание → имя файла).\n\n"
-        + (deck_skill.prompt_section((app or {}).get("telegramSkills")) if deck_skill else "")
-        + (study_skills.prompt_section((app or {}).get("telegramSkills")) if study_skills else "")
-        + (market_skill.prompt_section((app or {}).get("telegramSkills")) if market_skill else "")
-        + (tg_watch_skill.prompt_section((app or {}).get("telegramSkills")) if tg_watch_skill and with_tg else "")
-        + (mail_skill.prompt_section((app or {}).get("telegramSkills")) if mail_skill else "")
-        + (plan_skill.prompt_section((app or {}).get("telegramSkills")) if plan_skill else "")
-        + (tg_tools.prompt_section((app or {}).get("telegramSkills")) if with_tg else "") +
+    )
+    tail = (
         "ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task, cooking_plan_delete_ingredient) и любая запись в финансовые разделы "
         "(помечены выше «финансовое») требуют явного согласия пользователя. Если в инструменте нет confirmed:true "
         "— вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми "
@@ -5656,6 +5664,77 @@ def build_assistant_system_prompt(app: dict = None, with_tg: bool = False) -> st
         "- Никогда не удаляй и не меняй финансовые данные без подтверждения, даже если пользователь говорит это "
         "как бы между делом."
     )
+    return {"head": head, "date": date_block, "about": about_block, "items": items, "tail": tail}
+
+def _prompt_items_compact(on, domain_list: str, nav_list: str, write_list: str) -> str:
+    """Короткий перечень возможностей: что делает инструмент и его параметры — в описаниях инструментов, здесь только правила."""
+    out = ("Инструменты покрывают весь проект (подробности — в их описаниях):\n\n"
+           f"1. get_data(domain) — актуальные данные раздела. Разделы:\n{domain_list}\n\n"
+           f"2. navigate(target) — ссылка на раздел сайта. Разделы:\n{nav_list}\n\n"
+           f"3. create_record / update_record / delete_record(collection, …). Коллекции:\n{write_list}\n\n")
+    if on("house", "food"):
+        out += ("4. Канбан «Задачи» (house_tasks) — только kanban_*; отметки по дням log_diet_compliance / log_checklist_answer "
+                "(один раз на дату — повтор заменяет прежнюю); продукты плана готовки (meals → cookingPlans[].ingredients) — cooking_plan_*.\n\n")
+    if on("apple"):
+        out += ("5. Apple Календарь и Напоминания (iCloud, не данные приложения): читать (calendar_list_events, reminders_list) можно "
+                "свободно; ЛЮБАЯ запись — только после явного согласия: коротко скажи, что запишешь (название, дата, время), спроси «да», "
+                "потом повтори вызов с confirmed:true. Время московское. Планировщик приложения (planner) и Apple Календарь — разные места. "
+                "«В календарь» / «создай событие» → calendar_create_event (alarmMinutesBefore — если нужно напомнить); прямая просьба "
+                "Apple Напоминание («в Напоминания», «на айфон») → только reminders_create, не подменяй событием. queued:true — скажи, что "
+                "попадёт после синхронизации Быстрой команды, НЕ «создал»; error — честно скажи, почему не удалось.\n\n")
+    if on("weather"):
+        out += ("6. get_weather — живой запрос (не данные приложения), а не navigate/get_data. Город можно не указывать (берётся из настроек). "
+                "Без date — сейчас и 3 дня вперёд; для дня/диапазона передай date или date_from/date_to (YYYY-MM-DD), считай от СЕГОДНЯ, "
+                "прогноз на 16 дней.\n\n")
+    if on("study"):
+        out += ("7. Учёба: study_schedule — расписание пар (РЭУ, rasp.rea.ru; вопросы про пары, универ, аудитории — сначала он; в Apple "
+                "Календарь «Учеба» пары дублируются сами — не добавляй). Файл в задание: get_data(study) → предмет и задание (нет подходящего "
+                "— спроси; новое — create_if_missing) → один вызов study_attach_file с готовым полным содержимым; присланный файл — "
+                "use_received_file; study_get_attachment — прочитать/прислать вложение. После успеха скажи, куда положил.\n\n")
+    out += ("«Напомни …» → плановая задача (plan_create), а не Apple Напоминание, если пользователь прямо не просит Apple.\n\n")
+    return out
+
+
+def _prompt_sections(app, with_tg: bool, groups) -> str:
+    st = (app or {}).get("telegramSkills")
+
+    def on(*gs):
+        return groups is None or any(g in groups for g in gs)
+
+    tg_any = ("tg_read", "tg_write", "tg_topics", "tg_org", "tg_danger")
+    return (
+        (deck_skill.prompt_section(st) if deck_skill and on("deck") else "")
+        + (study_skills.prompt_section(st) if study_skills and on("study") else "")
+        + (market_skill.prompt_section(st) if market_skill and on("market") else "")
+        + (tg_watch_skill.prompt_section(st) if tg_watch_skill and with_tg and on("tg_watch") else "")
+        + (mail_skill.prompt_section(st) if mail_skill and on("mail") else "")
+        + (plan_skill.prompt_section(st) if plan_skill and on("plan") else "")
+        + (tg_tools.prompt_section(st) if with_tg and on(*tg_any) else "")
+    )
+
+
+def build_assistant_system_prompt(app: dict = None, with_tg: bool = False, groups=None, compact: bool = False, split: bool = False):
+    """Системный промпт ассистента.
+    По умолчанию — как раньше (одной строкой: дата и «База данных» в начале).
+    compact — короткий перечень инструментов без пересказа их описаний; groups — набор групп tool_groups (None — все);
+    split — вернуть (стабильная часть, меняющаяся часть): дата и «База данных» уходят в конец, чтобы начало запроса кэшировалось."""
+    pc = _prompt_pieces(app, with_tg)
+    domain_list = "\n".join(f"  • {k} — {label}" for k, (label, _) in ASSISTANT_DATA_DOMAINS.items())
+    nav_list = "\n".join(f"  • {k} — {label}" for k, (label, _) in ASSISTANT_NAV_TARGETS.items())
+    write_list = "\n".join(
+        f"  • {k} — {v['label']}" + (" (финансовое — подтверждение)" if v.get("require_confirm") else "")
+        for k, v in WRITE_REGISTRY.items())
+
+    def on(*gs):
+        return groups is None or any(g in groups for g in gs)
+
+    items = _prompt_items_compact(on, domain_list, nav_list, write_list) if compact else pc["items"]
+    catalog = tool_groups.catalog_line(set(groups)) if (tool_groups and groups is not None) else ""
+    body = items + _prompt_sections(app, with_tg, groups) + catalog + pc["tail"]
+    if split:
+        return pc["head"] + body, pc["date"] + pc["about"]
+    return pc["head"] + pc["date"] + pc["about"] + body
+
 
 
 _plan_scope = threading.local()   # .on — идёт плановая задача без пользователя: подтвердить «да» некому
@@ -5799,20 +5878,221 @@ class _AssistantError(Exception):
     pass
 
 
+_LIMIT_ERRORS = re.compile(r"reasoning|prompt_cache|unrecognized|unsupported|unknown parameter|not supported", re.I)
+
+
+def _openai_extras(model: str, effort: str, cache_key: str = "") -> dict:
+    """Необязательные параметры запроса: уровень рассуждений (только там, где модель его принимает) и ключ кэша."""
+    extra = {}
+    eff = ai_usage.fit_effort(model, effort) if ai_usage else ""
+    if eff:
+        extra["reasoning_effort"] = eff
+    if cache_key:
+        extra["prompt_cache_key"] = cache_key
+    return extra
+
+
+def _openai_post(api_key: str, body: dict, timeout: int = 60):
+    """POST в Chat Completions. Если API не принял reasoning_effort / prompt_cache_key — один повтор без них."""
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    r = requests.post(OPENAI_CHAT_URL, headers=headers, json=body, timeout=timeout)
+    if not r.ok and r.status_code == 400 and ("reasoning_effort" in body or "prompt_cache_key" in body):
+        try:
+            msg = (r.json().get("error") or {}).get("message") or ""
+        except Exception:
+            msg = ""
+        if _LIMIT_ERRORS.search(msg):
+            print(f"  openai: параметры рассуждений/кэша не приняты ({msg[:120]}) — повтор без них", flush=True)
+            body = {k: v for k, v in body.items() if k not in ("reasoning_effort", "prompt_cache_key")}
+            r = requests.post(OPENAI_CHAT_URL, headers=headers, json=body, timeout=timeout)
+    return r
+
+
+def _log_call(provider: str, model: str, role: str, func: str, effort: str, usage: dict, step: int = 0):
+    if not ai_usage:
+        return
+    try:
+        ai_usage.record_call(provider=provider, model=model, role=role, func=func, effort=effort, usage=usage, step=step)
+    except Exception as e:
+        print(f"  ai usage: {e}", flush=True)
+
+
+class _TurnState:
+    """Общее состояние хода ассистента для обоих циклов (Claude и OpenAI): набор инструментов (группы по смыслу запроса,
+    tools_more), системный промпт, эскалация на «сложную» модель, счётчики для журнала. Без groups/esc/turn ведёт себя как раньше."""
+
+    def __init__(self, app, with_tg, allowed, groups, esc, out, provider, model, effort, extra_system, compact, cache, role, func, max_steps):
+        self.app, self.with_tg, self.allowed = app, with_tg, allowed
+        self.groups = set(groups) if (groups is not None and not allowed and tool_groups) else None
+        self.esc = esc if provider == "openai" else None
+        self.provider, self.model, self.effort = provider, model, effort or ""
+        self.extra_system, self.compact, self.cache = extra_system or "", compact, cache
+        self.role, self.func = role, func
+        self.rounds = (max_steps or _ASSISTANT_MAX_STEPS) + 4
+        self.budget = self.rounds
+        self.step = 0
+        self.escalated = False
+        self.err_streak = 0
+        self.seen = {}
+        self.out = out if out is not None else {}
+        self.out.update(steps=0, tool_errors=0, tools=[], tools_more=0, esc=self.out.get("esc", ""), model=model, role=role, func=func,
+                        ok=False, confirm=False, groups=sorted(self.groups) if self.groups else [])
+        self._tools = None
+        self._sys = None
+
+    # инструменты
+    def tools(self) -> list:
+        if self._tools is None:
+            all_t = _assistant_tool_list(self.app, self.with_tg)
+            if self.allowed:   # фоновые задания работают только на чтение: лишних инструментов у модели нет
+                self._tools = [t for t in all_t if t["name"] in self.allowed]
+            elif self.groups is not None:
+                self._tools = tool_groups.filter_tools(all_t, self.groups) + [tool_groups.MORE_TOOL]
+            else:
+                self._tools = all_t
+        return self._tools
+
+    def names(self) -> set:
+        return {t["name"] for t in self.tools()}
+
+    def _reset(self):
+        self._tools = None
+        self._sys = None
+        self.out["groups"] = sorted(self.groups) if self.groups else []
+
+    def expand(self, inp: dict) -> dict:
+        req = {g for g in (inp.get("groups") or []) if g in tool_groups.GROUPS and g not in tool_groups.ALWAYS}
+        before = self.names()
+        self.groups |= req
+        self._reset()
+        added = sorted(self.names() - before)
+        self.out["tools_more"] += 1
+        if not added:
+            return {"ok": False, "error": "в этих группах нет доступных инструментов (навык выключен или группа уже подключена)"}
+        return {"ok": True, "added": added, "note": "новые инструменты доступны в следующем вызове"}
+
+    def adopt(self, name: str):
+        """Инструмент вне набора, но навык включён — подключаем его группу (выключенный навык сюда не попадёт: его нет в полном списке)."""
+        if self.groups is None or name in self.names():
+            return
+        g = tool_groups.group_of(name)
+        if g and name in {t["name"] for t in _assistant_tool_list(self.app, self.with_tg)}:
+            self.groups.add(g)
+            self.out["tools_more"] += 1
+            self._reset()
+
+    def openai_tools(self) -> list:
+        return [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
+                for t in self.tools()]
+
+    def claude_tools(self) -> list:
+        tools = list(self.tools())
+        if self.cache and tools:
+            tools[-1] = dict(tools[-1], cache_control={"type": "ephemeral"})
+        return tools
+
+    # системный промпт
+    def _parts(self):
+        if self._sys is None:
+            if self.cache:
+                static, dynamic = build_assistant_system_prompt(self.app, self.with_tg, groups=self.groups, compact=self.compact, split=True)
+                self._sys = (static, dynamic + self.extra_system)
+            else:
+                self._sys = (build_assistant_system_prompt(self.app, self.with_tg, groups=self.groups, compact=self.compact) + self.extra_system, "")
+        return self._sys
+
+    def openai_system(self) -> list:
+        static, dynamic = self._parts()
+        return [{"role": "system", "content": m} for m in (static, dynamic) if m]
+
+    def claude_system(self):
+        static, dynamic = self._parts()
+        if not self.cache:
+            return static
+        blocks = [{"type": "text", "text": static, "cache_control": {"type": "ephemeral"}}]
+        if dynamic:
+            blocks.append({"type": "text", "text": dynamic})
+        return blocks
+
+    # эскалация
+    def escalate(self, reason: str) -> bool:
+        e = self.esc
+        if not e or self.escalated or not e.get("model") or e.get("model") == self.model:
+            return False
+        if ai_usage and e.get("limit") is not None and ai_usage.escalations_today() >= e["limit"]:
+            return False
+        self.escalated = True
+        self.model, self.effort = e["model"], e.get("effort") or ""
+        self.out["esc"] = reason if not self.out.get("esc") else self.out["esc"]
+        self.out["model"] = self.model
+        self.err_streak = 0
+        print(f"  assistant: эскалация на {self.model} ({reason})", flush=True)
+        return True
+
+    def next_round(self) -> bool:
+        if self.budget <= 0 and self.escalate("steps"):
+            self.budget = self.rounds
+        if self.budget <= 0:
+            return False
+        self.budget -= 1
+        self.step += 1
+        self.out["steps"] = self.step
+        return True
+
+    def run_tool(self, name, inp, site_url):
+        inp = inp if isinstance(inp, dict) else {}
+        if self.allowed and name not in self.allowed:
+            output = {"error": "этот инструмент недоступен в фоновом режиме"}
+        elif name == "tools_more" and self.groups is not None:
+            output = self.expand(inp)
+        else:
+            self.adopt(name)
+            try:
+                output = execute_assistant_tool(name, inp, self.app, site_url, self.with_tg)
+            except Exception as e:
+                output = {"error": str(e)}
+        self.note(name, inp, output)
+        return output
+
+    def note(self, name, inp, output):
+        self.out["tools"].append(name)
+        failed = isinstance(output, dict) and bool(output.get("error")) and not output.get("needs_confirmation")
+        if isinstance(output, dict) and output.get("needs_confirmation"):
+            self.out["confirm"] = True
+        try:
+            key = (name, json.dumps(inp, sort_keys=True, ensure_ascii=False, default=str))
+        except Exception:
+            key = (name, "")
+        repeat = self.seen.get(key) is True and failed
+        self.seen[key] = failed
+        if failed:
+            self.err_streak += 1
+            self.out["tool_errors"] += 1
+        else:
+            self.err_streak = 0
+        if self.err_streak >= 2:
+            self.escalate("errors")
+        elif repeat:
+            self.escalate("repeat")
+
+    def finish(self, ok: bool):
+        self.out["ok"] = bool(ok)
+
+
 def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, site_url: str, with_tg: bool = False,
-                           extra_system: str = "", allowed: set = None, max_steps: int = None):
+                           extra_system: str = "", allowed: set = None, max_steps: int = None,
+                           effort: str = "", role: str = "main", func: str = "chat", esc: dict = None, groups=None,
+                           turn: dict = None, compact: bool = False, cache: bool = False):
     """Прогоняет tool-use цикл Claude поверх локальной копии истории.
     Возвращает (текст ответа | None, список ссылок navigate). None — агент не
-    уложился в отведённые шаги. Ошибки HTTP/сети — как _AssistantError."""
-    system = build_assistant_system_prompt(app, with_tg) + extra_system
-    all_tools = _assistant_tool_list(app, with_tg)
-    if allowed:   # фоновые задания работают только на чтение: лишних инструментов у модели нет
-        all_tools = [t for t in all_tools if t["name"] in allowed]
+    уложился в отведённые шаги. Ошибки HTTP/сети — как _AssistantError.
+    groups — набор групп инструментов (tool_groups; None — все), turn — словарь, куда пишется итог хода для журнала."""
+    ts = _TurnState(app, with_tg, allowed, groups, esc, turn, "claude", model, effort, extra_system, compact, cache, role, func, max_steps)
     convo = list(history)
     nav_links = []
     carried = ""        # текст уже выданных кусков, если ответ упёрся в лимит токенов
     continuations = 0
-    for _ in range((max_steps or _ASSISTANT_MAX_STEPS) + 4):
+    while ts.next_round():
         try:
             r = requests.post(
                 ANTHROPIC_MESSAGES_URL,
@@ -5822,8 +6102,8 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
                     "anthropic-version": "2023-06-01",
                 },
                 json={
-                    "model": model, "max_tokens": 8192, "system": system,
-                    "messages": convo, "tools": all_tools,
+                    "model": ts.model, "max_tokens": 8192, "system": ts.claude_system(),
+                    "messages": convo, "tools": ts.claude_tools(),
                 },
                 timeout=60,
             )
@@ -5837,6 +6117,8 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
             raise _AssistantError(f"Ошибка ИИ: {err or r.status_code}")
 
         resp = r.json()
+        if ai_usage:
+            _log_call("claude", ts.model, role, func, "", ai_usage.usage_from_claude(resp.get("usage")), ts.step)
         content = resp.get("content", [])
         tool_uses = [b for b in content if b.get("type") == "tool_use"]
         texts = "\n".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
@@ -5848,16 +6130,13 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
                 convo.append({"role": "assistant", "content": texts})
                 convo.append({"role": "user", "content": "Продолжи с того места, где оборвался, без повторов."})
                 continue
+            ts.finish(True)
             return (carried + texts) or "Готово", nav_links
 
         convo.append({"role": "assistant", "content": content})
         tool_results = []
         for tu in tool_uses:
-            try:
-                output = execute_assistant_tool(tu.get("name"), tu.get("input"), app, site_url, with_tg) \
-                    if not allowed or tu.get("name") in allowed else {"error": "этот инструмент недоступен в фоновом режиме"}
-            except Exception as e:
-                output = {"error": str(e)}
+            output = ts.run_tool(tu.get("name"), tu.get("input"), site_url)
             if tu.get("name") == "navigate" and output.get("url"):
                 nav_links.append((output.get("label"), output["url"]))
             # Картинка из чата (tg_get_file) уходит модели image-блоком внутри результата.
@@ -5870,34 +6149,29 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
                     {"type": "image", "source": {"type": "base64", "media_type": img["media_type"], "data": img["b64"]}}],
             })
         convo.append({"role": "user", "content": tool_results})
+    ts.finish(False)
     return None, nav_links
 
 
 def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, site_url: str, with_tg: bool = False,
-                           extra_system: str = "", allowed: set = None, max_steps: int = None):
+                           extra_system: str = "", allowed: set = None, max_steps: int = None,
+                           effort: str = "", role: str = "main", func: str = "chat", esc: dict = None, groups=None,
+                           turn: dict = None, compact: bool = False, cache: bool = False):
     """То же самое поверх OpenAI function calling — другой формат запроса и
     ответа (tool_calls в сообщении assistant, результаты — отдельными
-    сообщениями role:"tool"), но те же инструменты и та же семантика."""
-    system = build_assistant_system_prompt(app, with_tg) + extra_system
-    all_tools = _assistant_tool_list(app, with_tg)
-    if allowed:   # фоновые задания работают только на чтение: лишних инструментов у модели нет
-        all_tools = [t for t in all_tools if t["name"] in allowed]
-    tools = [
-        {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
-        for t in all_tools
-    ]
-    convo = [{"role": "system", "content": system}] + list(history)
+    сообщениями role:"tool"), но те же инструменты и та же семантика.
+    effort — уровень рассуждений (из Настроек; пусто — не передаётся), esc — {"model","effort","limit"} для перехода на «сложную»
+    модель при неудаче, groups/turn/compact/cache — см. _assistant_loop_claude."""
+    ts = _TurnState(app, with_tg, allowed, groups, esc, turn, "openai", model, effort, extra_system, compact, cache, role, func, max_steps)
+    convo = list(history)
     nav_links = []
     carried = ""
     continuations = 0
-    for _ in range((max_steps or _ASSISTANT_MAX_STEPS) + 4):
+    while ts.next_round():
+        body = {"model": ts.model, "max_completion_tokens": 8192, "messages": ts.openai_system() + convo, "tools": ts.openai_tools()}
+        body.update(_openai_extras(ts.model, ts.effort, ("jarvis-" + func) if cache else ""))
         try:
-            r = requests.post(
-                OPENAI_CHAT_URL,
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-                json={"model": model, "max_completion_tokens": 8192, "messages": convo, "tools": tools},
-                timeout=60,
-            )
+            r = _openai_post(api_key, body)
         except Exception as e:
             raise _AssistantError(f"Ошибка связи с ИИ: {e}")
         if not r.ok:
@@ -5908,6 +6182,8 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
             raise _AssistantError(f"Ошибка ИИ: {err or r.status_code}")
 
         resp = r.json()
+        if ai_usage:
+            _log_call("openai", ts.model, role, func, body.get("reasoning_effort", ""), ai_usage.usage_from_openai(resp.get("usage")), ts.step)
         choices = resp.get("choices") or [{}]
         message = choices[0].get("message") or {}
         tool_calls = message.get("tool_calls") or []
@@ -5919,6 +6195,7 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
                 convo.append({"role": "assistant", "content": part})
                 convo.append({"role": "user", "content": "Продолжи с того места, где оборвался, без повторов."})
                 continue
+            ts.finish(True)
             return (carried + part) or "Готово", nav_links
 
         convo.append({"role": "assistant", "content": message.get("content"), "tool_calls": tool_calls})
@@ -5929,11 +6206,7 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
                 inp = json.loads(fn.get("arguments") or "{}")
             except Exception:
                 inp = {}
-            try:
-                output = execute_assistant_tool(fn.get("name"), inp, app, site_url, with_tg) \
-                    if not allowed or fn.get("name") in allowed else {"error": "этот инструмент недоступен в фоновом режиме"}
-            except Exception as e:
-                output = {"error": str(e)}
+            output = ts.run_tool(fn.get("name"), inp, site_url)
             if fn.get("name") == "navigate" and output.get("url"):
                 nav_links.append((output.get("label"), output["url"]))
             img = output.pop("_image", None) if isinstance(output, dict) else None
@@ -5944,6 +6217,7 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
             convo.append({"role": "user", "content": [{"type": "text", "text": "Изображение из результата инструмента:"}] + [
                 {"type": "image_url", "image_url": {"url": f"data:{i['media_type']};base64,{i['b64']}"}} for i in pending_images]})
             pending_images = []
+    ts.finish(False)
     return None, nav_links
 
 
@@ -5959,23 +6233,29 @@ def find_openai_key(settings: dict) -> str:
     return os.environ.get("OPENAI_API_KEY", "").strip()
 
 
-def generate_dialog_title(provider: str, api_key: str, model: str, text: str) -> str:
+def generate_dialog_title(provider: str, api_key: str, model: str, text: str, effort: str = "") -> str:
     """Короткое название диалога по первому сообщению (как в чат-агрегаторах). Любая
     ошибка — название берётся из начала сообщения."""
     instruction = ("Придумай короткое название диалога (2–5 слов, на языке сообщения, без кавычек и точки в конце) "
                    "по первому сообщению пользователя. Ответь только названием.\n\nСообщение:\n" + (text or "")[:1500])
     try:
         if provider == "openai":
-            r = requests.post(OPENAI_CHAT_URL, headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-                              json={"model": model, "max_completion_tokens": 300, "messages": [{"role": "user", "content": instruction}]},
-                              timeout=20)
-            raw = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") if r.ok else ""
+            body = {"model": model, "max_completion_tokens": 300, "messages": [{"role": "user", "content": instruction}]}
+            body.update(_openai_extras(model, effort))
+            r = _openai_post(api_key, body, timeout=20)
+            j = r.json() if r.ok else {}
+            raw = ((j.get("choices") or [{}])[0].get("message") or {}).get("content") if r.ok else ""
+            if r.ok and ai_usage:
+                _log_call("openai", model, "title", "title", body.get("reasoning_effort", ""), ai_usage.usage_from_openai(j.get("usage")), 1)
         else:
             r = requests.post(ANTHROPIC_MESSAGES_URL,
                               headers={"Content-Type": "application/json", "x-api-key": api_key, "anthropic-version": "2023-06-01"},
                               json={"model": model, "max_tokens": 60, "messages": [{"role": "user", "content": instruction}]},
                               timeout=20)
-            raw = "".join(b.get("text", "") for b in (r.json().get("content") or []) if b.get("type") == "text") if r.ok else ""
+            j = r.json() if r.ok else {}
+            raw = "".join(b.get("text", "") for b in (j.get("content") or []) if b.get("type") == "text") if r.ok else ""
+            if r.ok and ai_usage:
+                _log_call("claude", model, "title", "title", "", ai_usage.usage_from_claude(j.get("usage")), 1)
     except Exception as e:
         print(f"  dialog title: {e}")
         raw = ""
@@ -6000,6 +6280,19 @@ def handle_assistant_message(token: str, chat_id, text: str, images: list = None
         _handle_assistant_message(token, chat_id, text, images or [], message_id)
 
 
+def _record_turn(stats: dict, cfg: dict, func: str, text: str, chat_id=None):
+    """Итог хода в журнал расхода и качества (ai_usage)."""
+    if not (ai_usage and stats):
+        return
+    try:
+        ai_usage.record_turn(func=func, role=stats.get("role") or "main", model=stats.get("model") or "", steps=stats.get("steps", 0),
+                             ok=stats.get("ok", False), tool_errors=stats.get("tool_errors", 0), tools=stats.get("tools"),
+                             escalated=stats.get("esc") or "", groups=stats.get("groups"), tools_more=stats.get("tools_more", 0),
+                             confirm=stats.get("confirm", False), chat=chat_id, text=text, log_text=bool(cfg.get("turnLog")))
+    except Exception as e:
+        print(f"  ai usage turn: {e}", flush=True)
+
+
 def _handle_assistant_message(token: str, chat_id, text: str, images: list, message_id):
     def say(msg: str):
         try:
@@ -6009,15 +6302,16 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
 
     app = load_app_data()
     settings = app.get("settings") or {}
-    preset = resolve_ai_preset(settings, "voiceAssistant")
-    api_key = (preset or {}).get("apiKey", "").strip()
-    if not api_key:
+    conf = _ai_conf(app, "main")
+    if not conf:
         say("Ассистенту не назначен набор ключей ИИ. В приложении: Настройки → Ассистент — "
             "добавьте набор ключей (Claude или OpenAI) и назначьте его функции «Ассистент».")
         return
-    provider = "openai" if preset.get("provider") == "openai" else "claude"
-    model = (preset.get("model") or "").strip() or AI_PROVIDER_DEFAULT_MODEL[provider]
-    site_url = (settings.get("publicUrl") or "").strip()
+    cfg = _ai_models_cfg(app)
+    has_files = bool(images) or "[Файл «" in text
+    conf, esc, esc_reason = _start_conf(app, conf, text, extra_chars=0)
+    provider, api_key, model, site_url = conf[:4]
+    title_conf = _ai_conf(app, "title") or conf
 
     # Контекст живёт, пока переписка непрерывна: пауза дольше TTL (10 минут)
     # сбрасывает историю — это делает history_for.
@@ -6031,11 +6325,14 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
     # Новый диалог — первое сообщение после паузы/сброса: название придумываем по нему,
     # пока основной ответ готовится (параллельно, чтобы не добавлять ожидания).
     is_new = not history or tg_bot.current_dialog(chat_id) is None
+    if is_new and tool_groups:
+        tool_groups.forget(chat_id)
     title_box = {}
     title_thread = None
     if is_new:
         title_thread = threading.Thread(
-            target=lambda: title_box.update(t=generate_dialog_title(provider, api_key, model, text)), daemon=True)
+            target=lambda: title_box.update(t=generate_dialog_title(title_conf[0], title_conf[1], title_conf[2], text,
+                                                                    effort=title_conf[4])), daemon=True)
         title_thread.start()
 
     def dialog_tag() -> str:
@@ -6057,13 +6354,25 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
     tg_bot.set_ctx(ctx)
     with_tg = bool(tg_user) and tg_user.is_owner_chat(chat_id)
     loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
+    groups = None
+    if tool_groups and cfg.get("toolGroups"):
+        dlg = tg_bot.current_dialog(chat_id) or {}
+        groups = tool_groups.pick(text, chat_id=chat_id, has_files=has_files, anchor=dlg.get("title") or "")
+    stats = {"esc": esc_reason}
     try:
-        answer, nav_links = loop_fn(turn, api_key, model, app, site_url, with_tg)
+        answer, nav_links = loop_fn(turn, api_key, model, app, site_url, with_tg,
+                                    effort=conf[4], role=conf[5], func="chat", esc=esc, groups=groups, turn=stats,
+                                    compact=bool(cfg.get("compactPrompt")), cache=bool(cfg.get("promptCache")))
     except _AssistantError as e:
+        stats["ok"] = False
+        _record_turn(stats, cfg, "chat", text, chat_id)
         say(str(e))
         return
     finally:
         tg_bot.set_ctx(None)
+    if tool_groups and stats.get("groups"):
+        tool_groups.remember(chat_id, set(stats["groups"]))
+    _record_turn(stats, cfg, "chat", text, chat_id)
 
     if answer is None:
         tag = ""
@@ -6225,8 +6534,28 @@ def _study_skill_tools(app) -> list:
     return out
 
 
-def _ai_conf(app):
-    """(provider, api_key, model, site_url) ассистента или None, если ключ не назначен."""
+class _AiConf(tuple):
+    """(provider, api_key, model, site_url, effort, role) — настройки ИИ для вызова; первые четыре поля — как раньше."""
+    __slots__ = ()
+
+    def __new__(cls, provider, key, model, site_url, effort="", role="main"):
+        return tuple.__new__(cls, (provider, key, model, site_url, effort, role))
+
+    provider = property(lambda s: s[0])
+    key = property(lambda s: s[1])
+    model = property(lambda s: s[2])
+    site_url = property(lambda s: s[3])
+    effort = property(lambda s: s[4])
+    role = property(lambda s: s[5])
+
+
+def _ai_models_cfg(app) -> dict:
+    return ai_usage.normalize((app or {}).get("settings") or {}) if ai_usage else {}
+
+
+def _ai_conf(app, role: str = "main"):
+    """Настройки ИИ ассистента для роли (main / complex / background / studyBrief / triage / title / notesTargets)
+    или None, если ключ не назначен. Роли и уровни рассуждений — Настройки → Ассистент → «Модели»; для Claude-набора не применяются."""
     settings = app.get("settings") or {}
     preset = resolve_ai_preset(settings, "voiceAssistant")
     key = ((preset or {}).get("apiKey") or "").strip()
@@ -6234,18 +6563,67 @@ def _ai_conf(app):
         return None
     provider = "openai" if preset.get("provider") == "openai" else "claude"
     model = (preset.get("model") or "").strip() or AI_PROVIDER_DEFAULT_MODEL[provider]
-    return provider, key, model, (settings.get("publicUrl") or "").strip()
+    effort = ""
+    if provider == "openai" and ai_usage:
+        r = ai_usage.resolve_role(settings, role, model)
+        if r["managed"]:
+            model, effort = r["model"] or model, r["effort"]
+    return _AiConf(provider, key, model, (settings.get("publicUrl") or "").strip(), effort, role)
 
 
-def _llm_text(conf, system: str, user: str, max_tokens: int = 2500, timeout: int = 120) -> str:
+def _esc_conf(app, conf):
+    """Куда переходить при неудаче/сложной задаче: {"model","effort","limit"} или None (эскалация выключена, не OpenAI, та же модель)."""
+    if not (ai_usage and conf and conf[0] == "openai"):
+        return None
+    cfg = _ai_models_cfg(app)
+    if not (cfg.get("enabled") and cfg.get("escalation")):
+        return None
+    c = _ai_conf(app, "complex")
+    if not c or c[2] == conf[2]:
+        return None
+    return {"model": c[2], "effort": c[4], "limit": cfg.get("escalationDailyLimit")}
+
+
+_COMPLEX_RX = re.compile(
+    r"python|javascript|typescript|\bjs\b|\bsql\b|регуляр|макрос|отлад|рефактор|скрипт|напиши код|код на |алгоритм|```|"
+    r"формул[аыу]? в (excel|эксел)|проанализируй|сравни\b|составь план|разбери подробно|подумай как следует|по каждому|"
+    r"сначала.{3,200}(потом|затем)|^/умно|\bумно\b", re.I | re.S)
+_COMPLEX_LEN = 6000
+
+
+def _needs_complex(text: str, extra_chars: int = 0) -> str:
+    """Причина, по которой ход сразу идёт на «сложную» модель (без вызова модели: правила по тексту), иначе ''."""
+    t = text or ""
+    if _COMPLEX_RX.search(t):
+        return "pre:text"
+    if len(t) + extra_chars > _COMPLEX_LEN:
+        return "pre:size"
+    return ""
+
+
+def _start_conf(app, conf, text: str, extra_chars: int = 0):
+    """Конфиг начала хода с учётом предварительной эскалации. → (conf, esc, причина)."""
+    esc = _esc_conf(app, conf)
+    if not esc or conf.role != "main":
+        return conf, esc, ""
+    reason = _needs_complex(text, extra_chars)
+    if reason and (esc.get("limit") is None or ai_usage.escalations_today() < esc["limit"]):
+        c = _ai_conf(app, "complex")
+        return c, None, reason
+    return conf, esc, ""
+
+
+def _llm_text(conf, system: str, user: str, max_tokens: int = 2500, timeout: int = 120, func: str = "") -> str:
     """Один запрос к модели без инструментов. Ошибки — _AssistantError."""
-    provider, key, model, _ = conf
+    provider, key, model = conf[0], conf[1], conf[2]
+    effort = conf[4] if len(conf) > 4 else ""
+    role = conf[5] if len(conf) > 5 else ""
     try:
         if provider == "openai":
-            r = requests.post(OPENAI_CHAT_URL, headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
-                              json={"model": model, "max_completion_tokens": max_tokens,
-                                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]},
-                              timeout=timeout)
+            body = {"model": model, "max_completion_tokens": max_tokens,
+                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+            body.update(_openai_extras(model, effort))
+            r = _openai_post(key, body, timeout=timeout)
         else:
             r = requests.post(ANTHROPIC_MESSAGES_URL,
                               headers={"Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"},
@@ -6260,6 +6638,9 @@ def _llm_text(conf, system: str, user: str, max_tokens: int = 2500, timeout: int
             err = None
         raise _AssistantError(f"Ошибка ИИ: {err or r.status_code}")
     j = r.json()
+    if ai_usage:
+        u = ai_usage.usage_from_openai(j.get("usage")) if provider == "openai" else ai_usage.usage_from_claude(j.get("usage"))
+        _log_call(provider, model, role, func or role, effort if provider == "openai" else "", u, 1)
     if provider == "openai":
         return (((j.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
     return "".join(b.get("text", "") for b in (j.get("content") or []) if b.get("type") == "text").strip()
@@ -6329,7 +6710,8 @@ def study_notes_targets(app, conf) -> tuple:
         return c.get("targets") or [], c.get("unresolved") or []
     targets, unresolved = [], []
     try:
-        refs = study_skills.parse_refs(_llm_text(conf, study_skills.NOTES_SYSTEM, text, max_tokens=800))
+        refs = study_skills.parse_refs(_llm_text(_ai_conf(app, "notesTargets") or conf, study_skills.NOTES_SYSTEM, text, max_tokens=800,
+                                                 func="notes_targets"))
         for name in refs["chats"]:
             try:
                 d = _resolve_chat_name(name)
@@ -6395,7 +6777,9 @@ def _plan_run_task(task: dict, token: str, chat) -> str:
     conf = _ai_conf(app)
     if not conf:
         raise _AssistantError("Ассистенту не назначен ключ ИИ: Настройки → Ассистент.")
-    provider, api_key, model, site_url = conf
+    task_text = "Плановая задача «" + task["title"] + "»:\n" + task["text"]
+    conf, esc, esc_reason = _start_conf(app, conf, task_text)
+    provider, api_key, model, site_url = conf[:4]
     with_tg = bool(tg_user and chat and tg_user.is_owner_chat(chat))
     ctx = tg_bot.Ctx(token, chat, None) if tg_bot and token and chat else None
     if ctx:
@@ -6403,13 +6787,19 @@ def _plan_run_task(task: dict, token: str, chat) -> str:
     tg_bot.set_ctx(ctx) if tg_bot else None
     _plan_scope.on = True
     loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
+    cfg = _ai_models_cfg(app)
+    groups = tool_groups.pick(task["title"] + " " + task["text"]) if (tool_groups and cfg.get("toolGroups")) else None
+    turn = {"esc": esc_reason}
     try:
-        answer, _ = loop_fn([{"role": "user", "content": "Плановая задача «" + task["title"] + "»:\n" + task["text"]}],
-                            api_key, model, app, site_url, with_tg, extra_system=PLAN_RUN_PROMPT, max_steps=14)
+        answer, _ = loop_fn([{"role": "user", "content": task_text}],
+                            api_key, model, app, site_url, with_tg, extra_system=PLAN_RUN_PROMPT, max_steps=14,
+                            effort=conf[4], role=conf[5], func="plan_task", esc=esc, groups=groups, turn=turn,
+                            compact=bool(cfg.get("compactPrompt")), cache=bool(cfg.get("promptCache")))
     finally:
         _plan_scope.on = False
         if tg_bot:
             tg_bot.set_ctx(None)
+        _record_turn(turn, cfg, "plan_task", task_text)
     if answer is None:
         raise _AssistantError("Не уложился в отведённые шаги.")
     return answer
@@ -6481,7 +6871,10 @@ def start_study_brief(task: dict, chat_id=None) -> dict:
 
 
 def _study_brief_worker(app, snap, conf, token, chats, key):
-    provider, api_key, model, site_url = conf
+    conf = _ai_conf(app, "studyBrief") or conf
+    provider, api_key, model, site_url = conf[:4]
+    cfg = _ai_models_cfg(app)
+    turn = {}
     owner_chats = [c for c in chats if tg_user and tg_user.is_owner_chat(c)]
     with_tg = bool(owner_chats)
     chats = owner_chats or chats          # личные переписки — только в личный чат владельца
@@ -6509,7 +6902,9 @@ def _study_brief_worker(app, snap, conf, token, chats, key):
             + "Собери информацию и верни итоговый отчёт по структуре.")
         loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
         answer, _ = loop_fn([{"role": "user", "content": user_msg}], api_key, model, app, site_url, with_tg,
-                            extra_system=study_skills.BRIEF_PROMPT, allowed=study_skills.BRIEF_ALLOWED_TOOLS, max_steps=18)
+                            extra_system=study_skills.BRIEF_PROMPT, allowed=study_skills.BRIEF_ALLOWED_TOOLS, max_steps=18,
+                            effort=conf[4], role=conf[5], func="study_brief", esc=_esc_conf(app, conf), turn=turn,
+                            compact=bool(cfg.get("compactPrompt")), cache=bool(cfg.get("promptCache")))
     except _AssistantError as e:
         err = str(e)
     except Exception as e:
@@ -6523,6 +6918,7 @@ def _study_brief_worker(app, snap, conf, token, chats, key):
                 pass
         _brief_scope.peers = None
         _study_brief_running.discard(key)
+        _record_turn(turn, cfg, "study_brief", snap.get("title") or "")
     title = f"Задача: {snap['title'][:40]}"
     for cid in chats:
         try:
@@ -6624,7 +7020,7 @@ def study_chats_scan(chat_id=None, manual: bool = False) -> dict:
             prompt = (f"ПОЛЬЗОВАТЕЛЬ: {me.get('name') or '?'}" + (f", @{me['username']}" if me.get("username") else "") + "\n"
                       + "ЕГО АКТИВНЫЕ ЗАДАЧИ: " + ("; ".join(f"{t.get('title')} (до {t.get('due') or 'без срока'})" for t in tasks) or "нет") + "\n\n"
                       + body)
-            raw = _llm_text(conf, study_skills.TRIAGE_SYSTEM, prompt, max_tokens=2500)
+            raw = _llm_text(_ai_conf(app, "triage") or conf, study_skills.TRIAGE_SYSTEM, prompt, max_tokens=2500, func="triage")
             by_chat = {c["chat"]: c for c in chats}
             for it in study_skills.parse_items(raw):
                 c = by_chat.get(it.get("chat")) or (chats[0] if len(chats) == 1 else None)
@@ -9753,6 +10149,17 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif route == "/api/plan/tools":
             state = (load_app_data() or {}).get("telegramSkills")
             self._json(200, plan_skill.voice_payload(state) if plan_skill else {"tools": [], "prompt": ""})
+        elif route == "/api/ai/models":
+            self._json(200, ai_usage.catalog() if ai_usage else {"models": [], "roles": [], "effortLabels": {}, "defaults": {}})
+        elif route == "/api/ai/usage":
+            q = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            try:
+                days = int((q.get("days") or ["7"])[0])
+            except ValueError:
+                days = 7
+            by = (q.get("by") or ["day"])[0]
+            self._json(200, ai_usage.summary(days, by if by in ("day", "model", "func", "role") else "day") if ai_usage
+                       else {"lines": [], "total": {}, "quality": {}, "error": "Журнал расхода на сервере недоступен."})
         elif route == "/api/plan/tasks":
             self._json(200, {"tasks": plan_skill.list_tasks(), **plan_skill.summary()} if plan_skill
                        else {"tasks": [], "active": 0, "total": 0, "error": "Планирование на сервере недоступно."})
@@ -9946,6 +10353,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._market_post(route)
         elif route.startswith("/api/mail/"):
             self._mail_post(route)
+        elif route == "/api/ai/usage":
+            self._ai_usage_post()
         elif route.startswith("/api/plan/"):
             self._plan_post(route)
         elif route == "/api/student/check":
@@ -11484,6 +11893,32 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(404, {"error": "not found"})
         except Exception as e:
             self._json(200, {"ok": False, "error": mail_skill.redact(f"{e.__class__.__name__}: {e}")})
+
+    def _ai_usage_post(self):
+        """Расход браузерного ассистента (запросы к OpenAI идут напрямую из браузера) — в общий журнал."""
+        length = self._content_length() or 0
+        if length > 16 * 1024:
+            self._json(413, {"error": "body too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except Exception as e:
+            self._json(400, {"error": str(e)})
+            return
+        if not (ai_usage and isinstance(payload, dict)):
+            self._json(200, {"ok": False})
+            return
+        try:
+            u = ai_usage.usage_from_openai(payload.get("usage"))
+            ai_usage.record_call(provider="openai", model=str(payload.get("model") or "")[:80], role=str(payload.get("role") or "main")[:20],
+                                 func=str(payload.get("func") or "voice")[:20], effort=str(payload.get("effort") or "")[:12], usage=u,
+                                 step=int(payload.get("step") or 0), source="browser")
+            if payload.get("turn"):
+                ai_usage.record_turn(func="voice", role=str(payload.get("role") or "main")[:20], model=str(payload.get("model") or "")[:80],
+                                     steps=int(payload.get("steps") or 0), ok=bool(payload.get("ok", True)), log_text=False)
+            self._json(200, {"ok": True})
+        except Exception as e:
+            self._json(200, {"ok": False, "error": str(e)})
 
     def _plan_post(self, route: str):
         """Плановые задачи: управление из настроек и вызов инструментов голосовым ассистентом."""
