@@ -223,7 +223,7 @@ def music_path(filename: str):
 SPA_ROUTES = {
     "/mybody", "/budget", "/supplements", "/meals", "/weather",
     "/house", "/cars", "/holidays", "/settings", "/planner", "/health",
-    "/misc", "/wishlist", "/cards", "/gym", "/music", "/knowledge", "/quiz",
+    "/misc", "/wishlist", "/cards", "/notes", "/gym", "/music", "/knowledge", "/quiz",
     "/study",
 }
 
@@ -4463,6 +4463,13 @@ ASSISTANT_DATA_DOMAINS = {
     "cards": ("Карты лояльности магазинов",
         lambda app: [{k: v for k, v in c.items() if k not in ("photo", "code")}
                      for c in app.get("loyaltyCards", [])]),
+    "sims": ("Заметки → Сим-карты: номера, оператор, в каком устройстве и слоте стоят (deviceId → devices), назначение, тариф и платёж, APN/прокси (без паролей), метки. PIN/PUK не передаются",
+        lambda app: {
+            "devices": app.get("simDevices", []),
+            "sims": [{**{k: v for k, v in s.items() if k not in ("pin", "puk", "apnPass", "proxyPass", "fields")},
+                      "fields": [f for f in (s.get("fields") or []) if not f.get("secret")]}
+                     for s in app.get("simCards", [])],
+        }),
     "gym": ("GYM: программы, дни, упражнения, журнал тренировок",
         lambda app: {
             "programs": app.get("gymPrograms", []), "days": app.get("gymDays", []),
@@ -4553,6 +4560,7 @@ ASSISTANT_NAV_TARGETS = {
     "wishlist": ("Хотелки", "/wishlist"),
     "study": ("Учёба", "/study"),
     "cards": ("Карты лояльности", "/cards"),
+    "notes": ("Заметки (сим-карты)", "/notes"),
     "gym": ("GYM", "/gym"),
     "music": ("Музыка", "/music"),
     "knowledge": ("База данных", "/knowledge"),
@@ -4644,6 +4652,14 @@ WRITE_REGISTRY = {
     },
     "healthEvents": {"label": "Событие здоровья (визит/болезнь/процедура)", "create_defaults": lambda: {"tags": [], "medications": []}},
     "loyaltyCards": {"label": "Карта лояльности магазина", "create_defaults": lambda: {"format": "auto"}},
+    "simDevices": {
+        "label": "Устройство для сим-карт (name, kind phone|modem|tablet|laptop|watch|car|other, slots — число слотов)",
+        "create_defaults": lambda: {"kind": "phone", "slots": 2, "note": ""},
+    },
+    "simCards": {
+        "label": "Сим-карта (number, operatorId mts|beeline|megafon|t2|yota|tmob|sber|other, operatorName, name, deviceId, slot 1|2|e, status active|spare|blocked, plan, payAmount, billing month|year|none, payDay, payMonth, roles [], tags [], apn, proxyType/proxyHost/proxyPort, note, archived)",
+        "create_defaults": lambda: {"operatorId": "other", "status": "active", "billing": "month", "roles": [], "tags": [], "fields": [], "archived": False},
+    },
     "knowledgeNotes": {
         "label": "Запись в «Базе данных» — факт о пользователе (title, text, category)",
         "create_defaults": lambda: {"category": "Разное", "pinned": False},

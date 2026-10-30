@@ -1591,6 +1591,252 @@
   }
   .st-audio-name { font-size: 14px; opacity: .8; text-align: center; word-break: break-word; }
   .st-audio audio { width: 100%; }
+
+  /* ── Прочее → Заметки: разделы-«папки» и раздел «Сим-карты» (классы notes-*, sim-*) ── */
+  .notes-secs { display: flex; gap: 6px; overflow-x: auto; margin: 0 -2px 14px; padding: 2px; }
+  .notes-sec {
+    display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0;
+    padding: 6px 12px 6px 6px; border-radius: 12px; font-size: 14px; font-weight: 600;
+    background: var(--surface); border: 1px solid var(--border); color: var(--text-muted);
+    transition: background .2s ease, color .2s ease, border-color .2s ease, transform .12s ease;
+  }
+  .notes-sec:active { transform: scale(.97); }
+  .notes-sec.on { background: var(--text); border-color: var(--text); color: #fff; }
+  .notes-sec-ic { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; color: #fff; font-size: 14px; }
+  .notes-sec-n { font-size: 11px; font-weight: 600; opacity: .6; font-variant-numeric: tabular-nums; }
+
+  .sim-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .sim-stat {
+    position: relative; overflow: hidden; border-radius: 16px; padding: 11px 12px 10px;
+    background: var(--surface); border: 1px solid var(--border); text-align: left; min-width: 0;
+    transition: transform .15s ease, box-shadow .2s ease;
+  }
+  button.sim-stat:hover { box-shadow: 0 6px 18px -12px rgba(0,0,0,.35); }
+  button.sim-stat:active { transform: scale(.98); }
+  .sim-stat-k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-subtle); font-weight: 600; }
+  .sim-stat-v { font-family: 'Fraunces', serif; font-size: 22px; letter-spacing: -.02em; line-height: 1.15; margin-top: 2px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sim-stat-s { font-size: 11.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @media (max-width: 480px) {
+    .sim-stats { gap: 6px; }
+    .sim-stat { padding: 9px 10px 8px; border-radius: 14px; }
+    .sim-stat-v { font-size: 18px; }
+    .sim-stat-s { white-space: normal; font-size: 11px; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .sim-seg button { padding: 7px 4px; font-size: 12.5px; gap: 4px; }
+    .sim-seg button svg { display: none; }
+  }
+  .sim-stat.hot { background: linear-gradient(135deg, #fff7ed, #ffedd5); border-color: #fed7aa; }
+  .sim-stat.hot .sim-stat-v { color: #c2410c; }
+  .sim-stat.due { background: linear-gradient(135deg, #fef2f2, #fee2e2); border-color: #fecaca; }
+  .sim-stat.due .sim-stat-v { color: #b91c1c; }
+
+  .sim-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .sim-search { position: relative; flex: 1 1 auto; min-width: 0; }
+  .sim-search input { padding: 10px 34px 10px 38px; border-radius: 12px; }
+  .sim-search > .sim-search-ic { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-subtle); pointer-events: none; display: flex; }
+  .sim-search > button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); padding: 6px; border-radius: 8px; color: var(--text-subtle); }
+  .sim-iconbtn {
+    flex-shrink: 0; width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center;
+    background: var(--surface); border: 1px solid var(--border); color: var(--text-muted); transition: all .15s ease;
+  }
+  .sim-iconbtn:hover { color: var(--text); border-color: var(--border-strong); }
+  .sim-iconbtn.on { background: var(--text); color: #fff; border-color: var(--text); }
+  .sim-add {
+    flex-shrink: 0; height: 42px; padding: 0 14px; border-radius: 12px; display: inline-flex; align-items: center; gap: 6px;
+    background: var(--text); color: #fff; font-weight: 600; font-size: 14px; transition: transform .12s ease, opacity .15s ease;
+  }
+  .sim-add:active { transform: scale(.96); }
+
+  .sim-seg { display: flex; padding: 3px; border-radius: 12px; background: #efefef; gap: 2px; position: relative; }
+  .sim-seg button {
+    flex: 1 1 0; position: relative; z-index: 1; padding: 7px 8px; border-radius: 9px; font-size: 13px; font-weight: 600;
+    color: var(--text-muted); display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap;
+    transition: color .2s ease;
+  }
+  .sim-seg button.on { color: var(--text); }
+  .sim-seg-thumb {
+    position: absolute; top: 3px; bottom: 3px; border-radius: 9px; background: var(--surface);
+    box-shadow: 0 1px 3px rgba(0,0,0,.12); transition: left .28s cubic-bezier(.3,.9,.3,1), width .28s cubic-bezier(.3,.9,.3,1);
+  }
+  .sim-chips { display: flex; gap: 6px; overflow-x: auto; padding: 2px 2px 4px; margin: 0 -2px 12px; }
+  .sim-chip {
+    flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 11px; border-radius: 10px;
+    font-size: 13px; font-weight: 500; background: var(--surface); border: 1px solid var(--border); color: var(--text-muted);
+    transition: all .15s ease; white-space: nowrap;
+  }
+  .sim-chip i { font-style: normal; font-size: 11px; opacity: .55; font-variant-numeric: tabular-nums; }
+  .sim-chip.on { background: var(--text); color: #fff; border-color: var(--text); }
+  .sim-chip-sep { flex-shrink: 0; width: 1px; background: var(--border); margin: 4px 2px; }
+  .sim-sort { width: auto; padding: 7px 28px 7px 10px; font-size: 13px; border-radius: 10px; height: 32px; flex-shrink: 0;
+    appearance: none; -webkit-appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%239a9a9a' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 8px center; }
+
+  /* Карточка в форме сим-карты: срезанный угол, чип, логотип оператора */
+  .sim-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(255px, 1fr)); gap: 12px; }
+  @media (max-width: 767px) { .sim-grid { grid-template-columns: 1fr; gap: 10px; } }
+  @keyframes simIn { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+  .sim-in { animation: simIn .38s cubic-bezier(.2,.8,.25,1) both; }
+  .sim-card {
+    --c1: #334155; --c2: #0f172a; --fg: #fff;
+    position: relative; display: block; width: 100%; text-align: left; color: var(--fg);
+    aspect-ratio: 1.62 / 1; max-height: 210px; padding: 14px 16px 13px;
+    border-radius: 18px; background: linear-gradient(135deg, var(--c1), var(--c2));
+    clip-path: polygon(0 0, calc(100% - 34px) 0, 100% 34px, 100% 100%, 0 100%);
+    box-shadow: 0 10px 24px -16px rgba(0,0,0,.6);
+    transition: transform .25s cubic-bezier(.2,.8,.25,1), filter .2s ease;
+    overflow: hidden; isolation: isolate; cursor: pointer;
+  }
+  @media (max-width: 767px) { .sim-card { aspect-ratio: auto; min-height: 150px; } }
+  .sim-card::before {
+    content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+    background: radial-gradient(120% 90% at 100% 0%, rgba(255,255,255,.22), transparent 55%),
+                radial-gradient(80% 80% at 0% 100%, rgba(0,0,0,.18), transparent 60%);
+  }
+  .sim-card::after {
+    content: ''; position: absolute; top: -40%; bottom: -40%; width: 40%; left: -60%; z-index: 0; pointer-events: none;
+    background: linear-gradient(100deg, transparent, rgba(255,255,255,.28), transparent);
+    transform: skewX(-18deg); transition: left .7s ease;
+  }
+  .sim-card:hover { transform: translateY(-3px); }
+  .sim-card:hover::after { left: 130%; }
+  .sim-card:active { transform: scale(.985); }
+  .sim-card.archived { filter: grayscale(.85) opacity(.75); }
+  .sim-card.blocked { filter: grayscale(.6); }
+  .sim-card-top { display: flex; align-items: flex-start; gap: 10px; position: relative; z-index: 1; }
+  .sim-card-op { font-size: 12px; font-weight: 700; letter-spacing: .02em; opacity: .92; line-height: 1.1; }
+  .sim-card-name { font-size: 12px; opacity: .78; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sim-chipimg { width: 42px; height: 32px; flex-shrink: 0; margin-top: 2px; filter: drop-shadow(0 1px 1px rgba(0,0,0,.25)); }
+  .sim-card-mid { position: relative; z-index: 1; margin-top: 12px; display: flex; align-items: center; gap: 6px; }
+  .sim-num { font: 600 21px/1.1 ui-monospace, 'SF Mono', Menlo, monospace; letter-spacing: .01em; white-space: nowrap; text-shadow: 0 1px 2px rgba(0,0,0,.18); }
+  .sim-copy {
+    width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex-shrink: 0;
+    background: rgba(255,255,255,.18); color: inherit; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+    transition: transform .15s ease, background .15s ease;
+  }
+  .sim-copy:hover { background: rgba(255,255,255,.3); }
+  .sim-copy:active { transform: scale(.88); }
+  .sim-copy.done { background: rgba(255,255,255,.95); color: #15803d; animation: simPop .35s ease; }
+  @keyframes simPop { 0% { transform: scale(.7); } 60% { transform: scale(1.15); } 100% { transform: scale(1); } }
+  .sim-card-bot { position: absolute; left: 16px; right: 14px; bottom: 12px; z-index: 1; display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; }
+  .sim-pill {
+    display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+    background: rgba(255,255,255,.2); color: inherit; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+    backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  }
+  .sim-pill.soon { background: #fff7ed; color: #c2410c; }
+  .sim-pill.today { background: #fef2f2; color: #b91c1c; }
+  .sim-pill.today::before, .sim-pill.soon::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: simPulse 1.4s ease-in-out infinite; }
+  @keyframes simPulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.7); } }
+  .sim-card-tags { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+  .sim-card-left { display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1 1 auto; align-items: flex-start; }
+  .sim-card-tags { flex-shrink: 0; max-width: 42%; }
+
+  /* Компактный список */
+  .sim-list { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+  .sim-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; text-align: left; width: 100%; border-top: 1px solid var(--border); transition: background .15s ease; }
+  .sim-row:first-child { border-top: 0; }
+  .sim-row:hover { background: #f6f6f6; }
+  .sim-mini {
+    width: 34px; height: 44px; flex-shrink: 0; border-radius: 6px; position: relative;
+    clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
+    display: grid; place-items: end center; padding-bottom: 4px; color: #fff; font-size: 9px; font-weight: 800; letter-spacing: .02em;
+  }
+  .sim-mini::before { content: ''; position: absolute; left: 8px; top: 9px; width: 16px; height: 12px; border-radius: 3px; background: linear-gradient(135deg, #f8e3a1, #c9a24a); }
+  .sim-row-main { flex: 1 1 auto; min-width: 0; }
+  .sim-row-num { font: 600 15px/1.2 ui-monospace, 'SF Mono', Menlo, monospace; white-space: nowrap; }
+  .sim-row-sub { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+  .sim-row .sim-copy { background: #f1f1f1; color: var(--text-muted); }
+  .sim-row .sim-copy.done { background: #dcfce7; color: #15803d; }
+
+  /* По устройствам */
+  .sim-devs { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+  @media (max-width: 767px) { .sim-devs { grid-template-columns: 1fr; } }
+  .sim-dev { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 12px; }
+  .sim-dev-h { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .sim-dev-ic { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; font-size: 19px; flex-shrink: 0; }
+  .sim-dev-name { font-weight: 600; font-size: 15px; line-height: 1.2; }
+  .sim-dev-sub { font-size: 12px; color: var(--text-muted); }
+  .sim-slot {
+    display: flex; align-items: stretch; gap: 10px; padding: 8px; border-radius: 14px; background: var(--bg); border: 1px solid var(--border);
+    width: 100%; text-align: left; transition: transform .15s ease, border-color .15s ease; margin-top: 6px;
+  }
+  .sim-slot:hover { border-color: var(--border-strong); }
+  .sim-slot:active { transform: scale(.99); }
+  .sim-slot.empty { border-style: dashed; color: var(--text-subtle); align-items: center; justify-content: center; font-size: 13px; padding: 12px; background: transparent; }
+  .sim-slot-lbl { font-size: 10px; font-weight: 700; letter-spacing: .08em; color: var(--text-subtle); text-transform: uppercase; }
+  .sim-kv { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+  .sim-kv b { font-weight: 600; color: var(--text); font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 11.5px; }
+
+  /* Платежи */
+  .sim-pay-h { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--text-subtle); font-weight: 700; margin: 16px 4px 6px; display: flex; justify-content: space-between; }
+  .sim-pay-h:first-child { margin-top: 0; }
+  .sim-days { min-width: 50px; text-align: center; border-radius: 12px; padding: 5px 4px; background: #f3f3f3; flex-shrink: 0; line-height: 1.05; }
+  .sim-days b { display: block; font-family: 'Fraunces', serif; font-size: 19px; }
+  .sim-days span { font-size: 10px; color: var(--text-muted); }
+  .sim-days.today { background: #fee2e2; color: #b91c1c; }
+  .sim-days.soon { background: #ffedd5; color: #c2410c; }
+  .sim-paybtn { flex-shrink: 0; height: 32px; padding: 0 10px; border-radius: 10px; font-size: 12.5px; font-weight: 600; border: 1px solid var(--border-strong); color: var(--text-muted); transition: all .15s ease; }
+  .sim-paybtn:hover { color: #15803d; border-color: #86efac; background: #f0fdf4; }
+
+  /* Карточка в деталях: 3D-наклон за пальцем/курсором */
+  .sim-hero-wrap { perspective: 900px; margin: -2px auto 14px; max-width: 360px; }
+  .sim-hero { transform-style: preserve-3d; transition: transform .35s cubic-bezier(.2,.8,.25,1); }
+  .sim-hero .sim-card { max-height: none; cursor: default; }
+  .sim-hero .sim-card:hover { transform: none; }
+  .sim-actions { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-bottom: 14px; }
+  .sim-act {
+    display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 9px 2px 8px; border-radius: 14px; font-size: 11px; font-weight: 500;
+    background: var(--surface); border: 1px solid var(--border); color: var(--text-muted); transition: all .15s ease;
+  }
+  .sim-act:hover { color: var(--text); border-color: var(--border-strong); }
+  .sim-act:active { transform: scale(.95); }
+  .sim-act.danger:hover { color: #b91c1c; border-color: #fecaca; }
+  .sim-sec { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; margin-bottom: 10px; overflow: hidden; }
+  .sim-sec-t { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--text-subtle); font-weight: 700; padding: 10px 14px 2px; }
+  .sim-line { display: flex; align-items: center; gap: 10px; padding: 8px 14px; min-height: 42px; border-top: 1px solid var(--border); }
+  .sim-sec-t + .sim-line { border-top: 0; }
+  .sim-line-k { font-size: 13px; color: var(--text-muted); flex-shrink: 0; min-width: 92px; }
+  .sim-line-v { flex: 1 1 auto; min-width: 0; text-align: right; font-size: 14px; font-weight: 500; word-break: break-word; }
+  .sim-line-v.mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 13.5px; }
+  .sim-line .sim-copy { background: #f1f1f1; color: var(--text-muted); width: 28px; height: 28px; }
+  .sim-line .sim-copy.done { background: #dcfce7; color: #15803d; }
+  .sim-secret { cursor: pointer; transition: filter .3s ease, letter-spacing .3s ease; user-select: none; }
+  .sim-secret.masked { filter: blur(5px); letter-spacing: .12em; }
+  .sim-tag { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 999px; font-size: 12px; font-weight: 500; }
+  .sim-tag::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+  /* Редактор */
+  .sim-form-sec { margin-bottom: 18px; }
+  .sim-form-sec > h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--text-subtle); font-weight: 700; margin: 0 0 8px; }
+  .sim-ops { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .sim-op {
+    display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 9px 4px 7px; border-radius: 14px; font-size: 11.5px; font-weight: 600;
+    border: 1.5px solid var(--border); background: var(--surface); color: var(--text-muted); transition: all .15s ease;
+  }
+  .sim-op.on { border-color: var(--text); color: var(--text); box-shadow: 0 0 0 3px rgba(0,0,0,.06); transform: translateY(-1px); }
+  .sim-toggles { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sim-tog { height: 32px; padding: 0 11px; border-radius: 10px; font-size: 13px; font-weight: 500; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); transition: all .15s ease; }
+  .sim-tog.on { background: var(--text); border-color: var(--text); color: #fff; }
+  .sim-colors { display: flex; flex-wrap: wrap; gap: 8px; }
+  .sim-color { width: 30px; height: 30px; border-radius: 10px; transition: transform .15s ease, box-shadow .15s ease; }
+  .sim-color.on { transform: scale(1.12); box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--text); }
+  .sim-g2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .sim-g3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .sim-form-sec label { margin-bottom: 4px; font-size: 11px; }
+  .sim-form-sec input, .sim-form-sec select, .sim-form-sec textarea { padding: 10px 12px; }
+  .sim-field-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) 40px; gap: 6px; margin-bottom: 6px; align-items: center; }
+
+  .sim-toast {
+    position: fixed; left: 50%; bottom: calc(6.5rem + env(safe-area-inset-bottom, 0px)); z-index: 70; transform: translateX(-50%);
+    background: #111; color: #fff; border-radius: 14px; padding: 10px 12px 10px 16px; font-size: 14px; display: flex; align-items: center; gap: 12px;
+    box-shadow: 0 12px 30px -10px rgba(0,0,0,.5); animation: simToast .3s cubic-bezier(.2,.9,.25,1.2) both; max-width: calc(100vw - 32px);
+  }
+  @media (min-width: 768px) { .sim-toast { bottom: 28px; } }
+  .sim-toast button { color: #fde047; font-weight: 600; padding: 4px 6px; }
+  @keyframes simToast { from { opacity: 0; transform: translate(-50%, 14px) scale(.96); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
+  @media (prefers-reduced-motion: reduce) {
+    .sim-in, .sim-toast, .sim-copy.done { animation: none; }
+    .sim-card, .sim-card::after, .sim-hero, .sim-seg-thumb { transition: none; }
+    .sim-pill.today::before, .sim-pill.soon::before { animation: none; }
+  }
 </style>
 </head>
 <body>
@@ -1948,6 +2194,10 @@ const DEFAULT_DATA = () => ({
   // Прочее → Карты: карты лояльности. code+format — то, из чего рисуется
   // штрихкод на экране; фото карты хранится отдельным файлом в /api/photos.
   loyaltyCards: [],
+  // Прочее → Заметки → Сим-карты: simCards (deviceId → simDevices.id) и
+  // устройства, где они стоят. Обычные id-массивы — LWW по updatedAt и тумбстоны.
+  simCards: [],
+  simDevices: [],
   // Прочее → Учёба: канбан, где столбец — предмет (studySubjects, у предмета
   // есть order и заметка note), а карточка — задание с состоянием
   // todo/doing/done (studyTasks.subjectId → studySubjects.id). Обычные
@@ -2898,6 +3148,7 @@ const PATH_TAB_MAP = {
   // последним и потому остаётся адресом раздела (домашний экран с иконками).
   '/wishlist': 'misc',
   '/cards': 'misc',
+  '/notes': 'misc',
   '/gym': 'misc',
   '/music': 'misc',
   '/knowledge': 'misc',
@@ -2914,8 +3165,8 @@ const TAB_PATH_MAP = Object.fromEntries(Object.entries(PATH_TAB_MAP).map(([p, t]
 const PLANNER_SUB_BY_PATH = { '/holidays': 'holidays' };
 const PLANNER_PATH_BY_SUB = { holidays: '/holidays' };
 
-const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/gym': 'gym', '/music': 'music', '/knowledge': 'knowledge', '/quiz': 'quiz', '/study': 'study', '/cars': 'cars', '/settings': 'settings' };
-const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', gym: '/gym', music: '/music', knowledge: '/knowledge', quiz: '/quiz', study: '/study', cars: '/cars', settings: '/settings' };
+const MISC_SUB_BY_PATH = { '/wishlist': 'wishlist', '/cards': 'cards', '/notes': 'notes', '/gym': 'gym', '/music': 'music', '/knowledge': 'knowledge', '/quiz': 'quiz', '/study': 'study', '/cars': 'cars', '/settings': 'settings' };
+const MISC_PATH_BY_SUB = { wishlist: '/wishlist', cards: '/cards', notes: '/notes', gym: '/gym', music: '/music', knowledge: '/knowledge', quiz: '/quiz', study: '/study', cars: '/cars', settings: '/settings' };
 
 // Routes that get their own Add-to-Home-Screen shortcut manifest (mirrors
 // SHORTCUT_MANIFESTS in jarvis.py). The server only sets the right
@@ -3381,7 +3632,7 @@ function App() {
       ) : tab === 'budget' ? (
         <BudgetView data={data} setData={setData} onDirtyChange={setBudgetPlansDirty} />
       ) : (
-        <main className={`${tab === 'misc' && miscTab === 'study' ? 'max-w-none' : 'max-w-3xl'} mx-auto px-4 sm:px-6 pt-6 md:pt-8`}>
+        <main className={`${tab === 'misc' && miscTab === 'study' ? 'max-w-none' : tab === 'misc' && miscTab === 'notes' ? 'max-w-5xl' : 'max-w-3xl'} mx-auto px-4 sm:px-6 pt-6 md:pt-8`}>
           {tab === 'home' && <HomeView data={data} setData={setData} setTab={setTab} setHouseTab={setHouseTab} setMealTab={setMealTab} />}
           {tab === 'supplements' && <SupplementsView data={data} setData={setData} />}
           {tab === 'meals' && <MealsView data={data} setData={setData} mealTab={mealTab} setMealTab={setMealTab} />}
@@ -14548,6 +14799,7 @@ const VOICE_NAV_TARGETS = {
   misc_home:        { tab: 'misc', miscTab: '' },
   wishlist:         { tab: 'misc', miscTab: 'wishlist' },
   cards:            { tab: 'misc', miscTab: 'cards', focusable: true },
+  notes:            { tab: 'misc', miscTab: 'notes' },
   gym:              { tab: 'misc', miscTab: 'gym' },
   quiz:             { tab: 'misc', miscTab: 'quiz' },
   study:            { tab: 'misc', miscTab: 'study' },
@@ -14562,7 +14814,7 @@ const VOICE_NAV_LABELS = {
   house_boss: 'Дела — Босс', house_tasks: 'Дела — Задачи (канбан)', house_cleaning: 'Дела — По дому',
   planner_plans: 'Планировщик — Мои планы', planner_holidays: 'Планировщик — Праздники',
   planner_events: 'Планировщик — События', planner_camping: 'Планировщик — Кемпинг',
-  misc_home: 'Прочее — главная', wishlist: 'Хотелки', cards: 'Карты лояльности',
+  misc_home: 'Прочее — главная', wishlist: 'Хотелки', cards: 'Карты лояльности', notes: 'Заметки (сим-карты)',
   gym: 'GYM', cars: 'Автомобили и обслуживание', english: 'English', settings: 'Настройки',
   quiz: 'Своя игра', study: 'Учёба (канбан по предметам)',
 };
@@ -14618,6 +14870,14 @@ const VOICE_DATA_DOMAINS = {
     // code/photo — штрихкод и фото карты, отвечать по ним нечего, а тратить
     // на них токены незачем.
     get: d => (d.loyaltyCards || []).map(({ photo, code, ...rest }) => rest),
+  },
+  sims: {
+    label: 'Заметки → Сим-карты: номера, оператор, в каком устройстве и слоте стоят (deviceId → devices), назначение, тариф и платёж, APN/прокси (без паролей), метки. PIN/PUK не передаются',
+    get: d => ({
+      devices: d.simDevices || [],
+      sims: (d.simCards || []).map(({ pin, puk, apnPass, proxyPass, fields, ...rest }) =>
+        ({ ...rest, fields: (fields || []).filter(f => !f.secret) })),
+    }),
   },
   about: {
     label: 'База данных: что пользователь рассказал о себе — кто он, где живёт, чем занимается, предпочтения и планы',
@@ -14783,6 +15043,8 @@ const WRITE_REGISTRY = {
     createDefaults: () => ({ tags: [], medications: [], notify: false, notifyDate: '', notifyTime: '10:00', notifyNote: '' }),
   },
   loyaltyCards: { label: 'Карта лояльности магазина', createDefaults: () => ({ format: 'auto' }) },
+  simDevices: { label: 'Устройство для сим-карт (name, kind phone|modem|tablet|laptop|watch|car|other, slots — число слотов)', createDefaults: () => ({ kind: 'phone', slots: 2, note: '' }) },
+  simCards: { label: 'Сим-карта (number, operatorId mts|beeline|megafon|t2|yota|tmob|sber|other, operatorName, name, deviceId, slot 1|2|e, status active|spare|blocked, plan, payAmount, billing month|year|none, payDay, payMonth, roles [], tags [], apn, proxyType/proxyHost/proxyPort, note, archived)', createDefaults: () => ({ operatorId: 'other', status: 'active', billing: 'month', roles: [], tags: [], fields: [], archived: false }) },
   knowledgeNotes: {
     label: 'Запись в «Базе данных» — факт о пользователе (title, text, category)',
     createDefaults: () => ({ category: 'Разное', pinned: false }),
@@ -39035,6 +39297,7 @@ function GymImportPreview({ days, mode, onApply, onClose }) {
 const MISC_APPS = [
   { id: 'wishlist', label: 'Хотелки',    icon: 'heart',      color: '#be185d' },
   { id: 'cards',    label: 'Карты',      icon: 'creditCard', color: '#1d4ed8' },
+  { id: 'notes',    label: 'Заметки',    icon: 'clipboard',  color: '#0f766e' },
   { id: 'gym',      label: 'GYM',        icon: 'dumbbell',   color: '#0d9488' },
   { id: 'music',    label: 'Музыка',     icon: 'music',      color: '#9333ea' },
   { id: 'knowledge', label: 'База данных', icon: 'database',  color: '#0369a1' },
@@ -39402,12 +39665,1179 @@ function MiscView({ data, setData, sub, setSub, settingsTab, setSettingsTab, voi
         />
       )}
       {sub === 'wishlist' && <WishlistView data={data} setData={setData} />}
+      {sub === 'notes' && <NotesView data={data} setData={setData} />}
       {sub === 'gym' && <GymView data={data} setData={setData} onExit={() => setSub('')} />}
       {sub === 'music' && <MusicView data={data} setData={setData} />}
       {sub === 'knowledge' && <KnowledgeView data={data} setData={setData} />}
       {sub === 'quiz' && <QuizView data={data} setData={setData} />}
       {sub === 'study' && <StudyView data={data} setData={setData} onBack={() => setSub('')} />}
     </div>
+  );
+}
+
+// ============== ЗАМЕТКИ ==============
+// Блокнот из разделов: раздел = { id, label, glyph, color, count(data), View }.
+// Пока один раздел — «Сим-карты» со своим интерфейсом учёта. Обычные заметки
+// в духе Apple Notes встанут сюда же ещё одним разделом со своим id-массивом
+// (например, noteItems) — переключатель и обвязка общие.
+const NOTES_SECTIONS = [
+  {
+    id: 'sims', label: 'Сим-карты', glyph: '📶', color: '#0f766e',
+    count: d => (d.simCards || []).filter(s => !s.archived).length,
+    View: props => <SimCardsView {...props} />,
+  },
+];
+const NOTES_SECTION_KEY = 'jarvis.notes.section';
+
+function NotesView({ data, setData }) {
+  const [secId, setSecId] = useState(() => {
+    try { return localStorage.getItem(NOTES_SECTION_KEY) || NOTES_SECTIONS[0].id; } catch (_) { return NOTES_SECTIONS[0].id; }
+  });
+  const sec = NOTES_SECTIONS.find(s => s.id === secId) || NOTES_SECTIONS[0];
+  const mobile = useBudgetMobile();
+  const pick = (id) => {
+    setSecId(id);
+    try { localStorage.setItem(NOTES_SECTION_KEY, id); } catch (_) {}
+  };
+  return (
+    <ModalSheetContext.Provider value={mobile}>
+      <div className="notes-root">
+        <div className="notes-secs scrollbar-hide" role="tablist">
+          {NOTES_SECTIONS.map(s => (
+            <button key={s.id} type="button" role="tab" aria-selected={s.id === sec.id}
+              className={'notes-sec' + (s.id === sec.id ? ' on' : '')} onClick={() => pick(s.id)}>
+              <span className="notes-sec-ic" style={{ background: s.color }}>{s.glyph}</span>
+              {s.label}
+              <span className="notes-sec-n">{s.count(data)}</span>
+            </button>
+          ))}
+        </div>
+        <div key={sec.id} className="fade-in">{sec.View({ data, setData, mobile })}</div>
+      </div>
+    </ModalSheetContext.Provider>
+  );
+}
+
+// ── Сим-карты ───────────────────────────────────────────────────────────────
+// Данные — два обычных id-массива (LWW по updatedAt, тумбстоны в deletedIds):
+//   simDevices: { id, name, kind, slots, note }
+//   simCards:   { id, number, name, operatorId, operatorName, color, deviceId, slot (1|2|e…),
+//                 status active|spare|blocked, plan, payAmount, billing month|year|none, payDay, payMonth,
+//                 paidFor (ключ оплаченного периода YYYY-MM | YYYY), balance, balanceAt,
+//                 roles [], tags [], apn, apnUser, apnPass, proxyType, proxyHost, proxyPort, proxyUser, proxyPass,
+//                 pin, puk, iccid, owner, fields [{id,k,v,secret}], note, archived }
+const SIM_OPERATORS = [
+  { id: 'mts',     name: 'МТС',        c1: '#ff2a35', c2: '#b8000c', apn: 'internet.mts.ru' },
+  { id: 'beeline', name: 'Билайн',     c1: '#ffd84d', c2: '#f0a800', fg: '#111', apn: 'internet.beeline.ru' },
+  { id: 'megafon', name: 'МегаФон',    c1: '#1fd170', c2: '#00873f', apn: 'internet' },
+  { id: 't2',      name: 'Т2',         c1: '#41464f', c2: '#0b0c10', apn: 'internet.tele2.ru' },
+  { id: 'yota',    name: 'Yota',       c1: '#3cc8ff', c2: '#0077c2', apn: 'internet.yota' },
+  { id: 'tmob',    name: 'Т-Мобайл',   c1: '#ffe14d', c2: '#f5c400', fg: '#111', apn: 'm.tinkoff' },
+  { id: 'sber',    name: 'СберМобайл', c1: '#3fcf6a', c2: '#108a3a', apn: '' },
+  { id: 'other',   name: 'Другой',     c1: '#64748b', c2: '#1e293b', apn: '' },
+];
+const SIM_OP_BY_ID = Object.fromEntries(SIM_OPERATORS.map(o => [o.id, o]));
+const SIM_COLORS = ['', '#0f172a', '#7c3aed', '#db2777', '#dc2626', '#ea580c', '#ca8a04', '#16a34a', '#0d9488', '#0284c7', '#4f46e5', '#57534e'];
+const SIM_ROLES = ['Основная', 'Интернет', 'Звонки', 'SMS / 2FA', 'Банки', 'Мессенджеры', 'Модем', 'Прокси', 'Рабочая', 'Резерв', 'Регистрации'];
+const SIM_STATUSES = [
+  { id: 'active',  label: 'Активна' },
+  { id: 'spare',   label: 'В запасе' },
+  { id: 'blocked', label: 'Заблок.' },
+];
+const SIM_DEVICE_KINDS = [
+  { id: 'phone',  label: 'Телефон', emoji: '📱', bg: '#e0f2fe' },
+  { id: 'modem',  label: 'Модем / роутер', emoji: '📶', bg: '#dcfce7' },
+  { id: 'tablet', label: 'Планшет', emoji: '📲', bg: '#ede9fe' },
+  { id: 'laptop', label: 'Ноутбук', emoji: '💻', bg: '#f1f5f9' },
+  { id: 'watch',  label: 'Часы', emoji: '⌚', bg: '#fef3c7' },
+  { id: 'car',    label: 'Авто / трекер', emoji: '🚗', bg: '#fee2e2' },
+  { id: 'other',  label: 'Другое', emoji: '📟', bg: '#f5f5f4' },
+];
+const SIM_KIND_BY_ID = Object.fromEntries(SIM_DEVICE_KINDS.map(k => [k.id, k]));
+const SIM_SORTS = [
+  { id: 'pay', label: 'Ближайший платёж' },
+  { id: 'device', label: 'По устройству' },
+  { id: 'operator', label: 'По оператору' },
+  { id: 'amount', label: 'По сумме' },
+  { id: 'number', label: 'По номеру' },
+  { id: 'recent', label: 'Недавно изменённые' },
+];
+const SIM_MON = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+const SIM_PREFS_KEY = 'jarvis.sims.prefs';
+
+const simDigits = (s) => String(s || '').replace(/\D/g, '');
+// +7 999 123-45-67 для российских номеров, остальное — как ввели.
+const simFormatNumber = (raw) => {
+  let d = simDigits(raw);
+  if (d.length === 11 && (d[0] === '7' || d[0] === '8')) d = '7' + d.slice(1);
+  else if (d.length === 10 && d[0] === '9') d = '7' + d;
+  if (d.length === 11 && d[0] === '7') return `+7 ${d.slice(1, 4)} ${d.slice(4, 7)}-${d.slice(7, 9)}-${d.slice(9)}`;
+  return String(raw || '').trim();
+};
+const simDialNumber = (raw) => {
+  const f = simFormatNumber(raw);
+  return f.startsWith('+') ? '+' + simDigits(f) : String(raw || '').trim();
+};
+const simOp = (s) => SIM_OP_BY_ID[s.operatorId] || SIM_OP_BY_ID.other;
+const simOpName = (s) => (s.operatorId === 'other' || !SIM_OP_BY_ID[s.operatorId]) ? (s.operatorName || 'Оператор') : simOp(s).name;
+const simShade = (hex, amt) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const ch = (v) => Math.max(0, Math.min(255, Math.round(v + amt * 255)));
+  return '#' + [ch(n >> 16), ch((n >> 8) & 255), ch(n & 255)].map(v => v.toString(16).padStart(2, '0')).join('');
+};
+const simCardStyle = (s) => {
+  const op = simOp(s);
+  if (s.color) return { '--c1': simShade(s.color, 0.1), '--c2': simShade(s.color, -0.14), '--fg': '#fff' };
+  return { '--c1': op.c1, '--c2': op.c2, '--fg': op.fg || '#fff' };
+};
+const simSlotLabel = (slot) => slot === 'e' ? 'eSIM' : slot ? `SIM ${slot}` : '';
+const simMoney = (n) => `${Math.round(Number(n) || 0).toLocaleString('ru-RU')} ₽`;
+const simTagColor = (t) => {
+  let h = 0;
+  for (const ch of String(t)) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return { color: `hsl(${h} 60% 34%)`, background: `hsl(${h} 70% 94%)` };
+};
+
+// Ближайший платёж: дата текущего периода, если она ещё впереди и период
+// не отмечен оплаченным, иначе — следующего. Просрочек нет намеренно:
+// большинство сим на автоплатеже, «Оплачено» нужно лишь чтобы погасить подсветку.
+const simNextPay = (s, now = new Date()) => {
+  if (!s || !s.payDay || !s.billing || s.billing === 'none') return null;
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dim = (y, m) => new Date(y, m + 1, 0).getDate();
+  const at = (y, m) => new Date(y, m, Math.min(Number(s.payDay) || 1, dim(y, m)));
+  const yearly = s.billing === 'year';
+  const keyOf = (d) => yearly ? String(d.getFullYear()) : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  let d = yearly ? at(today.getFullYear(), (Number(s.payMonth) || 1) - 1) : at(today.getFullYear(), today.getMonth());
+  const step = (x) => yearly ? at(x.getFullYear() + 1, x.getMonth()) : at(x.getFullYear(), x.getMonth() + 1);
+  if (d < today) d = step(d);
+  if (s.paidFor && s.paidFor === keyOf(d)) d = step(d);
+  const days = Math.round((d - today) / 86400000);
+  return { date: d, days, key: keyOf(d) };
+};
+const simPayTone = (np) => !np ? '' : np.days <= 1 ? 'today' : np.days <= 5 ? 'soon' : '';
+const simDaysText = (n) => n === 0 ? 'сегодня' : n === 1 ? 'завтра' : `через ${n} дн`;
+const simDateText = (d) => `${d.getDate()} ${SIM_MON[d.getMonth()]}`;
+const simMonthly = (s) => {
+  const a = Number(s.payAmount) || 0;
+  if (!a || s.archived || s.billing === 'none') return 0;
+  return s.billing === 'year' ? a / 12 : a;
+};
+
+const newSimCard = (patch = {}) => ({
+  id: crypto.randomUUID(),
+  number: '', name: '', operatorId: 'mts', operatorName: '', color: '',
+  deviceId: '', slot: '', status: 'active',
+  plan: '', payAmount: '', billing: 'month', payDay: '', payMonth: '', paidFor: '',
+  balance: '', balanceAt: '',
+  roles: [], tags: [],
+  apn: '', apnUser: '', apnPass: '',
+  proxyType: '', proxyHost: '', proxyPort: '', proxyUser: '', proxyPass: '',
+  pin: '', puk: '', iccid: '', owner: '',
+  fields: [], note: '', archived: false,
+  createdAt: Date.now(), updatedAt: Date.now(),
+  ...patch,
+});
+const newSimDevice = (patch = {}) => ({
+  id: crypto.randomUUID(), name: '', kind: 'phone', slots: 2, note: '',
+  createdAt: Date.now(), updatedAt: Date.now(), ...patch,
+});
+
+const simSearchHay = (s, dev) => [
+  s.name, simOpName(s), s.plan, s.owner, s.iccid, s.note, s.apn, s.proxyHost,
+  dev && dev.name, simSlotLabel(s.slot), ...(s.roles || []), ...(s.tags || []),
+  ...(s.fields || []).filter(f => !f.secret).flatMap(f => [f.k, f.v]),
+].filter(Boolean).join(' ').toLowerCase();
+
+function SimOpLogo({ op, size = 28 }) {
+  const o = op || SIM_OP_BY_ID.other;
+  const r = size * 0.28;
+  if (o.id === 'mts') return (
+    <svg width={size} height={size} viewBox="0 0 28 28" aria-hidden="true">
+      <rect width="28" height="28" rx="7" fill="#fff" /><rect x="2" y="2" width="24" height="24" rx="6" fill="#e30611" />
+      <ellipse cx="14" cy="15" rx="6" ry="7.5" fill="#fff" />
+    </svg>
+  );
+  if (o.id === 'beeline') return (
+    <svg width={size} height={size} viewBox="0 0 28 28" aria-hidden="true">
+      <defs><clipPath id="simBee"><circle cx="14" cy="14" r="12" /></clipPath></defs>
+      <circle cx="14" cy="14" r="13" fill="#fff" /><circle cx="14" cy="14" r="12" fill="#ffc800" />
+      <g clipPath="url(#simBee)" fill="#111"><rect x="0" y="7" width="28" height="3" /><rect x="0" y="13" width="28" height="3" /><rect x="0" y="19" width="28" height="3" /></g>
+    </svg>
+  );
+  if (o.id === 'megafon') return (
+    <svg width={size} height={size} viewBox="0 0 28 28" aria-hidden="true">
+      <rect width="28" height="28" rx="7" fill="#fff" /><rect x="2" y="2" width="24" height="24" rx="6" fill="#00b956" />
+      <path d="M7 20V9.5c0-1.4 1.6-1.9 2.4-.8L14 15l4.6-6.3c.8-1.1 2.4-.6 2.4.8V20" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+  const label = o.id === 't2' ? 't2' : o.id === 'yota' ? 'Y' : o.id === 'tmob' ? 'T' : o.id === 'sber' ? 'С' : '•';
+  const fg = o.fg || '#fff';
+  return (
+    <svg width={size} height={size} viewBox="0 0 28 28" aria-hidden="true">
+      <rect width="28" height="28" rx="7" fill="#fff" /><rect x="2" y="2" width="24" height="24" rx="6" fill={o.c2} />
+      <text x="14" y="18.5" textAnchor="middle" fontFamily="Inter, system-ui, sans-serif" fontWeight="800" fontSize={label.length > 1 ? 11 : 13} fill={fg}>{label}</text>
+    </svg>
+  );
+}
+
+function SimChipImg() {
+  return (
+    <svg className="sim-chipimg" viewBox="0 0 42 32" aria-hidden="true">
+      <defs>
+        <linearGradient id="simChipG" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#fbeab0" /><stop offset=".5" stopColor="#d9b75d" /><stop offset="1" stopColor="#b58a2c" />
+        </linearGradient>
+      </defs>
+      <rect x=".5" y=".5" width="41" height="31" rx="6" fill="url(#simChipG)" stroke="rgba(0,0,0,.25)" />
+      <path d="M14 .5v9M28 .5v9M14 22.5v9M28 22.5v9M.5 11h13M28.5 11H41.5M.5 21h13M28.5 21H41.5" stroke="rgba(90,60,10,.55)" strokeWidth="1" fill="none" />
+      <rect x="14" y="9.5" width="14" height="13" rx="3" fill="none" stroke="rgba(90,60,10,.55)" />
+    </svg>
+  );
+}
+
+const SimIc = ({ d, s = 16, w = 1.8 }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={w} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{d}</svg>
+);
+const SIM_IC = {
+  grid: <><rect x="3" y="3" width="7" height="9" rx="1.5" /><rect x="14" y="3" width="7" height="9" rx="1.5" /><rect x="3" y="15" width="7" height="6" rx="1.5" /><rect x="14" y="15" width="7" height="6" rx="1.5" /></>,
+  list: <><path d="M8 6h13M8 12h13M8 18h13" /><circle cx="3.5" cy="6" r="1" /><circle cx="3.5" cy="12" r="1" /><circle cx="3.5" cy="18" r="1" /></>,
+  device: <><rect x="6" y="2" width="12" height="20" rx="3" /><path d="M11 18h2" /></>,
+  wallet: <><rect x="3" y="6" width="18" height="14" rx="3" /><path d="M3 10h18M16 15h2" /></>,
+  copy: <><rect x="9" y="9" width="12" height="12" rx="2.5" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></>,
+  check: <path d="M20 6 9 17l-5-5" />,
+  phone: <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z" />,
+  dup: <><rect x="8" y="8" width="13" height="13" rx="2.5" /><path d="M4 16V5a1 1 0 0 1 1-1h11M14.5 11.5v6M11.5 14.5h6" /></>,
+  archive: <><rect x="2" y="3" width="20" height="5" rx="1" /><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8M10 12h4" /></>,
+  edit: <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />,
+  trash: <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />,
+  eye: <><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></>,
+  plus: <path d="M12 5v14M5 12h14" />,
+  search: <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></>,
+  x: <path d="M18 6 6 18M6 6l12 12" />,
+};
+
+function SimCopyBtn({ text, onCopied, title = 'Скопировать', size = 15 }) {
+  const [done, setDone] = useState(false);
+  const click = async (e) => {
+    e.stopPropagation();
+    if (!text) return;
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      setDone(true);
+      if (navigator.vibrate) navigator.vibrate(12);
+      onCopied && onCopied(text);
+      setTimeout(() => setDone(false), 1400);
+    } else {
+      prompt('Скопируйте вручную:', text);
+    }
+  };
+  return (
+    <button type="button" className={'sim-copy' + (done ? ' done' : '')} onClick={click} title={title} aria-label={title}>
+      <SimIc d={done ? SIM_IC.check : SIM_IC.copy} s={size} w={done ? 2.6 : 1.8} />
+    </button>
+  );
+}
+
+function SimCardFace({ sim, device, onOpen, onCopied, style, className = '' }) {
+  const np = simNextPay(sim);
+  const tone = simPayTone(np);
+  const op = simOp(sim);
+  const chips = [...(sim.roles || []), ...(sim.tags || [])];
+  return (
+    <div
+      role="button" tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={e => { if (onOpen && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); } }}
+      className={['sim-card', sim.archived ? 'archived' : '', sim.status === 'blocked' ? 'blocked' : '', className].filter(Boolean).join(' ')}
+      style={{ ...simCardStyle(sim), ...style }}
+      data-sim-id={sim.id}
+    >
+      <div className="sim-card-top">
+        <SimOpLogo op={op} size={30} />
+        <div className="min-w-0 flex-1">
+          <div className="sim-card-op">{simOpName(sim)}{sim.status === 'spare' ? ' · запас' : sim.status === 'blocked' ? ' · заблок.' : ''}</div>
+          <div className="sim-card-name">{sim.name || sim.plan || (sim.slot === 'e' ? 'eSIM' : 'Сим-карта')}</div>
+        </div>
+        <SimChipImg />
+      </div>
+      <div className="sim-card-mid">
+        <div className="sim-num">{simFormatNumber(sim.number) || 'без номера'}</div>
+        {sim.number && <SimCopyBtn text={simDialNumber(sim.number)} onCopied={onCopied} title="Скопировать номер" />}
+      </div>
+      <div className="sim-card-bot">
+        <div className="sim-card-left">
+          {device
+            ? <span className="sim-pill">{(SIM_KIND_BY_ID[device.kind] || SIM_KIND_BY_ID.other).emoji} {device.name || 'Устройство'}{sim.slot ? ` · ${simSlotLabel(sim.slot)}` : ''}</span>
+            : <span className="sim-pill" style={{ opacity: .75 }}>не в устройстве</span>}
+          {np && (
+            <span className={'sim-pill ' + tone}>
+              {simMoney(sim.payAmount)} · {np.days <= 1 ? simDaysText(np.days) : simDateText(np.date)}
+            </span>
+          )}
+        </div>
+        {chips.length > 0 && (
+          <div className="sim-card-tags">
+            {chips.slice(0, 2).map(t => <span key={t} className="sim-pill">{t}</span>)}
+            {chips.length > 2 && <span className="sim-pill">+{chips.length - 2}</span>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SimRow({ sim, device, onOpen, onCopied, style }) {
+  const np = simNextPay(sim);
+  const tone = simPayTone(np);
+  const op = simOp(sim);
+  const st = simCardStyle(sim);
+  const sub = [
+    simOpName(sim),
+    device ? `${device.name}${sim.slot ? ' · ' + simSlotLabel(sim.slot) : ''}` : 'не в устройстве',
+    sim.name, ...(sim.roles || []),
+  ].filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join(' · ');
+  return (
+    <button type="button" className="sim-row sim-in" style={style} onClick={onOpen} data-sim-id={sim.id}>
+      <span className="sim-mini" style={{ background: `linear-gradient(135deg, ${st['--c1']}, ${st['--c2']})`, color: st['--fg'] }}>
+        {op.id === 'other' ? '' : op.name.slice(0, 3).toUpperCase()}
+      </span>
+      <span className="sim-row-main">
+        <span className="sim-row-num block" style={{ opacity: sim.archived ? .55 : 1 }}>{simFormatNumber(sim.number) || 'без номера'}</span>
+        <span className="sim-row-sub block">{sub}</span>
+      </span>
+      {np && (
+        <span className={'sim-days ' + tone} title={np.date.toLocaleDateString('ru-RU')}>
+          <b>{np.days}</b><span>{np.days === 0 ? 'сегодня' : 'дн'}</span>
+        </span>
+      )}
+      {sim.number && <SimCopyBtn text={simDialNumber(sim.number)} onCopied={onCopied} title="Скопировать номер" />}
+    </button>
+  );
+}
+
+function SimSeg({ value, onChange, options }) {
+  const ref = useRef(null);
+  const [thumb, setThumb] = useState(null);
+  React.useLayoutEffect(() => {
+    const el = ref.current && ref.current.querySelector('button.on');
+    if (el) setThumb({ left: el.offsetLeft, width: el.offsetWidth });
+  }, [value, options.length]);
+  useEffect(() => {
+    const onR = () => {
+      const el = ref.current && ref.current.querySelector('button.on');
+      if (el) setThumb({ left: el.offsetLeft, width: el.offsetWidth });
+    };
+    window.addEventListener('resize', onR);
+    return () => window.removeEventListener('resize', onR);
+  }, []);
+  return (
+    <div className="sim-seg" ref={ref} role="tablist">
+      {thumb && <span className="sim-seg-thumb" style={thumb} />}
+      {options.map(o => (
+        <button key={o.id} type="button" role="tab" aria-selected={value === o.id} className={value === o.id ? 'on' : ''} onClick={() => onChange(o.id)}>
+          {o.icon && <SimIc d={o.icon} s={15} />}<span>{o.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function SimCardsView({ data, setData, mobile }) {
+  const sims = data.simCards || [];
+  const devices = data.simDevices || [];
+  const devById = useMemo(() => Object.fromEntries(devices.map(d => [d.id, d])), [devices]);
+  const [prefs, setPrefs] = useState(() => {
+    try { return { view: 'cards', sort: 'pay', ...(JSON.parse(localStorage.getItem(SIM_PREFS_KEY) || '{}')) }; }
+    catch (_) { return { view: 'cards', sort: 'pay' }; }
+  });
+  const setPref = (k, v) => setPrefs(p => {
+    const next = { ...p, [k]: v };
+    try { localStorage.setItem(SIM_PREFS_KEY, JSON.stringify(next)); } catch (_) {}
+    return next;
+  });
+  const [query, setQuery] = useState('');
+  const [opFilter, setOpFilter] = useState('all');
+  const [stFilter, setStFilter] = useState('all');
+  const [tagFilter, setTagFilter] = useState('');
+  const [showArchive, setShowArchive] = useState(false);
+  const [openId, setOpenId] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [editingDev, setEditingDev] = useState(null);
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+
+  const say = (text, undo) => {
+    clearTimeout(toastTimer.current);
+    setToast({ text, undo, k: Date.now() });
+    toastTimer.current = setTimeout(() => setToast(null), undo ? 5000 : 1800);
+  };
+  useEffect(() => () => clearTimeout(toastTimer.current), []);
+  const onCopied = () => say('Номер скопирован');
+
+  const upsertSim = (sim) => setData(d => {
+    const list = d.simCards || [];
+    const rec = { ...sim, updatedAt: Date.now() };
+    return { ...d, simCards: list.some(s => s.id === sim.id) ? list.map(s => s.id === sim.id ? rec : s) : [...list, rec] };
+  });
+  const patchSim = (id, patch) => setData(d => ({
+    ...d, simCards: (d.simCards || []).map(s => s.id === id ? { ...s, ...patch, updatedAt: Date.now() } : s),
+  }));
+  const removeSim = (sim) => {
+    setData(d => ({
+      ...d,
+      simCards: (d.simCards || []).filter(s => s.id !== sim.id),
+      deletedIds: withDeletedId(d, 'simCards', sim.id),
+    }));
+    setOpenId(null);
+    // Восстановление со свежим updatedAt переживает тумбстон при мердже.
+    say('Сим-карта удалена', () => upsertSim({ ...sim, updatedAt: Date.now() + 1 }));
+  };
+  const duplicateSim = (sim) => {
+    const copy = newSimCard({
+      ...sim, id: crypto.randomUUID(), number: '', iccid: '', pin: '', puk: '', paidFor: '',
+      deviceId: '', slot: '', name: sim.name ? `${sim.name} (копия)` : '',
+      fields: (sim.fields || []).map(f => ({ ...f, id: crypto.randomUUID() })),
+      archived: false, createdAt: Date.now(),
+    });
+    setOpenId(null);
+    setEditing(copy);
+  };
+  const toggleArchive = (sim) => {
+    patchSim(sim.id, { archived: !sim.archived });
+    setOpenId(null);
+    say(sim.archived ? 'Возвращена из архива' : 'Перенесена в архив', () => patchSim(sim.id, { archived: !!sim.archived }));
+  };
+  const markPaid = (sim) => {
+    const np = simNextPay(sim);
+    if (!np) return;
+    const prev = sim.paidFor || '';
+    patchSim(sim.id, { paidFor: np.key });
+    say(`Оплата ${simMoney(sim.payAmount)} отмечена`, () => patchSim(sim.id, { paidFor: prev }));
+  };
+  const saveDevice = (dev) => setData(d => {
+    const list = d.simDevices || [];
+    const rec = { ...dev, updatedAt: Date.now() };
+    return { ...d, simDevices: list.some(x => x.id === dev.id) ? list.map(x => x.id === dev.id ? rec : x) : [...list, rec] };
+  });
+  const removeDevice = (dev) => {
+    if (!confirm(`Удалить устройство «${dev.name || 'без названия'}»? Сим-карты останутся — без устройства.`)) return;
+    const now = Date.now();
+    setData(d => ({
+      ...d,
+      simDevices: (d.simDevices || []).filter(x => x.id !== dev.id),
+      simCards: (d.simCards || []).map(s => s.deviceId === dev.id ? { ...s, deviceId: '', slot: '', updatedAt: now } : s),
+      deletedIds: withDeletedId(d, 'simDevices', dev.id),
+    }));
+    setEditingDev(null);
+  };
+
+  const live = sims.filter(s => !s.archived);
+  const archivedCount = sims.length - live.length;
+  const pool = showArchive ? sims.filter(s => s.archived) : live;
+  const opCounts = {};
+  pool.forEach(s => { const k = SIM_OP_BY_ID[s.operatorId] ? s.operatorId : 'other'; opCounts[k] = (opCounts[k] || 0) + 1; });
+  const tagsUsed = [...new Set(pool.flatMap(s => [...(s.roles || []), ...(s.tags || [])]))].sort((a, b) => a.localeCompare(b, 'ru'));
+
+  const q = query.trim().toLowerCase();
+  const qd = simDigits(q);
+  const filtered = pool.filter(s => {
+    const opK = SIM_OP_BY_ID[s.operatorId] ? s.operatorId : 'other';
+    if (opFilter !== 'all' && opK !== opFilter) return false;
+    if (stFilter !== 'all' && (s.status || 'active') !== stFilter) return false;
+    if (tagFilter && ![...(s.roles || []), ...(s.tags || [])].includes(tagFilter)) return false;
+    if (!q) return true;
+    if (qd.length >= 2 && (simDigits(s.number).includes(qd) || simDigits(s.iccid).includes(qd))) return true;
+    return simSearchHay(s, devById[s.deviceId]).includes(q);
+  });
+  const devName = (s) => (devById[s.deviceId] && devById[s.deviceId].name) || '\uffff';
+  const sorted = [...filtered].sort((a, b) => {
+    switch (prefs.sort) {
+      case 'device': return devName(a).localeCompare(devName(b), 'ru') || String(a.slot).localeCompare(String(b.slot));
+      case 'operator': return simOpName(a).localeCompare(simOpName(b), 'ru');
+      case 'amount': return simMonthly(b) - simMonthly(a);
+      case 'number': return simDigits(a.number).localeCompare(simDigits(b.number));
+      case 'recent': return (b.updatedAt || 0) - (a.updatedAt || 0);
+      default: {
+        const pa = simNextPay(a), pb = simNextPay(b);
+        return (pa ? pa.days : 9999) - (pb ? pb.days : 9999) || simOpName(a).localeCompare(simOpName(b), 'ru');
+      }
+    }
+  });
+
+  const monthly = live.reduce((acc, s) => acc + simMonthly(s), 0);
+  const upcoming = live.map(s => ({ s, np: simNextPay(s) })).filter(x => x.np).sort((a, b) => a.np.days - b.np.days);
+  const next = upcoming[0];
+  const due7 = upcoming.filter(x => x.np.days <= 7);
+  const due7Sum = due7.reduce((a, x) => a + (Number(x.s.payAmount) || 0), 0);
+  const filtersOn = opFilter !== 'all' || stFilter !== 'all' || tagFilter || q;
+
+  const opened = openId ? sims.find(s => s.id === openId) : null;
+  const VIEWS = [
+    { id: 'cards', label: 'Карточки', icon: SIM_IC.grid },
+    { id: 'list', label: 'Список', icon: SIM_IC.list },
+    { id: 'devices', label: 'Устройства', icon: SIM_IC.device },
+    { id: 'pay', label: 'Платежи', icon: SIM_IC.wallet },
+  ];
+  const SHORT = { cards: 'Карты', devices: 'Устройства' };
+  const views = mobile ? VIEWS.map(v => ({ ...v, label: SHORT[v.id] || v.label })) : VIEWS;
+
+  return (
+    <div className="sim-root" data-testid="sim-root">
+      <div className="sim-stats">
+        <div className="sim-stat">
+          <div className="sim-stat-k">Сим-карт</div>
+          <div className="sim-stat-v">{live.length}</div>
+          <div className="sim-stat-s">{devices.length} устр.{live.some(s => !s.deviceId) ? ` · ${live.filter(s => !s.deviceId).length} вне` : ''}</div>
+        </div>
+        <div className="sim-stat">
+          <div className="sim-stat-k">В месяц</div>
+          <div className="sim-stat-v">{simMoney(monthly)}</div>
+          <div className="sim-stat-s">{simMoney(monthly * 12)} в год</div>
+        </div>
+        <button type="button" className={'sim-stat' + (next && next.np.days <= 1 ? ' due' : next && next.np.days <= 5 ? ' hot' : '')}
+          onClick={() => setPref('view', 'pay')} title="Платежи">
+          <div className="sim-stat-k">Ближайший</div>
+          <div className="sim-stat-v">{next ? (next.np.days <= 1 ? simDaysText(next.np.days) : simDateText(next.np.date)) : '—'}</div>
+          <div className="sim-stat-s">{next ? `${simOpName(next.s)} · ${simMoney(next.s.payAmount)}` : 'нет платежей'}{due7.length > 1 ? ` · за 7 дн ${simMoney(due7Sum)}` : ''}</div>
+        </button>
+      </div>
+
+      <div className="sim-toolbar">
+        <div className="sim-search">
+          <span className="sim-search-ic"><SimIc d={SIM_IC.search} s={16} /></span>
+          <input
+            value={query} onChange={e => setQuery(e.target.value)} inputMode="search" enterKeyHint="search"
+            placeholder={mobile ? 'Номер, устройство, оператор…' : 'Поиск: номер (хоть 4 цифры), устройство, оператор, метка, APN…'}
+            aria-label="Поиск сим-карт"
+          />
+          {query && <button type="button" onClick={() => setQuery('')} aria-label="Очистить"><SimIc d={SIM_IC.x} s={14} /></button>}
+        </div>
+        <button type="button" className="sim-add" onClick={() => setEditing(newSimCard())} data-testid="sim-add">
+          <SimIc d={SIM_IC.plus} s={16} w={2.2} />{!mobile && 'Сим-карта'}
+        </button>
+      </div>
+
+      <div className="mb-2.5"><SimSeg value={prefs.view} onChange={v => setPref('view', v)} options={views} /></div>
+
+      {prefs.view !== 'devices' && prefs.view !== 'pay' && (sims.length > 0) && (
+        <div className="sim-chips scrollbar-hide">
+          <select className="sim-sort" value={prefs.sort} onChange={e => setPref('sort', e.target.value)} aria-label="Сортировка">
+            {SIM_SORTS.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+          <span className="sim-chip-sep" />
+          <button type="button" className={'sim-chip' + (opFilter === 'all' ? ' on' : '')} onClick={() => setOpFilter('all')}>Все <i>{pool.length}</i></button>
+          {SIM_OPERATORS.filter(o => opCounts[o.id]).map(o => (
+            <button key={o.id} type="button" className={'sim-chip' + (opFilter === o.id ? ' on' : '')} onClick={() => setOpFilter(opFilter === o.id ? 'all' : o.id)}>
+              <SimOpLogo op={o} size={18} />{o.name}<i>{opCounts[o.id]}</i>
+            </button>
+          ))}
+          <span className="sim-chip-sep" />
+          {SIM_STATUSES.map(st => (
+            <button key={st.id} type="button" className={'sim-chip' + (stFilter === st.id ? ' on' : '')} onClick={() => setStFilter(stFilter === st.id ? 'all' : st.id)}>{st.label}</button>
+          ))}
+          {tagsUsed.length > 0 && <span className="sim-chip-sep" />}
+          {tagsUsed.map(t => (
+            <button key={t} type="button" className={'sim-chip' + (tagFilter === t ? ' on' : '')} onClick={() => setTagFilter(tagFilter === t ? '' : t)}>#{t}</button>
+          ))}
+          {(archivedCount > 0 || showArchive) && <span className="sim-chip-sep" />}
+          {(archivedCount > 0 || showArchive) && (
+            <button type="button" className={'sim-chip' + (showArchive ? ' on' : '')} onClick={() => setShowArchive(v => !v)}>
+              <SimIc d={SIM_IC.archive} s={14} />Архив<i>{archivedCount}</i>
+            </button>
+          )}
+        </div>
+      )}
+
+      {sims.length === 0 ? (
+        <EmptyState title="Сим-карт пока нет" text="Добавьте первую: номер, оператор, устройство, платёж и настройки (APN, прокси, PIN) — всё в одном месте." />
+      ) : prefs.view === 'devices' ? (
+        <SimDevicesBoard
+          sims={live.filter(s => !q || sorted.includes(s))} devices={devices}
+          onOpen={setOpenId} onCopied={onCopied}
+          onAddDevice={() => setEditingDev(newSimDevice())}
+          onEditDevice={setEditingDev}
+          onAddToSlot={(dev, slot) => setEditing(newSimCard({ deviceId: dev.id, slot }))}
+        />
+      ) : prefs.view === 'pay' ? (
+        <SimPayBoard sims={live} devById={devById} onOpen={setOpenId} onPaid={markPaid} monthly={monthly} />
+      ) : sorted.length === 0 ? (
+        <EmptyState title="Ничего не нашлось" text={filtersOn ? 'Измените запрос или снимите фильтры' : 'В архиве пусто'} />
+      ) : prefs.view === 'list' ? (
+        <div className="sim-list">
+          {sorted.map((s, i) => (
+            <SimRow key={s.id} sim={s} device={devById[s.deviceId]} onOpen={() => setOpenId(s.id)} onCopied={onCopied}
+              style={{ animationDelay: `${Math.min(i, 14) * 22}ms` }} />
+          ))}
+        </div>
+      ) : (
+        <div className="sim-grid">
+          {sorted.map((s, i) => (
+            <SimCardFace key={s.id} sim={s} device={devById[s.deviceId]} onOpen={() => setOpenId(s.id)} onCopied={onCopied}
+              className="sim-in" style={{ animationDelay: `${Math.min(i, 12) * 35}ms` }} />
+          ))}
+        </div>
+      )}
+
+      {opened && (
+        <SimDetail
+          sim={opened} device={devById[opened.deviceId]} devices={devices}
+          onClose={() => setOpenId(null)}
+          onEdit={() => { setEditing(opened); setOpenId(null); }}
+          onDuplicate={() => duplicateSim(opened)}
+          onArchive={() => toggleArchive(opened)}
+          onDelete={() => removeSim(opened)}
+          onPaid={() => markPaid(opened)}
+          onMove={(deviceId, slot) => { patchSim(opened.id, { deviceId, slot }); say(deviceId ? 'Перемещена' : 'Вынута из устройства'); }}
+          onCopied={() => say('Скопировано')}
+        />
+      )}
+      {editing && (
+        <SimEditor
+          key={editing.id} initial={editing} devices={devices} allSims={sims}
+          onSave={(s) => { upsertSim(s); setEditing(null); say('Сохранено'); }}
+          onAddDevice={(dev) => saveDevice(dev)}
+          onClose={() => setEditing(null)}
+        />
+      )}
+      {editingDev && (
+        <SimDeviceEditor
+          key={editingDev.id} initial={editingDev} isNew={!devices.some(d => d.id === editingDev.id)}
+          onSave={(dev) => { saveDevice(dev); setEditingDev(null); }}
+          onDelete={() => removeDevice(editingDev)}
+          onClose={() => setEditingDev(null)}
+        />
+      )}
+      {toast && ReactDOM.createPortal(
+        <div className="sim-toast" key={toast.k} role="status">
+          <span>{toast.text}</span>
+          {toast.undo && <button type="button" onClick={() => { toast.undo(); setToast(null); }}>Отменить</button>}
+        </div>,
+        document.body
+      )}
+    </div>
+  );
+}
+
+const simDeviceSlots = (dev, sims) => {
+  const n = Math.max(0, Math.min(8, Number(dev.slots) || 0));
+  const base = Array.from({ length: n }, (_, i) => String(i + 1));
+  const extra = [...new Set(sims.map(s => s.slot || ''))].filter(x => !base.includes(x));
+  return [...base, ...extra.filter(x => x).sort(), ...(extra.includes('') ? [''] : [])];
+};
+
+function SimSettingsLine({ sim }) {
+  const parts = [];
+  if (sim.apn) parts.push(['APN', sim.apn]);
+  if (sim.proxyHost) parts.push([(sim.proxyType || 'proxy').toUpperCase(), `${sim.proxyHost}${sim.proxyPort ? ':' + sim.proxyPort : ''}`]);
+  if (!parts.length) return null;
+  return <div className="sim-kv">{parts.map(([k, v]) => <span key={k}>{k} <b>{v}</b></span>)}</div>;
+}
+
+function SimDevicesBoard({ sims, devices, onOpen, onCopied, onAddDevice, onEditDevice, onAddToSlot }) {
+  const byDev = {};
+  sims.forEach(s => { (byDev[s.deviceId || ''] = byDev[s.deviceId || ''] || []).push(s); });
+  const kindIdx = (d) => { const i = SIM_DEVICE_KINDS.findIndex(k => k.id === d.kind); return i < 0 ? 99 : i; };
+  const devs = [...devices].sort((a, b) => kindIdx(a) - kindIdx(b) || (a.name || '').localeCompare(b.name || '', 'ru'));
+  const loose = (byDev[''] || []).concat(sims.filter(s => s.deviceId && !devices.some(d => d.id === s.deviceId)));
+  const slotCard = (s, label) => {
+    const st = simCardStyle(s);
+    return (
+      <div key={s.id} role="button" tabIndex={0} className="sim-slot" onClick={() => onOpen(s.id)}
+        onKeyDown={e => { if (e.key === 'Enter') onOpen(s.id); }} data-sim-id={s.id}>
+        <span className="sim-mini" style={{ background: `linear-gradient(135deg, ${st['--c1']}, ${st['--c2']})`, color: st['--fg'] }}>
+          {simOp(s).id === 'other' ? '' : simOp(s).name.slice(0, 3).toUpperCase()}
+        </span>
+        <span className="flex-1 min-w-0">
+          <span className="sim-slot-lbl block">{label}{s.status === 'spare' ? ' · запас' : s.status === 'blocked' ? ' · заблок.' : ''}</span>
+          <span className="sim-row-num block">{simFormatNumber(s.number) || 'без номера'}</span>
+          <span className="sim-row-sub block">{[...new Set([simOpName(s), s.name, ...(s.roles || [])].filter(Boolean))].join(' · ')}</span>
+          <SimSettingsLine sim={s} />
+        </span>
+        {s.number && <span className="self-center"><SimCopyBtn text={simDialNumber(s.number)} onCopied={onCopied} title="Скопировать номер" /></span>}
+      </div>
+    );
+  };
+  return (
+    <div>
+      <div className="sim-devs">
+        {devs.map((dev, i) => {
+          const list = byDev[dev.id] || [];
+          const kind = SIM_KIND_BY_ID[dev.kind] || SIM_KIND_BY_ID.other;
+          const slots = simDeviceSlots(dev, list);
+          return (
+            <div key={dev.id} className="sim-dev sim-in" style={{ animationDelay: `${Math.min(i, 10) * 40}ms` }} data-dev-id={dev.id}>
+              <div className="sim-dev-h">
+                <span className="sim-dev-ic" style={{ background: kind.bg }}>{kind.emoji}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="sim-dev-name truncate">{dev.name || 'Без названия'}</div>
+                  <div className="sim-dev-sub truncate">{kind.label} · {list.length} сим{dev.note ? ` · ${dev.note}` : ''}</div>
+                </div>
+                <button type="button" className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]" onClick={() => onEditDevice(dev)} title="Изменить устройство">
+                  <SimIc d={SIM_IC.edit} s={15} />
+                </button>
+              </div>
+              {slots.map(slot => {
+                const inSlot = list.filter(s => (s.slot || '') === slot);
+                if (!inSlot.length) {
+                  return (
+                    <button key={'empty' + slot} type="button" className="sim-slot empty" onClick={() => onAddToSlot(dev, slot)}>
+                      + {simSlotLabel(slot) || 'Слот'} пустой — добавить
+                    </button>
+                  );
+                }
+                return inSlot.map(s => slotCard(s, simSlotLabel(slot) || 'Без слота'));
+              })}
+            </div>
+          );
+        })}
+        {loose.length > 0 && (
+          <div className="sim-dev sim-in" style={{ background: 'transparent', borderStyle: 'dashed' }}>
+            <div className="sim-dev-h">
+              <span className="sim-dev-ic" style={{ background: '#f5f5f4' }}>🗂️</span>
+              <div className="flex-1 min-w-0">
+                <div className="sim-dev-name">Не в устройстве</div>
+                <div className="sim-dev-sub">{loose.length} сим — в ящике, запасные или новые</div>
+              </div>
+            </div>
+            {loose.map(s => slotCard(s, s.status === 'spare' ? 'Запас' : 'Без устройства'))}
+          </div>
+        )}
+      </div>
+      <button type="button" className="btn-secondary w-full mt-3 flex items-center justify-center gap-2" onClick={onAddDevice} data-testid="sim-add-device">
+        <SimIc d={SIM_IC.plus} s={16} />Устройство
+      </button>
+    </div>
+  );
+}
+
+function SimPayBoard({ sims, devById, onOpen, onPaid, monthly }) {
+  const rows = sims.map(s => ({ s, np: simNextPay(s) })).filter(x => x.np).sort((a, b) => a.np.days - b.np.days);
+  const none = sims.filter(s => !simNextPay(s));
+  const groups = [
+    { id: 'w', label: 'Ближайшие 7 дней', test: n => n <= 7 },
+    { id: 'm', label: 'До 31 дня', test: n => n > 7 && n <= 31 },
+    { id: 'l', label: 'Позже', test: n => n > 31 },
+  ];
+  if (!rows.length) {
+    return <EmptyState title="Платежей нет" text="Укажите в сим-карте сумму и день списания — здесь появится календарь платежей с подсветкой ближайших." />;
+  }
+  return (
+    <div>
+      {groups.map(g => {
+        const list = rows.filter(r => g.test(r.np.days));
+        if (!list.length) return null;
+        const sum = list.reduce((a, r) => a + (Number(r.s.payAmount) || 0), 0);
+        return (
+          <div key={g.id}>
+            <div className="sim-pay-h"><span>{g.label}</span><span>{simMoney(sum)}</span></div>
+            <div className="sim-list">
+              {list.map(({ s, np }, i) => {
+                const dev = devById[s.deviceId];
+                const tone = simPayTone(np);
+                return (
+                  <div key={s.id} className="sim-row sim-in" style={{ animationDelay: `${Math.min(i, 12) * 25}ms` }}>
+                    <span className={'sim-days ' + tone}><b>{np.date.getDate()}</b><span>{SIM_MON[np.date.getMonth()]}</span></span>
+                    <button type="button" className="sim-row-main text-left" onClick={() => onOpen(s.id)}>
+                      <span className="sim-row-num block">{simMoney(s.payAmount)} <span className="text-[var(--text-muted)] text-xs font-normal" style={{ fontFamily: 'Inter, sans-serif' }}>· {simDaysText(np.days)}{s.billing === 'year' ? ' · в год' : ''}</span></span>
+                      <span className="sim-row-sub block">{[simOpName(s), simFormatNumber(s.number), dev && dev.name, s.plan].filter(Boolean).join(' · ')}</span>
+                    </button>
+                    <button type="button" className="sim-paybtn" onClick={() => onPaid(s)}>Оплачено</button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+      <div className="sim-pay-h"><span>Итого в месяц</span><span>{simMoney(monthly)}</span></div>
+      {none.length > 0 && <div className="text-xs text-[var(--text-subtle)] px-1 mt-1">Без даты платежа: {none.length} сим</div>}
+    </div>
+  );
+}
+
+function SimLine({ k, v, mono, copy, secret, onCopied, children }) {
+  const [shown, setShown] = useState(false);
+  if (!v && !children) return null;
+  return (
+    <div className="sim-line">
+      <span className="sim-line-k">{k}</span>
+      <span className={'sim-line-v' + (mono ? ' mono' : '')}>
+        {children || (secret
+          ? <span className={'sim-secret' + (shown ? '' : ' masked')} onClick={() => setShown(x => !x)} title={shown ? 'Скрыть' : 'Показать'} data-testid="sim-secret">{shown ? v : '•'.repeat(Math.max(4, String(v).length))}</span>
+          : v)}
+      </span>
+      {secret && !shown && <button type="button" className="sim-copy" onClick={() => setShown(true)} title="Показать"><SimIc d={SIM_IC.eye} s={15} /></button>}
+      {copy && (!secret || shown) && <SimCopyBtn text={String(copy === true ? v : copy)} onCopied={onCopied} />}
+    </div>
+  );
+}
+
+function SimDetail({ sim, device, devices, onClose, onEdit, onDuplicate, onArchive, onDelete, onPaid, onMove, onCopied }) {
+  const [tilt, setTilt] = useState({ x: 0, y: 0 });
+  const np = simNextPay(sim);
+  const onTilt = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width - 0.5;
+    const py = (e.clientY - r.top) / r.height - 0.5;
+    setTilt({ x: -py * 12, y: px * 16 });
+  };
+  const proxyStr = sim.proxyHost
+    ? `${sim.proxyType ? sim.proxyType + '://' : ''}${sim.proxyUser ? `${sim.proxyUser}${sim.proxyPass ? ':' + sim.proxyPass : ''}@` : ''}${sim.proxyHost}${sim.proxyPort ? ':' + sim.proxyPort : ''}`
+    : '';
+  const tel = simDialNumber(sim.number);
+  const devSlots = device ? simDeviceSlots(device, []) : [];
+  const hasSettings = sim.apn || sim.apnUser || sim.proxyHost;
+  return (
+    <Modal title={simOpName(sim) + (sim.name ? ` · ${sim.name}` : '')} onClose={onClose}>
+      <div className="sim-hero-wrap" onPointerMove={onTilt} onPointerLeave={() => setTilt({ x: 0, y: 0 })}>
+        <div className="sim-hero" style={{ transform: `rotateX(${tilt.x}deg) rotateY(${tilt.y}deg)` }}>
+          <SimCardFace sim={sim} device={device} onCopied={onCopied} />
+        </div>
+      </div>
+      <div className="sim-actions">
+        <a className="sim-act" href={tel ? `tel:${tel}` : undefined} onClick={e => { if (!tel) e.preventDefault(); }}><SimIc d={SIM_IC.phone} s={18} />Позвонить</a>
+        <button type="button" className="sim-act" onClick={onEdit} data-testid="sim-edit"><SimIc d={SIM_IC.edit} s={18} />Изменить</button>
+        <button type="button" className="sim-act" onClick={onDuplicate}><SimIc d={SIM_IC.dup} s={18} />Дубль</button>
+        <button type="button" className="sim-act" onClick={onArchive}><SimIc d={SIM_IC.archive} s={18} />{sim.archived ? 'Вернуть' : 'В архив'}</button>
+        <button type="button" className="sim-act danger" onClick={onDelete}><SimIc d={SIM_IC.trash} s={18} />Удалить</button>
+      </div>
+
+      <div className="sim-sec">
+        <div className="sim-sec-t">Где стоит</div>
+        <div className="sim-line">
+          <span className="sim-line-k">Устройство</span>
+          <select className="!py-1.5 !px-2 !text-sm flex-1 min-w-0" value={sim.deviceId || ''} onChange={e => onMove(e.target.value, e.target.value ? (sim.slot || '1') : '')} aria-label="Устройство">
+            <option value="">— не в устройстве —</option>
+            {devices.map(d => <option key={d.id} value={d.id}>{(SIM_KIND_BY_ID[d.kind] || SIM_KIND_BY_ID.other).emoji} {d.name || 'Без названия'}</option>)}
+          </select>
+          {device && (
+            <select className="!py-1.5 !px-2 !text-sm !w-24" value={sim.slot || ''} onChange={e => onMove(sim.deviceId, e.target.value)} aria-label="Слот">
+              {[...new Set([...devSlots, 'e', sim.slot || ''])].filter(x => x !== undefined).map(s => <option key={s} value={s}>{simSlotLabel(s) || 'без слота'}</option>)}
+            </select>
+          )}
+        </div>
+        <SimLine k="Номер" v={simFormatNumber(sim.number)} mono copy={tel} onCopied={onCopied} />
+        <SimLine k="Назначение" v={(sim.roles || []).length ? ' ' : ''}>
+          {(sim.roles || []).length > 0 && <span className="inline-flex flex-wrap gap-1 justify-end">{sim.roles.map(r => <span key={r} className="sim-tag" style={simTagColor(r)}>{r}</span>)}</span>}
+        </SimLine>
+        <SimLine k="Статус" v={(SIM_STATUSES.find(x => x.id === (sim.status || 'active')) || SIM_STATUSES[0]).label + (sim.archived ? ' · в архиве' : '')} />
+      </div>
+
+      {(np || sim.plan || sim.balance) && (
+        <div className="sim-sec">
+          <div className="sim-sec-t">Тариф и платёж</div>
+          <SimLine k="Тариф" v={sim.plan} />
+          <SimLine k="Платёж" v={sim.payAmount ? `${simMoney(sim.payAmount)} ${sim.billing === 'year' ? 'в год' : 'в месяц'}${sim.payDay ? `, ${sim.payDay}-го${sim.billing === 'year' && sim.payMonth ? ' ' + SIM_MON[(Number(sim.payMonth) || 1) - 1] : ''}` : ''}` : ''} />
+          {np && (
+            <div className="sim-line">
+              <span className="sim-line-k">Следующий</span>
+              <span className="sim-line-v"><span className={'sim-pill ' + (simPayTone(np) || '')} style={!simPayTone(np) ? { background: '#f1f1f1' } : undefined}>{simDateText(np.date)} · {simDaysText(np.days)}</span></span>
+              <button type="button" className="sim-paybtn" onClick={onPaid}>Оплачено</button>
+            </div>
+          )}
+          <SimLine k="Баланс" v={sim.balance !== '' && sim.balance != null ? `${simMoney(sim.balance)}${sim.balanceAt ? ` · на ${new Date(sim.balanceAt).toLocaleDateString('ru-RU')}` : ''}` : ''} />
+        </div>
+      )}
+
+      {hasSettings && (
+        <div className="sim-sec">
+          <div className="sim-sec-t">Настройки</div>
+          <SimLine k="APN" v={sim.apn} mono copy onCopied={onCopied} />
+          <SimLine k="APN логин" v={sim.apnUser} mono copy onCopied={onCopied} />
+          <SimLine k="APN пароль" v={sim.apnPass} mono copy secret onCopied={onCopied} />
+          <SimLine k="Прокси" v={proxyStr} mono copy secret={!!sim.proxyPass} onCopied={onCopied} />
+        </div>
+      )}
+
+      {(sim.pin || sim.puk || sim.iccid || sim.owner || (sim.fields || []).length > 0) && (
+        <div className="sim-sec">
+          <div className="sim-sec-t">Коды и данные</div>
+          <SimLine k="PIN" v={sim.pin} mono copy secret onCopied={onCopied} />
+          <SimLine k="PUK" v={sim.puk} mono copy secret onCopied={onCopied} />
+          <SimLine k="ICCID" v={sim.iccid} mono copy onCopied={onCopied} />
+          <SimLine k="Владелец" v={sim.owner} />
+          {(sim.fields || []).filter(f => f.k || f.v).map(f => (
+            <SimLine key={f.id} k={f.k || 'Поле'} v={f.v} copy secret={!!f.secret} onCopied={onCopied} />
+          ))}
+        </div>
+      )}
+
+      {((sim.tags || []).length > 0 || sim.note) && (
+        <div className="sim-sec">
+          <div className="sim-sec-t">Заметка</div>
+          {(sim.tags || []).length > 0 && <div className="flex flex-wrap gap-1 px-3.5 pt-2">{sim.tags.map(t => <span key={t} className="sim-tag" style={simTagColor(t)}>{t}</span>)}</div>}
+          {sim.note && <div className="px-3.5 py-2.5 text-sm whitespace-pre-wrap">{sim.note}</div>}
+          {!sim.note && <div className="h-2.5" />}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function SimEditor({ initial, devices, allSims, onSave, onAddDevice, onClose }) {
+  const [s, setS] = useState(() => ({ ...newSimCard(), ...initial }));
+  const [tagDraft, setTagDraft] = useState('');
+  const [newDev, setNewDev] = useState('');
+  const [more, setMore] = useState(() => !!(initial.apn || initial.proxyHost || initial.pin || initial.puk || initial.iccid || (initial.fields || []).length));
+  const set = (k, v) => setS(p => ({ ...p, [k]: v }));
+  const op = simOp(s);
+  const dev = devices.find(d => d.id === s.deviceId);
+  const slots = dev ? [...simDeviceSlots(dev, []), 'e'] : [];
+  const dupe = simDigits(s.number).length >= 10 && allSims.find(x => x.id !== s.id && simDigits(x.number).slice(-10) === simDigits(s.number).slice(-10));
+  const pickOp = (id) => setS(p => {
+    const prevApn = (SIM_OP_BY_ID[p.operatorId] || {}).apn || '';
+    const nextApn = (SIM_OP_BY_ID[id] || {}).apn || '';
+    // APN подставляем, только если поле пустое или в нём был шаблон прошлого оператора.
+    return { ...p, operatorId: id, apn: (!p.apn || p.apn === prevApn) ? nextApn : p.apn };
+  });
+  const toggleRole = (r) => set('roles', (s.roles || []).includes(r) ? s.roles.filter(x => x !== r) : [...(s.roles || []), r]);
+  const addTag = () => {
+    const t = tagDraft.trim().replace(/^#/, '');
+    if (t && !(s.tags || []).includes(t)) set('tags', [...(s.tags || []), t]);
+    setTagDraft('');
+  };
+  const knownTags = [...new Set(allSims.flatMap(x => x.tags || []))].filter(t => !(s.tags || []).includes(t)).slice(0, 12);
+  const setField = (id, patch) => set('fields', (s.fields || []).map(f => f.id === id ? { ...f, ...patch } : f));
+  const createDevice = () => {
+    const name = newDev.trim();
+    if (!name) return;
+    const d = newSimDevice({ name });
+    onAddDevice(d);
+    setS(p => ({ ...p, deviceId: d.id, slot: p.slot || '1' }));
+    setNewDev('');
+  };
+  const submit = () => {
+    const clean = {
+      ...s,
+      number: s.number.trim(),
+      payDay: s.payDay === '' ? '' : Math.max(1, Math.min(31, Number(s.payDay) || 1)),
+      fields: (s.fields || []).filter(f => (f.k || '').trim() || (f.v || '').trim()),
+    };
+    onSave(clean);
+  };
+  const isNew = !allSims.some(x => x.id === s.id);
+  return (
+    <Modal title={isNew ? 'Новая сим-карта' : 'Сим-карта'} onClose={onClose}>
+      <div className="sim-hero-wrap" style={{ maxWidth: 300 }}><SimCardFace sim={s} device={dev} /></div>
+
+      <div className="sim-form-sec">
+        <h4>Оператор</h4>
+        <div className="sim-ops">
+          {SIM_OPERATORS.map(o => (
+            <button key={o.id} type="button" className={'sim-op' + (s.operatorId === o.id ? ' on' : '')} onClick={() => pickOp(o.id)}>
+              <SimOpLogo op={o} size={26} />{o.name}
+            </button>
+          ))}
+        </div>
+        {s.operatorId === 'other' && <input className="mt-2" value={s.operatorName} onChange={e => set('operatorName', e.target.value)} placeholder="Название оператора" />}
+      </div>
+
+      <div className="sim-form-sec">
+        <h4>Номер</h4>
+        <div className="sim-g2">
+          <div>
+            <label>Номер телефона</label>
+            <input value={s.number} onChange={e => set('number', e.target.value)} inputMode="tel" placeholder="+7 900 000-00-00" autoFocus={isNew} data-testid="sim-number" />
+          </div>
+          <div>
+            <label>Название / роль</label>
+            <input value={s.name} onChange={e => set('name', e.target.value)} placeholder="Личная, для банка…" data-testid="sim-name" />
+          </div>
+        </div>
+        {dupe && <div className="text-xs mt-1.5" style={{ color: '#c2410c' }}>Такой номер уже есть: {simOpName(dupe)}{dupe.name ? ` · ${dupe.name}` : ''}{dupe.archived ? ' (в архиве)' : ''}</div>}
+        <div className="mt-2">
+          <label>Статус</label>
+          <div className="sim-toggles">
+            {SIM_STATUSES.map(st => <button key={st.id} type="button" className={'sim-tog' + ((s.status || 'active') === st.id ? ' on' : '')} onClick={() => set('status', st.id)}>{st.label}</button>)}
+          </div>
+        </div>
+      </div>
+
+      <div className="sim-form-sec">
+        <h4>Устройство</h4>
+        <div className="sim-g2">
+          <select value={s.deviceId || ''} onChange={e => setS(p => ({ ...p, deviceId: e.target.value, slot: e.target.value ? (p.slot || '1') : '' }))} data-testid="sim-device">
+            <option value="">— не в устройстве —</option>
+            {devices.map(d => <option key={d.id} value={d.id}>{(SIM_KIND_BY_ID[d.kind] || SIM_KIND_BY_ID.other).emoji} {d.name || 'Без названия'}</option>)}
+          </select>
+          {dev ? (
+            <select value={s.slot || ''} onChange={e => set('slot', e.target.value)}>
+              {[...new Set([...slots, s.slot || ''])].map(x => <option key={x} value={x}>{simSlotLabel(x) || 'без слота'}</option>)}
+            </select>
+          ) : (
+            <div className="flex gap-1.5">
+              <input value={newDev} onChange={e => setNewDev(e.target.value)} placeholder="Новое устройство" onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); createDevice(); } }} />
+              <button type="button" className="sim-iconbtn" onClick={createDevice} title="Добавить устройство"><SimIc d={SIM_IC.plus} s={16} /></button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="sim-form-sec">
+        <h4>Назначение</h4>
+        <div className="sim-toggles">
+          {[...new Set([...SIM_ROLES, ...(s.roles || [])])].map(r => (
+            <button key={r} type="button" className={'sim-tog' + ((s.roles || []).includes(r) ? ' on' : '')} onClick={() => toggleRole(r)}>{r}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="sim-form-sec">
+        <h4>Тариф и платёж</h4>
+        <div className="sim-g2 mb-2">
+          <div><label>Тариф</label><input value={s.plan} onChange={e => set('plan', e.target.value)} placeholder="Название тарифа" /></div>
+          <div><label>Сумма, ₽</label><input value={s.payAmount} onChange={e => set('payAmount', e.target.value.replace(/[^\d.,]/g, '').replace(',', '.'))} inputMode="decimal" placeholder="0" data-testid="sim-amount" /></div>
+        </div>
+        <div className="sim-g3">
+          <div>
+            <label>Период</label>
+            <select value={s.billing || 'month'} onChange={e => set('billing', e.target.value)}>
+              <option value="month">Ежемесячно</option><option value="year">Раз в год</option><option value="none">Без платежа</option>
+            </select>
+          </div>
+          <div><label>День</label><input value={s.payDay} onChange={e => set('payDay', e.target.value.replace(/\D/g, '').slice(0, 2))} inputMode="numeric" placeholder="1–31" disabled={s.billing === 'none'} data-testid="sim-payday" /></div>
+          {s.billing === 'year' ? (
+            <div>
+              <label>Месяц</label>
+              <select value={s.payMonth || ''} onChange={e => set('payMonth', e.target.value)}>
+                <option value="">—</option>{SIM_MON.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+              </select>
+            </div>
+          ) : (
+            <div><label>Баланс, ₽</label><input value={s.balance} onChange={e => setS(p => ({ ...p, balance: e.target.value.replace(/[^\d.,-]/g, '').replace(',', '.'), balanceAt: Date.now() }))} inputMode="decimal" placeholder="—" /></div>
+          )}
+        </div>
+      </div>
+
+      <div className="sim-form-sec">
+        <h4>Цвет и метки</h4>
+        <div className="sim-colors mb-2.5">
+          {SIM_COLORS.map(c => (
+            <button key={c || 'op'} type="button" className={'sim-color' + ((s.color || '') === c ? ' on' : '')} onClick={() => set('color', c)}
+              title={c ? c : 'Цвет оператора'}
+              style={{ background: c || `linear-gradient(135deg, ${op.c1}, ${op.c2})`, outline: c ? 'none' : '1px dashed rgba(0,0,0,.2)' }} />
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {(s.tags || []).map(t => (
+            <button key={t} type="button" className="sim-tag" style={simTagColor(t)} onClick={() => set('tags', s.tags.filter(x => x !== t))} title="Убрать">{t} ×</button>
+          ))}
+        </div>
+        <div className="flex gap-1.5">
+          <input value={tagDraft} onChange={e => setTagDraft(e.target.value)} placeholder="Метка (Enter)" onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }} />
+          <button type="button" className="sim-iconbtn" onClick={addTag} title="Добавить метку"><SimIc d={SIM_IC.plus} s={16} /></button>
+        </div>
+        {knownTags.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-2">
+            {knownTags.map(t => <button key={t} type="button" className="sim-tag" style={{ ...simTagColor(t), opacity: .7 }} onClick={() => set('tags', [...(s.tags || []), t])}>+ {t}</button>)}
+          </div>
+        )}
+      </div>
+
+      <button type="button" className="w-full flex items-center justify-between py-2 mb-2 text-sm font-semibold text-[var(--text-muted)]" onClick={() => setMore(v => !v)}>
+        <span>Настройки, PIN/PUK, доп. поля</span>
+        <span style={{ transform: more ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }}><Icon name="chevronDown" size={18} /></span>
+      </button>
+      <div className={'gym-collapse' + (more ? ' open' : '')}>
+        <div className="gym-collapse-inner">
+          <div className="sim-form-sec">
+            <h4>Мобильный интернет (APN)</h4>
+            <div className="sim-g3">
+              <div><label>APN</label><input value={s.apn} onChange={e => set('apn', e.target.value)} placeholder={op.apn || 'internet'} autoCapitalize="off" /></div>
+              <div><label>Логин</label><input value={s.apnUser} onChange={e => set('apnUser', e.target.value)} autoCapitalize="off" /></div>
+              <div><label>Пароль</label><input value={s.apnPass} onChange={e => set('apnPass', e.target.value)} autoCapitalize="off" /></div>
+            </div>
+          </div>
+          <div className="sim-form-sec">
+            <h4>Прокси</h4>
+            <div className="sim-g3 mb-2">
+              <div>
+                <label>Тип</label>
+                <select value={s.proxyType || ''} onChange={e => set('proxyType', e.target.value)}>
+                  <option value="">нет</option><option value="http">HTTP</option><option value="socks5">SOCKS5</option>
+                </select>
+              </div>
+              <div><label>Хост</label><input value={s.proxyHost} onChange={e => set('proxyHost', e.target.value)} autoCapitalize="off" placeholder="1.2.3.4" /></div>
+              <div><label>Порт</label><input value={s.proxyPort} onChange={e => set('proxyPort', e.target.value.replace(/\D/g, ''))} inputMode="numeric" /></div>
+            </div>
+            <div className="sim-g2">
+              <div><label>Логин</label><input value={s.proxyUser} onChange={e => set('proxyUser', e.target.value)} autoCapitalize="off" /></div>
+              <div><label>Пароль</label><input value={s.proxyPass} onChange={e => set('proxyPass', e.target.value)} autoCapitalize="off" /></div>
+            </div>
+          </div>
+          <div className="sim-form-sec">
+            <h4>Коды</h4>
+            <div className="sim-g2 mb-2">
+              <div><label>PIN</label><input value={s.pin} onChange={e => set('pin', e.target.value)} inputMode="numeric" autoComplete="off" /></div>
+              <div><label>PUK</label><input value={s.puk} onChange={e => set('puk', e.target.value)} inputMode="numeric" autoComplete="off" /></div>
+            </div>
+            <div className="sim-g2">
+              <div><label>ICCID</label><input value={s.iccid} onChange={e => set('iccid', e.target.value)} inputMode="numeric" /></div>
+              <div><label>На кого оформлена</label><input value={s.owner} onChange={e => set('owner', e.target.value)} /></div>
+            </div>
+          </div>
+          <div className="sim-form-sec">
+            <h4>Свои поля</h4>
+            {(s.fields || []).map(f => (
+              <div key={f.id} className="sim-field-row">
+                <input value={f.k} onChange={e => setField(f.id, { k: e.target.value })} placeholder="Поле" />
+                <input value={f.v} onChange={e => setField(f.id, { v: e.target.value })} placeholder="Значение" />
+                <button type="button" className={'sim-iconbtn' + (f.secret ? ' on' : '')} onClick={() => setField(f.id, { secret: !f.secret })} title="Скрывать значение"><SimIc d={SIM_IC.eye} s={15} /></button>
+              </div>
+            ))}
+            <button type="button" className="btn-ghost !px-0 flex items-center gap-1.5" onClick={() => set('fields', [...(s.fields || []), { id: crypto.randomUUID(), k: '', v: '', secret: false }])}>
+              <SimIc d={SIM_IC.plus} s={15} />Добавить поле
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="sim-form-sec">
+        <h4>Заметка</h4>
+        <textarea rows={3} value={s.note} onChange={e => set('note', e.target.value)} placeholder="Что угодно: где лежит, кому отдана, особенности…" />
+      </div>
+
+      <div className="flex gap-2 sticky bottom-0 pt-2 pb-1" style={{ background: 'var(--bg)' }}>
+        <button type="button" className="btn-secondary flex-1" onClick={onClose}>Отмена</button>
+        <button type="button" className="btn-primary flex-[2]" onClick={submit} data-testid="sim-save">Сохранить</button>
+      </div>
+    </Modal>
+  );
+}
+
+function SimDeviceEditor({ initial, isNew, onSave, onDelete, onClose }) {
+  const [d, setD] = useState(initial);
+  const set = (k, v) => setD(p => ({ ...p, [k]: v }));
+  return (
+    <Modal title={isNew ? 'Новое устройство' : 'Устройство'} onClose={onClose}>
+      <div className="sim-form-sec">
+        <label>Название</label>
+        <input value={d.name} onChange={e => set('name', e.target.value)} placeholder="iPhone 15, Huawei модем, Redmi в машине…" autoFocus={isNew} data-testid="dev-name" />
+      </div>
+      <div className="sim-form-sec">
+        <h4>Тип</h4>
+        <div className="sim-toggles">
+          {SIM_DEVICE_KINDS.map(k => <button key={k.id} type="button" className={'sim-tog' + (d.kind === k.id ? ' on' : '')} onClick={() => set('kind', k.id)}>{k.emoji} {k.label}</button>)}
+        </div>
+      </div>
+      <div className="sim-form-sec">
+        <h4>Слотов под сим</h4>
+        <div className="sim-toggles">
+          {[0, 1, 2, 3, 4].map(n => <button key={n} type="button" className={'sim-tog' + (Number(d.slots) === n ? ' on' : '')} onClick={() => set('slots', n)}>{n === 0 ? 'только eSIM' : n}</button>)}
+        </div>
+      </div>
+      <div className="sim-form-sec">
+        <label>Заметка</label>
+        <input value={d.note} onChange={e => set('note', e.target.value)} placeholder="Где лежит, IMEI, пароль от Wi-Fi…" />
+      </div>
+      <div className="flex gap-2">
+        {!isNew && <button type="button" className="btn-secondary !text-red-700" onClick={onDelete}>Удалить</button>}
+        <button type="button" className="btn-primary flex-1" onClick={() => onSave({ ...d, name: d.name.trim() })} data-testid="dev-save">Сохранить</button>
+      </div>
+    </Modal>
   );
 }
 
