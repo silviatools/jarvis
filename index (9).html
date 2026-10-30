@@ -8576,9 +8576,6 @@ function AiCostBlocks({ data, setData, settings, presets, assignments }) {
     setRole(k, { model, effort: ok ? e : '' });
   };
 
-  const applyDefaults = () => { if (defaults) save({ ...defaults, prev: undefined }, { remember: true }); };
-  const applyLegacy = () => save({ enabled: false }, { remember: true });
-  const restore = () => { if (cfg.prev) updateAiSetting(setData, { ...cfg.prev, prev: null }); };
 
   const managed = cfg.enabled !== false;
   const modelOptions = (current) => {
@@ -8655,14 +8652,6 @@ function AiCostBlocks({ data, setData, settings, presets, assignments }) {
             ))}
           </div>
         </details>
-        <div className="flex flex-wrap gap-2 pt-1">
-          <button type="button" className="btn-secondary text-sm px-3 py-1.5" onClick={applyDefaults} disabled={!cat} data-testid="ai-apply-defaults">Рекомендованные</button>
-          <button type="button" className="btn-secondary text-sm px-3 py-1.5" onClick={applyLegacy} disabled={!managed} data-testid="ai-apply-legacy">Одна модель, как раньше</button>
-          <button type="button" className="btn-secondary text-sm px-3 py-1.5" onClick={restore} disabled={!cfg.prev} data-testid="ai-restore">Вернуть как было</button>
-        </div>
-        <p className="text-[11px] text-[var(--text-subtle)]">
-          «Рекомендованные»: основная — Terra (низкое рассуждение), сложная — Sol, фон — Luna. «Одна модель» — все запросы идут на модель из набора ключей без уровней рассуждений. «Вернуть как было» отменяет последнее из этих переключений.
-        </p>
       </AssistantBlock>
 
       <AssistantBlock id="ai-effort" title="Рассуждения" subtitle="Насколько глубоко модель думает: дороже и медленнее при высоком уровне">
@@ -8921,6 +8910,11 @@ function VoiceAssistantSettings({ data, setData }) {
                 placeholder={`По умолчанию: ${AI_PROVIDER_DEFAULT_MODEL[p.provider] || AI_PROVIDER_DEFAULT_MODEL.claude}`}
                 autoComplete="off"
               />
+              {p.provider === 'openai' && (
+                <p className="text-xs text-[var(--text-subtle)] mt-1">
+                  Для ассистента модель и рассуждения выбираются в блоке «Модели по ролям» — это поле для него не действует. Оно нужно остальным функциям (здоровье, GYM, хотелки, ДДС).
+                </p>
+              )}
             </div>
           </div>
         ))}
