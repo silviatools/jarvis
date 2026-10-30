@@ -92,6 +92,48 @@ class Base(unittest.TestCase):
         jarvis.requests.post = post
 
 
+class ProviderTest(Base):
+    def keys(self, **over):
+        presets = []
+        if over.get("openai", True):
+            presets.append({"id": "o", "name": "o", "provider": "openai", "apiKey": "sk-o", "model": "gpt-5.4"})
+        if over.get("claude", True):
+            presets.append({"id": "c", "name": "c", "provider": "claude", "apiKey": "sk-c", "model": ""})
+        s = {"aiPresets": presets, "aiAssignments": {}}
+        if over.get("models"):
+            s["aiModels"] = over["models"]
+        return {"telegramSkills": {}, "settings": s}
+
+    def test_provider_follows_model_name(self):
+        self.assertEqual(ai_usage.provider_of("claude-sonnet-5"), "claude")
+        self.assertEqual(ai_usage.provider_of("gpt-6.1-terra"), "openai")
+        r = ai_usage.resolve_role({"aiModels": {"main": {"model": "claude-sonnet-5", "effort": "high"}}}, "main")
+        self.assertEqual((r["provider"], r["model"], r["effort"]), ("claude", "claude-sonnet-5", ""))   # у Claude уровней нет
+
+    def test_each_role_takes_its_providers_key(self):
+        app = self.keys(models={"main": {"model": "claude-sonnet-5"}, "complex": {"model": "gpt-6.1-sol", "effort": "high"}})
+        main, cx = jarvis._ai_conf(app, "main"), jarvis._ai_conf(app, "complex")
+        self.assertEqual((main.provider, main.key, main.model), ("claude", "sk-c", "claude-sonnet-5"))
+        self.assertEqual((cx.provider, cx.key, cx.model, cx.effort), ("openai", "sk-o", "gpt-6.1-sol", "high"))
+
+    def test_task_inherits_provider_with_model(self):
+        app = self.keys(models={"background": {"model": "claude-sonnet-5"}})
+        conf = jarvis._ai_conf(app, "title")
+        self.assertEqual((conf.provider, conf.key, conf.model), ("claude", "sk-c", "claude-sonnet-5"))
+
+    def test_missing_key_falls_back_to_other_provider(self):
+        app = self.keys(openai=False)                       # по умолчанию роли на OpenAI, но есть только Claude
+        conf = jarvis._ai_conf(app, "main")
+        self.assertEqual((conf.provider, conf.key, conf.model, conf.effort), ("claude", "sk-c", "claude-sonnet-5", ""))
+        self.assertIsNone(jarvis._ai_conf({"settings": {"aiPresets": [], "aiAssignments": {}}}, "main"))
+
+    def test_no_escalation_across_providers(self):
+        app = self.keys(models={"main": {"model": "claude-sonnet-5"}, "complex": {"model": "gpt-6.1-sol"}})
+        self.assertIsNone(jarvis._esc_conf(app, jarvis._ai_conf(app, "main")))
+        app = self.keys(models={"main": {"model": "claude-sonnet-5"}, "complex": {"model": "claude-sonnet-5-max"}})
+        self.assertEqual(jarvis._esc_conf(app, jarvis._ai_conf(app, "main"))["model"], "claude-sonnet-5-max")
+
+
 class CatalogTest(unittest.TestCase):
     def test_efforts_follow_model(self):
         self.assertIn("none", ai_usage.efforts_for("gpt-6.1-terra"))

@@ -6645,33 +6645,53 @@ def _ai_models_cfg(app) -> dict:
     return ai_usage.normalize((app or {}).get("settings") or {}) if ai_usage else {}
 
 
+def _provider_key(settings: dict, provider: str) -> str:
+    """API-ключ провайдера из «Нейросети и ключи»: набор, назначенный ассистенту, если он этого провайдера, иначе первый подходящий."""
+    s = _ensure_ai_presets(settings or {})
+    ok = [p for p in (s.get("aiPresets") or [])
+          if (p.get("provider") == "openai") == (provider == "openai") and (p.get("apiKey") or "").strip()]
+    assigned = (s.get("aiAssignments") or {}).get("voiceAssistant")
+    for p in ok:
+        if p.get("id") == assigned:
+            return p["apiKey"].strip()
+    return ok[0]["apiKey"].strip() if ok else ""
+
+
 def _ai_conf(app, role: str = "main"):
     """Настройки ИИ ассистента для роли (main / complex / background / studyBrief / triage / title / notesTargets)
-    или None, если ключ не назначен. Роли и уровни рассуждений — Настройки → Ассистент → «Модели»; для Claude-набора не применяются."""
+    или None, если нет ни одного ключа. Провайдер и модель роли — Настройки → Ассистент → «Модели по ролям» (ключи — «Нейросети и ключи»);
+    если ключа нужного провайдера нет, берётся другой провайдер с его моделью по умолчанию."""
     settings = app.get("settings") or {}
+    site = (settings.get("publicUrl") or "").strip()
+    if ai_usage and ai_usage.normalize(settings).get("enabled"):
+        r = ai_usage.resolve_role(settings, role, "")
+        provider, model, effort = r["provider"], r["model"], r["effort"]
+        key = _provider_key(settings, provider)
+        if not key:
+            provider = "claude" if provider == "openai" else "openai"
+            key = _provider_key(settings, provider)
+            model, effort = AI_PROVIDER_DEFAULT_MODEL[provider], ""
+        if not key:
+            return None
+        return _AiConf(provider, key, model, site, effort, role)
     preset = resolve_ai_preset(settings, "voiceAssistant")
     key = ((preset or {}).get("apiKey") or "").strip()
     if not key:
         return None
     provider = "openai" if preset.get("provider") == "openai" else "claude"
     model = (preset.get("model") or "").strip() or AI_PROVIDER_DEFAULT_MODEL[provider]
-    effort = ""
-    if provider == "openai" and ai_usage:
-        r = ai_usage.resolve_role(settings, role, model)
-        if r["managed"]:
-            model, effort = r["model"] or model, r["effort"]
-    return _AiConf(provider, key, model, (settings.get("publicUrl") or "").strip(), effort, role)
+    return _AiConf(provider, key, model, site, "", role)
 
 
 def _esc_conf(app, conf):
-    """Куда переходить при неудаче/сложной задаче: {"model","effort","limit"} или None (эскалация выключена, не OpenAI, та же модель)."""
-    if not (ai_usage and conf and conf[0] == "openai"):
+    """Куда переходить при неудаче/сложной задаче: {"model","effort","limit"} или None (эскалация выключена, другой провайдер, та же модель)."""
+    if not (ai_usage and conf):
         return None
     cfg = _ai_models_cfg(app)
     if not (cfg.get("enabled") and cfg.get("escalation")):
         return None
     c = _ai_conf(app, "complex")
-    if not c or c[2] == conf[2]:
+    if not c or c[0] != conf[0] or c[2] == conf[2]:
         return None
     return {"model": c[2], "effort": c[4], "limit": cfg.get("escalationDailyLimit")}
 

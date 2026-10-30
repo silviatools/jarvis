@@ -8534,9 +8534,9 @@ function AiCostBlocks({ data, setData, settings, presets, assignments }) {
     return out;
   }, [settings.aiModels, defaults]);
 
-  const preset = presets.find(p => p.id === assignments.voiceAssistant) || presets[0] || null;
-  const isOpenAI = !!preset && preset.provider === 'openai';
-  const presetModel = (preset && (preset.model || '').trim()) || AI_PROVIDER_DEFAULT_MODEL.openai;
+  const hasKey = (prov) => presets.some(p => (p.provider === 'openai') === (prov === 'openai') && (p.apiKey || '').trim());
+  const providerOf = (m) => (/^claude/i.test(m || '') ? 'claude' : 'openai');
+  const defaultModels = (cat && cat.defaultModels) || AI_PROVIDER_DEFAULT_MODEL;
   const roles = (cat && cat.roles) || [];
   const roleMeta = (k) => roles.find(r => r.key === k) || { key: k, label: k, hint: '', fallback: null };
   const models = (cat && cat.models) || [];
@@ -8546,6 +8546,7 @@ function AiCostBlocks({ data, setData, settings, presets, assignments }) {
     if (exact) return exact;
     return models.filter(m => id.startsWith(m.id + '-')).sort((a, b) => b.id.length - a.id.length)[0] || null;
   };
+  const effProvider = (k) => providerOf(effModel(k));
   const effModel = (k) => {
     const seen = new Set();
     let key = k;
@@ -8554,7 +8555,7 @@ function AiCostBlocks({ data, setData, settings, presets, assignments }) {
       if (cfg[key] && cfg[key].model) return cfg[key].model;
       key = roleMeta(key).fallback;
     }
-    return presetModel;
+    return defaultModels.openai;
   };
   const effortsFor = (id) => {
     const info = modelInfo(id);
@@ -8573,14 +8574,19 @@ function AiCostBlocks({ data, setData, settings, presets, assignments }) {
   const setRoleModel = (k, model) => {
     const e = cfg[k].effort;
     const ok = !e || effortsFor(model || effModel(roleMeta(k).fallback || 'main')).includes(e);
-    setRole(k, { model, effort: ok ? e : '' });
+    setRole(k, { provider: model ? providerOf(model) : '', model, effort: ok ? e : '' });
+  };
+  const setRoleProvider = (k, prov) => {
+    if (!prov) { setRoleModel(k, ''); return; }
+    const own = (defaults && defaults[k] && providerOf(defaults[k].model) === prov && defaults[k].model) || defaultModels[prov];
+    setRoleModel(k, cfg[k].model && providerOf(cfg[k].model) === prov ? cfg[k].model : own);
   };
 
 
   const managed = cfg.enabled !== false;
-  const modelOptions = (current) => {
+  const openaiOptions = (current) => {
     const list = models.slice();
-    if (current && !modelInfo(current)) list.push({ id: current, title: `${current} (своя)` });
+    if (current && providerOf(current) === 'openai' && !modelInfo(current)) list.push({ id: current, title: `${current} (своя)` });
     return list;
   };
   const priceLine = (id) => {
@@ -8589,20 +8595,40 @@ function AiCostBlocks({ data, setData, settings, presets, assignments }) {
     return `вход $${i.in} · кэш $${i.cache ?? '—'} · выход $${i.out} за 1M токенов`;
   };
 
-  const rolesBadge = !isOpenAI
-    ? <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">только OpenAI</span>
-    : managed
-      ? <span className="text-[11px] px-2 py-0.5 rounded-full bg-green-100 text-green-800">по ролям</span>
-      : <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--bg)] text-[var(--text-subtle)]">одна модель</span>;
+  const rolesBadge = managed
+    ? <span className="text-[11px] px-2 py-0.5 rounded-full bg-green-100 text-green-800">по ролям</span>
+    : <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--bg)] text-[var(--text-subtle)]">одна модель</span>;
 
-  const modelSelect = (k, allowInherit) => {
+  const modelPicker = (k, allowInherit) => {
     const v = cfg[k].model || '';
-    const fb = roleMeta(k).fallback;
+    const fb = roleMeta(k).fallback || 'main';
+    const prov = v ? providerOf(v) : '';
+    const shownProv = prov || effProvider(k);
+    const claudeList = (cat && cat.claudeModels) || [{ id: defaultModels.claude, title: defaultModels.claude }];
     return (
-      <select value={v} onChange={e => setRoleModel(k, e.target.value)} disabled={!managed || !cat} data-testid={`ai-model-${k}`}>
-        {allowInherit && <option value="">как «{roleMeta(fb || 'main').label}» ({effModel(fb || 'main')})</option>}
-        {modelOptions(v).map(m => <option key={m.id} value={m.id}>{m.title || m.id}</option>)}
-      </select>
+      <div className="grid gap-2 sm:grid-cols-[11rem_1fr]">
+        <select value={prov} onChange={e => setRoleProvider(k, e.target.value)} disabled={!managed || !cat} aria-label="Провайдер" data-testid={`ai-provider-${k}`}>
+          {allowInherit && <option value="">как у «{roleMeta(fb).label}»</option>}
+          <option value="openai">OpenAI</option>
+          <option value="claude">Claude</option>
+        </select>
+        {!v ? (
+          <div className="text-sm text-[var(--text-muted)] self-center" data-testid={`ai-model-${k}`}>{effModel(k)}</div>
+        ) : prov === 'claude' ? (
+          <select value={v} onChange={e => setRoleModel(k, e.target.value)} disabled={!managed} data-testid={`ai-model-${k}`}>
+            {(claudeList.some(m => m.id === v) ? claudeList : [...claudeList, { id: v, title: `${v} (своя)` }]).map(m => <option key={m.id} value={m.id}>{m.title || m.id}</option>)}
+          </select>
+        ) : (
+          <select value={v} onChange={e => setRoleModel(k, e.target.value)} disabled={!managed || !cat} data-testid={`ai-model-${k}`}>
+            {openaiOptions(v).map(m => <option key={m.id} value={m.id}>{m.title || m.id}</option>)}
+          </select>
+        )}
+        {!hasKey(shownProv) && (
+          <p className="text-[11px] text-amber-800 sm:col-span-2">
+            Нет ключа {shownProv === 'claude' ? 'Claude' : 'OpenAI'} — добавьте его в «Нейросети и ключи», иначе возьмётся другой провайдер.
+          </p>
+        )}
+      </div>
     );
   };
 
@@ -8623,19 +8649,13 @@ function AiCostBlocks({ data, setData, settings, presets, assignments }) {
   return (
     <>
       <AssistantBlock id="ai-models" title="Модели по ролям"
-        subtitle="Какая модель OpenAI отвечает в чате, на сложных задачах и в фоне" badge={rolesBadge}>
+        subtitle="Провайдер и модель для чата, сложных задач и фона" badge={rolesBadge}>
         {err && <p className="text-xs text-red-600">{err}</p>}
-        {!isOpenAI && (
-          <p className="text-xs text-amber-800 bg-amber-50 rounded-lg px-3 py-2">
-            Сейчас ассистенту назначен {preset ? 'набор Claude' : 'пустой набор'} — роли и рассуждения применяются только к наборам OpenAI.
-            Выберите набор OpenAI в блоке «Нейросети и ключи».
-          </p>
-        )}
         <div className="grid gap-3">
           {AI_ROLE_ORDER.map(k => (
             <div key={k} className="space-y-1" data-testid={`ai-role-${k}`}>
               <label>{roleMeta(k).label}</label>
-              {modelSelect(k, k !== 'main')}
+              {modelPicker(k, k !== 'main')}
               <p className="text-[11px] text-[var(--text-subtle)] break-words">{roleMeta(k).hint}{priceLine(effModel(k)) ? ` · ${priceLine(effModel(k))}` : ''}</p>
             </div>
           ))}
@@ -8646,7 +8666,7 @@ function AiCostBlocks({ data, setData, settings, presets, assignments }) {
             {AI_TASK_ORDER.map(k => (
               <div key={k} className="space-y-1">
                 <label>{roleMeta(k).label}</label>
-                {modelSelect(k, true)}
+                {modelPicker(k, true)}
                 <p className="text-[11px] text-[var(--text-subtle)]">{roleMeta(k).hint}</p>
               </div>
             ))}
@@ -8664,7 +8684,7 @@ function AiCostBlocks({ data, setData, settings, presets, assignments }) {
             </div>
           ))}
         </div>
-        <p className="text-[11px] text-[var(--text-subtle)]">В списке только уровни, которые поддерживает выбранная модель; при смене модели недопустимый уровень сбрасывается.</p>
+        <p className="text-[11px] text-[var(--text-subtle)]">В списке только уровни, которые поддерживает выбранная модель; при смене модели недопустимый уровень сбрасывается. У моделей Claude настройки рассуждений нет.</p>
       </AssistantBlock>
 
       <AssistantBlock id="ai-escalation" title="Эскалация на сложную модель"
@@ -8856,7 +8876,7 @@ function VoiceAssistantSettings({ data, setData }) {
       </AssistantBlock>
 
       <AssistantBlock id="keys" title="Нейросети и ключи"
-        subtitle="Наборы ключей Claude / OpenAI и какой из них отвечает за ассистента">
+        subtitle="API-ключи Claude и OpenAI. Модели выбираются в «Модели по ролям»">
       <div className="space-y-4">
         <div className="flex items-center justify-between gap-3">
           <h3 className="font-display text-sm">Наборы ключей ИИ</h3>
@@ -8901,30 +8921,16 @@ function VoiceAssistantSettings({ data, setData }) {
                 Получите ключ на <span className="font-mono">{p.provider === 'openai' ? 'platform.openai.com' : 'console.anthropic.com'}</span>
               </p>
             </div>
-            <div>
-              <label>Модель (необязательно)</label>
-              <input
-                type="text"
-                value={p.model}
-                onChange={e => updatePreset(p.id, { model: e.target.value })}
-                placeholder={`По умолчанию: ${AI_PROVIDER_DEFAULT_MODEL[p.provider] || AI_PROVIDER_DEFAULT_MODEL.claude}`}
-                autoComplete="off"
-              />
-              {p.provider === 'openai' && (
-                <p className="text-xs text-[var(--text-subtle)] mt-1">
-                  Для ассистента модель и рассуждения выбираются в блоке «Модели по ролям» — это поле для него не действует. Оно нужно остальным функциям (здоровье, GYM, хотелки, ДДС).
-                </p>
-              )}
-            </div>
           </div>
         ))}
       </div>
 
       <div className="space-y-4 pt-4 border-t border-[var(--border)]">
         <h3 className="font-display text-sm">Какой набор для какой функции</h3>
+        <p className="text-xs text-[var(--text-subtle)]">Ассистент здесь не настраивается: ключ он берёт по провайдеру из «Модели по ролям». Остальные функции работают на модели по умолчанию выбранного провайдера.</p>
         {presets.length === 0 ? (
           <p className="text-sm text-[var(--text-subtle)]">Сначала добавьте хотя бы один набор ключей выше.</p>
-        ) : AI_FUNCTIONS.map(f => (
+        ) : AI_FUNCTIONS.filter(f => f.key !== 'voiceAssistant').map(f => (
           <div key={f.key}>
             <label>{f.label}</label>
             <select value={assignments[f.key] || ''} onChange={e => setAssignment(f.key, e.target.value)}>
@@ -16527,12 +16533,30 @@ function fitAiEffortClient(model, effort) {
   if (effort === 'none' && /^gpt-6(\.\d+)?-(sol|astra)/i.test(model || '')) return 'low';
   return effort;
 }
-function resolveAiRoleClient(settings, role, presetModel) {
+function resolveAiRoleClient(settings, role) {
   const cfg = (settings && settings.aiModels && typeof settings.aiModels === 'object') ? settings.aiModels : {};
-  if (cfg.enabled === false) return { model: presetModel, effort: '', managed: false };
+  const presets = ensureAiPresets(settings || {}).aiPresets || [];
+  const keyOf = (prov) => {
+    const ok = presets.filter(p => (p.provider === 'openai') === (prov === 'openai') && (p.apiKey || '').trim());
+    const assigned = ((settings || {}).aiAssignments || {}).voiceAssistant;
+    return ((ok.find(p => p.id === assigned) || ok[0] || {}).apiKey || '').trim();
+  };
+  const provOf = (m) => (/^claude/i.test(m || '') ? 'claude' : 'openai');
+  if (cfg.enabled === false) {
+    const preset = resolveAiPreset(settings, 'voiceAssistant');
+    const provider = preset && preset.provider === 'openai' ? 'openai' : 'claude';
+    return { provider, model: ((preset && preset.model) || '').trim() || AI_PROVIDER_DEFAULT_MODEL[provider], effort: '', managed: false, apiKey: (preset && preset.apiKey) || '' };
+  }
   const own = { ...(AI_ROLES_CLIENT_DEFAULT[role] || {}), ...(cfg[role] || {}) };
-  const model = own.model || (cfg.main && cfg.main.model) || AI_ROLES_CLIENT_DEFAULT.main.model || presetModel;
-  return { model, effort: fitAiEffortClient(model, own.effort || ''), managed: true };
+  const model = own.model || (cfg.main && cfg.main.model) || AI_ROLES_CLIENT_DEFAULT.main.model;
+  let provider = provOf(model);
+  let apiKey = keyOf(provider);
+  if (!apiKey) {
+    provider = provider === 'openai' ? 'claude' : 'openai';
+    apiKey = keyOf(provider);
+    return { provider, model: AI_PROVIDER_DEFAULT_MODEL[provider], effort: '', managed: true, apiKey };
+  }
+  return { provider, model, effort: fitAiEffortClient(model, own.effort || ''), managed: true, apiKey };
 }
 function reportAiUsage({ model, role, func, effort, usage, step, managed }) {
   if (!usage) return;
@@ -16545,18 +16569,12 @@ function reportAiUsage({ model, role, func, effort, usage, step, managed }) {
 }
 
 async function runVoiceAgent(messages, settings, data, nav, maxSteps = 6) {
-  const preset = resolveAiPreset(settings, 'voiceAssistant');
-  if (!preset || !preset.apiKey) throw new Error('no_key');
-  const provider = preset.provider === 'openai' ? 'openai' : 'claude';
-  const model = (preset.model || '').trim() || AI_PROVIDER_DEFAULT_MODEL[provider];
+  const r = resolveAiRoleClient(settings, 'main');
+  if (!r.apiKey) throw new Error('no_key');
   const convo = messages.map(m => ({ role: m.role, content: m.content }));
-  if (provider === 'openai') {
-    const r = resolveAiRoleClient(settings, 'main', model);
-    return runVoiceAgentOpenAI(convo, preset.apiKey, r.model, data, nav, maxSteps, r.effort, r.managed);
-  }
-  return provider === 'openai'
-    ? runVoiceAgentOpenAI(convo, preset.apiKey, model, data, nav, maxSteps)
-    : runVoiceAgentClaude(convo, preset.apiKey, model, data, nav, maxSteps);
+  return r.provider === 'openai'
+    ? runVoiceAgentOpenAI(convo, r.apiKey, r.model, data, nav, maxSteps, r.effort, r.managed)
+    : runVoiceAgentClaude(convo, r.apiKey, r.model, data, nav, maxSteps);
 }
 
 // Возвращают { text, pendingConfirmation }. data — снимок на момент начала
@@ -16726,7 +16744,7 @@ async function callAI(messages, settings, systemPrompt, maxTokens = 400, functio
   if (!preset || !preset.apiKey) throw new Error('no_key');
   const provider = preset.provider === 'openai' ? 'openai' : 'claude';
   const key = preset.apiKey;
-  const model = (preset.model || '').trim() || AI_PROVIDER_DEFAULT_MODEL[provider];
+  const model = AI_PROVIDER_DEFAULT_MODEL[provider];
 
   if (provider === 'claude') {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -44052,7 +44070,7 @@ async function wishlistParseScreenshot(base64, mediaType, settings) {
   if (!preset || !preset.apiKey) throw new Error('no_key');
   const provider = preset.provider === 'openai' ? 'openai' : 'claude';
   const key = preset.apiKey;
-  const model = (preset.model || '').trim() || AI_PROVIDER_DEFAULT_MODEL[provider];
+  const model = AI_PROVIDER_DEFAULT_MODEL[provider];
 
   let text;
   if (provider === 'claude') {

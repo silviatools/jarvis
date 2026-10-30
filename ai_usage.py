@@ -74,13 +74,13 @@ TASK_ROLES = ["studyBrief", "triage", "title", "notesTargets"]
 def default_ai_models() -> dict:
     return {
         "enabled": True,
-        "main": {"model": "gpt-6.1-terra", "effort": "low"},
-        "complex": {"model": "gpt-6.1-sol", "effort": "medium"},
-        "background": {"model": "gpt-6-luna", "effort": "none"},
-        "studyBrief": {"model": "", "effort": "medium"},
-        "triage": {"model": "", "effort": "low"},
-        "title": {"model": "", "effort": ""},
-        "notesTargets": {"model": "", "effort": ""},
+        "main": {"provider": "openai", "model": "gpt-6.1-terra", "effort": "low"},
+        "complex": {"provider": "openai", "model": "gpt-6.1-sol", "effort": "medium"},
+        "background": {"provider": "openai", "model": "gpt-6-luna", "effort": "none"},
+        "studyBrief": {"provider": "", "model": "", "effort": "medium"},
+        "triage": {"provider": "", "model": "", "effort": "low"},
+        "title": {"provider": "", "model": "", "effort": ""},
+        "notesTargets": {"provider": "", "model": "", "effort": ""},
         "escalation": True,
         "escalationDailyLimit": 40,
         "toolGroups": False,
@@ -100,7 +100,8 @@ def normalize(settings) -> dict:
     out = dict(base)
     for k, v in cur.items():
         if k in ROLES and isinstance(v, dict):
-            out[k] = {"model": str(v.get("model") or "").strip(), "effort": str(v.get("effort") or "").strip()}
+            model = str(v.get("model") or "").strip()
+            out[k] = {"provider": provider_of(model) if model else "", "model": model, "effort": str(v.get("effort") or "").strip()}
         elif k in base:
             out[k] = v
     try:
@@ -108,6 +109,14 @@ def normalize(settings) -> dict:
     except (TypeError, ValueError):
         out["escalationDailyLimit"] = base["escalationDailyLimit"]
     return out
+
+
+DEFAULT_MODELS = {"claude": "claude-sonnet-5", "openai": "gpt-6.1-terra"}
+
+
+def provider_of(model: str) -> str:
+    """Провайдер определяется по имени модели: claude-* — Anthropic, остальное — OpenAI."""
+    return "claude" if (model or "").strip().lower().startswith("claude") else "openai"
 
 
 def model_info(model: str):
@@ -159,17 +168,20 @@ def catalog() -> dict:
     return {
         "models": models,
         "effortLabels": EFFORT_LABELS,
+        "providers": [{"id": "openai", "title": "OpenAI"}, {"id": "claude", "title": "Claude (Anthropic)"}],
+        "claudeModels": [{"id": "claude-sonnet-5", "title": "Claude Sonnet 5"}],
+        "defaultModels": DEFAULT_MODELS,
         "roles": [{"key": k, "label": v["label"], "hint": v["hint"], "fallback": v["fallback"]} for k, v in ROLES.items()],
         "defaults": default_ai_models(),
     }
 
 
 def resolve_role(settings, role: str, preset_model: str = "") -> dict:
-    """{model, effort, role, managed}: модель и уровень роли.
-    managed=False — роли выключены («всё на одну модель»): модель пресета и уровень не передаётся (поведение как раньше)."""
+    """{provider, model, effort, role, managed}: провайдер, модель и уровень роли (провайдер выводится из имени модели).
+    managed=False — роли выключены (enabled:false, прежний режим): модель из аргумента и уровень не передаётся."""
     cfg = normalize(settings)
     if not cfg.get("enabled"):
-        return {"model": preset_model, "effort": "", "role": role, "managed": False}
+        return {"provider": provider_of(preset_model), "model": preset_model, "effort": "", "role": role, "managed": False}
     seen, key, model, effort = set(), role, "", ""
     # у задачи свой уровень, а пустую модель наследует от родительской роли
     own = cfg.get(role) or {}
@@ -185,8 +197,8 @@ def resolve_role(settings, role: str, preset_model: str = "") -> dict:
         if not effort:
             effort = entry.get("effort") or ""
         key = (ROLES.get(key) or {}).get("fallback")
-    model = model or preset_model
-    return {"model": model, "effort": fit_effort(model, effort), "role": role, "managed": True}
+    model = model or preset_model or DEFAULT_MODELS["openai"]
+    return {"provider": provider_of(model), "model": model, "effort": fit_effort(model, effort), "role": role, "managed": True}
 
 
 # ── Цены ─────────────────────────────────────────────────────────────────────
