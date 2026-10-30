@@ -40,6 +40,23 @@ def oai_tools(*calls):
         "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 3000, "completion_tokens": 20}})
 
 
+def responses_shape(r):
+    """Ответ, заготовленный в форме Chat Completions, → форма Responses API."""
+    ch = r.json()["choices"][0]
+    msg, u = ch["message"], r.json().get("usage") or {}
+    out = []
+    if msg.get("content"):
+        out.append({"type": "message", "content": [{"type": "output_text", "text": msg["content"]}]})
+    for tc in msg.get("tool_calls") or []:
+        out.append({"type": "function_call", "call_id": tc["id"], "name": tc["function"]["name"], "arguments": tc["function"]["arguments"]})
+    resp = {"status": "incomplete" if ch.get("finish_reason") == "length" else "completed", "output": out,
+            "usage": {"input_tokens": u.get("prompt_tokens", 0), "output_tokens": u.get("completion_tokens", 0),
+                      "input_tokens_details": {"cached_tokens": (u.get("prompt_tokens_details") or {}).get("cached_tokens", 0)}}}
+    if ch.get("finish_reason") == "length":
+        resp["incomplete_details"] = {"reason": "max_output_tokens"}
+    return R(resp)
+
+
 def make_app(models=None, preset_model="gpt-5.4", provider="openai", skills=None):
     settings = {"aiPresets": [{"id": "a", "name": "n", "provider": provider, "apiKey": "k", "model": preset_model}],
                 "aiAssignments": {"voiceAssistant": "a"}}
@@ -55,6 +72,7 @@ class Base(unittest.TestCase):
                 p.unlink()
         self._post = jarvis.requests.post
         self.sent = []
+        self.urls = []
 
     def tearDown(self):
         jarvis.requests.post = self._post
@@ -64,7 +82,13 @@ class Base(unittest.TestCase):
 
         def post(url, headers=None, json=None, timeout=None):
             self.sent.append(json)
-            return queue.pop(0) if len(queue) > 1 else queue[0]
+            self.urls.append(url)
+            if url.endswith("/chat/completions") and json.get("tools") and json.get("reasoning_effort") not in (None, "none"):
+                return R({"error": {"message": "Function tools with reasoning_effort are not supported for %s in /v1/chat/completions. "
+                                               "To use function tools, use /v1/responses or set reasoning_effort to 'none'." % json["model"]}},
+                         ok=False, status=400)
+            r = queue.pop(0) if len(queue) > 1 else queue[0]
+            return responses_shape(r) if url.endswith("/responses") and r.ok else r
         jarvis.requests.post = post
 
 
@@ -146,12 +170,65 @@ class RolesTest(Base):
         jarvis._assistant_loop_openai([{"role": "user", "content": "привет"}], conf.key, conf.model, app, "", False,
                                       effort=conf.effort, role="main", func="chat", cache=True, compact=True)
         body = self.sent[0]
-        self.assertEqual((body["model"], body["reasoning_effort"]), ("gpt-6.1-terra", "low"))
+        self.assertTrue(self.urls[0].endswith("/v1/responses"))          # с рассуждениями — Responses API
+        self.assertEqual((body["model"], body["reasoning"]), ("gpt-6.1-terra", {"effort": "low"}))
+        self.assertNotIn("reasoning_effort", body)
         self.assertTrue(body["prompt_cache_key"])
-        sysmsgs = [m for m in body["messages"] if m["role"] == "system"]
+        sysmsgs = [m for m in body["input"] if m.get("role") == "system"]
         self.assertEqual(len(sysmsgs), 2)
         self.assertIn("СЕГОДНЯ", sysmsgs[1]["content"])        # дата — во втором, меняющемся сообщении
         self.assertNotIn("СЕГОДНЯ:", sysmsgs[0]["content"])
+
+    def test_tools_with_effort_never_use_chat_completions(self):
+        # Chat Completions отвечает 400 на инструменты вместе с reasoning_effort — ошибка из жизни у gpt-6.1-terra
+        app = make_app()
+        conf = jarvis._ai_conf(app)
+        self.script(oai_tools(("get_data", {"domain": "budget"})), oai_text("готово"))
+        text, _ = jarvis._assistant_loop_openai([{"role": "user", "content": "бюджет"}], conf.key, conf.model, app, "", False,
+                                                effort="low")
+        self.assertEqual(text, "готово")
+        self.assertTrue(all(u.endswith("/v1/responses") for u in self.urls))
+        first = self.sent[0]
+        self.assertEqual(first["tools"][0]["type"], "function")
+        self.assertIn("name", first["tools"][0])
+        calls = [i for i in self.sent[1]["input"] if i.get("type") == "function_call"]
+        outs = [i for i in self.sent[1]["input"] if i.get("type") == "function_call_output"]
+        self.assertEqual((calls[0]["name"], calls[0]["call_id"]), ("get_data", "c0"))
+        self.assertEqual(outs[0]["call_id"], "c0")
+        self.assertIsInstance(outs[0]["output"], str)
+        self.assertFalse(self.sent[1].get("store"))
+
+    def test_sol_without_none_uses_responses(self):
+        app = make_app({"main": {"model": "gpt-6.1-sol", "effort": "high"}})
+        conf = jarvis._ai_conf(app)
+        self.script(oai_text("ок"))
+        jarvis._assistant_loop_openai([{"role": "user", "content": "привет"}], conf.key, conf.model, app, "", False, effort=conf.effort)
+        self.assertEqual((self.sent[0]["model"], self.sent[0]["reasoning"]), ("gpt-6.1-sol", {"effort": "high"}))
+
+    def test_effort_none_uses_chat_completions(self):
+        app = make_app({"main": {"model": "gpt-6.1-terra", "effort": "none"}})
+        conf = jarvis._ai_conf(app)
+        self.script(oai_text("ок"))
+        jarvis._assistant_loop_openai([{"role": "user", "content": "привет"}], conf.key, conf.model, app, "", False,
+                                      effort=conf.effort, func="chat")
+        self.assertTrue(self.urls[0].endswith("/chat/completions"))
+        self.assertEqual(self.sent[0]["reasoning_effort"], "none")
+
+    def test_chat_400_about_tools_falls_back_to_responses(self):
+        # режим «как раньше» (уровень не задан): модель сама берёт рассуждения по умолчанию, Chat Completions отказывает
+        app = make_app({"enabled": False}, preset_model="gpt-6.1-terra")
+        bad = R({"error": {"message": "Function tools with reasoning_effort are not supported for gpt-6.1-terra in "
+                                      "/v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'."}},
+                ok=False, status=400)
+        calls = []
+
+        def post(url, headers=None, json=None, timeout=None):
+            calls.append(url)
+            return bad if url.endswith("/chat/completions") else responses_shape(oai_text("ответ"))
+        jarvis.requests.post = post
+        text, _ = jarvis._assistant_loop_openai([{"role": "user", "content": "привет"}], "k", "gpt-6.1-terra", app, "", False)
+        self.assertEqual(text, "ответ")
+        self.assertEqual([u.rsplit("/", 1)[-1] for u in calls], ["completions", "responses"])
 
     def test_unsupported_params_retry_without(self):
         app = make_app()
@@ -159,7 +236,7 @@ class RolesTest(Base):
         bad = R({"error": {"message": "Unrecognized request argument supplied: reasoning_effort"}}, ok=False, status=400)
         self.script(bad, oai_text("ок"))
         text, _ = jarvis._assistant_loop_openai([{"role": "user", "content": "привет"}], conf.key, conf.model, app, "", False,
-                                                effort="low", cache=True)
+                                                effort="none", cache=True)
         self.assertEqual(text, "ок")
         self.assertIn("reasoning_effort", self.sent[0])
         self.assertNotIn("reasoning_effort", self.sent[1])
@@ -273,7 +350,7 @@ class EscalationTest(Base):
         (text, _), stats = self.run_loop(self.app(), "покажи данные")
         self.assertEqual(text, "разобрался")
         self.assertEqual(self.sent[0]["model"], "gpt-6.1-terra")
-        self.assertEqual((self.sent[1]["model"], self.sent[1]["reasoning_effort"]), ("gpt-6.1-sol", "medium"))
+        self.assertEqual((self.sent[1]["model"], self.sent[1]["reasoning"]["effort"]), ("gpt-6.1-sol", "medium"))
         self.assertEqual(stats["esc"], "errors")
         self.assertEqual(stats["tool_errors"], 2)
 

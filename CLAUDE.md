@@ -61,6 +61,7 @@
 - `tool_groups.py` — группы инструментов по смыслу запроса (переключатель `aiModels.toolGroups`, по умолчанию выключен = полный набор) и
  `tools_more`. **Новый навык/инструмент — ВСЕГДА добавлять в группу `GROUPS` (и ключевые слова `KEYWORDS`)**, иначе он считается «без группы»
  и остаётся всегда включённым. Группы работают поверх `skill_on`: выключенный навык не возвращается.
+ OpenAI: инструменты вместе с рассуждениями Chat Completions не принимает — при уровне ≠ none цикл идёт через Responses API (`_openai_step`, `_responses_call`; в браузере — `openaiVoiceStep`).
  Эскалация на «сложную» модель — `_TurnState.escalate` / `_needs_complex` в `jarvis.py`; промпт для кэша — `build_assistant_system_prompt(split=True)`.
 - `deck_builder.py` / `deck_skill.py` — навык «Презентации»: движок слайдов (темы, макеты, проверка качества) и интеграция.
 - `index (9).html` — всё приложение одним файлом (React через Babel в браузере); раздел «Учёба» — `StudyView`.

@@ -4375,6 +4375,7 @@ def weather_cal_tick(app_data: dict, now_str: str, today_iso: str) -> None:
 
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
 # Наборы ключей ИИ (settings.aiPresets/aiAssignments) — то же самое, что и в
 # index (9).html: несколько ключей/провайдеров можно завести сразу и
@@ -5879,6 +5880,8 @@ class _AssistantError(Exception):
 
 
 _LIMIT_ERRORS = re.compile(r"reasoning|prompt_cache|unrecognized|unsupported|unknown parameter|not supported", re.I)
+# Chat Completions не принимает инструменты вместе с рассуждениями («use /v1/responses or set reasoning_effort to 'none'»)
+_TOOLS_EFFORT_ERROR = re.compile(r"function tools|/v1/responses", re.I)
 
 
 def _openai_extras(model: str, effort: str, cache_key: str = "") -> dict:
@@ -5901,11 +5904,115 @@ def _openai_post(api_key: str, body: dict, timeout: int = 60):
             msg = (r.json().get("error") or {}).get("message") or ""
         except Exception:
             msg = ""
-        if _LIMIT_ERRORS.search(msg):
+        if _LIMIT_ERRORS.search(msg) and not _TOOLS_EFFORT_ERROR.search(msg):
             print(f"  openai: параметры рассуждений/кэша не приняты ({msg[:120]}) — повтор без них", flush=True)
             body = {k: v for k, v in body.items() if k not in ("reasoning_effort", "prompt_cache_key")}
             r = requests.post(OPENAI_CHAT_URL, headers=headers, json=body, timeout=timeout)
     return r
+
+
+def _responses_input(messages: list) -> list:
+    """Сообщения в формате Chat Completions → input для Responses API (вызовы и результаты инструментов — отдельные элементы)."""
+    out = []
+    for m in messages:
+        role, content = m.get("role"), m.get("content")
+        if role == "tool":
+            out.append({"type": "function_call_output", "call_id": m.get("tool_call_id"),
+                        "output": content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)})
+        elif role == "assistant":
+            if content:
+                out.append({"role": "assistant", "content": content if isinstance(content, str) else
+                            "".join(p.get("text", "") for p in content if isinstance(p, dict))})
+            for tc in m.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                out.append({"type": "function_call", "call_id": tc.get("id"), "name": fn.get("name"),
+                            "arguments": fn.get("arguments") or "{}"})
+        else:
+            if isinstance(content, list):
+                parts = []
+                for p in content:
+                    if p.get("type") == "image_url":
+                        url = p.get("image_url")
+                        parts.append({"type": "input_image", "image_url": url.get("url") if isinstance(url, dict) else url})
+                    else:
+                        parts.append({"type": "input_text", "text": p.get("text", "")})
+                content = parts
+            out.append({"role": role, "content": content if content is not None else ""})
+    return out
+
+
+def _responses_call(api_key: str, model: str, messages: list, tools: list, effort: str, cache_key: str = "",
+                    max_tokens: int = 8192, timeout: int = 120) -> dict:
+    """Один запрос через Responses API (там инструменты работают вместе с рассуждениями).
+    Возвращает то же, что цикл ждёт от Chat Completions: {content, tool_calls, truncated, usage (в форме chat), effort}."""
+    body = {"model": model, "input": _responses_input(messages), "max_output_tokens": max_tokens, "store": False}
+    if tools:
+        body["tools"] = [{"type": "function", **t["function"]} for t in tools]
+    if effort:
+        body["reasoning"] = {"effort": effort}
+    if cache_key:
+        body["prompt_cache_key"] = cache_key
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    try:
+        r = requests.post(OPENAI_RESPONSES_URL, headers=headers, json=body, timeout=timeout)
+        if r.status_code == 400 and "prompt_cache_key" in body:
+            try:
+                msg = (r.json().get("error") or {}).get("message") or ""
+            except Exception:
+                msg = ""
+            if "prompt_cache" in msg:
+                body.pop("prompt_cache_key")
+                r = requests.post(OPENAI_RESPONSES_URL, headers=headers, json=body, timeout=timeout)
+    except Exception as e:
+        raise _AssistantError(f"Ошибка связи с ИИ: {e}")
+    if not r.ok:
+        try:
+            err = r.json().get("error", {}).get("message")
+        except Exception:
+            err = None
+        raise _AssistantError(f"Ошибка ИИ: {err or r.status_code}")
+    resp = r.json()
+    text, calls = "", []
+    for it in resp.get("output") or []:
+        if it.get("type") == "message":
+            text += "".join(p.get("text", "") for p in (it.get("content") or []) if p.get("type") == "output_text")
+        elif it.get("type") == "function_call":
+            calls.append({"id": it.get("call_id") or it.get("id"), "type": "function",
+                          "function": {"name": it.get("name"), "arguments": it.get("arguments") or "{}"}})
+    u = resp.get("usage") or {}
+    usage = {"prompt_tokens": u.get("input_tokens", 0), "completion_tokens": u.get("output_tokens", 0),
+             "prompt_tokens_details": {"cached_tokens": (u.get("input_tokens_details") or {}).get("cached_tokens", 0)},
+             "completion_tokens_details": {"reasoning_tokens": (u.get("output_tokens_details") or {}).get("reasoning_tokens", 0)}}
+    truncated = resp.get("status") == "incomplete" and (resp.get("incomplete_details") or {}).get("reason") == "max_output_tokens"
+    return {"content": text, "tool_calls": calls, "truncated": truncated, "usage": usage, "effort": effort}
+
+
+def _openai_step(api_key: str, model: str, effort: str, messages: list, tools: list, cache_key: str = "") -> dict:
+    """Шаг цикла ассистента у OpenAI. С рассуждениями — через Responses API (Chat Completions не принимает инструменты вместе с
+    reasoning_effort); без них — обычный Chat Completions, а при отказе по этой причине — тоже Responses."""
+    eff = ai_usage.fit_effort(model, effort) if ai_usage else ""
+    if eff and eff != "none":
+        return _responses_call(api_key, model, messages, tools, eff, cache_key)
+    body = {"model": model, "max_completion_tokens": 8192, "messages": messages, "tools": tools}
+    body.update(_openai_extras(model, effort, cache_key))
+    try:
+        r = _openai_post(api_key, body)
+    except Exception as e:
+        raise _AssistantError(f"Ошибка связи с ИИ: {e}")
+    if not r.ok:
+        try:
+            err = r.json().get("error", {}).get("message")
+        except Exception:
+            err = None
+        if r.status_code == 400 and err and _TOOLS_EFFORT_ERROR.search(err):
+            return _responses_call(api_key, model, messages, tools, eff, cache_key)
+        raise _AssistantError(f"Ошибка ИИ: {err or r.status_code}")
+    resp = r.json()
+    choice = (resp.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    return {"content": message.get("content") or "", "tool_calls": message.get("tool_calls") or [],
+            "truncated": choice.get("finish_reason") == "length", "usage": resp.get("usage"), "effort": body.get("reasoning_effort", ""),
+            "raw_content": message.get("content")}
 
 
 def _log_call(provider: str, model: str, role: str, func: str, effort: str, usage: dict, step: int = 0):
@@ -6168,28 +6275,13 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
     carried = ""
     continuations = 0
     while ts.next_round():
-        body = {"model": ts.model, "max_completion_tokens": 8192, "messages": ts.openai_system() + convo, "tools": ts.openai_tools()}
-        body.update(_openai_extras(ts.model, ts.effort, ("jarvis-" + func) if cache else ""))
-        try:
-            r = _openai_post(api_key, body)
-        except Exception as e:
-            raise _AssistantError(f"Ошибка связи с ИИ: {e}")
-        if not r.ok:
-            try:
-                err = r.json().get("error", {}).get("message")
-            except Exception:
-                err = None
-            raise _AssistantError(f"Ошибка ИИ: {err or r.status_code}")
-
-        resp = r.json()
+        res = _openai_step(api_key, ts.model, ts.effort, ts.openai_system() + convo, ts.openai_tools(), ("jarvis-" + func) if cache else "")
         if ai_usage:
-            _log_call("openai", ts.model, role, func, body.get("reasoning_effort", ""), ai_usage.usage_from_openai(resp.get("usage")), ts.step)
-        choices = resp.get("choices") or [{}]
-        message = choices[0].get("message") or {}
-        tool_calls = message.get("tool_calls") or []
+            _log_call("openai", ts.model, role, func, res["effort"], ai_usage.usage_from_openai(res["usage"]), ts.step)
+        tool_calls = res["tool_calls"]
         if not tool_calls:
-            part = message.get("content") or ""
-            if choices[0].get("finish_reason") == "length" and part and continuations < 4:
+            part = res["content"]
+            if res["truncated"] and part and continuations < 4:
                 continuations += 1
                 carried += part
                 convo.append({"role": "assistant", "content": part})
@@ -6198,7 +6290,7 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
             ts.finish(True)
             return (carried + part) or "Готово", nav_links
 
-        convo.append({"role": "assistant", "content": message.get("content"), "tool_calls": tool_calls})
+        convo.append({"role": "assistant", "content": res["content"] or None, "tool_calls": tool_calls})
         pending_images = []
         for tc in tool_calls:
             fn = tc.get("function") or {}
