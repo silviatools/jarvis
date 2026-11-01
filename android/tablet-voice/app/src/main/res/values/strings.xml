@@ -57,5 +57,6 @@
     <string name="endpoint_value">%1$s с</string>
     <string name="convo_caption">Окно продолжения без имени</string>
     <string name="convo_value">%1$d с</string>
+    <string name="keep_screen">Экран не гаснет</string>
     <string name="server_link">Сервер</string>
 </resources>

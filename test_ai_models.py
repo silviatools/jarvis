@@ -154,6 +154,7 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual((d["main"]["model"], d["main"]["effort"]), ("gpt-6.1-terra", "low"))
         self.assertEqual(d["complex"]["model"], "gpt-6.1-sol")
         self.assertEqual(d["background"]["model"], "gpt-6-luna")
+        self.assertEqual((d["voice"]["model"], d["voice"]["effort"]), ("gpt-6-luna", "none"))
         self.assertFalse(d["toolGroups"])        # группы по умолчанию выключены: безопасный полный набор
 
     def test_roles_inherit(self):
@@ -191,6 +192,8 @@ class RolesTest(Base):
         main, bg = jarvis._ai_conf(app, "main"), jarvis._ai_conf(app, "background")
         self.assertEqual((main.model, main.effort), ("gpt-6.1-terra", "low"))
         self.assertEqual((bg.model, bg.effort), ("gpt-6-luna", "none"))
+        voice = jarvis._ai_conf(app, "voice")
+        self.assertEqual((voice.model, voice.effort, voice.role), ("gpt-6-luna", "none", "voice"))
         self.assertEqual(jarvis._ai_conf(app, "title").model, "gpt-6-luna")
         self.assertEqual((jarvis._ai_conf(app, "triage").model, jarvis._ai_conf(app, "triage").effort), ("gpt-6-luna", "low"))
         sb = jarvis._ai_conf(app, "studyBrief")

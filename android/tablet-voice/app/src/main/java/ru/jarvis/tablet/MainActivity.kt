@@ -10,7 +10,9 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
+import android.view.WindowManager
 import android.widget.Button
+import android.widget.CompoundButton
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -53,6 +55,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var endpointValue: TextView
     private lateinit var convoSlider: Slider
     private lateinit var convoValue: TextView
+    private lateinit var keepScreen: CompoundButton
     private var showLogin = false
 
     private val uiTick = object : Runnable {
@@ -138,6 +141,16 @@ class MainActivity : AppCompatActivity() {
             convoValue.text = formatConvo(sec)
             if (fromUser) Prefs.convoSec = sec
         }
+        keepScreen = findViewById(R.id.keepScreen)
+        keepScreen.isChecked = Prefs.keepScreen
+        keepScreen.setOnCheckedChangeListener { _, checked ->
+            if (checked == Prefs.keepScreen) return@setOnCheckedChangeListener
+            Prefs.keepScreen = checked
+            applyKeepScreen()
+            noteScreen()
+        }
+        applyKeepScreen()
+        noteScreen()
         applyMode()
         askPerms()
         refresh()
@@ -145,6 +158,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        applyKeepScreen()
         bus.listener = { phase, h, a ->
             status.text = bus.label.ifBlank { phaseLabel(phase) }
             if (h.isNotBlank()) heard.text = h
@@ -174,6 +188,16 @@ class MainActivity : AppCompatActivity() {
         DialogLog.listener = null
         userStatus.removeCallbacks(uiTick)
         super.onPause()
+    }
+
+    /** Только флаг окна, пока эта активность видна. Питание и слух в фоне не трогает. */
+    private fun applyKeepScreen() {
+        if (Prefs.keepScreen) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    private fun noteScreen() {
+        VoiceLog.add(if (Prefs.keepScreen) "экран не гаснет" else "экран по таймеру")
     }
 
     private fun applyMode() {

@@ -41,13 +41,24 @@ object Api {
         return TurnResult(r.optBoolean("ok"), answer, r.optString("error"))
     }
 
-    fun stt(base: String, token: String, wav: ByteArray): SttResult {
-        val conn = open(base, "/api/tablet/stt", "POST", token, "audio/wav")
+    /** Запасной целый ролик, если поток не открылся. Сервер всё равно берёт быструю модель. */
+    fun sttAudio(base: String, token: String, bytes: ByteArray, contentType: String): SttResult {
+        val conn = open(base, "/api/tablet/stt", "POST", token, contentType)
         conn.doOutput = true
-        conn.setFixedLengthStreamingMode(wav.size)
-        conn.outputStream.use { it.write(wav) }
+        conn.setFixedLengthStreamingMode(bytes.size)
+        conn.outputStream.use { it.write(bytes) }
         val r = read(conn)
         return SttResult(r.optBoolean("ok"), r.optString("text"), r.optString("error"))
+    }
+
+    /** Длинный POST: куски речи по ходу фразы, в конце только хвост. */
+    fun stream(base: String, token: String): HttpURLConnection {
+        val conn = open(base, "/api/tablet/stt", "POST", token, "application/x-jarvis-stt")
+        conn.doOutput = true
+        conn.doInput = true
+        conn.setChunkedStreamingMode(1024)
+        conn.setRequestProperty("Expect", "")
+        return conn
     }
 
     private fun post(base: String, path: String, body: JSONObject, token: String?): JSONObject {

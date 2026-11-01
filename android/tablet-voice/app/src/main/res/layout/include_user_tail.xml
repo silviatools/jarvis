@@ -122,6 +122,16 @@
         app:trackColorActive="#E6C36A"
         app:trackColorInactive="#3A3F4A" />
 
+    <com.google.android.material.switchmaterial.SwitchMaterial
+        android:id="@+id/keepScreen"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:checked="true"
+        android:minHeight="48dp"
+        android:text="@string/keep_screen"
+        android:textColor="#C8C2B4"
+        android:textSize="16sp" />
+
     <TextView
         android:id="@+id/serverLink"
         android:layout_width="wrap_content"

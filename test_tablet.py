@@ -2,7 +2,9 @@
 
 import json
 import os
+import queue
 import re
+import socket
 import sys
 import tempfile
 import threading
@@ -186,11 +188,12 @@ if "pyaes" not in sys.modules:
         sys.modules["pyaes"] = types.ModuleType("pyaes")
 
 import jarvis  # noqa: E402
+import tablet_stt  # noqa: E402
 
 
 class R:
-    def __init__(self, j):
-        self.ok, self._j, self.status_code = True, j, 200
+    def __init__(self, j, status=200):
+        self.ok, self._j, self.status_code = 200 <= status < 300, j, status
 
     def json(self):
         return self._j
@@ -373,8 +376,8 @@ class TabletUnitTest(unittest.TestCase):
             self.assertIn("@+id/userRoot", user)
             self.assertNotIn("@+id/version", user)
         gradle = (Path(__file__).resolve().parent / "android/tablet-voice/app/build.gradle.kts").read_text(encoding="utf-8")
-        self.assertIn('versionName = "1.17"', gradle)
-        self.assertIn("versionCode = 18", gradle)
+        self.assertIn('versionName = "1.18"', gradle)
+        self.assertIn("versionCode = 19", gradle)
         recs = []
         for p in (root / "java").rglob("*.kt"):
             if "AudioRecord(" in p.read_text(encoding="utf-8"):
@@ -464,6 +467,53 @@ class TabletUnitTest(unittest.TestCase):
         self.assertEqual(convo_decide(1000, convo_cap(1000, 5000, 0), False), "expire")
         # удержание важнее укороченного дедлайна: фраза не обрывается
         self.assertEqual(convo_decide(3000, shortened, True), "hold")
+
+    def test_v118_stream_stt_does_not_open_a_second_mic(self):
+        """Один проход: речь в сокет по ходу, после паузы только хвост. Частичный текст ход не открывает."""
+        root = Path(__file__).resolve().parent / "android/tablet-voice/app/src/main"
+        voice = (root / "java/ru/jarvis/tablet/VoiceService.kt").read_text(encoding="utf-8")
+        cap = voice.split("private fun appendCapture")[1].split("private fun onUtterance")[0]
+        utt = voice.split("private fun onUtterance")[1].split("private fun holdConvo")[0]
+        self.assertLess(cap.index("muteCloud"), cap.index("u.offer"))
+        self.assertIn("if (hasCmd) u.arm()", cap)
+        self.assertIn("EndpointPause.ends(silentMs, EndpointPause.silenceMs)", cap)
+        self.assertIn("u?.finish()", utt)
+        self.assertNotIn("Wav.pcm16", utt)
+        self.assertNotIn("Api.stt(", voice)
+        self.assertIn('r.error == "cancelled"', voice)
+        self.assertIn("тишина — без трафика", utt)
+        self.assertIn("echo drop", utt)
+        self.assertIn("PREROLL_MS = 2500", voice)
+        up = (root / "java/ru/jarvis/tablet/SttUplink.kt").read_text(encoding="utf-8")
+        api = (root / "java/ru/jarvis/tablet/Api.kt").read_text(encoding="utf-8")
+        self.assertIn("cloudOk", up)
+        self.assertIn("stt поток", up)
+        self.assertIn("stt хвост", up)
+        self.assertNotIn("AudioRecord", up)
+        self.assertNotIn("SpeechRecognizer", up)
+        self.assertNotIn("fun stt(", api)
+        self.assertIn("setChunkedStreamingMode", api)
+        self.assertIn("const val DEFAULT_MS = 2000",
+                      (root / "java/ru/jarvis/tablet/EndpointPause.kt").read_text(encoding="utf-8"))
+        self.assertIn("const val DEFAULT_S = 5",
+                      (root / "java/ru/jarvis/tablet/ConvoWindow.kt").read_text(encoding="utf-8"))
+        recs = [p.name for p in (root / "java").rglob("*.kt")
+                if "AudioRecord(" in p.read_text(encoding="utf-8")]
+        self.assertEqual(recs, ["Ear.kt"])
+        act = (root / "java/ru/jarvis/tablet/MainActivity.kt").read_text(encoding="utf-8")
+        prefs = (root / "java/ru/jarvis/tablet/Prefs.kt").read_text(encoding="utf-8")
+        tail = (root / "res/layout/include_user_tail.xml").read_text(encoding="utf-8")
+        dev = (root / "res/layout/include_dev.xml").read_text(encoding="utf-8")
+        self.assertIn("FLAG_KEEP_SCREEN_ON", act)
+        self.assertNotIn("SCREEN_BRIGHT_WAKE_LOCK", act)
+        self.assertNotIn("FULL_WAKE_LOCK", act)
+        self.assertIn("экран не гаснет", act)
+        self.assertIn("экран по таймеру", act)
+        self.assertIn('getBoolean("keep_screen", true)', prefs)
+        self.assertIn("@+id/keepScreen", tail)
+        self.assertNotIn("keepScreen", dev)
+        self.assertIn("PARTIAL_WAKE_LOCK", voice)
+        self.assertNotIn("FLAG_KEEP_SCREEN_ON", voice)
 
     def test_v113_echo_and_name_gate(self):
         spoken = "В Москве сейчас плюс пять, без осадков, ветер слабый."
@@ -633,6 +683,50 @@ class TabletAssistantTest(unittest.TestCase):
         self.assertNotIn("9999", r["text"])
         self.assertNotIn("hunter2", r["text"])
 
+    def _openai_app(self):
+        self.app["settings"]["aiPresets"] = [
+            {"id": "a", "name": "n", "provider": "claude", "apiKey": "k", "model": ""},
+            {"id": "o", "name": "o", "provider": "openai", "apiKey": "sk-test", "model": ""},
+        ]
+        self.app["settings"]["aiModels"] = {"enabled": True, "escalation": True, "toolGroups": False}
+        self.app["telegramSkills"] = {}
+
+    def _names(self, body):
+        return [t["function"]["name"] for t in (body.get("tools") or [])]
+
+    def test_voice_role_is_luna_narrow_and_does_not_escalate(self):
+        self._openai_app()
+        seen = []
+
+        def post(url, headers=None, json=None, timeout=None, data=None, files=None):
+            seen.append({"url": str(url), "json": json})
+            return R({"choices": [{"message": {"content": "ок"}, "finish_reason": "stop"}], "usage": {}})
+
+        jarvis.requests.post = post
+        r = jarvis.handle_tablet_turn("напиши код на python", "dev1")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(len(seen), 1)
+        self.assertIn("/chat/completions", seen[0]["url"])
+        self.assertNotIn("/responses", seen[0]["url"])
+        body = seen[0]["json"]
+        self.assertEqual(body["model"], "gpt-6-luna")
+        self.assertEqual(body.get("reasoning_effort"), "none")
+        names = self._names(body)
+        self.assertIn("get_data", names)
+        self.assertIn("get_weather", names)
+        self.assertIn("plan_create", names)
+        self.assertFalse(any(n.startswith("mail_") or n.startswith("tg_") for n in names))
+        self.assertLess(len(set(names)), 20)
+
+        seen.clear()
+        self.app["telegramSkills"] = {"plan": False}
+        r = jarvis.handle_tablet_turn("напомни завтра купить хлеб", "dev1")
+        self.assertTrue(r["ok"], r)
+        names = self._names(seen[0]["json"])
+        self.assertNotIn("plan_create", names)
+        self.assertIn("get_weather", names)
+        self.assertEqual(seen[0]["json"]["model"], "gpt-6-luna")
+
 
 class TabletHttpTest(unittest.TestCase):
     def setUp(self):
@@ -709,10 +803,11 @@ class TabletHttpTest(unittest.TestCase):
         self.assertTrue(payload["ok"], payload)
         self.assertEqual(payload["text"], "какая погода")
         self.assertTrue(any("transcriptions" in str(x["url"]) for x in seen))
-        self.assertTrue(any(
-            isinstance(x.get("data"), dict) and "Джарвис" in str(x["data"].get("prompt", ""))
-            for x in seen
-        ))
+        prompts = [x["data"] for x in seen if isinstance(x.get("data"), dict)]
+        self.assertTrue(prompts)
+        self.assertEqual(prompts[0]["model"], "gpt-4o-transcribe")
+        self.assertNotIn("whisper-1", [p.get("model") for p in prompts])
+        self.assertIn("Джарвис", prompts[0]["prompt"])
 
         empty = urllib.request.Request(
             f"http://127.0.0.1:{self.port}/api/tablet/stt",
@@ -753,6 +848,206 @@ class TabletHttpTest(unittest.TestCase):
         code, body = self.req("POST", "/api/tablet/turn", {"text": "ещё раз"}, cookie=True)
         self.assertEqual(code, 200)
         self.assertTrue(body["ok"])
+
+
+class TabletSttStreamTest(unittest.TestCase):
+    def setUp(self):
+        self._connect = tablet_stt.connect_ws
+
+    def tearDown(self):
+        tablet_stt.connect_ws = self._connect
+
+    def test_tail_keeps_pause_between_speech_and_trims_the_end(self):
+        hold = tablet_stt.TailHold()
+        speech = b"\x01" * tablet_stt.RATE
+        silence = b"\xff" * (tablet_stt.RATE * 2)
+        out = hold.feed(speech, True, True, True)
+        self.assertEqual(out, speech)
+        self.assertEqual(hold.feed(silence, False, True, True), b"")
+        head, tail = hold.finish(True, True)
+        self.assertEqual(head, b"")
+        self.assertEqual(tail, b"\xff" * tablet_stt.KEEP_BYTES)
+
+        mid = tablet_stt.TailHold()
+        gap = b"\xff" * 4000
+        again = b"\x02" * tablet_stt.RATE
+        self.assertEqual(mid.feed(speech, True, True, True), speech)
+        self.assertEqual(mid.feed(gap, False, True, True), b"")
+        self.assertEqual(mid.feed(again, True, True, True), gap + again)
+        head, tail = mid.finish(True, True)
+        self.assertEqual(head + tail, b"")
+
+        blocked = tablet_stt.TailHold()
+        self.assertEqual(blocked.feed(speech, True, True, False), b"")
+        self.assertEqual(blocked.finish(True, False), (b"", b""))
+        self.assertEqual(tablet_stt.linear_to_ulaw(0), 0xFF)
+
+    def test_fast_model_before_whisper(self):
+        wav = tablet_stt._wav(b"\x01\x00" * 2000, 16000)
+
+        def once(url, headers=None, data=None, files=None, timeout=None, json=None):
+            self.assertEqual(data["model"], "gpt-4o-transcribe")
+            self.assertIn("Джарвис", data["prompt"])
+            return R({"text": "погода"})
+
+        r = tablet_stt.transcribe_file("sk-test", wav, once)
+        self.assertEqual(r["text"], "погода")
+
+        calls = []
+
+        def fallback(url, headers=None, data=None, files=None, timeout=None, json=None):
+            calls.append(data["model"])
+            if data["model"] == "gpt-transcribe":
+                return R({"text": "дальше"})
+            return R({"error": {"message": "model not found"}}, 404)
+
+        r = tablet_stt.transcribe_file("sk-test", wav, fallback)
+        self.assertEqual(calls, ["gpt-4o-transcribe", "gpt-transcribe"])
+        self.assertEqual(r["text"], "дальше")
+
+        calls.clear()
+
+        def both(url, headers=None, data=None, files=None, timeout=None, json=None):
+            calls.append(data["model"])
+            if data["model"] == "whisper-1":
+                return R({"text": "старый"})
+            return R({"error": {"message": "The model does not exist"}}, 400)
+
+        r = tablet_stt.transcribe_file("sk-test", wav, both)
+        self.assertEqual(calls, ["gpt-4o-transcribe", "gpt-transcribe", "whisper-1"])
+        self.assertEqual(r["text"], "старый")
+
+        calls.clear()
+
+        def bad_audio(url, headers=None, data=None, files=None, timeout=None, json=None):
+            calls.append(data["model"])
+            return R({"error": {"message": "audio too short"}}, 400)
+
+        r = tablet_stt.transcribe_file("sk-test", wav, bad_audio)
+        self.assertEqual(calls, ["gpt-4o-transcribe"])
+        self.assertEqual(r["error"], "stt")
+
+    def test_stream_returns_completed_not_delta_and_cancel_does_not_commit(self):
+        sent = []
+
+        class Ws:
+            def __init__(self):
+                self.q = queue.Queue()
+
+            def send(self, data):
+                ev = json.loads(data)
+                sent.append(ev)
+                if ev.get("type") == "input_audio_buffer.commit":
+                    self.q.put(json.dumps({
+                        "type": "conversation.item.input_audio_transcription.delta", "delta": "чужой"}))
+                    self.q.put(json.dumps({
+                        "type": "conversation.item.input_audio_transcription.completed",
+                        "transcript": "какая погода"}))
+
+            def recv(self):
+                return self.q.get(timeout=5)
+
+            def close(self):
+                self.q.put("")
+
+        tablet_stt.connect_ws = lambda url, headers: Ws()
+        posts = []
+        frames = [
+            (tablet_stt.FRAME_AUDIO, b"\x01" * 4000),
+            (tablet_stt.FRAME_END, b"\xff" * tablet_stt.KEEP_BYTES),
+        ]
+        r = tablet_stt.run_frames(frames, "sk-test", lambda *a, **k: posts.append(1))
+        self.assertEqual(r["text"], "какая погода")
+        self.assertEqual(posts, [])
+        commits = [e for e in sent if e.get("type") == "input_audio_buffer.commit"]
+        self.assertEqual(len(commits), 1)
+        models = []
+        for e in sent:
+            if e.get("type") != "session.update":
+                continue
+            models.append(e["session"]["audio"]["input"]["transcription"]["model"])
+            self.assertEqual(e["session"]["audio"]["input"]["transcription"]["model"], "gpt-4o-transcribe")
+            self.assertIn("Джарвис", e["session"]["audio"]["input"]["transcription"]["prompt"])
+            self.assertIsNone(e["session"]["audio"]["input"]["turn_detection"])
+        self.assertEqual(models, ["gpt-4o-transcribe"])
+
+        sent.clear()
+        r = tablet_stt.run_frames([(tablet_stt.FRAME_AUDIO, b"\x01" * 4000)], "sk-test",
+                                  lambda *a, **k: posts.append(1))
+        self.assertEqual(r["error"], "cancelled")
+        self.assertFalse(any(e.get("type") == "input_audio_buffer.commit" for e in sent))
+        self.assertEqual(posts, [])
+
+    def test_chunked_http_one_commit(self):
+        tmp = tempfile.TemporaryDirectory()
+        old = os.environ.get("DATA_DIR")
+        old_load = jarvis.load_app_data
+        os.environ["DATA_DIR"] = tmp.name
+        jarvis.load_app_data = lambda: {"settings": {"aiPresets": [
+            {"id": "o", "provider": "openai", "apiKey": "sk-test", "model": ""}]}}
+        sent = []
+
+        class Ws:
+            def __init__(self):
+                self.q = queue.Queue()
+
+            def send(self, data):
+                ev = json.loads(data)
+                sent.append(ev)
+                if ev.get("type") == "input_audio_buffer.commit":
+                    self.q.put(json.dumps({
+                        "type": "conversation.item.input_audio_transcription.completed",
+                        "transcript": "включи свет"}))
+
+            def recv(self):
+                return self.q.get(timeout=5)
+
+            def close(self):
+                self.q.put("")
+
+        tablet_stt.connect_ws = lambda url, headers: Ws()
+        posts = []
+        real_post = jarvis.requests.post
+        jarvis.requests.post = lambda *a, **k: posts.append(1)
+        srv = jarvis.JarvisServer(("127.0.0.1", 0), jarvis.JarvisHandler)
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        port = srv.server_address[1]
+        try:
+            token = jarvis.tablet_issue_token()
+            blob = tablet_stt.frame(1, b"\x01" * 4000) + tablet_stt.frame(2, b"\xff" * 300)
+            body = f"{len(blob):x}\r\n".encode() + blob + b"\r\n0\r\n\r\n"
+            head = (
+                f"POST /api/tablet/stt HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+                f"Authorization: Bearer {token}\r\nTransfer-Encoding: chunked\r\n"
+                "Content-Type: application/x-jarvis-stt\r\nConnection: close\r\n\r\n"
+            ).encode()
+            sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+            sock.sendall(head + body)
+            raw = b""
+            while True:
+                part = sock.recv(4096)
+                if not part:
+                    break
+                raw += part
+            sock.close()
+            payload = json.loads(raw.split(b"\r\n\r\n", 1)[1])
+            self.assertTrue(payload["ok"], payload)
+            self.assertEqual(payload["text"], "включи свет")
+            self.assertEqual(sum(1 for e in sent if e.get("type") == "input_audio_buffer.commit"), 1)
+            self.assertEqual(posts, [])
+        finally:
+            srv.shutdown()
+            thread.join(timeout=3)
+            srv.server_close()
+            jarvis.requests.post = real_post
+            jarvis.load_app_data = old_load
+            tablet_stt.connect_ws = self._connect
+            if old is None:
+                os.environ.pop("DATA_DIR", None)
+            else:
+                os.environ["DATA_DIR"] = old
+            tmp.cleanup()
 
 
 if __name__ == "__main__":

@@ -8481,7 +8481,7 @@ function StudySettings({ data, setData }) {
 
 // ── Модели, рассуждения и расход ИИ (ai_usage.py / tool_groups.py на сервере) ──────────────
 // Всё хранится в settings.aiModels (обычная синхронизация); роли работают только для наборов OpenAI.
-const AI_ROLE_ORDER = ['main', 'complex', 'background'];
+const AI_ROLE_ORDER = ['main', 'complex', 'background', 'voice'];
 const AI_TASK_ORDER = ['studyBrief', 'triage', 'title', 'notesTargets'];
 const AI_FUNC_LABELS = {
   chat: 'Чат в Telegram', voice: 'Голос в приложении', plan_task: 'Плановые поручения', study_brief: 'Сбор информации',
@@ -8650,7 +8650,7 @@ function AiCostBlocks({ data, setData, settings, presets, assignments }) {
   return (
     <>
       <AssistantBlock id="ai-models" title="Модели по ролям"
-        subtitle="Провайдер и модель для чата, сложных задач и фона" badge={rolesBadge}>
+        subtitle="Провайдер и модель для чата, сложных задач, фона и голоса планшета" badge={rolesBadge}>
         {err && <p className="text-xs text-red-600">{err}</p>}
         <div className="grid gap-3">
           {AI_ROLE_ORDER.map(k => (
@@ -16585,6 +16585,7 @@ const AI_ROLES_CLIENT_DEFAULT = {
   main: { model: 'gpt-6.1-terra', effort: 'low' },
   complex: { model: 'gpt-6.1-sol', effort: 'medium' },
   background: { model: 'gpt-6-luna', effort: 'none' },
+  voice: { model: 'gpt-6-luna', effort: 'none' },
 };
 function fitAiEffortClient(model, effort) {
   if (!effort) return '';

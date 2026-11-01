@@ -40,6 +40,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urljoin
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
+import tablet_stt
 from foods_data import FOODS, FOOD_CATEGORIES
 from off_products_data import OFF_PRODUCTS
 
@@ -8214,39 +8215,23 @@ def pcm16_to_wav(pcm: bytes, rate: int = 16000) -> bytes:
     return hdr + (pcm or b"")
 
 
-def handle_tablet_stt(body: bytes, content_type: str = "") -> dict:
-    """Распознать фразу с планшета. Ключ OpenAI тот же, что у ассистента. SpeechKit не нужен."""
+def _tablet_stt_key() -> str:
     app = load_app_data() or {}
-    key = find_openai_key(app.get("settings") or {})
-    if not key:
-        return {"ok": False, "error": "no_key",
-                "text": "Нет ключа OpenAI для распознавания. На сайте: Настройки → Ассистент."}
-    raw = body or b""
-    if len(raw) < 64:
-        return {"ok": False, "error": "empty", "text": ""}
-    ct = (content_type or "").lower()
-    wav = raw if (raw[:4] == b"RIFF" or "wav" in ct) else pcm16_to_wav(raw)
-    try:
-        r = requests.post(
-            "https://api.openai.com/v1/audio/transcriptions",
-            headers={"Authorization": f"Bearer {key}"},
-            data={
-                "model": "whisper-1",
-                "language": "ru",
-                "prompt": "Джарвис. Жервис. Джервис.",
-            },
-            files={"file": ("speech.wav", wav, "audio/wav")},
-            timeout=45,
-        )
-    except Exception as e:
+    return find_openai_key(app.get("settings") or {})
+
+
+def handle_tablet_stt(body: bytes, content_type: str = "") -> dict:
+    """Целый ролик (прежний APK или запасной кадр). Модель — быстрая, не whisper-1."""
+    if not requests:
         return {"ok": False, "error": "net", "text": "Нет связи с распознаванием."}
-    if not r.ok:
-        return {"ok": False, "error": "stt", "text": "Не расслышал."}
-    try:
-        text = str((r.json() or {}).get("text") or "").strip()
-    except Exception:
-        text = ""
-    return {"ok": True, "text": text}
+    return tablet_stt.transcribe_body(body or b"", content_type or "", _tablet_stt_key(), requests.post)
+
+
+def handle_tablet_stt_stream(rfile) -> dict:
+    """Один проход, пока человек говорит. Кадр «конец» — только хвост, затем commit."""
+    if not requests:
+        return {"ok": False, "error": "net", "text": "Нет связи с распознаванием."}
+    return tablet_stt.transcribe_chunked(rfile, _tablet_stt_key(), requests.post)
 
 
 def handle_tablet_turn(text: str, session_id: str, history_in=None) -> dict:
@@ -8255,12 +8240,13 @@ def handle_tablet_turn(text: str, session_id: str, history_in=None) -> dict:
     if not text:
         return {"ok": False, "error": "empty", "text": "Не расслышал."}
     app = load_app_data() or {}
-    conf = _ai_conf(app, "main")
+    # Планшет не идёт в main и не эскалируется на complex: роль voice, модель как у фоновой.
+    conf = _ai_conf(app, "voice")
     if not conf:
         return {"ok": False, "error": "no_key",
                 "text": "Ассистенту не назначен набор ключей ИИ. На сайте: Настройки → Ассистент."}
     cfg = _ai_models_cfg(app)
-    conf, esc, esc_reason = _start_conf(app, conf, text)
+    esc, esc_reason = None, ""
     provider, api_key, model, site_url = conf[:4]
     if history_in is not None:
         history = [{"role": m.get("role"), "content": m.get("content")}
@@ -8273,15 +8259,14 @@ def handle_tablet_turn(text: str, session_id: str, history_in=None) -> dict:
         history = rec["msgs"]
     turn = list(history) + [{"role": "user", "content": text}]
     loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
-    groups = None
-    if tool_groups and cfg.get("toolGroups"):
-        groups = tool_groups.pick(text, chat_id="tablet:" + (session_id or "")[:16], has_files=False, anchor="")
+    # Узкий набор поверх skill_on: выключенный навык в список не попадает. Личный Telegram с планшета не зовём.
+    groups = {"core", "plan", "weather"}
     stats = {"esc": esc_reason}
     try:
         answer, nav_links = loop_fn(
-            turn, api_key, model, app, site_url, True,
+            turn, api_key, model, app, site_url, False,
             extra_system=voice_reply_extra(app, text),
-            effort=conf[4], role=conf[5], func="voice", esc=esc, groups=groups, turn=stats,
+            effort=conf[4], role=conf[5], func="voice", esc=None, groups=groups, turn=stats,
             compact=bool(cfg.get("compactPrompt")), cache=bool(cfg.get("promptCache")))
     except _AssistantError as e:
         stats["ok"] = False
@@ -11957,6 +11942,14 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         self._json(200 if result.get("ok") else 401, result)
 
     def _tablet_stt_post(self):
+        te = (self.headers.get("Transfer-Encoding") or "").lower()
+        if "chunked" in te:
+            try:
+                self.connection.settimeout(100)
+            except Exception:
+                pass
+            self._json(200, handle_tablet_stt_stream(self.rfile))
+            return
         length = self._content_length() or 0
         if length > 2_000_000:
             self._json(413, {"error": "body too large"})

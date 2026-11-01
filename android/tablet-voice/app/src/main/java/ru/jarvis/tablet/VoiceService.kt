@@ -61,6 +61,8 @@ class VoiceService : Service() {
     @Volatile private var listenGen = 0
     private var cpuLock: PowerManager.WakeLock? = null
     @Volatile private var capturing = false
+    @Volatile private var uplink: SttUplink? = null
+    @Volatile private var inflight: SttUplink? = null
     private val cap = ArrayList<Short>(Ear.SR * 8)
     private val preroll = ArrayDeque<Short>()
     private var speechSeen = false
@@ -301,9 +303,19 @@ class VoiceService : Service() {
         setPhase(Phase.WAKE)
     }
 
+    private fun dropUplink() {
+        val u = uplink
+        uplink = null
+        u?.cancel()
+        val f = inflight
+        inflight = null
+        if (f != null && f !== u) f.cancel()
+    }
+
     private fun abortListen(why: String) {
         listenGen++
         echoExempt = false
+        dropUplink()
         synchronized(capLock) {
             capturing = false
             cap.clear()
@@ -343,6 +355,15 @@ class VoiceService : Service() {
             silentMs = 0
             listenSince = System.currentTimeMillis()
             capturing = true
+            dropUplink()
+            val seedPcm = if (cap.isEmpty()) ShortArray(0) else ShortArray(cap.size) { cap[it] }
+            val u = SttUplink(Prefs.url, Prefs.token) {
+                echoExempt || System.currentTimeMillis() >= echoUntil
+            }
+            uplink = u
+            u.start()
+            if (seedPcm.isNotEmpty()) u.offer(seedPcm, seedPcm.size, true)
+            if (phraseInPreroll) u.arm()
         }
         when {
             why == "wake" -> {
@@ -406,6 +427,11 @@ class VoiceService : Service() {
             val waited = System.currentTimeMillis() - listenSince
             hasCmd = postWakeHits >= POST_WAKE_HITS || phraseInPreroll
             if (started && !needName) holdConvo()
+            val u = uplink
+            if (u != null) {
+                u.offer(samples, n, speech)
+                if (hasCmd) u.arm()
+            }
             when {
                 hasCmd && EndpointPause.ends(silentMs, EndpointPause.silenceMs) -> {
                     capturing = false
@@ -439,29 +465,33 @@ class VoiceService : Service() {
         }
         if (phase == Phase.THINK || phase == Phase.SPEAK) return
         if (timeout || samples.size < Ear.SR / 4) {
+            dropUplink()
             VoiceLog.add(if (timeout) "тишина — без трафика" else "stream skip коротко")
             stayQuiet()
             return
         }
         if (!echoExempt && System.currentTimeMillis() < echoUntil) {
+            dropUplink()
             VoiceLog.add("echo drop")
             stayQuiet()
             return
         }
         val ms = samples.size * 1000 / Ear.SR
         VoiceLog.add("stream ${ms}мс")
+        val u = uplink
+        uplink = null
+        inflight = u
         setPhase(Phase.THINK)
-        val token = Prefs.token
-        val url = Prefs.url
         val exempt = echoExempt
         val requireName = needName
         val named = nameAtStart
         io.execute {
             val r = try {
-                Api.stt(url, token, Wav.pcm16(samples))
+                u?.finish() ?: SttResult(false, "", "net")
             } catch (e: Exception) {
                 SttResult(false, "", "net")
             }
+            if (inflight === u) inflight = null
             main.post { onStt(r, gen, exempt, requireName, named) }
         }
     }
@@ -579,6 +609,7 @@ class VoiceService : Service() {
             return
         }
         if (!r.ok) {
+            if (r.error == "cancelled") return
             VoiceLog.add("stt ошибка ${r.error.ifBlank { "fail" }}")
             if (r.error == "empty") {
                 stayQuiet()

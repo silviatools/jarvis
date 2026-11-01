@@ -1,4 +1,5 @@
 requests
+websocket-client
 telethon
 segno
 python-docx

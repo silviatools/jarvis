@@ -60,9 +60,10 @@ MODEL_ORDER = ["gpt-6-luna", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra", "gpt
 
 # Роли и отдельные задачи. fallback — чья настройка берётся, если у задачи модель не указана.
 ROLES = {
-    "main": {"label": "Основная", "hint": "чат в Telegram, голос в приложении, плановые поручения", "fallback": None},
+    "main": {"label": "Основная", "hint": "чат в Telegram, кнопка микрофона на сайте, плановые поручения", "fallback": None},
     "complex": {"label": "Сложная", "hint": "эскалация: код, большие документы, многошаговые задачи, неудача основной", "fallback": "main"},
     "background": {"label": "Фоновая", "hint": "простые одиночные запросы без инструментов", "fallback": "main"},
+    "voice": {"label": "Голос планшета", "hint": "планшет: короткие ответы. По умолчанию как фоновая — gpt-6-luna, без рассуждений. Инструменты: данные, планы и погода", "fallback": "background"},
     "studyBrief": {"label": "Сбор информации по задаче", "hint": "фоновый агент «Учёбы» (до 18 шагов)", "fallback": "main"},
     "triage": {"label": "Контроль учебных чатов", "hint": "ежедневный разбор новых сообщений", "fallback": "background"},
     "title": {"label": "Название диалога", "hint": "короткий заголовок по первому сообщению", "fallback": "background"},
@@ -77,6 +78,7 @@ def default_ai_models() -> dict:
         "main": {"provider": "openai", "model": "gpt-6.1-terra", "effort": "low"},
         "complex": {"provider": "openai", "model": "gpt-6.1-sol", "effort": "medium"},
         "background": {"provider": "openai", "model": "gpt-6-luna", "effort": "none"},
+        "voice": {"provider": "openai", "model": "gpt-6-luna", "effort": "none"},
         "studyBrief": {"provider": "", "model": "", "effort": "medium"},
         "triage": {"provider": "", "model": "", "effort": "low"},
         "title": {"provider": "", "model": "", "effort": ""},

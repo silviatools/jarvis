@@ -29,6 +29,11 @@ object Prefs {
         get() = p.getBoolean("dev_ui", false)
         set(v) = p.edit().putBoolean("dev_ui", v).apply()
 
+    /** Пока активность на экране — не давать системе гасить его. Кнопка питания работает. */
+    var keepScreen: Boolean
+        get() = p.getBoolean("keep_screen", true)
+        set(v) = p.edit().putBoolean("keep_screen", v).apply()
+
     /** Порог тишины конца фразы, мс. Сеттер сразу кладёт его в EndpointPause.silenceMs. */
     var endpointMs: Int
         get() = EndpointPause.clamp(p.getInt("endpoint_ms", EndpointPause.DEFAULT_MS))
