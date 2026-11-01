@@ -47,6 +47,7 @@ class VoiceService : Service() {
     private var lastSrStartAt = 0L
     private var failStreak = 0
     private var afterTts = false
+    private var echoUntil = 0L
     private var wakeLock: PowerManager.WakeLock? = null
     private lateinit var micKeep: MicKeep
 
@@ -235,7 +236,7 @@ class VoiceService : Service() {
     }
 
     private fun scheduleRestart(delay: Long, force: Boolean) {
-        if (!wanted || restarting) return
+        if (!wanted || restarting || srListening) return
         restarting = true
         VoiceLog.add("STT listen again через ${delay}мс force=$force")
         main.postDelayed({
@@ -272,7 +273,8 @@ class VoiceService : Service() {
         }
         override fun onBeginningOfSpeech() {
             lastSrAt = System.currentTimeMillis()
-            VoiceLog.add("STT onBeginningOfSpeech")
+            if (deaf()) VoiceLog.add("STT onBeginningOfSpeech ignore (TTS)")
+            else VoiceLog.add("STT onBeginningOfSpeech")
         }
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
@@ -282,9 +284,12 @@ class VoiceService : Service() {
         override fun onEvent(eventType: Int, params: Bundle?) {}
         override fun onPartialResults(partialResults: Bundle?) {
             val t = first(partialResults) ?: return
-            if (phase == Phase.SPEAK && bargeIn(t)) {
-                VoiceLog.add("barge-in STT partial «${clip(t)}»")
-                interrupt(t)
+            if (deaf()) {
+                if (WakeWord.isStop(t) && System.currentTimeMillis() - speakStartedAt >= BARGE_GRACE) {
+                    VoiceLog.add("barge-in стоп partial")
+                    interrupt(t)
+                }
+                return
             }
         }
         override fun onResults(results: Bundle?) {
@@ -336,19 +341,23 @@ class VoiceService : Service() {
         return list.map { it.trim() }.filter { it.isNotBlank() }
     }
 
+    private fun deaf(): Boolean =
+        phase == Phase.SPEAK || tts?.isSpeaking == true || System.currentTimeMillis() < echoUntil
+
     private fun handleHeard(variants: List<String>) {
         if (variants.isEmpty()) return
         if (phase == Phase.THINK) {
             VoiceLog.add("STT ignore: думаю «${clip(variants.first())}»")
             return
         }
-        if (phase == Phase.SPEAK || tts?.isSpeaking == true) {
-            val hit = variants.firstOrNull { bargeIn(it) } ?: run {
-                VoiceLog.add("STT echo «${clip(variants.first())}»")
+        if (deaf()) {
+            val stop = variants.firstOrNull { WakeWord.isStop(it) }
+            if (stop != null && System.currentTimeMillis() - speakStartedAt >= BARGE_GRACE) {
+                VoiceLog.add("barge-in стоп «${clip(stop)}»")
+                interrupt(stop)
                 return
             }
-            VoiceLog.add("barge-in STT «${clip(hit)}»")
-            interrupt(hit)
+            VoiceLog.add("STT echo ignore «${clip(variants.first())}»")
             return
         }
         val now = System.currentTimeMillis()
@@ -374,13 +383,6 @@ class VoiceService : Service() {
         }
         val stripped = WakeWord.strip(text)
         runCommand(if (!stripped.isNullOrBlank()) stripped else text)
-    }
-
-    private fun bargeIn(heard: String): Boolean {
-        if (WakeWord.isStop(heard)) return true
-        if (WakeWord.strip(heard) != null) return true
-        if (heard.trim().split(Regex("\\s+")).size < 2) return false
-        return !WakeWord.overlapsTts(heard, spoken)
     }
 
     private fun onMicVoice(rms: Double, floor: Double) {
@@ -426,8 +428,6 @@ class VoiceService : Service() {
         setPhase(Phase.THINK)
         notify(getString(R.string.notif_think))
         VoiceLog.add("ход «${clip(text)}»")
-        if (!srListening) startRec(force = rec == null)
-        if (micKeep.running && srListening) micKeep.stop("ход: STT жив")
         val token = Prefs.token
         val snap = history.toList()
         io.execute {
@@ -461,10 +461,9 @@ class VoiceService : Service() {
             return
         }
         afterTts = false
+        echoUntil = Long.MAX_VALUE
         setPhase(Phase.SPEAK)
         speakStartedAt = System.currentTimeMillis()
-        if (!srListening) startRec(force = rec == null)
-        main.postDelayed({ if (micKeep.running) micKeep.bargeArmed = true }, BARGE_GRACE)
         tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "jarvis-local")
         armSpeakWatch(clean)
     }
@@ -473,11 +472,10 @@ class VoiceService : Service() {
         val clean = ReplyText.plain(text)
         spoken = clean
         afterTts = false
+        echoUntil = Long.MAX_VALUE
         setPhase(Phase.SPEAK)
         speakStartedAt = System.currentTimeMillis()
         notify(getString(R.string.notif_speak))
-        if (!srListening) startRec(force = rec == null)
-        main.postDelayed({ if (micKeep.running) micKeep.bargeArmed = true }, BARGE_GRACE)
         if (!ttsReady) {
             onSpeakDone("no-tts")
             return
@@ -525,14 +523,14 @@ class VoiceService : Service() {
         }
         afterTts = true
         cancelSpeakWatch()
+        echoUntil = System.currentTimeMillis() + ECHO_MS
         spoken = ""
         micKeep.bargeArmed = false
         convoUntil = System.currentTimeMillis() + CONVO_MS
         setPhase(Phase.LISTEN)
         notify(getString(R.string.notif_listen))
-        VoiceLog.add("TTS end ($why) — STT не рвём")
+        VoiceLog.add("TTS end ($why) — эхо ещё ${ECHO_MS}мс")
         if (micKeep.running) micKeep.stop("после TTS")
-        if (!srListening) startRec(force = rec == null)
     }
 
     private fun setPhase(p: Phase) {
@@ -575,6 +573,7 @@ class VoiceService : Service() {
         private const val IDLE_RESTART = 200L
         private const val WATCH_MS = 5000L
         private const val BARGE_GRACE = 1200L
+        private const val ECHO_MS = 900L
         val running = AtomicBoolean(false)
 
         fun start(ctx: Context) {
