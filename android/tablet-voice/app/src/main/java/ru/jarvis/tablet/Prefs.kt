@@ -9,6 +9,7 @@ object Prefs {
     fun init(ctx: Context) {
         p = ctx.applicationContext.getSharedPreferences("jarvis_tablet", Context.MODE_PRIVATE)
         EndpointPause.load(p.getInt("endpoint_ms", EndpointPause.DEFAULT_MS))
+        ConvoWindow.load(p.getInt("convo_sec", ConvoWindow.DEFAULT_S))
     }
 
     var url: String
@@ -34,6 +35,14 @@ object Prefs {
         set(v) {
             val ms = EndpointPause.commit(v)
             p.edit().putInt("endpoint_ms", ms).apply()
+        }
+
+    /** Окно продолжения без имени, секунды. 0 — сразу ждать имя. */
+    var convoSec: Int
+        get() = ConvoWindow.clamp(p.getInt("convo_sec", ConvoWindow.DEFAULT_S))
+        set(v) {
+            val s = ConvoWindow.commit(v)
+            p.edit().putInt("convo_sec", s).apply()
         }
 
     fun configured(): Boolean = url.isNotBlank() && token.isNotBlank()

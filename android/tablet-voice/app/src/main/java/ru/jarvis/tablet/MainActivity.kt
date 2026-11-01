@@ -51,6 +51,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var userPassword: EditText
     private lateinit var endpointSlider: Slider
     private lateinit var endpointValue: TextView
+    private lateinit var convoSlider: Slider
+    private lateinit var convoValue: TextView
     private var showLogin = false
 
     private val uiTick = object : Runnable {
@@ -87,6 +89,8 @@ class MainActivity : AppCompatActivity() {
         userPassword = findViewById(R.id.userPassword)
         endpointSlider = findViewById(R.id.endpointSlider)
         endpointValue = findViewById(R.id.endpointValue)
+        convoSlider = findViewById(R.id.convoSlider)
+        convoValue = findViewById(R.id.convoValue)
         findViewById<TextView>(R.id.version).text = getString(R.string.version_fmt, AppVer.label(this))
         url.setText(Prefs.url)
         userUrl.setText(Prefs.url)
@@ -125,6 +129,14 @@ class MainActivity : AppCompatActivity() {
             val ms = EndpointPause.clamp((value * 1000f).roundToInt())
             endpointValue.text = formatPause(ms)
             if (fromUser) Prefs.endpointMs = ms
+        }
+        val convo = Prefs.convoSec
+        convoSlider.value = convo.toFloat()
+        convoValue.text = formatConvo(convo)
+        convoSlider.addOnChangeListener { _, value, fromUser ->
+            val sec = ConvoWindow.clamp(value.roundToInt())
+            convoValue.text = formatConvo(sec)
+            if (fromUser) Prefs.convoSec = sec
         }
         applyMode()
         askPerms()
@@ -256,6 +268,9 @@ class MainActivity : AppCompatActivity() {
         val num = if (tenth == 0) "$whole" else "$whole,$tenth"
         return getString(R.string.endpoint_value, num)
     }
+
+    private fun formatConvo(sec: Int): String =
+        getString(R.string.convo_value, ConvoWindow.clamp(sec))
 
     private fun refresh() {
         val on = Prefs.listenOn && Prefs.configured()
