@@ -7,7 +7,6 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.Locale
 import java.util.zip.ZipInputStream
 
 object VoskPack {
@@ -99,18 +98,21 @@ object VoskPack {
 
 class VoskWake(modelDir: File) {
     private val model = Model(modelDir.absolutePath)
-    private val rec = Recognizer(model, Ear.SR.toFloat(), GRAMMAR)
+    private val rec = Recognizer(model, Ear.SR.toFloat(), GRAMMAR).also {
+        try { it.setWords(true) } catch (_: Exception) {}
+    }
 
-    fun feed(samples: ShortArray, n: Int): Kind {
-        val ok = try { rec.acceptWaveForm(samples, n) } catch (_: Exception) { return Kind.NONE }
-        val raw = try {
-            if (ok) rec.result else rec.partialResult
-        } catch (_: Exception) { return Kind.NONE }
-        val text = extract(raw).lowercase(Locale("ru"))
-        if (text.isBlank() || text == "[unk]") return Kind.NONE
-        if (STOP.any { text.contains(it) }) return Kind.STOP
-        if (WAKE.any { text.contains(it) }) return Kind.WAKE
-        return Kind.NONE
+    fun feed(samples: ShortArray, n: Int): SpotRule.Kind {
+        val final = try { rec.acceptWaveForm(samples, n) } catch (_: Exception) { return SpotRule.Kind.NONE }
+        if (!final) return SpotRule.Kind.NONE
+        val raw = try { rec.result } catch (_: Exception) { return SpotRule.Kind.NONE }
+        return try {
+            val j = JSONObject(raw)
+            val text = j.optString("text").trim()
+            SpotRule.classify(true, text, SpotRule.confidence(j))
+        } catch (_: Exception) {
+            SpotRule.Kind.NONE
+        }
     }
 
     fun close() {
@@ -118,20 +120,7 @@ class VoskWake(modelDir: File) {
         try { model.close() } catch (_: Exception) {}
     }
 
-    private fun extract(raw: String): String {
-        return try {
-            val j = JSONObject(raw)
-            (j.optString("text").ifBlank { j.optString("partial") }).trim()
-        } catch (_: Exception) {
-            raw
-        }
-    }
-
-    enum class Kind { NONE, WAKE, STOP }
-
     companion object {
-        private val WAKE = listOf("джарвис", "жервис", "жарвис", "джарвиз", "джарвес")
-        private val STOP = listOf("стоп", "хватит", "замолчи", "тихо")
         private const val GRAMMAR =
             """["джарвис","жервис","жарвис","стоп","хватит","замолчи","тихо","[unk]"]"""
     }

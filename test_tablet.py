@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -10,6 +11,23 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+
+def spot_classify(final, text, conf, min_conf=0.65):
+    """Зеркало SpotRule: только финал, одно слово, порог уверенности."""
+    if not final or conf < min_conf:
+        return "none"
+    tokens = [
+        t for t in re.sub(r"[^а-яёa-z0-9\s]", " ", (text or "").lower()).split()
+        if t and t not in ("unk", "[unk]")
+    ]
+    if len(tokens) != 1:
+        return "none"
+    if tokens[0] in ("стоп", "хватит", "замолчи", "тихо"):
+        return "stop"
+    if tokens[0] in ("джарвис", "жервис", "жарвис", "джарвиз", "джарвес"):
+        return "wake"
+    return "none"
 
 _TMP = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = _TMP.name
@@ -92,6 +110,25 @@ class TabletUnitTest(unittest.TestCase):
         ww = (Path(__file__).resolve().parent / "android/tablet-voice/app/src/main/java"
               / "ru/jarvis/tablet/WakeWord.kt").read_text(encoding="utf-8")
         self.assertIn("fun isBareWake", ww)
+
+    def test_spot_rule_isolated_final_only(self):
+        self.assertEqual(spot_classify(False, "стоп", 0.99), "none")
+        self.assertEqual(spot_classify(True, "стоп какая", 0.99), "none")
+        self.assertEqual(spot_classify(True, "стоп", 0.4), "none")
+        self.assertEqual(spot_classify(True, "стоп", 0.9), "stop")
+        self.assertEqual(spot_classify(True, "джарвис", 0.9), "wake")
+        self.assertEqual(spot_classify(True, "какая погода", 0.99), "none")
+        root = Path(__file__).resolve().parent / "android/tablet-voice/app/src/main/java/ru/jarvis/tablet"
+        vosk = (root / "VoskPack.kt").read_text(encoding="utf-8")
+        rule = (root / "SpotRule.kt").read_text(encoding="utf-8")
+        voice = (root / "VoiceService.kt").read_text(encoding="utf-8")
+        self.assertNotIn("text.contains", vosk)
+        self.assertNotIn("partialResult", vosk)
+        self.assertIn("MIN_CONF = 0.65", rule)
+        self.assertIn("tokens.size != 1", rule)
+        stop = voice.split("private fun onStopSpot()")[1].split("private fun abortListen")[0]
+        self.assertIn("phase == Phase.LISTEN && capturing", stop)
+        self.assertNotIn("wake уже слушаю", voice)
 
     def test_sanitize_strips_html_markup(self):
         raw = "Да! Напишите, пожалуйста, <b>адрес или станцию метро</b> либо отправьте геопозицию."

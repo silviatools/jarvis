@@ -225,9 +225,9 @@ class VoiceService : Service() {
         val w = spotter
         if (w != null) {
             when (w.feed(samples, n)) {
-                VoskWake.Kind.WAKE -> main.post { onWakeSpot() }
-                VoskWake.Kind.STOP -> main.post { onStopSpot() }
-                VoskWake.Kind.NONE -> {}
+                SpotRule.Kind.WAKE -> main.post { onWakeSpot() }
+                SpotRule.Kind.STOP -> main.post { onStopSpot() }
+                SpotRule.Kind.NONE -> {}
             }
         }
         if (capturing) appendCapture(samples, n, rms, floor)
@@ -246,16 +246,15 @@ class VoiceService : Service() {
             beginListen("barge-wake", barge = true)
             return
         }
-        if (phase == Phase.LISTEN && capturing) {
-            VoiceLog.add("wake уже слушаю")
-            return
-        }
+        if (phase == Phase.LISTEN && capturing) return
         VoiceLog.add("wake")
         beginListen("wake")
     }
 
     private fun onStopSpot() {
         if (!wanted || !spotOk()) return
+        if (phase == Phase.LISTEN && capturing) return
+        if (phase == Phase.THINK) return
         if (phase == Phase.SPEAK) {
             VoiceLog.add("barge-in стоп")
             stopSpeech()
