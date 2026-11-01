@@ -34,5 +34,26 @@
     <string name="err_stt">Не расслышал</string>
     <string name="yes">Да?</string>
     <string name="empty_answer">Готово</string>
-    <string name="howto">Скажите «Джарвис, …» одной фразой. Имя слышит планшет, фразу — сервер. Голое имя без команды — молчит. Пока говорит — «стоп» (без хода) или снова «Джарвис» и новая фраза. Первая загрузка качает модель слуха (~45 МБ). Уведомление не смахивайте. One UI: Батарея → Не переводить в сон; в недавних — замок.</string>
+    <string name="howto">Скажите «Джарвис, …» одной фразой. Имя слышит планшет, фразу — сервер. Голое имя без команды — молчит. Пока говорит — «стоп» (без хода) или снова «Джарвис» и новая фраза. После ответа 5 секунд можно без имени. Кнопка «Экран» — обычный вид. Первая загрузка качает модель слуха (~45 МБ). Уведомление не смахивайте. One UI: Батарея → Не переводить в сон; в недавних — замок.</string>
+    <string name="mode_dev">Журнал</string>
+    <string name="mode_user">Экран</string>
+    <string name="user_wait">Жду «Джарвис»</string>
+    <string name="user_heard">Услышал</string>
+    <string name="user_listen">Слушаю</string>
+    <string name="user_think">Думаю</string>
+    <string name="user_speak">Говорю</string>
+    <string name="user_off">Выключен</string>
+    <string name="user_count">Ещё %1$d с без имени</string>
+    <string name="user_hint_convo">Потом снова скажите «Джарвис»</string>
+    <string name="user_hint_wake">Скажите «Джарвис»</string>
+    <string name="user_hint_listen">Говорите фразу</string>
+    <string name="user_hint_speak">Можно перебить словом «Джарвис»</string>
+    <string name="user_hint_off">Нажмите круг — начну слушать</string>
+    <string name="user_empty">Диалог появится здесь</string>
+    <string name="user_you">Вы</string>
+    <string name="user_jarvis">Джарвис</string>
+    <string name="user_orb">Состояние Джарвиса</string>
+    <string name="endpoint_caption">Пауза, после которой я считаю, что ты договорил</string>
+    <string name="endpoint_value">%1$s с</string>
+    <string name="server_link">Сервер</string>
 </resources>

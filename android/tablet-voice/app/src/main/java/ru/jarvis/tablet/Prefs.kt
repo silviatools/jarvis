@@ -8,6 +8,7 @@ object Prefs {
 
     fun init(ctx: Context) {
         p = ctx.applicationContext.getSharedPreferences("jarvis_tablet", Context.MODE_PRIVATE)
+        EndpointPause.load(p.getInt("endpoint_ms", EndpointPause.DEFAULT_MS))
     }
 
     var url: String
@@ -21,6 +22,19 @@ object Prefs {
     var listenOn: Boolean
         get() = p.getBoolean("listen", false)
         set(v) = p.edit().putBoolean("listen", v).apply()
+
+    /** false — экран пользователя. true — журнал разработчика. */
+    var devUi: Boolean
+        get() = p.getBoolean("dev_ui", false)
+        set(v) = p.edit().putBoolean("dev_ui", v).apply()
+
+    /** Порог тишины конца фразы, мс. Сеттер сразу кладёт его в EndpointPause.silenceMs. */
+    var endpointMs: Int
+        get() = EndpointPause.clamp(p.getInt("endpoint_ms", EndpointPause.DEFAULT_MS))
+        set(v) {
+            val ms = EndpointPause.commit(v)
+            p.edit().putInt("endpoint_ms", ms).apply()
+        }
 
     fun configured(): Boolean = url.isNotBlank() && token.isNotBlank()
 }

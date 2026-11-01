@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="orb_size">150dp</dimen>
+    <dimen name="user_status">28sp</dimen>
+    <dimen name="user_pad_top">52dp</dimen>
+</resources>

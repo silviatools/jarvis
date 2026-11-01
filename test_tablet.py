@@ -104,6 +104,19 @@ def allow_command(stt, in_convo):
     return allow_turn(stt, need_name=not in_convo, spotter_wake=in_convo or has_name(stt), name_at_start=has_name(stt))
 
 
+def endpoint_clamp(raw, default=2000, step=500, lo=500, hi=5000):
+    """Зеркало EndpointPause.clamp: шаг 0.5 с, диапазон 0.5–5 с."""
+    if raw <= 0:
+        return default
+    snapped = ((raw + step // 2) // step) * step
+    return min(hi, max(lo, snapped))
+
+
+def endpoint_ends(silent_ms, threshold_ms):
+    """Зеркало EndpointPause.ends — сравнение в appendCapture на каждом кадре."""
+    return silent_ms >= threshold_ms
+
+
 def allow_turn(stt, need_name, spotter_wake, name_at_start):
     t = (stt or "").strip()
     if not t:
@@ -192,7 +205,6 @@ class TabletUnitTest(unittest.TestCase):
         src = (Path(__file__).resolve().parent / "android/tablet-voice/app/src/main/java"
                / "ru/jarvis/tablet/VoiceService.kt").read_text(encoding="utf-8")
         self.assertIn("PREROLL_MS = 2500", src)
-        self.assertIn("SILENCE_MS = 1000", src)
         self.assertIn("MAX_UTTER_MS = 30_000L", src)
         self.assertIn("READY_IGNORE_MS = 1000L", src)
         self.assertNotIn("HOLD_AFTER_WAKE_MS", src)
@@ -211,6 +223,7 @@ class TabletUnitTest(unittest.TestCase):
         self.assertNotIn("speakLocal(getString(R.string.yes))", src)
         self.assertNotIn("overlapsTts", src)
         self.assertNotIn("PARTIAL_WAKE_HITS", src)
+        self.assertNotIn("SILENCE_MS", src)
 
     def test_v114_wake_name_gate(self):
         self.assertTrue(allow_turn("Джарвис какая погода", True, True, False))
@@ -249,6 +262,93 @@ class TabletUnitTest(unittest.TestCase):
                 / "ru/jarvis/tablet/SpotRule.kt").read_text(encoding="utf-8")
         self.assertIn("SPEAK_EXT_WAKE_CONF = 0.82", rule)
         self.assertIn("SPEAK_EXT_STOP_CONF = 0.88", rule)
+
+    def test_v116_endpoint_pause_is_live_vad(self):
+        """Смена паузы двигает порог тишины в appendCapture, не подпись на экране."""
+        root = Path(__file__).resolve().parent / "android/tablet-voice/app/src/main"
+        voice = (root / "java/ru/jarvis/tablet/VoiceService.kt").read_text(encoding="utf-8")
+        cap = voice.split("private fun appendCapture")[1].split("private fun onUtterance")[0]
+        self.assertIn("EndpointPause.ends(silentMs, EndpointPause.silenceMs)", cap)
+        self.assertNotIn("SILENCE_MS", cap)
+        self.assertIn("CONVO_MS = 5_000L", voice)
+        self.assertNotIn("CONVO_MS = 20_000L", voice)
+        wake = voice.split("private fun onWakeSpot()")[1].split("private fun onStopSpot()")[0]
+        barge = wake.split("phase == Phase.SPEAK")[1].split("return")[0]
+        self.assertIn("heardPing()", barge)
+        after = wake.split('beginListen("barge-wake"')[1]
+        self.assertIn("heardPing()", after)
+        exp = voice.split("private fun expireConvo")[1].split("private fun armConvoTick")[0]
+        self.assertIn("Earcon.done()", exp)
+        self.assertIn("val closing = !needName && convoUntil > 0L", exp)
+        self.assertIn("bus.level", voice)
+        ep = (root / "java/ru/jarvis/tablet/EndpointPause.kt").read_text(encoding="utf-8")
+        self.assertIn("const val DEFAULT_MS = 2000", ep)
+        self.assertIn("const val MIN_MS = 500", ep)
+        self.assertIn("const val MAX_MS = 5000", ep)
+        self.assertIn("const val STEP_MS = 500", ep)
+        self.assertIn("fun ends(silentMs: Int, thresholdMs: Int): Boolean = silentMs >= thresholdMs", ep)
+        commit = ep.split("fun commit")[1].split("fun ")[0]
+        self.assertIn("silenceMs = ms", commit)
+        self.assertIn('VoiceLog.add("пауза конца $ms мс")', commit)
+        load = ep.split("fun load")[1].split("fun commit")[0]
+        self.assertNotIn("VoiceLog", load)
+        prefs = (root / "java/ru/jarvis/tablet/Prefs.kt").read_text(encoding="utf-8")
+        setter = prefs.split("var endpointMs")[1].split("fun configured")[0]
+        self.assertIn("EndpointPause.commit", setter)
+        self.assertIn('getBoolean("dev_ui", false)', prefs)
+        self.assertIn("EndpointPause.load", prefs)
+        ui = (root / "java/ru/jarvis/tablet/MainActivity.kt").read_text(encoding="utf-8")
+        self.assertIn("Prefs.endpointMs = ms", ui)
+        self.assertIn("fromUser", ui)
+        self.assertIn("Prefs.devUi", ui)
+        strings = (root / "res/values/strings.xml").read_text(encoding="utf-8")
+        self.assertIn("Пауза, после которой я считаю, что ты договорил", strings)
+        tail = (root / "res/layout/include_user_tail.xml").read_text(encoding="utf-8")
+        self.assertIn('android:valueFrom="0.5"', tail)
+        self.assertIn('android:valueTo="5.0"', tail)
+        self.assertIn('android:stepSize="0.5"', tail)
+        self.assertIn("@+id/endpointSlider", tail)
+        self.assertNotIn("@+id/log", tail)
+        dev = (root / "res/layout/include_dev.xml").read_text(encoding="utf-8")
+        self.assertIn("@+id/version", dev)
+        self.assertIn("@+id/log", dev)
+        self.assertIn("@+id/toggle", dev)
+        self.assertIn("@+id/copyLog", dev)
+        self.assertNotIn("endpointSlider", dev)
+        for name in ("layout/activity_main.xml", "layout-land/activity_main.xml"):
+            screen = (root / "res" / name).read_text(encoding="utf-8")
+            self.assertIn("@+id/userRoot", screen)
+            self.assertIn("@+id/modeToggle", screen)
+            self.assertIn("@+id/orb", screen)
+            self.assertIn("@+id/historyBox", screen)
+            self.assertIn("@layout/include_dev", screen)
+            self.assertIn("@layout/include_user_tail", screen)
+            self.assertNotIn("@+id/version", screen)
+            self.assertNotIn("@+id/log", screen)
+            user, _dev = screen.split("@+id/devRoot", 1)
+            self.assertIn("@+id/userRoot", user)
+            self.assertNotIn("@+id/version", user)
+        gradle = (Path(__file__).resolve().parent / "android/tablet-voice/app/build.gradle.kts").read_text(encoding="utf-8")
+        self.assertIn('versionName = "1.16"', gradle)
+        self.assertIn("versionCode = 17", gradle)
+        recs = []
+        for p in (root / "java").rglob("*.kt"):
+            if "AudioRecord(" in p.read_text(encoding="utf-8"):
+                recs.append(p.name)
+        self.assertEqual(recs, ["Ear.kt"])
+        self.assertNotIn("SpeechRecognizer", (root / "java/ru/jarvis/tablet/Earcon.kt").read_text(encoding="utf-8"))
+        self.assertNotIn("AudioRecord", (root / "java/ru/jarvis/tablet/OrbView.kt").read_text(encoding="utf-8"))
+        # та же фраза, 1.6 с тишины: 2 с ещё нет, 1.5 с уже конец, 2.5 с ещё нет
+        self.assertFalse(endpoint_ends(1600, endpoint_clamp(2000)))
+        self.assertTrue(endpoint_ends(1600, endpoint_clamp(1500)))
+        self.assertFalse(endpoint_ends(1600, endpoint_clamp(2500)))
+        self.assertEqual(endpoint_clamp(2000), 2000)
+        self.assertEqual(endpoint_clamp(0), 2000)
+        self.assertEqual(endpoint_clamp(400), 500)
+        self.assertEqual(endpoint_clamp(1750), 2000)
+        self.assertEqual(endpoint_clamp(1749), 1500)
+        self.assertEqual(endpoint_clamp(9000), 5000)
+        self.assertEqual(endpoint_clamp(2500), 2500)
 
     def test_v113_echo_and_name_gate(self):
         spoken = "В Москве сейчас плюс пять, без осадков, ветер слабый."

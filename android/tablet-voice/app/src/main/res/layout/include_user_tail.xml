@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingTop="6dp">
+
+    <LinearLayout
+        android:id="@+id/userLogin"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingBottom="8dp"
+        android:visibility="gone">
+
+        <EditText
+            android:id="@+id/userUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/url_hint"
+            android:inputType="textUri"
+            android:textColor="#F4F1EA"
+            android:textColorHint="#777777"
+            android:textSize="16sp" />
+
+        <EditText
+            android:id="@+id/userPassword"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/password_hint"
+            android:inputType="numberPassword"
+            android:textColor="#F4F1EA"
+            android:textColorHint="#777777"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/userSave"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/save"
+            android:textAllCaps="false" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/endpointCaption"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/endpoint_caption"
+            android:textColor="#C8C2B4"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/endpointValue"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:textColor="#F4F1EA"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <com.google.android.material.slider.Slider
+        android:id="@+id/endpointSlider"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:contentDescription="@string/endpoint_caption"
+        android:stepSize="0.5"
+        android:value="2.0"
+        android:valueFrom="0.5"
+        android:valueTo="5.0"
+        app:haloColor="#66E6C36A"
+        app:labelBehavior="gone"
+        app:thumbColor="#E6C36A"
+        app:trackColorActive="#E6C36A"
+        app:trackColorInactive="#3A3F4A" />
+
+    <TextView
+        android:id="@+id/serverLink"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:paddingTop="2dp"
+        android:paddingBottom="4dp"
+        android:text="@string/server_link"
+        android:textColor="#8A8478"
+        android:textSize="15sp" />
+</LinearLayout>

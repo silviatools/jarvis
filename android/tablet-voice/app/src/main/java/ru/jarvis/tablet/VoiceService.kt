@@ -8,7 +8,6 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioManager
-import android.media.ToneGenerator
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -72,6 +71,7 @@ class VoiceService : Service() {
     private var lastFrameAt = 0L
     private val capLock = Any()
     @Volatile private var replay: ShortArray? = null
+    private var levelSm = 0.0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -234,6 +234,7 @@ class VoiceService : Service() {
 
     private fun onFrame(samples: ShortArray, n: Int, rms: Double, floor: Double) {
         lastFrameAt = System.currentTimeMillis()
+        noteLevel(rms, floor)
         synchronized(capLock) {
             for (i in 0 until n) {
                 preroll.addLast(samples[i])
@@ -266,11 +267,14 @@ class VoiceService : Service() {
         if (phase == Phase.SPEAK) {
             VoiceLog.add("barge-in wake? out=$outKind")
             pauseSpeechForBarge()
+            bus.heardAt = System.currentTimeMillis()
+            heardPing()
             beginListen("barge-wake", barge = true)
             return
         }
         if (phase == Phase.LISTEN && capturing) return
         VoiceLog.add("wake")
+        bus.heardAt = System.currentTimeMillis()
         heardPing()
         beginListen("wake")
     }
@@ -349,7 +353,9 @@ class VoiceService : Service() {
             why == "после TTS" -> {
                 needName = false
                 nameAtStart = false
-                convoUntil = System.currentTimeMillis() + CONVO_MS
+                if (convoUntil <= System.currentTimeMillis()) {
+                    convoUntil = System.currentTimeMillis() + CONVO_MS
+                }
                 armConvoTick()
             }
             why == "окно" -> {
@@ -391,7 +397,7 @@ class VoiceService : Service() {
             val waited = System.currentTimeMillis() - listenSince
             hasCmd = postWakeHits >= POST_WAKE_HITS || phraseInPreroll
             when {
-                hasCmd && silentMs >= SILENCE_MS -> {
+                hasCmd && EndpointPause.ends(silentMs, EndpointPause.silenceMs) -> {
                     capturing = false
                     snap = ShortArray(cap.size) { cap[it] }
                     cap.clear()
@@ -461,11 +467,13 @@ class VoiceService : Service() {
     }
 
     private fun expireConvo(why: String) {
+        val closing = !needName && convoUntil > 0L
         needName = true
         nameAtStart = false
         convoUntil = 0L
         cancelConvoTick()
         abortListen(why)
+        if (closing) Earcon.done()
         setPhase(Phase.WAKE)
         VoiceLog.add("окно закрыто — жду имя")
     }
@@ -488,11 +496,11 @@ class VoiceService : Service() {
                 }
                 refreshStatus()
                 convoTick = this
-                main.postDelayed(this, 500)
+                main.postDelayed(this, 200)
             }
         }
         convoTick = r
-        main.postDelayed(r, 500)
+        main.postDelayed(r, 200)
     }
 
     private fun cancelConvoTick() {
@@ -504,7 +512,7 @@ class VoiceService : Service() {
         Phase.OFF -> getString(R.string.off)
         Phase.WAKE -> getString(R.string.notif_wake)
         Phase.LISTEN -> {
-            val sec = ((convoUntil - System.currentTimeMillis()) / 1000L).toInt()
+            val sec = ((convoUntil - System.currentTimeMillis() + 999L) / 1000L).toInt()
             if (!needName && sec >= 0) getString(R.string.notif_convo, sec)
             else getString(R.string.notif_listen)
         }
@@ -515,6 +523,9 @@ class VoiceService : Service() {
     private fun refreshStatus() {
         val text = statusText()
         bus.label = text
+        val now = System.currentTimeMillis()
+        bus.convoOpen = phase == Phase.LISTEN && !needName && convoUntil > now
+        bus.convoDeadline = if (!needName && convoUntil > 0L) convoUntil else 0L
         notify(text)
         bus.post(phase, lastHeard, lastAnswer)
     }
@@ -532,6 +543,7 @@ class VoiceService : Service() {
             }
             val msg = r.text.ifBlank { getString(R.string.err_stt) }
             lastAnswer = msg
+            DialogLog.add("jarvis", msg)
             speak(msg)
             return
         }
@@ -609,6 +621,7 @@ class VoiceService : Service() {
 
     private fun runCommand(text: String) {
         lastHeard = text
+        DialogLog.add("user", text)
         capturing = false
         setPhase(Phase.THINK)
         VoiceLog.add("ход «${clip(text)}»")
@@ -631,6 +644,7 @@ class VoiceService : Service() {
         history.addLast("assistant" to answer)
         while (history.size > 16) history.removeFirst()
         lastAnswer = answer
+        DialogLog.add("jarvis", answer)
         convoUntil = System.currentTimeMillis() + CONVO_MS
         VoiceLog.add("ответ ${answer.length} симв ok=${r.ok}")
         speak(answer)
@@ -732,11 +746,13 @@ class VoiceService : Service() {
     }
 
     private fun heardPing() {
-        try {
-            val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 48)
-            tg.startTone(ToneGenerator.TONE_PROP_ACK, 90)
-            main.postDelayed({ try { tg.release() } catch (_: Exception) {} }, 250)
-        } catch (_: Exception) {}
+        Earcon.listen()
+    }
+
+    private fun noteLevel(rms: Double, floor: Double) {
+        val n = ((rms - floor) / (floor * 4.0 + 1600.0)).coerceIn(0.0, 1.0)
+        levelSm += (n - levelSm) * 0.35
+        bus.level = levelSm.toFloat()
     }
 
     private fun armWatchdog() {
@@ -785,7 +801,7 @@ class VoiceService : Service() {
         const val CHANNEL_ID = "jarvis_listen"
         const val NOTIF_ID = 17
         const val ACTION_STOP = "ru.jarvis.tablet.STOP"
-        private const val CONVO_MS = 20_000L
+        private const val CONVO_MS = 5_000L
         private const val WATCH_MS = 5000L
         private const val ECHO_MS = 900L
         private const val SPOT_DEBOUNCE = 800L
@@ -793,7 +809,6 @@ class VoiceService : Service() {
         private const val PREROLL = Ear.SR * PREROLL_MS / 1000
         private const val BARE_IDLE_MS = 4000L
         private const val POST_WAKE_HITS = 3
-        private const val SILENCE_MS = 1000
         private const val MAX_UTTER_MS = 30_000L
         private const val READY_IGNORE_MS = 1000L
         val running = AtomicBoolean(false)
@@ -814,10 +829,18 @@ class VoiceService : Service() {
 }
 
 object bus {
+    const val HEARD_MS = 700L
     @Volatile var listener: ((VoiceService.Phase, String, String) -> Unit)? = null
     @Volatile var label: String = ""
+    @Volatile var phase: VoiceService.Phase = VoiceService.Phase.OFF
+    @Volatile var level: Float = 0f
+    @Volatile var heardAt: Long = 0L
+    @Volatile var convoOpen: Boolean = false
+    @Volatile var convoDeadline: Long = 0L
     private val main = Handler(Looper.getMainLooper())
     fun post(phase: VoiceService.Phase, heard: String, answer: String) {
+        this.phase = phase
         main.post { listener?.invoke(phase, heard, answer) }
     }
+    fun heardNow(): Boolean = System.currentTimeMillis() - heardAt < HEARD_MS
 }
