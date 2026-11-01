@@ -13,19 +13,18 @@ import urllib.request
 from pathlib import Path
 
 
-def spot_classify(final, text, conf, min_conf=0.65):
-    """Зеркало SpotRule: только финал, одно слово, порог уверенности."""
-    if not final or conf < min_conf:
-        return "none"
+def spot_classify(final, text, conf, wake_conf=0.28, stop_conf=0.70):
+    """Зеркало SpotRule 1.12: wake мягкий, стоп — финал и одно слово."""
     tokens = [
         t for t in re.sub(r"[^а-яёa-z0-9\s]", " ", (text or "").lower()).split()
         if t and t not in ("unk", "[unk]")
     ]
-    if len(tokens) != 1:
+    if not tokens:
         return "none"
-    if tokens[0] in ("стоп", "хватит", "замолчи", "тихо"):
-        return "stop"
-    if tokens[0] in ("джарвис", "жервис", "жарвис", "джарвиз", "джарвес"):
+    if tokens[0] in ("стоп", "хватит"):
+        return "stop" if final and len(tokens) == 1 and conf >= stop_conf else "none"
+    wake = ("джарвис", "джервис", "жервис", "жарвис", "дарвис", "джарвиз", "джарвес")
+    if any(t in wake for t in tokens) and conf >= wake_conf:
         return "wake"
     return "none"
 
@@ -98,34 +97,34 @@ class TabletUnitTest(unittest.TestCase):
         self.assertIn("barge-in стоп", stop)
         self.assertIn("echoUntil", src)
 
-    def test_v110_listen_policy(self):
+    def test_v112_listen_policy(self):
         src = (Path(__file__).resolve().parent / "android/tablet-voice/app/src/main/java"
                / "ru/jarvis/tablet/VoiceService.kt").read_text(encoding="utf-8")
-        self.assertIn("PREROLL_MS = 1500", src)
-        self.assertIn("HOLD_AFTER_WAKE_MS = 2500L", src)
+        self.assertIn("PREROLL_MS = 2500", src)
+        self.assertIn("SILENCE_MS = 800", src)
+        self.assertNotIn("HOLD_AFTER_WAKE_MS", src)
         self.assertIn("echoExempt", src)
         self.assertIn("abortListen", src)
-        self.assertIn("isBareWake", src)
+        self.assertIn("heardPing", src)
+        self.assertIn("wake готов, прогрет", src)
         self.assertNotIn("speakLocal(getString(R.string.yes))", src)
-        ww = (Path(__file__).resolve().parent / "android/tablet-voice/app/src/main/java"
-              / "ru/jarvis/tablet/WakeWord.kt").read_text(encoding="utf-8")
-        self.assertIn("fun isBareWake", ww)
 
-    def test_spot_rule_isolated_final_only(self):
+    def test_spot_rule_wake_soft_stop_strict(self):
         self.assertEqual(spot_classify(False, "стоп", 0.99), "none")
         self.assertEqual(spot_classify(True, "стоп какая", 0.99), "none")
         self.assertEqual(spot_classify(True, "стоп", 0.4), "none")
         self.assertEqual(spot_classify(True, "стоп", 0.9), "stop")
-        self.assertEqual(spot_classify(True, "джарвис", 0.9), "wake")
+        self.assertEqual(spot_classify(False, "джарвис", 1.0), "wake")
+        self.assertEqual(spot_classify(True, "джарвис какая", 0.4), "wake")
         self.assertEqual(spot_classify(True, "какая погода", 0.99), "none")
         root = Path(__file__).resolve().parent / "android/tablet-voice/app/src/main/java/ru/jarvis/tablet"
         vosk = (root / "VoskPack.kt").read_text(encoding="utf-8")
         rule = (root / "SpotRule.kt").read_text(encoding="utf-8")
         voice = (root / "VoiceService.kt").read_text(encoding="utf-8")
         self.assertNotIn("text.contains", vosk)
-        self.assertNotIn("partialResult", vosk)
-        self.assertIn("MIN_CONF = 0.65", rule)
-        self.assertIn("tokens.size != 1", rule)
+        self.assertIn("partialResult", vosk)
+        self.assertIn("WAKE_CONF = 0.28", rule)
+        self.assertIn("STOP_CONF = 0.70", rule)
         stop = voice.split("private fun onStopSpot()")[1].split("private fun abortListen")[0]
         self.assertIn("phase == Phase.LISTEN && capturing", stop)
         self.assertNotIn("wake уже слушаю", voice)
@@ -314,7 +313,7 @@ class TabletHttpTest(unittest.TestCase):
         seen = []
 
         def post(url, headers=None, data=None, files=None, json=None, timeout=None):
-            seen.append({"url": url, "has_file": bool(files)})
+            seen.append({"url": url, "has_file": bool(files), "data": data})
             if "transcriptions" in str(url):
                 return R({"text": "какая погода"})
             return R({"content": [{"type": "text", "text": "ок"}], "stop_reason": "end_turn"})
@@ -331,6 +330,10 @@ class TabletHttpTest(unittest.TestCase):
         self.assertTrue(payload["ok"], payload)
         self.assertEqual(payload["text"], "какая погода")
         self.assertTrue(any("transcriptions" in str(x["url"]) for x in seen))
+        self.assertTrue(any(
+            isinstance(x.get("data"), dict) and "Джарвис" in str(x["data"].get("prompt", ""))
+            for x in seen
+        ))
 
         empty = urllib.request.Request(
             f"http://127.0.0.1:{self.port}/api/tablet/stt",

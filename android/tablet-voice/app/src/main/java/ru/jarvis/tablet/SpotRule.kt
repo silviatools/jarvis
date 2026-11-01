@@ -3,19 +3,23 @@ package ru.jarvis.tablet
 import org.json.JSONObject
 import java.util.Locale
 
-/** Vosk grammar из пары слов классифицирует любой звук как wake/стоп. Только финал + одно слово. */
+/**
+ * Словарь Vosk-small-ru знает «джарвис» и «джервис»; остальные алиасы в грамматике игнорируются.
+ * Wake — мягко (и на partial). Стоп — только финал, одно слово, высокий порог.
+ */
 object SpotRule {
-    const val MIN_CONF = 0.65
-    val WAKE = listOf("джарвис", "жервис", "жарвис", "джарвиз", "джарвес")
-    val STOP = listOf("стоп", "хватит", "замолчи", "тихо")
+    const val WAKE_CONF = 0.28
+    const val STOP_CONF = 0.70
+    val WAKE = listOf("джарвис", "джервис", "жервис", "жарвис", "дарвис", "джарвиз", "джарвес")
+    val STOP = listOf("стоп", "хватит")
 
     fun classify(final: Boolean, text: String, conf: Double): Kind {
-        if (!final || conf < MIN_CONF) return Kind.NONE
-        val tokens = tokens(text)
-        if (tokens.size != 1) return Kind.NONE
-        val w = tokens[0]
-        if (w in STOP) return Kind.STOP
-        if (w in WAKE) return Kind.WAKE
+        val t = tokens(text)
+        if (t.isEmpty()) return Kind.NONE
+        if (t[0] in STOP) {
+            return if (final && t.size == 1 && conf >= STOP_CONF) Kind.STOP else Kind.NONE
+        }
+        if (t.any { it in WAKE } && conf >= WAKE_CONF) return Kind.WAKE
         return Kind.NONE
     }
 

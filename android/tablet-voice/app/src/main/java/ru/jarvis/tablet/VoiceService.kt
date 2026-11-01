@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -56,11 +58,12 @@ class VoiceService : Service() {
     private var speechSeen = false
     private var postWakeHits = 0
     private var phraseInPreroll = false
-    private var silentFrames = 0
+    private var silentMs = 0
     private var listenSince = 0L
     private var lastSpotAt = 0L
     private var lastFrameAt = 0L
     private val capLock = Any()
+    @Volatile private var replay: ShortArray? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -200,8 +203,9 @@ class VoiceService : Service() {
                     spotter = w
                     wakeReady = true
                     wakeLoading = false
+                    replay = synchronized(capLock) { preroll.toShortArray() }
                     try { old?.close() } catch (_: Exception) {}
-                    VoiceLog.add("wake готов")
+                    VoiceLog.add("wake готов, прогрет")
                     if (phase == Phase.WAKE) notify(getString(R.string.notif_wake))
                 }
             } catch (e: Exception) {
@@ -224,6 +228,16 @@ class VoiceService : Service() {
         }
         val w = spotter
         if (w != null) {
+            val extra = replay
+            if (extra != null) {
+                replay = null
+                var i = 0
+                while (i < extra.size) {
+                    val m = minOf(320, extra.size - i)
+                    w.feed(extra.copyOfRange(i, i + m), m)
+                    i += m
+                }
+            }
             when (w.feed(samples, n)) {
                 SpotRule.Kind.WAKE -> main.post { onWakeSpot() }
                 SpotRule.Kind.STOP -> main.post { onStopSpot() }
@@ -243,11 +257,13 @@ class VoiceService : Service() {
         if (phase == Phase.SPEAK) {
             VoiceLog.add("barge-in wake")
             stopSpeech()
+            heardPing()
             beginListen("barge-wake", barge = true)
             return
         }
         if (phase == Phase.LISTEN && capturing) return
         VoiceLog.add("wake")
+        heardPing()
         beginListen("wake")
     }
 
@@ -275,6 +291,7 @@ class VoiceService : Service() {
             speechSeen = false
             postWakeHits = 0
             phraseInPreroll = false
+            silentMs = 0
         }
         VoiceLog.add("abort $why")
     }
@@ -305,7 +322,7 @@ class VoiceService : Service() {
             phraseInPreroll = voicedCount(cap) > Ear.SR * 9 / 10
             speechSeen = phraseInPreroll
             postWakeHits = 0
-            silentFrames = 0
+            silentMs = 0
             listenSince = System.currentTimeMillis()
             capturing = true
         }
@@ -331,19 +348,19 @@ class VoiceService : Service() {
             if (!capturing || muteCloud) return
             for (i in 0 until n) cap.add(samples[i])
             val speech = rms > max(floor * 2.6, 700.0)
+            val frameMs = n * 1000 / Ear.SR
             if (speech) {
                 speechSeen = true
                 postWakeHits++
-                silentFrames = 0
+                silentMs = 0
             } else if (speechSeen) {
-                silentFrames++
+                silentMs += frameMs
             }
             val ms = cap.size * 1000L / Ear.SR
             val waited = System.currentTimeMillis() - listenSince
-            val held = waited < HOLD_AFTER_WAKE_MS
             hasCmd = postWakeHits >= POST_WAKE_HITS || phraseInPreroll
             when {
-                hasCmd && silentFrames >= SILENCE_FRAMES && !held -> {
+                hasCmd && silentMs >= SILENCE_MS -> {
                     capturing = false
                     snap = ShortArray(cap.size) { cap[it] }
                     cap.clear()
@@ -563,6 +580,14 @@ class VoiceService : Service() {
         goForeground(text)
     }
 
+    private fun heardPing() {
+        try {
+            val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 48)
+            tg.startTone(ToneGenerator.TONE_PROP_ACK, 90)
+            main.postDelayed({ try { tg.release() } catch (_: Exception) {} }, 250)
+        } catch (_: Exception) {}
+    }
+
     private fun armWatchdog() {
         main.removeCallbacks(watchdog)
         main.postDelayed(watchdog, WATCH_MS)
@@ -613,13 +638,12 @@ class VoiceService : Service() {
         private const val WATCH_MS = 5000L
         private const val ECHO_MS = 900L
         private const val SPOT_DEBOUNCE = 800L
-        private const val PREROLL_MS = 1500
+        private const val PREROLL_MS = 2500
         private const val PREROLL = Ear.SR * PREROLL_MS / 1000
-        private const val HOLD_AFTER_WAKE_MS = 2500L
-        private const val BARE_IDLE_MS = 3000L
-        private const val POST_WAKE_HITS = 4
-        private const val SILENCE_FRAMES = 12
-        private const val MAX_UTTER_MS = 15_000L
+        private const val BARE_IDLE_MS = 4000L
+        private const val POST_WAKE_HITS = 3
+        private const val SILENCE_MS = 800
+        private const val MAX_UTTER_MS = 12_000L
         val running = AtomicBoolean(false)
 
         fun start(ctx: Context) {

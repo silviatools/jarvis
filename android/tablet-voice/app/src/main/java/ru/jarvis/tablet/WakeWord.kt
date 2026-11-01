@@ -3,7 +3,7 @@ package ru.jarvis.tablet
 import java.util.Locale
 
 object WakeWord {
-    private val names = "джарвис|жервис|жарвис|джарвиз|джарвес|алиса"
+    private val names = "джарвис|джервис|жервис|жарвис|дарвис|джарвиз|джарвес|алиса"
     private val wake = Regex(
         """(?:^|[^\p{L}])(эй[,.]?\s*)?(окей[,.]?\s*)?($names)[а-яё]*[,!.]?\s*""",
         RegexOption.IGNORE_CASE,

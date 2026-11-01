@@ -8230,7 +8230,11 @@ def handle_tablet_stt(body: bytes, content_type: str = "") -> dict:
         r = requests.post(
             "https://api.openai.com/v1/audio/transcriptions",
             headers={"Authorization": f"Bearer {key}"},
-            data={"model": "whisper-1", "language": "ru"},
+            data={
+                "model": "whisper-1",
+                "language": "ru",
+                "prompt": "Джарвис. Жервис. Джервис.",
+            },
             files={"file": ("speech.wav", wav, "audio/wav")},
             timeout=45,
         )

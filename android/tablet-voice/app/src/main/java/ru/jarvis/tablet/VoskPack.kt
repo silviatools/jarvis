@@ -100,16 +100,19 @@ class VoskWake(modelDir: File) {
     private val model = Model(modelDir.absolutePath)
     private val rec = Recognizer(model, Ear.SR.toFloat(), GRAMMAR).also {
         try { it.setWords(true) } catch (_: Exception) {}
+        warmup(it)
     }
 
     fun feed(samples: ShortArray, n: Int): SpotRule.Kind {
         val final = try { rec.acceptWaveForm(samples, n) } catch (_: Exception) { return SpotRule.Kind.NONE }
-        if (!final) return SpotRule.Kind.NONE
-        val raw = try { rec.result } catch (_: Exception) { return SpotRule.Kind.NONE }
         return try {
-            val j = JSONObject(raw)
-            val text = j.optString("text").trim()
-            SpotRule.classify(true, text, SpotRule.confidence(j))
+            if (final) {
+                val j = JSONObject(rec.result)
+                SpotRule.classify(true, j.optString("text"), SpotRule.confidence(j))
+            } else {
+                val j = JSONObject(rec.partialResult)
+                SpotRule.classify(false, j.optString("partial"), 1.0)
+            }
         } catch (_: Exception) {
             SpotRule.Kind.NONE
         }
@@ -121,7 +124,16 @@ class VoskWake(modelDir: File) {
     }
 
     companion object {
+        // Только слова из словаря small-ru. Остальные алиасы Vosk молча выкидывает.
         private const val GRAMMAR =
-            """["джарвис","жервис","жарвис","стоп","хватит","замолчи","тихо","[unk]"]"""
+            """["джарвис","джервис","стоп","хватит","[unk]"]"""
+
+        private fun warmup(r: Recognizer) {
+            val z = ShortArray(Ear.SR / 2)
+            try {
+                r.acceptWaveForm(z, z.size)
+                r.result
+            } catch (_: Exception) {}
+        }
     }
 }
