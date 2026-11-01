@@ -45,7 +45,6 @@ class VoiceService : Service() {
     private var lastHeard = ""
     private var lastAnswer = ""
     private var speakWatch: Runnable? = null
-    @Volatile private var speakStartedAt = 0L
     private var afterTts = false
     @Volatile private var echoUntil = 0L
     private var cpuLock: PowerManager.WakeLock? = null
@@ -232,20 +231,12 @@ class VoiceService : Service() {
 
     private fun onWakeSpot() {
         if (!wanted || !spotOk()) return
-        val now = System.currentTimeMillis()
-        if (now < echoUntil) {
-            VoiceLog.add("echo wake")
-            return
-        }
+        // окно эха глушит только облако, не локальный споттер
         if (phase == Phase.THINK) {
             VoiceLog.add("wake ignore: думаю")
             return
         }
         if (phase == Phase.SPEAK) {
-            if (now - speakStartedAt < BARGE_GRACE) {
-                VoiceLog.add("echo wake (grace)")
-                return
-            }
             VoiceLog.add("barge-in wake")
             stopSpeech()
             beginListen("barge-wake")
@@ -261,16 +252,7 @@ class VoiceService : Service() {
 
     private fun onStopSpot() {
         if (!wanted || !spotOk()) return
-        val now = System.currentTimeMillis()
-        if (now < echoUntil) {
-            VoiceLog.add("echo стоп")
-            return
-        }
         if (phase == Phase.SPEAK) {
-            if (now - speakStartedAt < BARGE_GRACE) {
-                VoiceLog.add("echo стоп (grace)")
-                return
-            }
             VoiceLog.add("barge-in стоп")
             stopSpeech()
             capturing = false
@@ -304,7 +286,6 @@ class VoiceService : Service() {
             capturing = true
         }
         convoUntil = System.currentTimeMillis() + CONVO_MS
-        afterTts = false
         setPhase(Phase.LISTEN)
         notify(getString(R.string.notif_listen))
         VoiceLog.add("слушаю ($why)")
@@ -485,7 +466,6 @@ class VoiceService : Service() {
         afterTts = false
         echoUntil = Long.MAX_VALUE
         setPhase(Phase.SPEAK)
-        speakStartedAt = System.currentTimeMillis()
         tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "jarvis-local")
         armSpeakWatch(clean)
     }
@@ -496,7 +476,6 @@ class VoiceService : Service() {
         afterTts = false
         echoUntil = Long.MAX_VALUE
         setPhase(Phase.SPEAK)
-        speakStartedAt = System.currentTimeMillis()
         notify(getString(R.string.notif_speak))
         if (!ttsReady) {
             onSpeakDone("no-tts")
@@ -616,7 +595,6 @@ class VoiceService : Service() {
         const val ACTION_STOP = "ru.jarvis.tablet.STOP"
         private const val CONVO_MS = 20_000L
         private const val WATCH_MS = 5000L
-        private const val BARGE_GRACE = 1200L
         private const val ECHO_MS = 900L
         private const val SPOT_DEBOUNCE = 800L
         private const val PREROLL = Ear.SR * 500 / 1000

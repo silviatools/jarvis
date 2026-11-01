@@ -69,6 +69,17 @@ class TabletUnitTest(unittest.TestCase):
         self.assertEqual(hits, [], "Google STT остался в горячем пути: " + ", ".join(hits))
         self.assertFalse((root / "java/ru/jarvis/tablet/MicKeep.kt").exists())
 
+    def test_spotter_not_gated_by_echo_window(self):
+        src = (Path(__file__).resolve().parent / "android/tablet-voice/app/src/main/java"
+               / "ru/jarvis/tablet/VoiceService.kt").read_text(encoding="utf-8")
+        wake = src.split("private fun onWakeSpot()")[1].split("private fun onStopSpot()")[0]
+        stop = src.split("private fun onStopSpot()")[1].split("private fun spotOk()")[0]
+        self.assertNotIn("echoUntil", wake)
+        self.assertNotIn("echoUntil", stop)
+        self.assertIn("barge-in wake", wake)
+        self.assertIn("barge-in стоп", stop)
+        self.assertIn("echoUntil", src)
+
     def test_sanitize_strips_html_markup(self):
         raw = "Да! Напишите, пожалуйста, <b>адрес или станцию метро</b> либо отправьте геопозицию."
         out = jarvis.tablet_sanitize(raw)
