@@ -112,8 +112,7 @@ class VoiceService : Service() {
         goForeground(getString(R.string.notif_wake))
         holdCpu()
         setPhase(Phase.WAKE)
-        VoiceLog.add("FGS слух включён, микро не гасим")
-        micKeep.start("всегда")
+        VoiceLog.add("FGS слух включён — один STT, без AudioRecord")
         startRec(force = rec == null)
         armWatchdog()
         return START_STICKY
@@ -169,9 +168,9 @@ class VoiceService : Service() {
 
     private fun startRec(force: Boolean = false) {
         if (!wanted) return
-        if (micKeep.running.not()) micKeep.start("слух")
         val now = System.currentTimeMillis()
         if (srListening) {
+            if (micKeep.running) micKeep.stop("STT жив")
             VoiceLog.add("STT skip: уже слушает force=$force")
             return
         }
@@ -179,9 +178,15 @@ class VoiceService : Service() {
             VoiceLog.add("STT skip debounce ${now - lastSrStartAt}мс")
             return
         }
+        if (micKeep.running) {
+            micKeep.stop("перед STT")
+            main.postDelayed({ if (wanted && !srListening) startRec(force) }, 300)
+            return
+        }
         if (force && rec != null) stopSr("force")
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            VoiceLog.add("STT нет в системе — AudioRecord держит микро")
+            VoiceLog.add("STT нет в системе")
+            holdIfSttDead("no-sr")
             bus.post(phase, lastHeard, getString(R.string.err_no_sr))
             return
         }
@@ -223,6 +228,12 @@ class VoiceService : Service() {
         if (had) VoiceLog.add("STT destroy ($why)")
     }
 
+    private fun holdIfSttDead(why: String) {
+        if (!wanted || srListening) return
+        if (phase != Phase.SPEAK) return
+        micKeep.start(why)
+    }
+
     private fun scheduleRestart(delay: Long, force: Boolean) {
         if (!wanted || restarting) return
         restarting = true
@@ -242,13 +253,10 @@ class VoiceService : Service() {
     private val watchdog = object : Runnable {
         override fun run() {
             if (!wanted) return
-            if (!micKeep.running) {
-                VoiceLog.add("watchdog: AudioRecord погас — включаю")
-                micKeep.start("watch")
-            }
+            if (srListening && micKeep.running) micKeep.stop("watch: STT жив")
             val idle = System.currentTimeMillis() - lastSrAt
             if (!srListening && !restarting && idle > WATCH_MS) {
-                VoiceLog.add("watchdog: STT молчит ${idle}мс фаза=$phase — listen again")
+                VoiceLog.add("watchdog: STT молчит ${idle}мс фаза=$phase")
                 startRec(force = rec == null)
             }
             if (wanted) main.postDelayed(this, WATCH_MS)
@@ -303,7 +311,10 @@ class VoiceService : Service() {
             val busy = error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY
             val hard = disconnected || busy ||
                 error == SpeechRecognizer.ERROR_CLIENT || error == SpeechRecognizer.ERROR_AUDIO
-            if (hard) stopSr("error $name")
+            if (hard) {
+                stopSr("error $name")
+                holdIfSttDead("error $name")
+            }
             val delay = when {
                 disconnected -> (4_000L shl (failStreak - 1).coerceAtMost(3)).coerceAtMost(30_000L)
                 busy -> (2_000L shl (failStreak - 1).coerceAtMost(3)).coerceAtMost(16_000L)
@@ -391,6 +402,7 @@ class VoiceService : Service() {
         setPhase(Phase.LISTEN)
         notify(getString(R.string.notif_listen))
         micKeep.bargeArmed = false
+        if (micKeep.running) micKeep.stop("после barge-in")
         if (!srListening) startRec(force = rec == null)
     }
 
@@ -415,6 +427,7 @@ class VoiceService : Service() {
         notify(getString(R.string.notif_think))
         VoiceLog.add("ход «${clip(text)}»")
         if (!srListening) startRec(force = rec == null)
+        if (micKeep.running && srListening) micKeep.stop("ход: STT жив")
         val token = Prefs.token
         val snap = history.toList()
         io.execute {
@@ -451,7 +464,7 @@ class VoiceService : Service() {
         setPhase(Phase.SPEAK)
         speakStartedAt = System.currentTimeMillis()
         if (!srListening) startRec(force = rec == null)
-        main.postDelayed({ micKeep.bargeArmed = true }, BARGE_GRACE)
+        main.postDelayed({ if (micKeep.running) micKeep.bargeArmed = true }, BARGE_GRACE)
         tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "jarvis-local")
         armSpeakWatch(clean)
     }
@@ -464,7 +477,7 @@ class VoiceService : Service() {
         speakStartedAt = System.currentTimeMillis()
         notify(getString(R.string.notif_speak))
         if (!srListening) startRec(force = rec == null)
-        main.postDelayed({ micKeep.bargeArmed = true }, BARGE_GRACE)
+        main.postDelayed({ if (micKeep.running) micKeep.bargeArmed = true }, BARGE_GRACE)
         if (!ttsReady) {
             onSpeakDone("no-tts")
             return
@@ -517,7 +530,8 @@ class VoiceService : Service() {
         convoUntil = System.currentTimeMillis() + CONVO_MS
         setPhase(Phase.LISTEN)
         notify(getString(R.string.notif_listen))
-        VoiceLog.add("TTS end ($why) — микро не трогаем")
+        VoiceLog.add("TTS end ($why) — STT не рвём")
+        if (micKeep.running) micKeep.stop("после TTS")
         if (!srListening) startRec(force = rec == null)
     }
 
