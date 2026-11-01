@@ -19,3 +19,9 @@ jarvis_mail/
 jarvis_plan_tasks.json
 jarvis_ai_usage.jsonl
 jarvis_ai_turns.jsonl
+jarvis_tablet_tokens.json
+android/tablet-voice/.gradle/
+android/tablet-voice/build/
+android/tablet-voice/app/build/
+android/tablet-voice/local.properties
+android/tablet-voice/.idea/

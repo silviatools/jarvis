@@ -17212,6 +17212,10 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
   };
 
   const startRecording = (existingMessages) => {
+    if (window.JarvisNative && typeof window.JarvisNative.listen === 'function') {
+      window.JarvisNative.listen();
+      return;
+    }
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
       setErrorMsg('Браузер не поддерживает распознавание речи');
@@ -17334,6 +17338,25 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, settings?.voiceWakeMode]);
 
+  useEffect(() => {
+    if (!settings?.voiceWakeMode) return;
+    let lock = null;
+    let cancelled = false;
+    const request = () => {
+      if (!navigator.wakeLock || document.visibilityState !== 'visible') return;
+      navigator.wakeLock.request('screen')
+        .then(l => { if (cancelled) l.release().catch(() => {}); else lock = l; })
+        .catch(() => {});
+    };
+    request();
+    document.addEventListener('visibilitychange', request);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', request);
+      if (lock) lock.release().catch(() => {});
+    };
+  }, [settings?.voiceWakeMode]);
+
   const toggleWakeMode = () => {
     if (!voiceWakeListener.supported()) {
       setErrorMsg('Браузер не поддерживает постоянное распознавание речи');
@@ -17370,8 +17393,12 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
     } else if (phase === 'listening') {
       // Manual early stop — triggers onend which calls processTranscript
       if (recogRef.current) recogRef.current.stop();
+    } else if (phase === 'speaking') {
+      // Barge-in: перебить озвучку и сразу слушать новую фразу.
+      window.speechSynthesis?.cancel();
+      stopCurrentSpeech();
+      startRecording(messagesRef.current);
     }
-    // processing/speaking: do nothing, ждём
   };
 
   // Долгое нажатие на ту же кнопку — переключатель постоянной прослушки, без
@@ -17484,11 +17511,11 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
 
             <button
               onClick={handleMainButton}
-              disabled={phase === 'processing' || phase === 'speaking'}
+              disabled={phase === 'processing'}
               className={`mt-4 w-16 h-16 rounded-full shadow-lg flex items-center justify-center transition-all text-white ${
                 phase === 'listening' ? 'bg-amber-500' : phase === 'error' ? 'bg-red-500' : 'bg-white/10'
-              } ${(phase === 'processing' || phase === 'speaking') ? 'opacity-40' : ''}`}
-              title={phase === 'listening' ? 'Остановить запись' : phase === 'error' ? 'Попробовать снова' : 'Микрофон'}
+              } ${phase === 'processing' ? 'opacity-40' : ''}`}
+              title={phase === 'listening' ? 'Остановить запись' : phase === 'speaking' ? 'Перебить' : phase === 'error' ? 'Попробовать снова' : 'Микрофон'}
             >
               <Icon name="mic" size={26} />
             </button>
@@ -17515,7 +17542,7 @@ function VoiceButton({ data, setData, settings, setTab, setPlannerTab, setMiscTa
             onPointerLeave={cancelPressTimer}
             disabled={phase === 'processing'}
             className={`w-14 h-14 rounded-full shadow-lg flex items-center justify-center transition-all ${btnBg} ${phase === 'listening' ? 'voice-pulse' : ''} ${phase === 'processing' ? 'opacity-70' : ''}`}
-            title="Голосовой ассистент (долгое нажатие — постоянная прослушка «Джарвис, ...»)"
+            title="Голосовой ассистент (долгое нажатие — постоянная прослушка «Джарвис, ...»; во время ответа можно перебить)"
           >
             {phase === 'processing' ? (
               <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>

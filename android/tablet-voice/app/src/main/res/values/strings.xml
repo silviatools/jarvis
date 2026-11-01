@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Джарвис</string>
+    <string name="channel_name">Слушаю</string>
+    <string name="channel_desc">Микрофон Джарвиса не должен засыпать</string>
+    <string name="notif_title">Джарвис слушает</string>
+    <string name="notif_wake">Жду «Джарвис»</string>
+    <string name="notif_listen">Слушаю команду</string>
+    <string name="notif_think">Думаю…</string>
+    <string name="notif_speak">Говорю — можно перебить</string>
+    <string name="listen_on">Слушать</string>
+    <string name="listen_off">Выключить слух</string>
+    <string name="stop">Стоп</string>
+    <string name="off">Выключен</string>
+    <string name="settings">Сервер</string>
+    <string name="url_hint">https://ваш-домен.up.railway.app</string>
+    <string name="password_hint">Код входа на сайт</string>
+    <string name="save">Войти и сохранить</string>
+    <string name="battery_btn">Не экономить батарею</string>
+    <string name="battery_ok">Уже без ограничений батареи</string>
+    <string name="need_login">Сначала URL и код сайта</string>
+    <string name="need_fields">Нужны адрес сайта и код</string>
+    <string name="login_ok">Токен сохранён</string>
+    <string name="login_fail">Не вошло: %1$s</string>
+    <string name="err_no_sr">На планшете нет распознавания речи Google</string>
+    <string name="yes">Да?</string>
+    <string name="empty_answer">Готово</string>
+    <string name="howto">Скажите «Джарвис, …». Пока отвечает — можно перебить. One UI: Батарея → этот приложение → Не переводить в сон; в недавних закрепите замок. Google-приложение должно уметь слушать по-русски.</string>
+</resources>

@@ -25,6 +25,7 @@ import json
 import os
 import random
 import re
+import secrets
 import sys
 import time
 import threading
@@ -313,6 +314,9 @@ def route_is_public(route: str) -> bool:
     # Мост Напоминаний: Быстрая команда на телефоне ходит без cookie, её
     # пропуск — APPLE_BRIDGE_TOKEN, он проверяется в самом обработчике.
     if route in ("/api/apple/bridge/pull", "/api/apple/bridge/push"):
+        return True
+    # Планшет логинится кодом сайта и получает токен — cookie ещё нет.
+    if route == "/api/tablet/login":
         return True
     return False
 
@@ -1172,7 +1176,7 @@ def build_backup_zip() -> bytes:
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
         #    skips data JSONs — when DATA_DIR == DIR they belong under data/ only)
         for p in sorted(DIR.iterdir()):
-            if p.is_file() and p.name not in data_names and p.name not in ("jarvis_tg_user.json", "jarvis_ai_turns.jsonl") and p.suffix != ".tmp":
+            if p.is_file() and p.name not in data_names and p.name not in ("jarvis_tg_user.json", "jarvis_ai_turns.jsonl", "jarvis_tablet_tokens.json") and p.suffix != ".tmp":
                 add_file(p, f"code/{p.name}")
 
         # 2. Core data files
@@ -8073,6 +8077,138 @@ def handle_alice_request(payload: dict) -> dict:
     }
 
 
+# ── Планшет: голосовой мост (APK) ───────────────────────────────────────────
+# Sideload-приложение на Galaxy Tab: слушает, шлёт текст сюда, озвучивает ответ.
+# Мозг — тот же _assistant_loop_*, что у бота и браузерной кнопки.
+# Токены — DATA_DIR/jarvis_tablet_tokens.json (600, не в бэкапе). PIN/PUK/пароли
+# из ответа вырезаются ещё раз, даже если инструмент их не отдал.
+
+TABLET_TOKENS_NAME = "jarvis_tablet_tokens.json"
+TABLET_HISTORY_TTL = 10 * 60
+_tablet_history: dict = {}
+_TABLET_SECRET_RX = re.compile(
+    r"(?i)\b(PIN|PUK|пин|пук|password|passwd|пароль|apnPass|proxyPass|api[_-]?key)\b\s*[:=]?\s*\S+"
+)
+
+
+def tablet_tokens_path() -> Path:
+    return Path(os.environ.get("DATA_DIR") or DATA_DIR) / TABLET_TOKENS_NAME
+
+
+def tablet_sanitize(text: str) -> str:
+    """Убрать PIN/PUK/пароли и ключи из ответа, который уйдёт на динамик планшета."""
+    t = text or ""
+    t = _TABLET_SECRET_RX.sub(lambda m: (m.group(1) or "секрет") + " ***", t)
+    t = re.sub(r"sk-(?:ant-)?[A-Za-z0-9_-]{12,}", "sk-***", t)
+    return t
+
+
+def _tablet_load_tokens() -> list:
+    p = tablet_tokens_path()
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return list(data.get("tokens") or []) if isinstance(data, dict) else []
+    except Exception:
+        return []
+
+
+def _tablet_save_tokens(tokens: list) -> None:
+    p = tablet_tokens_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"tokens": tokens}, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, p)
+    try:
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
+
+
+def tablet_issue_token() -> str:
+    raw = secrets.token_urlsafe(32)
+    rec = {"id": uuid.uuid4().hex[:12], "hash": hashlib.sha256(raw.encode()).hexdigest(),
+           "createdAt": int(time.time() * 1000)}
+    tokens = _tablet_load_tokens()
+    tokens.append(rec)
+    _tablet_save_tokens(tokens)
+    return raw
+
+
+def tablet_token_ok(raw: str) -> bool:
+    raw = (raw or "").strip()
+    if not raw or len(raw) < 16:
+        return False
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    return any(t.get("hash") == digest for t in _tablet_load_tokens())
+
+
+def tablet_session_id(raw_token: str = "", cookie_ok: bool = False) -> str:
+    if raw_token:
+        return "tok:" + hashlib.sha256(raw_token.encode()).hexdigest()[:16]
+    if cookie_ok:
+        return "cookie"
+    return ""
+
+
+def tablet_login(password: str) -> dict:
+    if (password or "") != AUTH_PASSWORD:
+        return {"ok": False, "error": "wrong_password"}
+    token = tablet_issue_token()
+    return {"ok": True, "token": token, "cookie": AUTH_COOKIE_VALUE, "cookieName": AUTH_COOKIE_NAME}
+
+
+def handle_tablet_turn(text: str, session_id: str, history_in=None) -> dict:
+    """Один ход голоса с планшета. history_in — явная история от клиента, иначе серверная (TTL 10 мин)."""
+    text = (text or "").strip()
+    if not text:
+        return {"ok": False, "error": "empty", "text": "Не расслышал."}
+    app = load_app_data() or {}
+    conf = _ai_conf(app, "main")
+    if not conf:
+        return {"ok": False, "error": "no_key",
+                "text": "Ассистенту не назначен набор ключей ИИ. На сайте: Настройки → Ассистент."}
+    cfg = _ai_models_cfg(app)
+    conf, esc, esc_reason = _start_conf(app, conf, text)
+    provider, api_key, model, site_url = conf[:4]
+    if history_in is not None:
+        history = [{"role": m.get("role"), "content": m.get("content")}
+                   for m in history_in
+                   if isinstance(m, dict) and m.get("role") in ("user", "assistant") and m.get("content")][-20:]
+    else:
+        rec = _tablet_history.setdefault(session_id or "anon", {"msgs": [], "at": 0.0})
+        if time.time() - rec["at"] > TABLET_HISTORY_TTL:
+            rec["msgs"] = []
+        history = rec["msgs"]
+    turn = list(history) + [{"role": "user", "content": text}]
+    loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
+    groups = None
+    if tool_groups and cfg.get("toolGroups"):
+        groups = tool_groups.pick(text, chat_id="tablet:" + (session_id or "")[:16], has_files=False, anchor="")
+    stats = {"esc": esc_reason}
+    try:
+        answer, nav_links = loop_fn(
+            turn, api_key, model, app, site_url, True,
+            effort=conf[4], role=conf[5], func="voice", esc=esc, groups=groups, turn=stats,
+            compact=bool(cfg.get("compactPrompt")), cache=bool(cfg.get("promptCache")))
+    except _AssistantError as e:
+        stats["ok"] = False
+        _record_turn(stats, cfg, "voice", text, "tablet")
+        msg = tablet_sanitize(str(e))
+        return {"ok": False, "error": msg, "text": msg}
+    _record_turn(stats, cfg, "voice", text, "tablet")
+    if answer is None:
+        answer = "Не разобрался за отведённое число шагов — попробуйте переформулировать."
+    answer = tablet_sanitize(answer)
+    history.append({"role": "user", "content": text})
+    history.append({"role": "assistant", "content": answer})
+    if history_in is None:
+        _tablet_history[session_id or "anon"] = {"msgs": history[-20:], "at": time.time()}
+    links = [{"label": lab, "url": url} for lab, url in (nav_links or []) if url]
+    return {"ok": True, "text": answer, "links": links}
+
+
 # ── Планировщик дел ────────────────────────────────────────────────────────
 
 def token_from_route(route: str, prefix: str, suffix: str = "") -> str | None:
@@ -10214,6 +10350,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._serve_sw()
         elif route == "/api/push/status":
             self._json(200, webpush.public_status() if webpush else {"ok": False, "error": "Web Push на сервере недоступен.", "subscriptions": 0})
+        elif route == "/api/tablet/status":
+            self._json(200, {"ok": True, "device": "tablet"})
         elif route == "/api/push/tools":
             state = (load_app_data() or {}).get("telegramSkills")
             self._json(200, tg_watch_skill.voice_payload(state) if tg_watch_skill else {"tools": [], "prompt": ""})
@@ -10335,6 +10473,9 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         route = self.path.split("?", 1)[0].rstrip("/") or "/"
         if route == "/login":
             self._handle_login_post()
+            return
+        if route == "/api/tablet/login":
+            self._tablet_login_post()
             return
         if not route_is_public(route) and not self._is_authed():
             self._json(401, {"error": "unauthorized"})
@@ -10597,6 +10738,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                     "response": {"text": "Извините, не получилось загрузить дела.", "end_session": True},
                 }
             self._json(200, result)
+        elif route == "/api/tablet/turn":
+            self._tablet_turn_post()
         elif self.path == "/api/english/send-words-test":
             # Test pick using current (optional) reminder overrides from the modal.
             try:
@@ -11639,8 +11782,17 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 return part[len(name) + 1:]
         return None
 
+    def _tablet_bearer(self) -> str:
+        h = (self.headers.get("Authorization") or "").strip()
+        if h.lower().startswith("bearer "):
+            return h[7:].strip()
+        return (self.headers.get("X-Jarvis-Token") or "").strip()
+
     def _is_authed(self) -> bool:
-        return self._get_cookie(AUTH_COOKIE_NAME) == AUTH_COOKIE_VALUE
+        if self._get_cookie(AUTH_COOKIE_NAME) == AUTH_COOKIE_VALUE:
+            return True
+        tok = self._tablet_bearer()
+        return bool(tok and tablet_token_ok(tok))
 
     def _send_login_page(self, next_path: str = "/", error: bool = False):
         if not next_path.startswith("/") or next_path.startswith("//"):
@@ -11696,6 +11848,39 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         self._cors()
         self.end_headers()
         self.wfile.write(body)
+
+    def _tablet_login_post(self):
+        length = self._content_length() or 0
+        if length > 4 * 1024:
+            self._json(413, {"error": "body too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        result = tablet_login(str(payload.get("password") or ""))
+        self._json(200 if result.get("ok") else 401, result)
+
+    def _tablet_turn_post(self):
+        length = self._content_length() or 0
+        if length > 64 * 1024:
+            self._json(413, {"error": "body too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except Exception:
+            self._json(400, {"error": "bad json"})
+            return
+        if not isinstance(payload, dict):
+            payload = {}
+        tok = self._tablet_bearer()
+        sid = tablet_session_id(tok, cookie_ok=self._get_cookie(AUTH_COOKIE_NAME) == AUTH_COOKIE_VALUE)
+        hist = payload.get("history")
+        if hist is not None and not isinstance(hist, list):
+            hist = None
+        self._json(200, handle_tablet_turn(str(payload.get("text") or ""), sid, hist))
 
     def _handle_login_post(self):
         length = self._content_length()
@@ -11831,7 +12016,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Jarvis-Token")
 
     # ── Apple: Календарь, Напоминания и мост Быстрых команд ────────────────
     def _apple_query(self) -> dict:

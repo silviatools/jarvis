@@ -65,6 +65,7 @@
  OpenAI: инструменты вместе с рассуждениями Chat Completions не принимает — при уровне ≠ none цикл идёт через Responses API (`_openai_step`, `_responses_call`; в браузере — `openaiVoiceStep`).
  Эскалация на «сложную» модель — `_TurnState.escalate` / `_needs_complex` в `jarvis.py`; промпт для кэша — `build_assistant_system_prompt(split=True)`.
 - `deck_builder.py` / `deck_skill.py` — навык «Презентации»: движок слайдов (темы, макеты, проверка качества) и интеграция.
+- `android/tablet-voice/` — sideload APK «как Алиса» на планшете (Galaxy Tab A9): foreground service микрофона, wake word «Джарвис», STT, TTS с перебиванием, автозапуск. Мозг — `POST /api/tablet/turn` (тот же `_assistant_loop_*`, cookie или токен устройства). Инструкция — `android/tablet-voice/README-sideload.md`.
 - `index (9).html` — всё приложение одним файлом (React через Babel в браузере); раздел «Учёба» — `StudyView`.
   Настройки → Ассистент (`VoiceAssistantSettings`) разбит на сворачиваемые блоки `AssistantBlock` (по умолчанию закрыты):
   «Плановые задачи» (`PlannedTasksBlock`), навыки, ключи ИИ, Apple, голос и ссылки, инструкция. Новый блок — тоже через `AssistantBlock`.
