@@ -7,6 +7,7 @@ import android.app.NotificationManager
 class App : Application() {
     override fun onCreate() {
         super.onCreate()
+        System.setProperty("jna.nosys", "true")
         Prefs.init(this)
         val ch = NotificationChannel(
             VoiceService.CHANNEL_ID,

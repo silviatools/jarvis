@@ -26,6 +26,7 @@ import os
 import random
 import re
 import secrets
+import struct
 import sys
 import time
 import threading
@@ -8202,6 +8203,48 @@ def tablet_login(password: str) -> dict:
     return {"ok": True, "token": token, "cookie": AUTH_COOKIE_VALUE, "cookieName": AUTH_COOKIE_NAME}
 
 
+def pcm16_to_wav(pcm: bytes, rate: int = 16000) -> bytes:
+    """Сырой PCM 16-bit LE mono → WAV, чтобы отдать в Whisper."""
+    data_size = len(pcm or b"")
+    hdr = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF", 36 + data_size, b"WAVE", b"fmt ", 16,
+        1, 1, rate, rate * 2, 2, 16, b"data", data_size,
+    )
+    return hdr + (pcm or b"")
+
+
+def handle_tablet_stt(body: bytes, content_type: str = "") -> dict:
+    """Распознать фразу с планшета. Ключ OpenAI тот же, что у ассистента. SpeechKit не нужен."""
+    app = load_app_data() or {}
+    key = find_openai_key(app.get("settings") or {})
+    if not key:
+        return {"ok": False, "error": "no_key",
+                "text": "Нет ключа OpenAI для распознавания. На сайте: Настройки → Ассистент."}
+    raw = body or b""
+    if len(raw) < 64:
+        return {"ok": False, "error": "empty", "text": ""}
+    ct = (content_type or "").lower()
+    wav = raw if (raw[:4] == b"RIFF" or "wav" in ct) else pcm16_to_wav(raw)
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {key}"},
+            data={"model": "whisper-1", "language": "ru"},
+            files={"file": ("speech.wav", wav, "audio/wav")},
+            timeout=45,
+        )
+    except Exception as e:
+        return {"ok": False, "error": "net", "text": "Нет связи с распознаванием."}
+    if not r.ok:
+        return {"ok": False, "error": "stt", "text": "Не расслышал."}
+    try:
+        text = str((r.json() or {}).get("text") or "").strip()
+    except Exception:
+        text = ""
+    return {"ok": True, "text": text}
+
+
 def handle_tablet_turn(text: str, session_id: str, history_in=None) -> dict:
     """Один ход голоса с планшета. history_in — явная история от клиента, иначе серверная (TTL 10 мин)."""
     text = (text or "").strip()
@@ -10784,6 +10827,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, result)
         elif route == "/api/tablet/turn":
             self._tablet_turn_post()
+        elif route == "/api/tablet/stt":
+            self._tablet_stt_post()
         elif self.path == "/api/english/send-words-test":
             # Test pick using current (optional) reminder overrides from the modal.
             try:
@@ -11906,6 +11951,15 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             payload = {}
         result = tablet_login(str(payload.get("password") or ""))
         self._json(200 if result.get("ok") else 401, result)
+
+    def _tablet_stt_post(self):
+        length = self._content_length() or 0
+        if length > 2_000_000:
+            self._json(413, {"error": "body too large"})
+            return
+        body = self.rfile.read(length) if length else b""
+        ct = self.headers.get("Content-Type") or ""
+        self._json(200, handle_tablet_stt(body, ct))
 
     def _tablet_turn_post(self):
         length = self._content_length() or 0

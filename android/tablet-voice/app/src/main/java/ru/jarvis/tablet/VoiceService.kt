@@ -8,48 +8,56 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import java.util.ArrayDeque
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.max
 
+/**
+ * Слух как Алиса: один AudioRecord на весь FGS, офлайн wake (Vosk),
+ * в облако — только фраза после пробуждения. Google STT в цикле слуха нет.
+ */
 class VoiceService : Service() {
     enum class Phase { OFF, WAKE, LISTEN, THINK, SPEAK }
 
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
-    private var rec: SpeechRecognizer? = null
+    private lateinit var ear: Ear
+    @Volatile private var spotter: VoskWake? = null
+    @Volatile private var wakeReady = false
+    private var wakeLoading = false
     private var tts: TextToSpeech? = null
     private var ttsReady = false
-    private var phase = Phase.OFF
-    private var wanted = false
+    @Volatile private var phase = Phase.OFF
+    @Volatile private var wanted = false
     private var spoken = ""
-    private var convoUntil = 0L
+    @Volatile private var convoUntil = 0L
     private val history = ArrayDeque<Pair<String, String>>()
     private var lastHeard = ""
     private var lastAnswer = ""
-    private var restarting = false
-    private var srListening = false
     private var speakWatch: Runnable? = null
-    private var speakStartedAt = 0L
-    private var lastSrAt = 0L
-    private var lastSrStartAt = 0L
-    private var failStreak = 0
+    @Volatile private var speakStartedAt = 0L
     private var afterTts = false
-    private var echoUntil = 0L
-    private var wakeLock: PowerManager.WakeLock? = null
-    private lateinit var micKeep: MicKeep
+    @Volatile private var echoUntil = 0L
+    private var cpuLock: PowerManager.WakeLock? = null
+    @Volatile private var capturing = false
+    private val cap = ArrayList<Short>(Ear.SR * 8)
+    private val preroll = ArrayDeque<Short>()
+    private var speechSeen = false
+    private var silentFrames = 0
+    private var listenSince = 0L
+    private var lastSpotAt = 0L
+    private var lastFrameAt = 0L
+    private val capLock = Any()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -57,8 +65,8 @@ class VoiceService : Service() {
         super.onCreate()
         running.set(true)
         VoiceLog.add("FGS onCreate ${AppVer.label(this)}")
-        micKeep = MicKeep(
-            onVoice = { rms, floor -> main.post { onMicVoice(rms, floor) } },
+        ear = Ear(
+            onFrame = { samples, n, rms, floor -> onFrame(samples, n, rms, floor) },
             onNote = { VoiceLog.add(it) },
         )
         tts = TextToSpeech(this) { status ->
@@ -113,9 +121,10 @@ class VoiceService : Service() {
         goForeground(getString(R.string.notif_wake))
         holdCpu()
         setPhase(Phase.WAKE)
-        VoiceLog.add("FGS слух включён — один STT, без AudioRecord")
-        startRec(force = rec == null)
+        ear.start()
+        ensureWake()
         armWatchdog()
+        VoiceLog.add("FGS слух как Алиса — один AudioRecord, без Google STT")
         return START_STICKY
     }
 
@@ -135,27 +144,29 @@ class VoiceService : Service() {
 
     private fun tearDown() {
         cancelSpeakWatch()
-        micKeep.stop("teardown")
-        stopSr("teardown")
+        capturing = false
+        ear.stop("teardown")
+        val w = spotter
+        spotter = null
+        wakeReady = false
+        try { w?.close() } catch (_: Exception) {}
         releaseCpu()
         main.removeCallbacksAndMessages(null)
-        restarting = false
-        srListening = false
     }
 
     private fun holdCpu() {
-        if (wakeLock?.isHeld == true) return
+        if (cpuLock?.isHeld == true) return
         val wl = (getSystemService(POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "jarvis:mic")
         wl.setReferenceCounted(false)
         wl.acquire()
-        wakeLock = wl
+        cpuLock = wl
         VoiceLog.add("wakeLock on")
     }
 
     private fun releaseCpu() {
-        try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (_: Exception) {}
-        wakeLock = null
+        try { if (cpuLock?.isHeld == true) cpuLock?.release() } catch (_: Exception) {}
+        cpuLock = null
     }
 
     private fun goForeground(text: String) {
@@ -167,264 +178,275 @@ class VoiceService : Service() {
         }
     }
 
-    private fun startRec(force: Boolean = false) {
-        if (!wanted) return
-        val now = System.currentTimeMillis()
-        if (srListening) {
-            if (micKeep.running) micKeep.stop("STT жив")
-            VoiceLog.add("STT skip: уже слушает force=$force")
-            return
-        }
-        if (!force && now - lastSrStartAt < START_DEBOUNCE) {
-            VoiceLog.add("STT skip debounce ${now - lastSrStartAt}мс")
-            return
-        }
-        if (micKeep.running) {
-            micKeep.stop("перед STT")
-            main.postDelayed({ if (wanted && !srListening) startRec(force) }, 300)
-            return
-        }
-        if (force && rec != null) stopSr("force")
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            VoiceLog.add("STT нет в системе")
-            holdIfSttDead("no-sr")
-            bus.post(phase, lastHeard, getString(R.string.err_no_sr))
-            return
-        }
-        if (rec == null) {
-            rec = SpeechRecognizer.createSpeechRecognizer(this).also { it.setRecognitionListener(listener) }
-            VoiceLog.add("STT create")
-        }
-        val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 8000L)
-        }
-        restarting = false
-        lastSrStartAt = now
-        try {
-            rec?.startListening(i)
-            srListening = true
-            VoiceLog.add("STT startListening")
-        } catch (e: Exception) {
-            srListening = false
-            VoiceLog.add("STT start fail ${e.javaClass.simpleName}")
-            stopSr("start-fail")
-            scheduleRestart(1500, force = true)
-        }
-    }
-
-    private fun stopSr(why: String) {
-        val had = rec != null
-        srListening = false
-        val r = rec ?: return
-        rec = null
-        try { r.cancel() } catch (_: Exception) {}
-        try { r.destroy() } catch (_: Exception) {}
-        if (had) VoiceLog.add("STT destroy ($why)")
-    }
-
-    private fun holdIfSttDead(why: String) {
-        if (!wanted || srListening) return
-        if (phase != Phase.SPEAK) return
-        micKeep.start(why)
-    }
-
-    private fun scheduleRestart(delay: Long, force: Boolean) {
-        if (!wanted || restarting || srListening) return
-        restarting = true
-        VoiceLog.add("STT listen again через ${delay}мс force=$force")
-        main.postDelayed({
-            restarting = false
-            if (!wanted) return@postDelayed
-            startRec(force)
-        }, delay)
-    }
-
-    private fun armWatchdog() {
-        main.removeCallbacks(watchdog)
-        main.postDelayed(watchdog, WATCH_MS)
-    }
-
-    private val watchdog = object : Runnable {
-        override fun run() {
-            if (!wanted) return
-            if (srListening && micKeep.running) micKeep.stop("watch: STT жив")
-            val idle = System.currentTimeMillis() - lastSrAt
-            if (!srListening && !restarting && idle > WATCH_MS) {
-                VoiceLog.add("watchdog: STT молчит ${idle}мс фаза=$phase")
-                startRec(force = rec == null)
-            }
-            if (wanted) main.postDelayed(this, WATCH_MS)
-        }
-    }
-
-    private val listener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {
-            srListening = true
-            lastSrAt = System.currentTimeMillis()
-            failStreak = 0
-            VoiceLog.add("STT ready")
-        }
-        override fun onBeginningOfSpeech() {
-            lastSrAt = System.currentTimeMillis()
-            if (deaf()) VoiceLog.add("STT onBeginningOfSpeech ignore (TTS)")
-            else VoiceLog.add("STT onBeginningOfSpeech")
-        }
-        override fun onRmsChanged(rmsdB: Float) {}
-        override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() {
-            VoiceLog.add("STT onEndOfSpeech")
-        }
-        override fun onEvent(eventType: Int, params: Bundle?) {}
-        override fun onPartialResults(partialResults: Bundle?) {
-            val t = first(partialResults) ?: return
-            if (deaf()) {
-                if (WakeWord.isStop(t) && System.currentTimeMillis() - speakStartedAt >= BARGE_GRACE) {
-                    VoiceLog.add("barge-in стоп partial")
-                    interrupt(t)
+    private fun ensureWake() {
+        if (wakeReady || wakeLoading) return
+        wakeLoading = true
+        notify(getString(R.string.notif_model))
+        io.execute {
+            try {
+                System.setProperty("jna.nosys", "true")
+                val dir = VoskPack.ensure(filesDir) { msg -> main.post { VoiceLog.add(msg) } }
+                val w = VoskWake(dir)
+                main.post {
+                    if (!wanted) {
+                        w.close()
+                        wakeLoading = false
+                        return@post
+                    }
+                    val old = spotter
+                    spotter = w
+                    wakeReady = true
+                    wakeLoading = false
+                    try { old?.close() } catch (_: Exception) {}
+                    VoiceLog.add("wake готов")
+                    if (phase == Phase.WAKE) notify(getString(R.string.notif_wake))
                 }
-                return
+            } catch (e: Exception) {
+                main.post {
+                    wakeLoading = false
+                    VoiceLog.add("wake ошибка ${e.javaClass.simpleName}: ${e.message ?: ""}")
+                    if (wanted) main.postDelayed({ if (wanted && !wakeReady) ensureWake() }, 20_000)
+                }
             }
-        }
-        override fun onResults(results: Bundle?) {
-            srListening = false
-            lastSrAt = System.currentTimeMillis()
-            val variants = texts(results)
-            VoiceLog.add("STT results «${clip(variants.firstOrNull() ?: "")}» n=${variants.size}")
-            handleHeard(variants)
-            afterSr(soft = true, delay = IDLE_RESTART)
-        }
-        override fun onError(error: Int) {
-            srListening = false
-            lastSrAt = System.currentTimeMillis()
-            val name = srError(error)
-            VoiceLog.add("STT error $error $name")
-            val idle = error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
-            if (idle) {
-                failStreak = 0
-                afterSr(soft = true, delay = IDLE_RESTART)
-                return
-            }
-            failStreak++
-            val disconnected = error == SpeechRecognizer.ERROR_SERVER_DISCONNECTED
-            val busy = error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY
-            val hard = disconnected || busy ||
-                error == SpeechRecognizer.ERROR_CLIENT || error == SpeechRecognizer.ERROR_AUDIO
-            if (hard) {
-                stopSr("error $name")
-                holdIfSttDead("error $name")
-            }
-            val delay = when {
-                disconnected -> (4_000L shl (failStreak - 1).coerceAtMost(3)).coerceAtMost(30_000L)
-                busy -> (2_000L shl (failStreak - 1).coerceAtMost(3)).coerceAtMost(16_000L)
-                else -> (800L * (1 shl failStreak.coerceAtMost(3))).coerceAtMost(8_000L)
-            }
-            afterSr(soft = false, delay = delay)
         }
     }
 
-    private fun afterSr(soft: Boolean, delay: Long) {
-        if (!wanted) return
-        scheduleRestart(delay, force = !soft)
-    }
-
-    private fun first(b: Bundle?): String? = texts(b).firstOrNull()
-
-    private fun texts(b: Bundle?): List<String> {
-        val list = b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) ?: return emptyList()
-        return list.map { it.trim() }.filter { it.isNotBlank() }
-    }
-
-    private fun deaf(): Boolean =
-        phase == Phase.SPEAK || tts?.isSpeaking == true || System.currentTimeMillis() < echoUntil
-
-    private fun handleHeard(variants: List<String>) {
-        if (variants.isEmpty()) return
-        if (phase == Phase.THINK) {
-            VoiceLog.add("STT ignore: думаю «${clip(variants.first())}»")
-            return
-        }
-        if (deaf()) {
-            val stop = variants.firstOrNull { WakeWord.isStop(it) }
-            if (stop != null && System.currentTimeMillis() - speakStartedAt >= BARGE_GRACE) {
-                VoiceLog.add("barge-in стоп «${clip(stop)}»")
-                interrupt(stop)
-                return
+    private fun onFrame(samples: ShortArray, n: Int, rms: Double, floor: Double) {
+        lastFrameAt = System.currentTimeMillis()
+        synchronized(capLock) {
+            for (i in 0 until n) {
+                preroll.addLast(samples[i])
+                while (preroll.size > PREROLL) preroll.removeFirst()
             }
-            VoiceLog.add("STT echo ignore «${clip(variants.first())}»")
-            return
         }
+        val w = spotter
+        if (w != null) {
+            when (w.feed(samples, n)) {
+                VoskWake.Kind.WAKE -> main.post { onWakeSpot() }
+                VoskWake.Kind.STOP -> main.post { onStopSpot() }
+                VoskWake.Kind.NONE -> {}
+            }
+        }
+        if (capturing) appendCapture(samples, n, rms, floor)
+    }
+
+    private fun onWakeSpot() {
+        if (!wanted || !spotOk()) return
         val now = System.currentTimeMillis()
-        val inConvo = now < convoUntil
-        if (phase == Phase.WAKE && !inConvo) {
-            val cmd = variants.map { WakeWord.strip(it) }.firstOrNull { it != null } ?: return
-            if (cmd.isBlank()) {
-                lastHeard = "Джарвис"
-                setPhase(Phase.LISTEN)
-                speakLocal(getString(R.string.yes))
-                return
-            }
-            runCommand(cmd)
+        if (now < echoUntil) {
+            VoiceLog.add("echo wake")
             return
         }
-        val text = variants.first()
-        if (WakeWord.isStop(text)) {
-            tts?.stop()
+        if (phase == Phase.THINK) {
+            VoiceLog.add("wake ignore: думаю")
+            return
+        }
+        if (phase == Phase.SPEAK) {
+            if (now - speakStartedAt < BARGE_GRACE) {
+                VoiceLog.add("echo wake (grace)")
+                return
+            }
+            VoiceLog.add("barge-in wake")
+            stopSpeech()
+            beginListen("barge-wake")
+            return
+        }
+        if (phase == Phase.LISTEN && capturing) {
+            VoiceLog.add("wake уже слушаю")
+            return
+        }
+        VoiceLog.add("wake")
+        beginListen("wake")
+    }
+
+    private fun onStopSpot() {
+        if (!wanted || !spotOk()) return
+        val now = System.currentTimeMillis()
+        if (now < echoUntil) {
+            VoiceLog.add("echo стоп")
+            return
+        }
+        if (phase == Phase.SPEAK) {
+            if (now - speakStartedAt < BARGE_GRACE) {
+                VoiceLog.add("echo стоп (grace)")
+                return
+            }
+            VoiceLog.add("barge-in стоп")
+            stopSpeech()
+            capturing = false
             setPhase(Phase.WAKE)
             notify(getString(R.string.notif_wake))
-            VoiceLog.add("стоп")
             return
         }
-        val stripped = WakeWord.strip(text)
-        runCommand(if (!stripped.isNullOrBlank()) stripped else text)
+        if (phase == Phase.LISTEN || phase == Phase.WAKE) {
+            VoiceLog.add("стоп")
+            capturing = false
+            setPhase(Phase.WAKE)
+            notify(getString(R.string.notif_wake))
+        }
     }
 
-    private fun onMicVoice(rms: Double, floor: Double) {
-        if (!wanted || phase != Phase.SPEAK) {
-            VoiceLog.add("AEC mute не SPEAK rms=${rms.toInt()} floor=${floor.toInt()}")
-            return
+    private fun spotOk(): Boolean {
+        val now = System.currentTimeMillis()
+        if (now - lastSpotAt < SPOT_DEBOUNCE) return false
+        lastSpotAt = now
+        return true
+    }
+
+    private fun beginListen(why: String) {
+        if (!wanted) return
+        synchronized(capLock) {
+            cap.clear()
+            cap.addAll(preroll)
+            speechSeen = false
+            silentFrames = 0
+            listenSince = System.currentTimeMillis()
+            capturing = true
         }
-        val age = System.currentTimeMillis() - speakStartedAt
-        if (age < BARGE_GRACE) {
-            VoiceLog.add("AEC mute grace ${age}мс rms=${rms.toInt()}")
-            return
-        }
-        VoiceLog.add("barge-in energy rms=${rms.toInt()} floor=${floor.toInt()}")
-        cancelSpeakWatch()
-        tts?.stop()
-        spoken = ""
-        afterTts = true
         convoUntil = System.currentTimeMillis() + CONVO_MS
+        afterTts = false
         setPhase(Phase.LISTEN)
         notify(getString(R.string.notif_listen))
-        micKeep.bargeArmed = false
-        if (micKeep.running) micKeep.stop("после barge-in")
-        if (!srListening) startRec(force = rec == null)
+        VoiceLog.add("слушаю ($why)")
     }
 
-    private fun interrupt(heard: String) {
-        cancelSpeakWatch()
-        tts?.stop()
-        spoken = ""
-        if (WakeWord.isStop(heard)) {
+    private fun appendCapture(samples: ShortArray, n: Int, rms: Double, floor: Double) {
+        val snap: ShortArray
+        val timeout: Boolean
+        synchronized(capLock) {
+            if (!capturing || System.currentTimeMillis() < echoUntil) return
+            for (i in 0 until n) cap.add(samples[i])
+            val speech = rms > max(floor * 2.6, 700.0)
+            if (speech) {
+                speechSeen = true
+                silentFrames = 0
+            } else if (speechSeen) {
+                silentFrames++
+            }
+            val ms = cap.size * 1000L / Ear.SR
+            val waited = System.currentTimeMillis() - listenSince
+            when {
+                speechSeen && silentFrames >= SILENCE_FRAMES -> {
+                    capturing = false
+                    snap = ShortArray(cap.size) { cap[it] }
+                    cap.clear()
+                    timeout = false
+                }
+                ms >= MAX_UTTER_MS -> {
+                    capturing = false
+                    snap = ShortArray(cap.size) { cap[it] }
+                    cap.clear()
+                    timeout = false
+                }
+                !speechSeen && waited >= listenIdleMs() -> {
+                    capturing = false
+                    cap.clear()
+                    snap = ShortArray(0)
+                    timeout = true
+                }
+                else -> return
+            }
+        }
+        main.post { onUtterance(snap, timeout) }
+    }
+
+    private fun listenIdleMs(): Long {
+        val left = convoUntil - System.currentTimeMillis()
+        return if (left > 0) left.coerceIn(6_000L, CONVO_MS) else 8_000L
+    }
+
+    private fun onUtterance(samples: ShortArray, timeout: Boolean) {
+        if (!wanted) return
+        if (phase == Phase.THINK || phase == Phase.SPEAK) return
+        if (timeout || samples.size < Ear.SR / 4) {
+            if (timeout) VoiceLog.add("тишина — без трафика")
+            else VoiceLog.add("stream skip коротко")
             setPhase(Phase.WAKE)
             notify(getString(R.string.notif_wake))
-            convoUntil = System.currentTimeMillis() + CONVO_MS
-            VoiceLog.add("interrupt стоп")
             return
         }
-        val cmd = WakeWord.strip(heard)?.ifBlank { null } ?: heard
+        if (System.currentTimeMillis() < echoUntil) {
+            VoiceLog.add("echo drop")
+            setPhase(Phase.WAKE)
+            notify(getString(R.string.notif_wake))
+            return
+        }
+        val ms = samples.size * 1000 / Ear.SR
+        VoiceLog.add("stream ${ms}мс")
+        setPhase(Phase.THINK)
+        notify(getString(R.string.notif_think))
+        val token = Prefs.token
+        val url = Prefs.url
+        io.execute {
+            val r = try {
+                Api.stt(url, token, Wav.pcm16(samples))
+            } catch (e: Exception) {
+                SttResult(false, "", "net")
+            }
+            main.post { onStt(r) }
+        }
+    }
+
+    private fun onStt(r: SttResult) {
+        if (!wanted) return
+        if (!r.ok) {
+            VoiceLog.add("stt ошибка ${r.error.ifBlank { "fail" }}")
+            if (r.error == "empty") {
+                setPhase(Phase.WAKE)
+                notify(getString(R.string.notif_wake))
+                return
+            }
+            val msg = r.text.ifBlank { getString(R.string.err_stt) }
+            lastAnswer = msg
+            speak(msg)
+            return
+        }
+        val raw = r.text.trim()
+        VoiceLog.add("stt «${clip(raw)}»")
+        if (raw.isBlank()) {
+            VoiceLog.add("stt пусто — без хода")
+            setPhase(Phase.WAKE)
+            notify(getString(R.string.notif_wake))
+            return
+        }
+        if (WakeWord.isStop(raw)) {
+            VoiceLog.add("стоп")
+            setPhase(Phase.WAKE)
+            notify(getString(R.string.notif_wake))
+            return
+        }
+        if (lastAnswer.isNotBlank() && WakeWord.overlapsTts(raw, lastAnswer)) {
+            VoiceLog.add("echo «${clip(raw)}»")
+            setPhase(Phase.WAKE)
+            notify(getString(R.string.notif_wake))
+            return
+        }
+        val stripped = WakeWord.strip(raw)
+        val cmd = when {
+            stripped == null -> raw
+            stripped.isBlank() -> ""
+            else -> stripped
+        }
+        if (cmd.isBlank()) {
+            lastHeard = "Джарвис"
+            setPhase(Phase.LISTEN)
+            speakLocal(getString(R.string.yes))
+            return
+        }
         runCommand(cmd)
+    }
+
+    private fun stopSpeech() {
+        cancelSpeakWatch()
+        try { tts?.stop() } catch (_: Exception) {}
+        spoken = ""
+        afterTts = true
+        echoUntil = System.currentTimeMillis() + 250
     }
 
     private fun runCommand(text: String) {
         lastHeard = text
+        capturing = false
         setPhase(Phase.THINK)
         notify(getString(R.string.notif_think))
         VoiceLog.add("ход «${clip(text)}»")
@@ -525,12 +547,15 @@ class VoiceService : Service() {
         cancelSpeakWatch()
         echoUntil = System.currentTimeMillis() + ECHO_MS
         spoken = ""
-        micKeep.bargeArmed = false
         convoUntil = System.currentTimeMillis() + CONVO_MS
         setPhase(Phase.LISTEN)
         notify(getString(R.string.notif_listen))
-        VoiceLog.add("TTS end ($why) — эхо ещё ${ECHO_MS}мс")
-        if (micKeep.running) micKeep.stop("после TTS")
+        VoiceLog.add("TTS end ($why) — эхо ещё ${ECHO_MS}мс, rec жив")
+        main.postDelayed({
+            if (!wanted || phase != Phase.LISTEN || capturing) return@postDelayed
+            if (System.currentTimeMillis() < echoUntil) return@postDelayed
+            beginListen("после TTS")
+        }, ECHO_MS + 80)
     }
 
     private fun setPhase(p: Phase) {
@@ -541,6 +566,27 @@ class VoiceService : Service() {
 
     private fun notify(text: String) {
         goForeground(text)
+    }
+
+    private fun armWatchdog() {
+        main.removeCallbacks(watchdog)
+        main.postDelayed(watchdog, WATCH_MS)
+    }
+
+    private val watchdog = object : Runnable {
+        override fun run() {
+            if (!wanted) return
+            if (!ear.running) {
+                VoiceLog.add("watchdog: rec мёртв — поднимаю")
+                ear.start()
+            } else if (lastFrameAt > 0 && System.currentTimeMillis() - lastFrameAt > WATCH_MS) {
+                VoiceLog.add("watchdog: rec молчит — перезапуск")
+                ear.stop("watchdog")
+                ear.start()
+            }
+            if (!wakeReady && !wakeLoading) ensureWake()
+            if (wanted) main.postDelayed(this, WATCH_MS)
+        }
     }
 
     private fun buildNotif(text: String): Notification {
@@ -569,11 +615,13 @@ class VoiceService : Service() {
         const val NOTIF_ID = 17
         const val ACTION_STOP = "ru.jarvis.tablet.STOP"
         private const val CONVO_MS = 20_000L
-        private const val START_DEBOUNCE = 250L
-        private const val IDLE_RESTART = 200L
         private const val WATCH_MS = 5000L
         private const val BARGE_GRACE = 1200L
         private const val ECHO_MS = 900L
+        private const val SPOT_DEBOUNCE = 800L
+        private const val PREROLL = Ear.SR * 500 / 1000
+        private const val SILENCE_FRAMES = 10
+        private const val MAX_UTTER_MS = 12_000L
         val running = AtomicBoolean(false)
 
         fun start(ctx: Context) {
@@ -582,20 +630,6 @@ class VoiceService : Service() {
 
         fun stop(ctx: Context) {
             ctx.startService(Intent(ctx, VoiceService::class.java).setAction(ACTION_STOP))
-        }
-
-        fun srError(code: Int): String = when (code) {
-            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "NETWORK_TIMEOUT"
-            SpeechRecognizer.ERROR_NETWORK -> "NETWORK"
-            SpeechRecognizer.ERROR_AUDIO -> "AUDIO"
-            SpeechRecognizer.ERROR_SERVER -> "SERVER"
-            SpeechRecognizer.ERROR_CLIENT -> "CLIENT"
-            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "SPEECH_TIMEOUT"
-            SpeechRecognizer.ERROR_NO_MATCH -> "NO_MATCH"
-            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "BUSY"
-            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "PERMISSIONS"
-            SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "SERVER_DISCONNECTED"
-            else -> "E$code"
         }
 
         fun clip(s: String): String = s.replace('\n', ' ').take(48)

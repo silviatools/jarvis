@@ -9,6 +9,7 @@ import types
 import unittest
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 _TMP = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = _TMP.name
@@ -45,6 +46,28 @@ class TabletUnitTest(unittest.TestCase):
         self.assertNotIn("sk-ant-abcdefghijklmnop", out)
         self.assertNotIn("sk-abcdefghijklmnopqrst", out)
         self.assertIn("***", out)
+
+    def test_pcm_wav_and_stt_no_key(self):
+        wav = jarvis.pcm16_to_wav(b"\x00\x01" * 10, 16000)
+        self.assertTrue(wav.startswith(b"RIFF"))
+        self.assertIn(b"WAVE", wav[:16])
+        jarvis.load_app_data = lambda: {"settings": {"aiPresets": []}}
+        r = jarvis.handle_tablet_stt(b"\x00\x01" * 80, "application/octet-stream")
+        self.assertEqual(r["error"], "no_key")
+
+    def test_apk_listen_path_has_no_google_stt(self):
+        root = Path(__file__).resolve().parent / "android" / "tablet-voice" / "app" / "src" / "main"
+        files = list(root.rglob("*.kt")) + list(root.rglob("*.xml"))
+        self.assertTrue(files)
+        banned = ("SpeechRecognizer", "RecognizerIntent", "android.speech.RecognitionListener")
+        hits = []
+        for p in files:
+            text = p.read_text(encoding="utf-8")
+            for token in banned:
+                if token in text:
+                    hits.append(f"{p.relative_to(root)}:{token}")
+        self.assertEqual(hits, [], "Google STT остался в горячем пути: " + ", ".join(hits))
+        self.assertFalse((root / "java/ru/jarvis/tablet/MicKeep.kt").exists())
 
     def test_sanitize_strips_html_markup(self):
         raw = "Да! Напишите, пожалуйста, <b>адрес или станцию метро</b> либо отправьте геопозицию."
@@ -215,6 +238,47 @@ class TabletHttpTest(unittest.TestCase):
         except urllib.error.HTTPError as e:
             payload = json.loads(e.read().decode()) if not raw else e.read()
             return e.code, payload
+
+    def test_stt_needs_auth_and_uses_whisper_mock(self):
+        code, body = self.req("POST", "/api/tablet/stt", None)
+        self.assertEqual(code, 401)
+
+        code, body = self.req("POST", "/api/tablet/login", {"password": jarvis.AUTH_PASSWORD})
+        token = body["token"]
+
+        self.app["settings"]["aiPresets"] = [
+            {"id": "a", "name": "n", "provider": "claude", "apiKey": "k", "model": ""},
+            {"id": "o", "name": "o", "provider": "openai", "apiKey": "sk-test", "model": ""},
+        ]
+        seen = []
+
+        def post(url, headers=None, data=None, files=None, json=None, timeout=None):
+            seen.append({"url": url, "has_file": bool(files)})
+            if "transcriptions" in str(url):
+                return R({"text": "какая погода"})
+            return R({"content": [{"type": "text", "text": "ок"}], "stop_reason": "end_turn"})
+
+        jarvis.requests.post = post
+        pcm = b"\x00\x01" * 200
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/tablet/stt",
+            data=pcm, method="POST",
+            headers={"Content-Type": "application/octet-stream", "Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode())
+        self.assertTrue(payload["ok"], payload)
+        self.assertEqual(payload["text"], "какая погода")
+        self.assertTrue(any("transcriptions" in str(x["url"]) for x in seen))
+
+        empty = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/tablet/stt",
+            data=b"", method="POST",
+            headers={"Content-Type": "audio/wav", "Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(empty, timeout=10) as resp:
+            payload = json.loads(resp.read().decode())
+        self.assertEqual(payload.get("error"), "empty")
 
     def test_unauthorized_and_login_and_turn(self):
         code, body = self.req("POST", "/api/tablet/turn", {"text": "привет"})

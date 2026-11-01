@@ -9,6 +9,7 @@ import java.net.URL
 import java.nio.charset.StandardCharsets
 
 data class TurnResult(val ok: Boolean, val text: String, val error: String = "")
+data class SttResult(val ok: Boolean, val text: String, val error: String = "")
 
 object Api {
     fun login(base: String, password: String): Pair<Boolean, String> {
@@ -40,11 +41,24 @@ object Api {
         return TurnResult(r.optBoolean("ok"), answer, r.optString("error"))
     }
 
+    fun stt(base: String, token: String, wav: ByteArray): SttResult {
+        val conn = open(base, "/api/tablet/stt", "POST", token, "audio/wav")
+        conn.doOutput = true
+        conn.setFixedLengthStreamingMode(wav.size)
+        conn.outputStream.use { it.write(wav) }
+        val r = read(conn)
+        return SttResult(r.optBoolean("ok"), r.optString("text"), r.optString("error"))
+    }
+
     private fun post(base: String, path: String, body: JSONObject, token: String?): JSONObject {
         val conn = open(base, path, "POST", token)
         conn.doOutput = true
         conn.outputStream.use { it.write(body.toString().toByteArray(StandardCharsets.UTF_8)) }
-        val code = conn.responseCode
+        return read(conn)
+    }
+
+    private fun read(conn: HttpURLConnection): JSONObject {
+        val code = try { conn.responseCode } catch (_: Exception) { -1 }
         val stream = if (code in 200..299) conn.inputStream else conn.errorStream
         val raw = stream?.let { BufferedReader(InputStreamReader(it, StandardCharsets.UTF_8)).readText() } ?: "{}"
         conn.disconnect()
@@ -55,13 +69,19 @@ object Api {
         }
     }
 
-    private fun open(base: String, path: String, method: String, token: String?): HttpURLConnection {
+    private fun open(
+        base: String,
+        path: String,
+        method: String,
+        token: String?,
+        contentType: String = "application/json",
+    ): HttpURLConnection {
         val url = URL(base.trimEnd('/') + path)
         val conn = url.openConnection() as HttpURLConnection
         conn.requestMethod = method
         conn.connectTimeout = 20_000
         conn.readTimeout = 90_000
-        conn.setRequestProperty("Content-Type", "application/json")
+        conn.setRequestProperty("Content-Type", contentType)
         conn.setRequestProperty("Accept", "application/json")
         if (!token.isNullOrBlank()) conn.setRequestProperty("Authorization", "Bearer $token")
         return conn

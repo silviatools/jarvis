@@ -4,13 +4,14 @@
     <string name="version_placeholder">Джарвис …</string>
     <string name="version_fmt">Джарвис %1$s</string>
     <string name="log_title">Журнал слуха (МСК)</string>
-    <string name="log_empty">Включите «Слушать» — сюда пойдут STT / TTS / микрофон</string>
+    <string name="log_empty">Включите «Слушать» — сюда пойдут rec / wake / stream / echo</string>
     <string name="copy_log">Скопировать журнал</string>
     <string name="copy_log_ok">Журнал скопирован, %1$d строк</string>
     <string name="copy_log_empty">Журнал пуст</string>
     <string name="notif_title">Джарвис · %1$s</string>
     <string name="channel_name">Слушаю</string>
     <string name="channel_desc">Микрофон Джарвиса не должен засыпать</string>
+    <string name="notif_model">Качаю модель слуха</string>
     <string name="notif_wake">Жду «Джарвис»</string>
     <string name="notif_listen">Слушаю команду</string>
     <string name="notif_think">Думаю…</string>
@@ -29,8 +30,8 @@
     <string name="need_fields">Нужны адрес сайта и код</string>
     <string name="login_ok">Токен сохранён</string>
     <string name="login_fail">Не вошло: %1$s</string>
-    <string name="err_no_sr">На планшете нет распознавания речи Google</string>
+    <string name="err_stt">Не расслышал</string>
     <string name="yes">Да?</string>
     <string name="empty_answer">Готово</string>
-    <string name="howto">Скажите «Джарвис, …». После ответа говорите без имени ~20 с, кнопку повторно жать не надо. Пока говорит — перебейте голосом или «стоп». Уведомление «слушаю» не смахивайте. One UI: Батарея → Не переводить в сон; в недавних — замок.</string>
+    <string name="howto">Скажите «Джарвис, …». Имя слышит планшет, фразу — сервер. После ответа говорите без имени ~20 с. Пока говорит — «стоп» или снова «Джарвис». Первая загрузка качает модель слуха (~45 МБ). Уведомление не смахивайте. One UI: Батарея → Не переводить в сон; в недавних — замок.</string>
 </resources>
