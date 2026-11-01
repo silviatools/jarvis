@@ -51,6 +51,9 @@ class MainActivity : AppCompatActivity() {
             if (a.isNotBlank()) answer.text = a
             toggle.text = if (phase == VoiceService.Phase.OFF) getString(R.string.listen_on) else getString(R.string.listen_off)
         }
+        if (Prefs.listenOn && Prefs.configured() && !VoiceService.running.get()) {
+            VoiceService.start(this)
+        }
         refresh()
     }
 
@@ -115,7 +118,7 @@ class MainActivity : AppCompatActivity() {
             askPerms()
             return
         }
-        if (Prefs.listenOn) {
+        if (Prefs.listenOn && VoiceService.running.get()) {
             VoiceService.stop(this)
             Prefs.listenOn = false
         } else {
