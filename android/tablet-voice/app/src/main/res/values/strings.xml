@@ -5,6 +5,9 @@
     <string name="version_fmt">Джарвис %1$s</string>
     <string name="log_title">Журнал слуха (МСК)</string>
     <string name="log_empty">Включите «Слушать» — сюда пойдут STT / TTS / микрофон</string>
+    <string name="copy_log">Скопировать журнал</string>
+    <string name="copy_log_ok">Журнал скопирован, %1$d строк</string>
+    <string name="copy_log_empty">Журнал пуст</string>
     <string name="notif_title">Джарвис · %1$s</string>
     <string name="channel_name">Слушаю</string>
     <string name="channel_desc">Микрофон Джарвиса не должен засыпать</string>

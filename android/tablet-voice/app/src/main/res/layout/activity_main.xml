@@ -77,6 +77,13 @@
                 android:textColor="#F0C14B"
                 android:textSize="15sp" />
 
+            <Button
+                android:id="@+id/copyLog"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="@string/copy_log" />
+
             <ScrollView
                 android:id="@+id/logScroll"
                 android:layout_width="match_parent"

@@ -8096,11 +8096,15 @@ def tablet_tokens_path() -> Path:
 
 
 def tablet_sanitize(text: str) -> str:
-    """Убрать PIN/PUK/пароли и ключи из ответа, который уйдёт на динамик планшета."""
+    """Убрать HTML, PIN/PUK/пароли и ключи из ответа, который уйдёт на динамик планшета."""
     t = text or ""
+    t = re.sub(r"(?i)<br\s*/?>", "\n", t)
+    t = re.sub(r"(?i)</p>", "\n", t)
+    t = re.sub(r"(?s)<[^>]+>", "", t)
+    t = html.unescape(t)
     t = _TABLET_SECRET_RX.sub(lambda m: (m.group(1) or "секрет") + " ***", t)
     t = re.sub(r"sk-(?:ant-)?[A-Za-z0-9_-]{12,}", "sk-***", t)
-    return t
+    return t.strip()
 
 
 def _tablet_load_tokens() -> list:

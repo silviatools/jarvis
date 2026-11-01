@@ -1,6 +1,8 @@
 package ru.jarvis.tablet
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -44,6 +46,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.save).setOnClickListener { login() }
         toggle.setOnClickListener { toggleListen() }
         findViewById<Button>(R.id.battery).setOnClickListener { battery() }
+        findViewById<Button>(R.id.copyLog).setOnClickListener { copyLog() }
         askPerms()
         refresh()
     }
@@ -158,6 +161,17 @@ class MainActivity : AppCompatActivity() {
             return
         }
         startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).setData(Uri.parse("package:$packageName")))
+    }
+
+    private fun copyLog() {
+        val n = VoiceLog.sessionLines()
+        if (n == 0) {
+            toast(getString(R.string.copy_log_empty))
+            return
+        }
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("jarvis-log", VoiceLog.sessionText()))
+        toast(getString(R.string.copy_log_ok, n))
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()

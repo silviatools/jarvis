@@ -46,6 +46,13 @@ class TabletUnitTest(unittest.TestCase):
         self.assertNotIn("sk-abcdefghijklmnopqrst", out)
         self.assertIn("***", out)
 
+    def test_sanitize_strips_html_markup(self):
+        raw = "Да! Напишите, пожалуйста, <b>адрес или станцию метро</b> либо отправьте геопозицию."
+        out = jarvis.tablet_sanitize(raw)
+        self.assertNotIn("<b>", out)
+        self.assertNotIn("</b>", out)
+        self.assertIn("адрес или станцию метро", out)
+
     def test_login_and_token(self):
         self.assertFalse(jarvis.tablet_login("nope")["ok"])
         ok = jarvis.tablet_login(jarvis.AUTH_PASSWORD)
