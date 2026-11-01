@@ -80,6 +80,19 @@ class TabletUnitTest(unittest.TestCase):
         self.assertIn("barge-in стоп", stop)
         self.assertIn("echoUntil", src)
 
+    def test_v110_listen_policy(self):
+        src = (Path(__file__).resolve().parent / "android/tablet-voice/app/src/main/java"
+               / "ru/jarvis/tablet/VoiceService.kt").read_text(encoding="utf-8")
+        self.assertIn("PREROLL_MS = 1500", src)
+        self.assertIn("HOLD_AFTER_WAKE_MS = 2500L", src)
+        self.assertIn("echoExempt", src)
+        self.assertIn("abortListen", src)
+        self.assertIn("isBareWake", src)
+        self.assertNotIn("speakLocal(getString(R.string.yes))", src)
+        ww = (Path(__file__).resolve().parent / "android/tablet-voice/app/src/main/java"
+              / "ru/jarvis/tablet/WakeWord.kt").read_text(encoding="utf-8")
+        self.assertIn("fun isBareWake", ww)
+
     def test_sanitize_strips_html_markup(self):
         raw = "Да! Напишите, пожалуйста, <b>адрес или станцию метро</b> либо отправьте геопозицию."
         out = jarvis.tablet_sanitize(raw)

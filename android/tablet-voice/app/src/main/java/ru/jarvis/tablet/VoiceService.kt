@@ -47,11 +47,15 @@ class VoiceService : Service() {
     private var speakWatch: Runnable? = null
     private var afterTts = false
     @Volatile private var echoUntil = 0L
+    @Volatile private var echoExempt = false
+    @Volatile private var listenGen = 0
     private var cpuLock: PowerManager.WakeLock? = null
     @Volatile private var capturing = false
     private val cap = ArrayList<Short>(Ear.SR * 8)
     private val preroll = ArrayDeque<Short>()
     private var speechSeen = false
+    private var postWakeHits = 0
+    private var phraseInPreroll = false
     private var silentFrames = 0
     private var listenSince = 0L
     private var lastSpotAt = 0L
@@ -143,7 +147,7 @@ class VoiceService : Service() {
 
     private fun tearDown() {
         cancelSpeakWatch()
-        capturing = false
+        abortListen("teardown")
         ear.stop("teardown")
         val w = spotter
         spotter = null
@@ -239,7 +243,7 @@ class VoiceService : Service() {
         if (phase == Phase.SPEAK) {
             VoiceLog.add("barge-in wake")
             stopSpeech()
-            beginListen("barge-wake")
+            beginListen("barge-wake", barge = true)
             return
         }
         if (phase == Phase.LISTEN && capturing) {
@@ -255,17 +259,25 @@ class VoiceService : Service() {
         if (phase == Phase.SPEAK) {
             VoiceLog.add("barge-in стоп")
             stopSpeech()
-            capturing = false
-            setPhase(Phase.WAKE)
-            notify(getString(R.string.notif_wake))
-            return
-        }
-        if (phase == Phase.LISTEN || phase == Phase.WAKE) {
+        } else {
             VoiceLog.add("стоп")
-            capturing = false
-            setPhase(Phase.WAKE)
-            notify(getString(R.string.notif_wake))
         }
+        abortListen("стоп")
+        setPhase(Phase.WAKE)
+        notify(getString(R.string.notif_wake))
+    }
+
+    private fun abortListen(why: String) {
+        listenGen++
+        echoExempt = false
+        synchronized(capLock) {
+            capturing = false
+            cap.clear()
+            speechSeen = false
+            postWakeHits = 0
+            phraseInPreroll = false
+        }
+        VoiceLog.add("abort $why")
     }
 
     private fun spotOk(): Boolean {
@@ -275,12 +287,25 @@ class VoiceService : Service() {
         return true
     }
 
-    private fun beginListen(why: String) {
+    private fun beginListen(why: String, barge: Boolean = false, seedMs: Int = PREROLL_MS) {
         if (!wanted) return
+        listenGen++
+        if (barge) {
+            echoUntil = 0
+            echoExempt = true
+            VoiceLog.add("echo сброшен (команда)")
+        }
+        val seed = (Ear.SR * seedMs / 1000).coerceAtLeast(0)
         synchronized(capLock) {
             cap.clear()
-            cap.addAll(preroll)
-            speechSeen = false
+            if (seed > 0) {
+                val take = preroll.toList()
+                val from = (take.size - seed).coerceAtLeast(0)
+                for (i in from until take.size) cap.add(take[i])
+            }
+            phraseInPreroll = voicedCount(cap) > Ear.SR * 9 / 10
+            speechSeen = phraseInPreroll
+            postWakeHits = 0
             silentFrames = 0
             listenSince = System.currentTimeMillis()
             capturing = true
@@ -288,38 +313,50 @@ class VoiceService : Service() {
         convoUntil = System.currentTimeMillis() + CONVO_MS
         setPhase(Phase.LISTEN)
         notify(getString(R.string.notif_listen))
-        VoiceLog.add("слушаю ($why)")
+        VoiceLog.add("слушаю ($why) preroll=${seedMs}мс")
+    }
+
+    private fun voicedCount(samples: List<Short>): Int {
+        var n = 0
+        for (s in samples) if (kotlin.math.abs(s.toInt()) > 900) n++
+        return n
     }
 
     private fun appendCapture(samples: ShortArray, n: Int, rms: Double, floor: Double) {
         val snap: ShortArray
         val timeout: Boolean
+        val hasCmd: Boolean
+        val gen: Int
         synchronized(capLock) {
-            if (!capturing || System.currentTimeMillis() < echoUntil) return
+            val muteCloud = !echoExempt && System.currentTimeMillis() < echoUntil
+            if (!capturing || muteCloud) return
             for (i in 0 until n) cap.add(samples[i])
             val speech = rms > max(floor * 2.6, 700.0)
             if (speech) {
                 speechSeen = true
+                postWakeHits++
                 silentFrames = 0
             } else if (speechSeen) {
                 silentFrames++
             }
             val ms = cap.size * 1000L / Ear.SR
             val waited = System.currentTimeMillis() - listenSince
+            val held = waited < HOLD_AFTER_WAKE_MS
+            hasCmd = postWakeHits >= POST_WAKE_HITS || phraseInPreroll
             when {
-                speechSeen && silentFrames >= SILENCE_FRAMES -> {
+                hasCmd && silentFrames >= SILENCE_FRAMES && !held -> {
                     capturing = false
                     snap = ShortArray(cap.size) { cap[it] }
                     cap.clear()
                     timeout = false
                 }
-                ms >= MAX_UTTER_MS -> {
+                ms >= MAX_UTTER_MS && postWakeHits >= POST_WAKE_HITS -> {
                     capturing = false
                     snap = ShortArray(cap.size) { cap[it] }
                     cap.clear()
                     timeout = false
                 }
-                !speechSeen && waited >= listenIdleMs() -> {
+                !hasCmd && waited >= BARE_IDLE_MS -> {
                     capturing = false
                     cap.clear()
                     snap = ShortArray(0)
@@ -327,29 +364,25 @@ class VoiceService : Service() {
                 }
                 else -> return
             }
+            gen = listenGen
         }
-        main.post { onUtterance(snap, timeout) }
+        main.post { onUtterance(snap, timeout, gen) }
     }
 
-    private fun listenIdleMs(): Long {
-        val left = convoUntil - System.currentTimeMillis()
-        return if (left > 0) left.coerceIn(6_000L, CONVO_MS) else 8_000L
-    }
-
-    private fun onUtterance(samples: ShortArray, timeout: Boolean) {
-        if (!wanted) return
-        if (phase == Phase.THINK || phase == Phase.SPEAK) return
-        if (timeout || samples.size < Ear.SR / 4) {
-            if (timeout) VoiceLog.add("тишина — без трафика")
-            else VoiceLog.add("stream skip коротко")
-            setPhase(Phase.WAKE)
-            notify(getString(R.string.notif_wake))
+    private fun onUtterance(samples: ShortArray, timeout: Boolean, gen: Int) {
+        if (!wanted || gen != listenGen) {
+            if (gen != listenGen) VoiceLog.add("stream abort")
             return
         }
-        if (System.currentTimeMillis() < echoUntil) {
+        if (phase == Phase.THINK || phase == Phase.SPEAK) return
+        if (timeout || samples.size < Ear.SR / 4) {
+            VoiceLog.add(if (timeout) "тишина — без трафика" else "stream skip коротко")
+            stayQuiet()
+            return
+        }
+        if (!echoExempt && System.currentTimeMillis() < echoUntil) {
             VoiceLog.add("echo drop")
-            setPhase(Phase.WAKE)
-            notify(getString(R.string.notif_wake))
+            stayQuiet()
             return
         }
         val ms = samples.size * 1000 / Ear.SR
@@ -358,23 +391,32 @@ class VoiceService : Service() {
         notify(getString(R.string.notif_think))
         val token = Prefs.token
         val url = Prefs.url
+        val exempt = echoExempt
         io.execute {
             val r = try {
                 Api.stt(url, token, Wav.pcm16(samples))
             } catch (e: Exception) {
                 SttResult(false, "", "net")
             }
-            main.post { onStt(r) }
+            main.post { onStt(r, gen, exempt) }
         }
     }
 
-    private fun onStt(r: SttResult) {
-        if (!wanted) return
+    private fun stayQuiet() {
+        echoExempt = false
+        setPhase(Phase.WAKE)
+        notify(getString(R.string.notif_wake))
+    }
+
+    private fun onStt(r: SttResult, gen: Int, exempt: Boolean) {
+        if (!wanted || gen != listenGen) {
+            if (gen != listenGen) VoiceLog.add("stt abort")
+            return
+        }
         if (!r.ok) {
             VoiceLog.add("stt ошибка ${r.error.ifBlank { "fail" }}")
             if (r.error == "empty") {
-                setPhase(Phase.WAKE)
-                notify(getString(R.string.notif_wake))
+                stayQuiet()
                 return
             }
             val msg = r.text.ifBlank { getString(R.string.err_stt) }
@@ -384,36 +426,26 @@ class VoiceService : Service() {
         }
         val raw = r.text.trim()
         VoiceLog.add("stt «${clip(raw)}»")
-        if (raw.isBlank()) {
-            VoiceLog.add("stt пусто — без хода")
-            setPhase(Phase.WAKE)
-            notify(getString(R.string.notif_wake))
+        if (raw.isBlank() || WakeWord.isBareWake(raw)) {
+            VoiceLog.add("stt пусто/только имя — без хода")
+            stayQuiet()
             return
         }
         if (WakeWord.isStop(raw)) {
             VoiceLog.add("стоп")
+            abortListen("stt-стоп")
             setPhase(Phase.WAKE)
             notify(getString(R.string.notif_wake))
             return
         }
-        if (lastAnswer.isNotBlank() && WakeWord.overlapsTts(raw, lastAnswer)) {
+        if (!exempt && lastAnswer.isNotBlank() && WakeWord.overlapsTts(raw, lastAnswer)) {
             VoiceLog.add("echo «${clip(raw)}»")
-            setPhase(Phase.WAKE)
-            notify(getString(R.string.notif_wake))
+            stayQuiet()
             return
         }
         val stripped = WakeWord.strip(raw)
-        val cmd = when {
-            stripped == null -> raw
-            stripped.isBlank() -> ""
-            else -> stripped
-        }
-        if (cmd.isBlank()) {
-            lastHeard = "Джарвис"
-            setPhase(Phase.LISTEN)
-            speakLocal(getString(R.string.yes))
-            return
-        }
+        val cmd = if (!stripped.isNullOrBlank()) stripped else raw
+        echoExempt = false
         runCommand(cmd)
     }
 
@@ -422,7 +454,7 @@ class VoiceService : Service() {
         try { tts?.stop() } catch (_: Exception) {}
         spoken = ""
         afterTts = true
-        echoUntil = System.currentTimeMillis() + 250
+        echoUntil = 0
     }
 
     private fun runCommand(text: String) {
@@ -453,21 +485,6 @@ class VoiceService : Service() {
         convoUntil = System.currentTimeMillis() + CONVO_MS
         VoiceLog.add("ответ ${answer.length} симв ok=${r.ok}")
         speak(answer)
-    }
-
-    private fun speakLocal(text: String) {
-        val clean = ReplyText.plain(text)
-        spoken = clean
-        lastAnswer = clean
-        if (!ttsReady) {
-            onSpeakDone("no-tts")
-            return
-        }
-        afterTts = false
-        echoUntil = Long.MAX_VALUE
-        setPhase(Phase.SPEAK)
-        tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "jarvis-local")
-        armSpeakWatch(clean)
     }
 
     private fun speak(text: String) {
@@ -533,7 +550,7 @@ class VoiceService : Service() {
         main.postDelayed({
             if (!wanted || phase != Phase.LISTEN || capturing) return@postDelayed
             if (System.currentTimeMillis() < echoUntil) return@postDelayed
-            beginListen("после TTS")
+            beginListen("после TTS", seedMs = 200)
         }, ECHO_MS + 80)
     }
 
@@ -597,9 +614,13 @@ class VoiceService : Service() {
         private const val WATCH_MS = 5000L
         private const val ECHO_MS = 900L
         private const val SPOT_DEBOUNCE = 800L
-        private const val PREROLL = Ear.SR * 500 / 1000
-        private const val SILENCE_FRAMES = 10
-        private const val MAX_UTTER_MS = 12_000L
+        private const val PREROLL_MS = 1500
+        private const val PREROLL = Ear.SR * PREROLL_MS / 1000
+        private const val HOLD_AFTER_WAKE_MS = 2500L
+        private const val BARE_IDLE_MS = 3000L
+        private const val POST_WAKE_HITS = 4
+        private const val SILENCE_FRAMES = 12
+        private const val MAX_UTTER_MS = 15_000L
         val running = AtomicBoolean(false)
 
         fun start(ctx: Context) {
