@@ -117,6 +117,51 @@ def endpoint_ends(silent_ms, threshold_ms):
     return silent_ms >= threshold_ms
 
 
+def convo_clamp(raw):
+    return min(20, max(0, int(raw)))
+
+
+def convo_decide(now, deadline, speech_held):
+    """Зеркало ConvoWindow.decide: речь держит окно, иначе ноль закрывает."""
+    if speech_held:
+        return "hold"
+    if deadline <= 0 or now >= deadline:
+        return "expire"
+    return "wait"
+
+
+def convo_cap(now, deadline, seconds):
+    """Зеркало ConvoWindow.capDeadline: остаток не длиннее нового окна."""
+    if deadline <= 0:
+        return deadline
+    cap = convo_clamp(seconds) * 1000
+    left = deadline - now
+    if left <= cap:
+        return deadline
+    return now + cap
+
+
+def convo_episode(window_ms, speech_start, speech_end, step=200):
+    """Окно с нуля. speech_start=None — речи не было.
+    Возвращает phase, turn, sounds (мс, когда сыграл бы конец)."""
+    deadline = window_ms
+    held = False
+    sounds = []
+    limit = window_ms if speech_end is None else speech_end
+    t = 0
+    while t <= limit:
+        if speech_start is not None and speech_start <= t < speech_end and (t <= window_ms or held):
+            held = True
+        decision = convo_decide(t, deadline, held)
+        if decision == "expire":
+            sounds.append(t)
+            return {"phase": "WAKE", "turn": False, "sounds": sounds}
+        if speech_end is not None and t >= speech_end and held:
+            return {"phase": "TURN", "turn": True, "sounds": sounds}
+        t += step
+    return {"phase": "LISTEN", "turn": False, "sounds": sounds}
+
+
 def allow_turn(stt, need_name, spotter_wake, name_at_start):
     t = (stt or "").strip()
     if not t:
@@ -270,8 +315,7 @@ class TabletUnitTest(unittest.TestCase):
         cap = voice.split("private fun appendCapture")[1].split("private fun onUtterance")[0]
         self.assertIn("EndpointPause.ends(silentMs, EndpointPause.silenceMs)", cap)
         self.assertNotIn("SILENCE_MS", cap)
-        self.assertIn("CONVO_MS = 5_000L", voice)
-        self.assertNotIn("CONVO_MS = 20_000L", voice)
+        self.assertNotIn("CONVO_MS", voice)
         wake = voice.split("private fun onWakeSpot()")[1].split("private fun onStopSpot()")[0]
         barge = wake.split("phase == Phase.SPEAK")[1].split("return")[0]
         self.assertIn("heardPing()", barge)
@@ -279,7 +323,7 @@ class TabletUnitTest(unittest.TestCase):
         self.assertIn("heardPing()", after)
         exp = voice.split("private fun expireConvo")[1].split("private fun armConvoTick")[0]
         self.assertIn("Earcon.done()", exp)
-        self.assertIn("val closing = !needName && convoUntil > 0L", exp)
+        self.assertIn("val closing = !needName && convoUntil > 0L && !convoHeld", exp)
         self.assertIn("bus.level", voice)
         ep = (root / "java/ru/jarvis/tablet/EndpointPause.kt").read_text(encoding="utf-8")
         self.assertIn("const val DEFAULT_MS = 2000", ep)
@@ -329,8 +373,8 @@ class TabletUnitTest(unittest.TestCase):
             self.assertIn("@+id/userRoot", user)
             self.assertNotIn("@+id/version", user)
         gradle = (Path(__file__).resolve().parent / "android/tablet-voice/app/build.gradle.kts").read_text(encoding="utf-8")
-        self.assertIn('versionName = "1.16"', gradle)
-        self.assertIn("versionCode = 17", gradle)
+        self.assertIn('versionName = "1.17"', gradle)
+        self.assertIn("versionCode = 18", gradle)
         recs = []
         for p in (root / "java").rglob("*.kt"):
             if "AudioRecord(" in p.read_text(encoding="utf-8"):
@@ -349,6 +393,77 @@ class TabletUnitTest(unittest.TestCase):
         self.assertEqual(endpoint_clamp(1749), 1500)
         self.assertEqual(endpoint_clamp(9000), 5000)
         self.assertEqual(endpoint_clamp(2500), 2500)
+
+    def test_v117_window_holds_phrase_and_slider_is_timer(self):
+        """Речь с 4-й по 7-ю секунду — ход, без звука конца. Тишина — конец на 5-й и WAKE."""
+        root = Path(__file__).resolve().parent / "android/tablet-voice/app/src/main"
+        voice = (root / "java/ru/jarvis/tablet/VoiceService.kt").read_text(encoding="utf-8")
+        tick = voice.split("private fun armConvoTick")[1].split("private fun cancelConvoTick")[0]
+        self.assertIn("convoUntil = ConvoWindow.capDeadline(now, convoUntil, ConvoWindow.seconds)", tick)
+        self.assertIn("ConvoWindow.decide(now, convoUntil, convoHeld)", tick)
+        expire_branch = tick.split("Decision.EXPIRE")[1].split("Decision.HOLD")[0]
+        self.assertIn('expireConvo("таймаут")', expire_branch)
+        hold_branch = tick.split("Decision.HOLD")[1]
+        self.assertNotIn("expireConvo", hold_branch)
+        self.assertNotIn("Earcon.done", hold_branch)
+        cap = voice.split("private fun appendCapture")[1].split("private fun onUtterance")[0]
+        self.assertIn("val started = !speechSeen && speech", cap)
+        self.assertIn("if (started && !needName) holdConvo()", cap)
+        self.assertIn("EndpointPause.ends(silentMs, EndpointPause.silenceMs)", cap)
+        hold = voice.split("private fun holdConvo")[1].split("private fun stayQuiet")[0]
+        self.assertIn("convoHeld = true", hold)
+        exp = voice.split("private fun expireConvo")[1].split("private fun retargetConvo")[0]
+        self.assertIn("if (closing) Earcon.done()", exp)
+        self.assertIn("!convoHeld", exp)
+        retarget = voice.split("private fun retargetConvo")[1].split("private fun armConvoTick")[0]
+        self.assertIn("convoUntil = ConvoWindow.capDeadline(now, convoUntil, ConvoWindow.seconds)", retarget)
+        self.assertIn('expireConvo("настройка")', retarget)
+        self.assertIn("ConvoWindow.onChange", voice)
+        self.assertIn("ConvoWindow.durationMs()", voice)
+        cw = (root / "java/ru/jarvis/tablet/ConvoWindow.kt").read_text(encoding="utf-8")
+        self.assertIn("const val DEFAULT_S = 5", cw)
+        self.assertIn("const val MIN_S = 0", cw)
+        self.assertIn("const val MAX_S = 20", cw)
+        self.assertIn("if (speechHeld) return Decision.HOLD", cw)
+        self.assertIn("if (deadline <= 0L || now >= deadline) return Decision.EXPIRE", cw)
+        self.assertIn("return now + cap", cw)
+        commit = cw.split("fun commit")[1]
+        self.assertIn("seconds = s", commit)
+        self.assertIn('VoiceLog.add("окно диалога $s с")', commit)
+        self.assertIn("onChange?.invoke(s)", commit)
+        prefs = (root / "java/ru/jarvis/tablet/Prefs.kt").read_text(encoding="utf-8")
+        setter = prefs.split("var convoSec")[1].split("fun configured")[0]
+        self.assertIn("ConvoWindow.commit", setter)
+        ui = (root / "java/ru/jarvis/tablet/MainActivity.kt").read_text(encoding="utf-8")
+        self.assertIn("Prefs.convoSec = sec", ui)
+        tail = (root / "res/layout/include_user_tail.xml").read_text(encoding="utf-8")
+        self.assertIn("@+id/convoSlider", tail)
+        self.assertIn('android:valueFrom="0.0"', tail)
+        self.assertIn('android:valueTo="20.0"', tail)
+        self.assertIn('android:stepSize="1.0"', tail)
+        strings = (root / "res/values/strings.xml").read_text(encoding="utf-8")
+        self.assertIn("Окно продолжения без имени", strings)
+        ep = (root / "java/ru/jarvis/tablet/EndpointPause.kt").read_text(encoding="utf-8")
+        self.assertIn("const val DEFAULT_MS = 2000", ep)
+        spoke = convo_episode(5000, 4000, 7000)
+        self.assertTrue(spoke["turn"])
+        self.assertEqual(spoke["sounds"], [])
+        self.assertEqual(spoke["phase"], "TURN")
+        self.assertTrue(allow_command("погода в Москве", True))
+        quiet = convo_episode(5000, None, None)
+        self.assertFalse(quiet["turn"])
+        self.assertEqual(quiet["phase"], "WAKE")
+        self.assertEqual(quiet["sounds"], [5000])
+        # ползунок двигает дедлайн, с которым decide закрывает окно
+        shortened = convo_cap(1000, 5000, 2)
+        self.assertEqual(shortened, 3000)
+        self.assertEqual(convo_decide(2999, shortened, False), "wait")
+        self.assertEqual(convo_decide(3000, shortened, False), "expire")
+        self.assertEqual(convo_cap(1000, 5000, 20), 5000)
+        self.assertEqual(convo_cap(1000, 5000, 0), 1000)
+        self.assertEqual(convo_decide(1000, convo_cap(1000, 5000, 0), False), "expire")
+        # удержание важнее укороченного дедлайна: фраза не обрывается
+        self.assertEqual(convo_decide(3000, shortened, True), "hold")
 
     def test_v113_echo_and_name_gate(self):
         spoken = "В Москве сейчас плюс пять, без осадков, ветер слабый."

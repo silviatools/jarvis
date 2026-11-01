@@ -42,6 +42,7 @@ class VoiceService : Service() {
     @Volatile private var wanted = false
     private var spoken = ""
     @Volatile private var convoUntil = 0L
+    @Volatile private var convoHeld = false
     @Volatile private var needName = true
     @Volatile private var nameAtStart = false
     private var convoTick: Runnable? = null
@@ -78,6 +79,7 @@ class VoiceService : Service() {
     override fun onCreate() {
         super.onCreate()
         running.set(true)
+        ConvoWindow.onChange = { main.post { if (wanted) retargetConvo() } }
         VoiceLog.add("FGS onCreate ${AppVer.label(this)}")
         ear = Ear(
             onFrame = { samples, n, rms, floor -> onFrame(samples, n, rms, floor) },
@@ -150,6 +152,7 @@ class VoiceService : Service() {
         if (wanted) VoiceLog.add("FGS lost — служба убита, слух ещё хотели")
         else VoiceLog.add("FGS onDestroy")
         wanted = false
+        ConvoWindow.onChange = null
         tearDown()
         tts?.stop()
         tts?.shutdown()
@@ -291,6 +294,7 @@ class VoiceService : Service() {
         }
         needName = true
         nameAtStart = false
+        convoHeld = false
         convoUntil = 0L
         cancelConvoTick()
         abortListen("стоп")
@@ -344,17 +348,20 @@ class VoiceService : Service() {
             why == "wake" -> {
                 needName = true
                 nameAtStart = true
+                convoHeld = false
             }
             why == "barge-wake" || barge -> {
                 needName = true
                 nameAtStart = false
                 bargePending = true
+                convoHeld = false
             }
             why == "после TTS" -> {
                 needName = false
                 nameAtStart = false
                 if (convoUntil <= System.currentTimeMillis()) {
-                    convoUntil = System.currentTimeMillis() + CONVO_MS
+                    val ms = ConvoWindow.durationMs()
+                    if (ms > 0L) convoUntil = System.currentTimeMillis() + ms
                 }
                 armConvoTick()
             }
@@ -363,6 +370,7 @@ class VoiceService : Service() {
                 nameAtStart = false
             }
         }
+        if (!needName && speechSeen) holdConvo()
         setPhase(Phase.LISTEN)
         VoiceLog.add("слушаю ($why) preroll=${seedMs}мс needName=$needName")
     }
@@ -385,6 +393,7 @@ class VoiceService : Service() {
             val loud = rms > max(floor * 2.6, 700.0)
             val tail = rms > max(floor * 1.35, 280.0)
             val speech = if (speechSeen) tail else loud
+            val started = !speechSeen && speech
             val frameMs = n * 1000 / Ear.SR
             if (speech) {
                 speechSeen = true
@@ -396,6 +405,7 @@ class VoiceService : Service() {
             val ms = cap.size * 1000L / Ear.SR
             val waited = System.currentTimeMillis() - listenSince
             hasCmd = postWakeHits >= POST_WAKE_HITS || phraseInPreroll
+            if (started && !needName) holdConvo()
             when {
                 hasCmd && EndpointPause.ends(silentMs, EndpointPause.silenceMs) -> {
                     capturing = false
@@ -456,9 +466,23 @@ class VoiceService : Service() {
         }
     }
 
+    private fun holdConvo() {
+        if (convoHeld || needName) return
+        convoHeld = true
+        VoiceLog.add("окно держу — фраза")
+        main.post { if (wanted) refreshStatus() }
+    }
+
     private fun stayQuiet() {
         echoExempt = false
-        if (!needName && System.currentTimeMillis() < convoUntil) {
+        val now = System.currentTimeMillis()
+        if (!needName && convoHeld && now < convoUntil) {
+            convoHeld = false
+            setPhase(Phase.LISTEN)
+            beginListen("окно", seedMs = 200)
+            return
+        }
+        if (!needName && !convoHeld && now < convoUntil) {
             setPhase(Phase.LISTEN)
             beginListen("окно", seedMs = 200)
             return
@@ -467,15 +491,28 @@ class VoiceService : Service() {
     }
 
     private fun expireConvo(why: String) {
-        val closing = !needName && convoUntil > 0L
+        val closing = !needName && convoUntil > 0L && !convoHeld
         needName = true
         nameAtStart = false
+        convoHeld = false
         convoUntil = 0L
         cancelConvoTick()
         abortListen(why)
         if (closing) Earcon.done()
         setPhase(Phase.WAKE)
         VoiceLog.add("окно закрыто — жду имя")
+    }
+
+    private fun retargetConvo() {
+        if (!wanted || needName || convoHeld || convoUntil <= 0L) return
+        if (phase == Phase.THINK || phase == Phase.SPEAK) return
+        val now = System.currentTimeMillis()
+        convoUntil = ConvoWindow.capDeadline(now, convoUntil, ConvoWindow.seconds)
+        if (ConvoWindow.decide(now, convoUntil, false) == ConvoWindow.Decision.EXPIRE) {
+            expireConvo("настройка")
+        } else {
+            refreshStatus()
+        }
     }
 
     private fun armConvoTick() {
@@ -489,14 +526,19 @@ class VoiceService : Service() {
                     main.postDelayed(this, 500)
                     return
                 }
-                val left = convoUntil - System.currentTimeMillis()
-                if (left <= 0L) {
-                    expireConvo("таймаут")
-                    return
+                val now = System.currentTimeMillis()
+                if (!convoHeld) convoUntil = ConvoWindow.capDeadline(now, convoUntil, ConvoWindow.seconds)
+                when (ConvoWindow.decide(now, convoUntil, convoHeld)) {
+                    ConvoWindow.Decision.EXPIRE -> {
+                        expireConvo("таймаут")
+                        return
+                    }
+                    ConvoWindow.Decision.HOLD, ConvoWindow.Decision.WAIT -> {
+                        refreshStatus()
+                        convoTick = this
+                        main.postDelayed(this, 200)
+                    }
                 }
-                refreshStatus()
-                convoTick = this
-                main.postDelayed(this, 200)
             }
         }
         convoTick = r
@@ -512,8 +554,9 @@ class VoiceService : Service() {
         Phase.OFF -> getString(R.string.off)
         Phase.WAKE -> getString(R.string.notif_wake)
         Phase.LISTEN -> {
-            val sec = ((convoUntil - System.currentTimeMillis() + 999L) / 1000L).toInt()
-            if (!needName && sec >= 0) getString(R.string.notif_convo, sec)
+            val now = System.currentTimeMillis()
+            val sec = ((convoUntil - now + 999L) / 1000L).toInt()
+            if (!needName && !convoHeld && convoUntil > now && sec >= 0) getString(R.string.notif_convo, sec)
             else getString(R.string.notif_listen)
         }
         Phase.THINK -> getString(R.string.notif_think)
@@ -524,8 +567,8 @@ class VoiceService : Service() {
         val text = statusText()
         bus.label = text
         val now = System.currentTimeMillis()
-        bus.convoOpen = phase == Phase.LISTEN && !needName && convoUntil > now
-        bus.convoDeadline = if (!needName && convoUntil > 0L) convoUntil else 0L
+        bus.convoOpen = phase == Phase.LISTEN && !needName && !convoHeld && convoUntil > now
+        bus.convoDeadline = if (!needName && !convoHeld && convoUntil > 0L) convoUntil else 0L
         notify(text)
         bus.post(phase, lastHeard, lastAnswer)
     }
@@ -645,7 +688,6 @@ class VoiceService : Service() {
         while (history.size > 16) history.removeFirst()
         lastAnswer = answer
         DialogLog.add("jarvis", answer)
-        convoUntil = System.currentTimeMillis() + CONVO_MS
         VoiceLog.add("ответ ${answer.length} симв ok=${r.ok}")
         speak(answer)
     }
@@ -717,9 +759,24 @@ class VoiceService : Service() {
         cancelSpeakWatch()
         echoUntil = System.currentTimeMillis() + ECHO_MS
         spoken = ""
+        openConvo(why)
+    }
+
+    private fun openConvo(why: String) {
+        convoHeld = false
+        val ms = ConvoWindow.durationMs()
+        if (ms <= 0L) {
+            needName = true
+            nameAtStart = false
+            convoUntil = 0L
+            cancelConvoTick()
+            setPhase(Phase.WAKE)
+            VoiceLog.add("TTS end ($why) — окно 0, жду имя")
+            return
+        }
         needName = false
         nameAtStart = false
-        convoUntil = System.currentTimeMillis() + CONVO_MS
+        convoUntil = System.currentTimeMillis() + ms
         armConvoTick()
         setPhase(Phase.LISTEN)
         VoiceLog.add("TTS end ($why) — эхо ещё ${ECHO_MS}мс, rec жив")
@@ -801,7 +858,6 @@ class VoiceService : Service() {
         const val CHANNEL_ID = "jarvis_listen"
         const val NOTIF_ID = 17
         const val ACTION_STOP = "ru.jarvis.tablet.STOP"
-        private const val CONVO_MS = 5_000L
         private const val WATCH_MS = 5000L
         private const val ECHO_MS = 900L
         private const val SPOT_DEBOUNCE = 800L
