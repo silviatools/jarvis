@@ -25,6 +25,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var url: EditText
     private lateinit var password: EditText
     private lateinit var toggle: Button
+    private lateinit var logView: TextView
+    private lateinit var logScroll: android.widget.ScrollView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -35,7 +37,9 @@ class MainActivity : AppCompatActivity() {
         url = findViewById(R.id.url)
         password = findViewById(R.id.password)
         toggle = findViewById(R.id.toggle)
-        findViewById<TextView>(R.id.version).text = AppVer.label(this)
+        logView = findViewById(R.id.log)
+        logScroll = findViewById(R.id.logScroll)
+        findViewById<TextView>(R.id.version).text = getString(R.string.version_fmt, AppVer.label(this))
         url.setText(Prefs.url)
         findViewById<Button>(R.id.save).setOnClickListener { login() }
         toggle.setOnClickListener { toggleListen() }
@@ -52,6 +56,12 @@ class MainActivity : AppCompatActivity() {
             if (a.isNotBlank()) answer.text = a
             toggle.text = if (phase == VoiceService.Phase.OFF) getString(R.string.listen_on) else getString(R.string.listen_off)
         }
+        VoiceLog.listener = { text ->
+            logView.text = text
+            logScroll.post { logScroll.fullScroll(android.view.View.FOCUS_DOWN) }
+        }
+        val snap = VoiceLog.snapshot()
+        if (snap.isNotBlank()) logView.text = snap
         if (Prefs.listenOn && Prefs.configured() && !VoiceService.running.get()) {
             VoiceService.start(this)
         }
@@ -60,6 +70,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         bus.listener = null
+        VoiceLog.listener = null
         super.onPause()
     }
 

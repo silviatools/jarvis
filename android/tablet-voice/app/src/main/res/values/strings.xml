@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Джарвис</string>
-    <string name="version_placeholder">…</string>
+    <string name="version_placeholder">Джарвис …</string>
+    <string name="version_fmt">Джарвис %1$s</string>
+    <string name="log_title">Журнал слуха (МСК)</string>
+    <string name="log_empty">Включите «Слушать» — сюда пойдут STT / TTS / микрофон</string>
     <string name="notif_title">Джарвис · %1$s</string>
     <string name="channel_name">Слушаю</string>
     <string name="channel_desc">Микрофон Джарвиса не должен засыпать</string>

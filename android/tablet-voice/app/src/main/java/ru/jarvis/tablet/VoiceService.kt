@@ -43,6 +43,9 @@ class VoiceService : Service() {
     private var srListening = false
     private var speakWatch: Runnable? = null
     private var speakStartedAt = 0L
+    private var lastSrAt = 0L
+    private var lastSrStartAt = 0L
+    private var failStreak = 0
     private var wakeLock: PowerManager.WakeLock? = null
     private lateinit var micKeep: MicKeep
 
@@ -51,9 +54,14 @@ class VoiceService : Service() {
     override fun onCreate() {
         super.onCreate()
         running.set(true)
-        micKeep = MicKeep { main.post { onMicVoice() } }
+        VoiceLog.add("FGS onCreate ${AppVer.label(this)}")
+        micKeep = MicKeep(
+            onVoice = { rms, floor -> main.post { onMicVoice(rms, floor) } },
+            onNote = { VoiceLog.add(it) },
+        )
         tts = TextToSpeech(this) { status ->
             ttsReady = status == TextToSpeech.SUCCESS
+            VoiceLog.add("TTS init ${if (ttsReady) "ok" else "fail $status"}")
             if (ttsReady) {
                 tts?.language = Locale("ru", "RU")
                 tts?.setAudioAttributes(
@@ -63,13 +71,18 @@ class VoiceService : Service() {
                         .build(),
                 )
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) {}
+                    override fun onStart(utteranceId: String?) {
+                        main.post { VoiceLog.add("TTS start $utteranceId") }
+                    }
                     override fun onDone(utteranceId: String?) {
-                        main.post { onSpeakDone() }
+                        main.post { onSpeakDone("tts-done") }
                     }
                     @Deprecated("deprecated")
                     override fun onError(utteranceId: String?) {
-                        main.post { onSpeakDone() }
+                        main.post {
+                            VoiceLog.add("TTS error $utteranceId")
+                            onSpeakDone("tts-error")
+                        }
                     }
                 })
             }
@@ -79,6 +92,7 @@ class VoiceService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                VoiceLog.add("FGS stop (кнопка)")
                 wanted = false
                 Prefs.listenOn = false
                 tearDown()
@@ -88,6 +102,7 @@ class VoiceService : Service() {
             }
         }
         if (!Prefs.configured()) {
+            VoiceLog.add("FGS: нет URL/токена")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -96,12 +111,15 @@ class VoiceService : Service() {
         goForeground(getString(R.string.notif_wake))
         holdCpu()
         setPhase(Phase.WAKE)
-        startRec(force = true)
+        VoiceLog.add("FGS слух включён")
+        startRec(force = rec == null)
         armWatchdog()
         return START_STICKY
     }
 
     override fun onDestroy() {
+        if (wanted) VoiceLog.add("FGS lost — служба убита, слух ещё хотели")
+        else VoiceLog.add("FGS onDestroy")
         wanted = false
         tearDown()
         tts?.stop()
@@ -115,8 +133,8 @@ class VoiceService : Service() {
 
     private fun tearDown() {
         cancelSpeakWatch()
-        micKeep.stop()
-        stopSr()
+        micKeep.stop("teardown")
+        stopSr("teardown")
         releaseCpu()
         main.removeCallbacksAndMessages(null)
         restarting = false
@@ -130,6 +148,7 @@ class VoiceService : Service() {
         wl.setReferenceCounted(false)
         wl.acquire()
         wakeLock = wl
+        VoiceLog.add("wakeLock on")
     }
 
     private fun releaseCpu() {
@@ -148,16 +167,33 @@ class VoiceService : Service() {
 
     private fun startRec(force: Boolean = false) {
         if (!wanted) return
-        if (srListening && !force) return
-        micKeep.stop()
-        if (force) stopSr()
+        if (phase == Phase.SPEAK || phase == Phase.THINK) {
+            VoiceLog.add("STT skip: фаза $phase")
+            keepMic("фаза $phase")
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (srListening && !force) {
+            VoiceLog.add("STT skip: уже слушает")
+            return
+        }
+        if (!force && now - lastSrStartAt < START_DEBOUNCE) {
+            VoiceLog.add("STT skip debounce ${now - lastSrStartAt}мс")
+            return
+        }
+        if (force) {
+            micKeep.stop("перед STT")
+            stopSr("force")
+        }
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            VoiceLog.add("STT нет в системе")
             keepMic("no-sr")
             bus.post(phase, lastHeard, getString(R.string.err_no_sr))
             return
         }
         if (rec == null) {
             rec = SpeechRecognizer.createSpeechRecognizer(this).also { it.setRecognitionListener(listener) }
+            VoiceLog.add("STT create")
         }
         val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -167,90 +203,124 @@ class VoiceService : Service() {
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
         }
         restarting = false
+        lastSrStartAt = now
         try {
             rec?.startListening(i)
             srListening = true
-        } catch (_: Exception) {
+            VoiceLog.add("STT startListening")
+        } catch (e: Exception) {
             srListening = false
-            stopSr()
-            main.postDelayed({ if (wanted) startRec(force = true) }, 400)
+            VoiceLog.add("STT start fail ${e.javaClass.simpleName}")
+            stopSr("start-fail")
+            scheduleRestart(900, force = true)
         }
     }
 
-    private fun stopSr() {
+    private fun stopSr(why: String) {
+        val had = rec != null
         srListening = false
         val r = rec ?: return
         rec = null
-        try { r.stopListening() } catch (_: Exception) {}
         try { r.cancel() } catch (_: Exception) {}
         try { r.destroy() } catch (_: Exception) {}
+        if (had) VoiceLog.add("STT destroy ($why)")
     }
 
-    private fun keepMic(@Suppress("UNUSED_PARAMETER") why: String) {
+    private fun keepMic(why: String) {
         if (!wanted) return
         if (srListening) return
-        micKeep.start()
+        micKeep.start(why)
     }
 
-    private fun scheduleRestart(delay: Long = 220) {
+    private fun scheduleRestart(delay: Long, force: Boolean) {
         if (!wanted || restarting) return
         restarting = true
+        VoiceLog.add("STT restart через ${delay}мс force=$force")
         main.postDelayed({
             restarting = false
             if (!wanted) return@postDelayed
-            if (phase == Phase.SPEAK || phase == Phase.THINK) {
-                keepMic("hold")
-                return@postDelayed
-            }
-            startRec(force = true)
+            startRec(force)
         }, delay)
     }
 
     private fun armWatchdog() {
         main.removeCallbacks(watchdog)
-        main.postDelayed(watchdog, 2000)
+        main.postDelayed(watchdog, WATCH_MS)
     }
 
     private val watchdog = object : Runnable {
         override fun run() {
             if (!wanted) return
-            if (!srListening && !micKeep.running) {
+            val idle = System.currentTimeMillis() - lastSrAt
+            val dead = !srListening && !micKeep.running && !restarting
+            if (dead && idle > WATCH_MS) {
+                VoiceLog.add("watchdog: слух мёртв ${idle}мс фаза=$phase")
                 if (phase == Phase.SPEAK || phase == Phase.THINK) keepMic("watch")
-                else startRec(force = true)
+                else startRec(force = rec == null)
             }
-            if (wanted) main.postDelayed(this, 2000)
+            if (wanted) main.postDelayed(this, WATCH_MS)
         }
     }
 
     private val listener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) { srListening = true }
-        override fun onBeginningOfSpeech() {}
+        override fun onReadyForSpeech(params: Bundle?) {
+            srListening = true
+            lastSrAt = System.currentTimeMillis()
+            failStreak = 0
+            VoiceLog.add("STT ready")
+        }
+        override fun onBeginningOfSpeech() {
+            lastSrAt = System.currentTimeMillis()
+            VoiceLog.add("STT onBeginningOfSpeech")
+        }
         override fun onRmsChanged(rmsdB: Float) {}
         override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() {}
+        override fun onEndOfSpeech() {
+            VoiceLog.add("STT onEndOfSpeech")
+        }
         override fun onEvent(eventType: Int, params: Bundle?) {}
         override fun onPartialResults(partialResults: Bundle?) {
             val t = first(partialResults) ?: return
-            if (phase == Phase.SPEAK && bargeIn(t)) interrupt(t)
+            if (phase == Phase.SPEAK && bargeIn(t)) {
+                VoiceLog.add("barge-in STT partial «${clip(t)}»")
+                interrupt(t)
+            }
         }
         override fun onResults(results: Bundle?) {
             srListening = false
+            lastSrAt = System.currentTimeMillis()
             val variants = texts(results)
+            VoiceLog.add("STT results «${clip(variants.firstOrNull() ?: "")}» n=${variants.size}")
             handleHeard(variants)
-            afterSr()
+            afterSr(soft = true)
         }
         override fun onError(error: Int) {
             srListening = false
-            val busy = error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY || error == SpeechRecognizer.ERROR_CLIENT
-            if (busy) stopSr()
-            afterSr(if (busy) 450 else 200)
+            lastSrAt = System.currentTimeMillis()
+            val name = srError(error)
+            VoiceLog.add("STT error $error $name")
+            val idle = error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+            if (idle) {
+                failStreak = 0
+                afterSr(soft = true)
+                return
+            }
+            failStreak++
+            val hard = error == SpeechRecognizer.ERROR_CLIENT || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
+                error == SpeechRecognizer.ERROR_AUDIO
+            if (hard) stopSr("error $name")
+            val delay = (700L * (1 shl failStreak.coerceAtMost(3))).coerceAtMost(3000L)
+            afterSr(soft = !hard, delay = delay)
         }
     }
 
-    private fun afterSr(delay: Long = 220) {
+    private fun afterSr(soft: Boolean, delay: Long = SOFT_RESTART) {
         if (!wanted) return
-        if (phase == Phase.THINK || phase == Phase.SPEAK) keepMic("after-sr")
-        else scheduleRestart(delay)
+        if (phase == Phase.THINK || phase == Phase.SPEAK) {
+            keepMic("после STT, фаза $phase")
+            return
+        }
+        scheduleRestart(delay, force = !soft)
     }
 
     private fun first(b: Bundle?): String? = texts(b).firstOrNull()
@@ -265,6 +335,7 @@ class VoiceService : Service() {
         if (phase == Phase.THINK) return
         if (phase == Phase.SPEAK) {
             val hit = variants.firstOrNull { bargeIn(it) } ?: return
+            VoiceLog.add("barge-in STT «${clip(hit)}»")
             interrupt(hit)
             return
         }
@@ -286,6 +357,7 @@ class VoiceService : Service() {
             tts?.stop()
             setPhase(Phase.WAKE)
             notify(getString(R.string.notif_wake))
+            VoiceLog.add("стоп")
             return
         }
         val stripped = WakeWord.strip(text)
@@ -299,16 +371,24 @@ class VoiceService : Service() {
         return !WakeWord.overlapsTts(heard, spoken)
     }
 
-    private fun onMicVoice() {
-        if (!wanted || phase != Phase.SPEAK) return
-        if (System.currentTimeMillis() - speakStartedAt < 700) return
+    private fun onMicVoice(rms: Double, floor: Double) {
+        if (!wanted || phase != Phase.SPEAK) {
+            VoiceLog.add("AEC mute не SPEAK rms=${rms.toInt()} floor=${floor.toInt()}")
+            return
+        }
+        val age = System.currentTimeMillis() - speakStartedAt
+        if (age < BARGE_GRACE) {
+            VoiceLog.add("AEC mute grace ${age}мс rms=${rms.toInt()}")
+            return
+        }
+        VoiceLog.add("barge-in energy rms=${rms.toInt()} floor=${floor.toInt()}")
         cancelSpeakWatch()
         tts?.stop()
         spoken = ""
         convoUntil = System.currentTimeMillis() + CONVO_MS
         setPhase(Phase.LISTEN)
         notify(getString(R.string.notif_listen))
-        startRec(force = true)
+        main.postDelayed({ if (wanted && phase == Phase.LISTEN) startRec(force = true) }, 450)
     }
 
     private fun interrupt(heard: String) {
@@ -319,6 +399,7 @@ class VoiceService : Service() {
             setPhase(Phase.WAKE)
             notify(getString(R.string.notif_wake))
             convoUntil = System.currentTimeMillis() + CONVO_MS
+            VoiceLog.add("interrupt стоп")
             return
         }
         val cmd = WakeWord.strip(heard)?.ifBlank { null } ?: heard
@@ -329,15 +410,16 @@ class VoiceService : Service() {
         lastHeard = text
         setPhase(Phase.THINK)
         notify(getString(R.string.notif_think))
+        VoiceLog.add("ход «${clip(text)}»")
+        stopSr("think")
         keepMic("think")
-        val base = Prefs.url
         val token = Prefs.token
         val snap = history.toList()
         io.execute {
             val r = try {
-                Api.turn(base, token, text, snap)
+                Api.turn(Prefs.url, token, text, snap)
             } catch (e: Exception) {
-                TurnResult(false, "Нет связи с Джарвисом: ${e.message ?: ""}", "net")
+                TurnResult(false, "Нет связи с Джарвисом", "net")
             }
             main.post { onAnswer(text, r) }
         }
@@ -351,6 +433,7 @@ class VoiceService : Service() {
         while (history.size > 16) history.removeFirst()
         lastAnswer = answer
         convoUntil = System.currentTimeMillis() + CONVO_MS
+        VoiceLog.add("ответ ${answer.length} симв ok=${r.ok}")
         speak(answer)
     }
 
@@ -358,12 +441,14 @@ class VoiceService : Service() {
         spoken = text
         lastAnswer = text
         if (!ttsReady) {
-            onSpeakDone()
+            onSpeakDone("no-tts")
             return
         }
         setPhase(Phase.SPEAK)
         speakStartedAt = System.currentTimeMillis()
+        stopSr("speak-local")
         keepMic("speak-local")
+        main.postDelayed({ micKeep.bargeArmed = true }, BARGE_GRACE)
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis-local")
         armSpeakWatch(text)
     }
@@ -373,9 +458,11 @@ class VoiceService : Service() {
         setPhase(Phase.SPEAK)
         speakStartedAt = System.currentTimeMillis()
         notify(getString(R.string.notif_speak))
+        stopSr("speak")
         keepMic("speak")
+        main.postDelayed({ micKeep.bargeArmed = true }, BARGE_GRACE)
         if (!ttsReady) {
-            onSpeakDone()
+            onSpeakDone("no-tts")
             return
         }
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis-ans")
@@ -385,7 +472,7 @@ class VoiceService : Service() {
     private fun armSpeakWatch(text: String) {
         cancelSpeakWatch()
         val wait = (text.length * 90L + 2500L).coerceAtMost(45_000L).coerceAtLeast(2500L)
-        val r = Runnable { if (phase == Phase.SPEAK && wanted) onSpeakDone() }
+        val r = Runnable { if (phase == Phase.SPEAK && wanted) onSpeakDone("tts-watch") }
         speakWatch = r
         main.postDelayed(r, wait)
     }
@@ -395,19 +482,25 @@ class VoiceService : Service() {
         speakWatch = null
     }
 
-    private fun onSpeakDone() {
+    private fun onSpeakDone(why: String) {
         if (!wanted) return
         if (phase != Phase.SPEAK && phase != Phase.LISTEN) return
         cancelSpeakWatch()
         spoken = ""
+        micKeep.bargeArmed = false
         convoUntil = System.currentTimeMillis() + CONVO_MS
         setPhase(Phase.LISTEN)
         notify(getString(R.string.notif_listen))
-        // Google STT на Samsung не живёт рядом с TTS — поднимаем заново сразу.
-        startRec(force = true)
+        VoiceLog.add("TTS end ($why) — пауза затем STT")
+        main.postDelayed({
+            if (!wanted || phase == Phase.THINK) return@postDelayed
+            micKeep.stop("после TTS")
+            startRec(force = true)
+        }, 500)
     }
 
     private fun setPhase(p: Phase) {
+        if (phase != p) VoiceLog.add("фаза $phase → $p")
         phase = p
         bus.post(p, lastHeard, lastAnswer)
     }
@@ -442,6 +535,10 @@ class VoiceService : Service() {
         const val NOTIF_ID = 17
         const val ACTION_STOP = "ru.jarvis.tablet.STOP"
         private const val CONVO_MS = 20_000L
+        private const val START_DEBOUNCE = 900L
+        private const val SOFT_RESTART = 1100L
+        private const val WATCH_MS = 5000L
+        private const val BARGE_GRACE = 1200L
         val running = AtomicBoolean(false)
 
         fun start(ctx: Context) {
@@ -451,6 +548,21 @@ class VoiceService : Service() {
         fun stop(ctx: Context) {
             ctx.startService(Intent(ctx, VoiceService::class.java).setAction(ACTION_STOP))
         }
+
+        fun srError(code: Int): String = when (code) {
+            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "NETWORK_TIMEOUT"
+            SpeechRecognizer.ERROR_NETWORK -> "NETWORK"
+            SpeechRecognizer.ERROR_AUDIO -> "AUDIO"
+            SpeechRecognizer.ERROR_SERVER -> "SERVER"
+            SpeechRecognizer.ERROR_CLIENT -> "CLIENT"
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "SPEECH_TIMEOUT"
+            SpeechRecognizer.ERROR_NO_MATCH -> "NO_MATCH"
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "BUSY"
+            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "PERMISSIONS"
+            else -> "E$code"
+        }
+
+        fun clip(s: String): String = s.replace('\n', ' ').take(48)
     }
 }
 
