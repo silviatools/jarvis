@@ -1,4 +1,4 @@
-"""1:1 зеркало споттера и буфера слуха — старые правила 1.11 и новые 1.12."""
+"""1:1 зеркало споттера и буфера слуха — 1.12 vs 1.13."""
 from __future__ import annotations
 
 import math
@@ -29,19 +29,92 @@ def classify_old(final: bool, text: str, conf: float) -> str:
     return "none"
 
 
-def classify_new(final: bool, text: str, conf: float) -> str:
+def classify_v12(final: bool, text: str, conf: float) -> str:
     t = tokens(text)
     if not t:
         return "none"
-    # стоп: только финал, одно слово, высокий порог
     if t[0] in STOP:
         if final and len(t) == 1 and conf >= 0.70:
             return "stop"
         return "none"
-    # wake: любое вхождение варианта, финал или partial, мягкий порог
     if any(w in NEW_WAKE for w in t) and conf >= 0.28:
         return "wake"
     return "none"
+
+
+def classify_new(final: bool, text: str, conf: float) -> str:
+    """1.13: partial — гипотеза, финал ≥ 0.50."""
+    t = tokens(text)
+    if not t:
+        return "none"
+    if t[0] in STOP:
+        if final and len(t) == 1 and conf >= 0.70:
+            return "stop"
+        return "none"
+    if any(w in NEW_WAKE for w in t) and (not final or conf >= 0.50):
+        return "wake"
+    return "none"
+
+
+class WakeGate:
+    """replay/ignore + 2 кадра partial."""
+
+    def __init__(self, ignore_ms: int = 0):
+        self.ignore_ms = ignore_ms
+        self.hits = 0
+
+    def push(self, t_ms: int, final: bool, text: str, conf: float) -> str:
+        if t_ms < self.ignore_ms:
+            self.hits = 0
+            return "none"
+        k = classify_new(final, text, conf)
+        if k == "wake":
+            if final:
+                self.hits = 0
+                return "wake"
+            self.hits += 1
+            if self.hits >= 2:
+                self.hits = 0
+                return "wake"
+            return "none"
+        self.hits = 0
+        return k
+
+
+def is_echo(exempt: bool, stream_start: int, echo_until: int, heard: str, spoken: str) -> bool:
+    if exempt or stream_start >= echo_until:
+        return False
+    return near_echo(heard, spoken)
+
+
+def near_echo(heard: str, spoken: str) -> bool:
+    a = re.sub(r"[^а-яёa-z0-9 ]", " ", (heard or "").lower()).strip()
+    b = re.sub(r"[^а-яёa-z0-9 ]", " ", (spoken or "").lower()).strip()
+    if len(a) < 8 or len(b) < 8:
+        return False
+    if a in b:
+        return True
+    if b in a and len(b) >= 12:
+        return True
+    aw = [t for t in a.split() if len(t) > 2]
+    bw = {t for t in b.split() if len(t) > 2}
+    if len(aw) < 4:
+        return False
+    return all(t in bw for t in aw) and len(a) <= len(b) + 6
+
+
+def allow_command(stt: str, in_convo: bool) -> bool:
+    t = (stt or "").strip()
+    if not t:
+        return False
+    names = ("джарвис", "джервис", "жервис", "жарвис", "дарвис", "джарвиз", "джарвес", "алиса")
+    low = t.lower()
+    if any(low.strip(" ,.!") == n for n in names):
+        return False
+    if any(n in low for n in names):
+        return True
+    return in_convo
+
 
 
 class ListenBuf:
@@ -71,7 +144,9 @@ class ListenBuf:
             return None
         self.cap.extend(samples)
         rms = math.sqrt(sum(s * s for s in samples) / max(1, len(samples)))
-        speech = rms > 700
+        loud = rms > 700
+        tail = rms > 280
+        speech = tail if self.speech else loud
         if speech:
             self.speech = True
             self.post_hits += 1

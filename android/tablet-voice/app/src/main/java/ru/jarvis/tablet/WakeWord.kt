@@ -26,13 +26,32 @@ object WakeWord {
         return stripped.isBlank()
     }
 
-    fun overlapsTts(heard: String, spoken: String): Boolean {
+    fun hasName(text: String): Boolean =
+        strip(text) != null || isBareWake(text)
+
+    /** Фраза после TTS+хвоста — никогда не эхо. Во время озвучки — только почти дословное совпадение. */
+    fun isEcho(exempt: Boolean, streamStart: Long, echoUntil: Long, heard: String, spoken: String): Boolean {
+        if (exempt) return false
+        if (streamStart >= echoUntil) return false
+        return nearEcho(heard, spoken)
+    }
+
+    fun allowCommand(stt: String, inConvo: Boolean): Boolean {
+        val t = stt.trim()
+        if (t.isBlank() || isBareWake(t)) return false
+        if (hasName(t)) return true
+        return inConvo
+    }
+
+    fun nearEcho(heard: String, spoken: String): Boolean {
         val a = heard.lowercase(Locale("ru")).replace(Regex("[^а-яёa-z0-9 ]"), " ").trim()
-        val b = spoken.lowercase(Locale("ru"))
-        if (a.length < 4) return true
-        val words = a.split(Regex("\\s+")).filter { it.length > 2 }
-        if (words.isEmpty()) return true
-        val hit = words.count { b.contains(it) }
-        return hit * 2 >= words.size
+        val b = spoken.lowercase(Locale("ru")).replace(Regex("[^а-яёa-z0-9 ]"), " ").trim()
+        if (a.length < 8 || b.length < 8) return false
+        if (b.contains(a)) return true
+        if (a.contains(b) && b.length >= 12) return true
+        val aw = a.split(Regex("\\s+")).filter { it.length > 2 }
+        val bw = b.split(Regex("\\s+")).filter { it.length > 2 }.toSet()
+        if (aw.size < 4) return false
+        return aw.all { it in bw } && a.length <= b.length + 6
     }
 }

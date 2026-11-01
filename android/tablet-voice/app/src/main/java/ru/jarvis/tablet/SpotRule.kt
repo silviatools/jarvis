@@ -5,11 +5,13 @@ import java.util.Locale
 
 /**
  * Словарь Vosk-small-ru знает «джарвис» и «джервис»; остальные алиасы в грамматике игнорируются.
- * Wake — мягко (и на partial). Стоп — только финал, одно слово, высокий порог.
+ * Wake: финал с порогом, partial — только как гипотеза (подтверждает VoskWake двумя кадрами).
+ * Стоп — только финал, одно слово, высокий порог.
  */
 object SpotRule {
-    const val WAKE_CONF = 0.28
+    const val WAKE_CONF = 0.50
     const val STOP_CONF = 0.70
+    const val PARTIAL_WAKE_HITS = 2
     val WAKE = listOf("джарвис", "джервис", "жервис", "жарвис", "дарвис", "джарвиз", "джарвес")
     val STOP = listOf("стоп", "хватит")
 
@@ -19,7 +21,7 @@ object SpotRule {
         if (t[0] in STOP) {
             return if (final && t.size == 1 && conf >= STOP_CONF) Kind.STOP else Kind.NONE
         }
-        if (t.any { it in WAKE } && conf >= WAKE_CONF) return Kind.WAKE
+        if (t.any { it in WAKE } && (!final || conf >= WAKE_CONF)) return Kind.WAKE
         return Kind.NONE
     }
 

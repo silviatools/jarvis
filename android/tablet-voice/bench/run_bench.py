@@ -15,8 +15,12 @@ from spot_logic import (
     ListenBuf,
     NEW_GRAMMAR,
     OLD_GRAMMAR,
+    WakeGate,
+    allow_command,
     classify_new,
     classify_old,
+    classify_v12,
+    is_echo,
     tokens,
 )
 
@@ -124,6 +128,15 @@ def first_kind(events, classify) -> tuple[str, int | None]:
     return "none", None
 
 
+def first_kind_v13(events, ignore_ms: int = 0) -> tuple[str, int | None]:
+    gate = WakeGate(ignore_ms=ignore_ms)
+    for e in events:
+        k = gate.push(e["t_ms"], e["final"], e["text"], e["conf"])
+        if k != "none":
+            return k, e["t_ms"]
+    return "none", None
+
+
 def phrase_cover(captured: list[int], original: list[int]) -> float:
     if not original:
         return 0.0
@@ -148,7 +161,11 @@ def main() -> int:
         ("phrase_fast", "Джарвис какая погода в Москве", {"speed": 200, "pitch": 50}),
         ("stop", "стоп", {"speed": 160, "pitch": 50}),
         ("tv", "С вами был прогноз погоды", {"speed": 160, "pitch": 50}),
+        ("tv_tracer", "Это трейсер. Мы снимаем", {"speed": 160, "pitch": 50}),
         ("cmd_only", "какая сегодня погода", {"speed": 165, "pitch": 50}),
+        ("follow_weather", "Да про погоду в Москве", {"speed": 160, "pitch": 50}),
+        ("follow_skill", "Что ты умеешь", {"speed": 160, "pitch": 50}),
+        ("long_ask", "Джарвис расскажи коротко что случилось в Москве", {"speed": 155, "pitch": 50}),
     ]
 
     clips: dict[str, list[int]] = {}
@@ -171,13 +188,13 @@ def main() -> int:
     rows = []
     for label, samples in clips.items():
         padded = silence(250) + samples + silence(600)
-        old_ev = feed_vosk(model, OLD_GRAMMAR, padded, warmup=False)
+        old_ev = feed_vosk(model, NEW_GRAMMAR, padded, warmup=True)
         new_ev = feed_vosk(model, NEW_GRAMMAR, padded, warmup=True)
-        old_k, old_t = first_kind(old_ev, classify_old)
-        new_k, new_t = first_kind(new_ev, classify_new)
+        old_k, old_t = first_kind(old_ev, classify_v12)
+        new_k, new_t = first_kind_v13(new_ev, ignore_ms=0)
         # буфер: wake в момент first wake, полнота фразы
-        old_buf = ListenBuf(1500, 2500, 800, 15000, 3000)
-        new_buf = ListenBuf(2500, 0, 800, 12000, 4000)
+        old_buf = ListenBuf(2500, 0, 800, 12000, 4000)
+        new_buf = ListenBuf(2500, 0, 1000, 30000, 4000)
         frame = SR // 20
         old_cap = new_cap = None
         for i in range(0, len(padded), frame):
@@ -224,11 +241,45 @@ def main() -> int:
     phrase_new = rate("new", "phrase", "wake")
     stop_old = rate("old", "stop", "stop")
     stop_new = rate("new", "stop", "stop")
-    false_old = sum(1 for r in rows if r["clip"] in ("tv", "cmd_only") and r["old"] != "none")
-    false_new = sum(1 for r in rows if r["clip"] in ("tv", "cmd_only") and r["new"] != "none")
+    false_old = sum(1 for r in rows if r["clip"] in ("tv", "tv_tracer", "cmd_only") and r["old"] != "none")
+    false_new = sum(1 for r in rows if r["clip"] in ("tv", "tv_tracer", "cmd_only") and r["new"] != "none")
 
     first = [r for r in rows if r["clip"] == "wake_norm"][0]
     first_g = next((r for r in rows if r["clip"] == "wake_norm_gtts"), None)
+
+    spoken = "В Москве сейчас плюс пять без осадков ветер слабый"
+    echo_cases = {
+        "follow_after_tail": not is_echo(False, 2000, 900, "Да про погоду в Москве", spoken),
+        "skill_after_tail": not is_echo(False, 3000, 900, "Что ты умеешь", spoken),
+        "overlap_near": is_echo(False, 800, 900, "в москве сейчас плюс пять без осадков", spoken),
+        "tv_no_name": not allow_command("Это трейсер. Мы снимаем.", False),
+        "wake_with_name": allow_command("Джарвис какая погода", False),
+        "convo_follow": allow_command("Да про погоду в Москве", True),
+    }
+
+    def feed_buf(buf: ListenBuf, samples: list[int]):
+        closed = None
+        fr = SR // 20
+        for i in range(0, len(samples), fr):
+            got = buf.push(samples[i:i + fr])
+            if got is not None:
+                closed = got
+        return closed
+
+    long_pcm = clips.get("long_ask") or clips["phrase"]
+    piece = long_pcm[: max(SR, len(long_pcm) * 4 // 5)]
+    mid = ListenBuf(2500, 0, 1000, 30000, 4000)
+    mid.begin()
+    closed_mid = feed_buf(mid, piece + silence(400) + piece[-SR // 5 :])
+    end = ListenBuf(2500, 0, 1000, 30000, 4000)
+    end.begin()
+    closed_end = feed_buf(end, piece + silence(1100))
+
+    replay = first_kind_v13(
+        [{"t_ms": 50, "final": False, "text": "джарвис", "conf": 1.0},
+         {"t_ms": 120, "final": False, "text": "джарвис", "conf": 1.0}],
+        ignore_ms=1000,
+    )
 
     summary = {
         "wake_hit_old": wake_old, "wake_hit_new": wake_new,
@@ -236,15 +287,21 @@ def main() -> int:
         "stop_old": stop_old, "stop_new": stop_new,
         "false_old": false_old, "false_new": false_new,
         "first_old": first["old"], "first_new": first["new"],
+        "echo_cases": echo_cases,
+        "endpoint_mid_open": closed_mid is None,
+        "endpoint_end_closed": closed_end is not None,
+        "replay_ignore": replay[0] == "none",
         "rows": rows,
     }
     (OUT / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    print("=== BENCH 1.11 vs 1.12 ===")
+    print("=== BENCH 1.12 vs 1.13 ===")
     print(f"wake hits old {wake_old[0]}/{wake_old[1]}  new {wake_new[0]}/{wake_new[1]}")
     print(f"phrase→wake old {phrase_old[0]}/{phrase_old[1]}  new {phrase_new[0]}/{phrase_new[1]}")
     print(f"stop old {stop_old[0]}/{stop_old[1]}  new {stop_new[0]}/{stop_new[1]}")
     print(f"false (tv/cmd) old {false_old}  new {false_new}")
     print(f"first wake_norm old={first['old']} t={first['old_t']}  new={first['new']} t={first['new_t']}")
+    print("echo/name", echo_cases)
+    print(f"endpoint mid_open={closed_mid is None} end_closed={closed_end is not None} replay_ignore={replay[0]}")
     if first_g:
         print(f"first gtts old={first_g['old']} new={first_g['new']}")
     for r in rows:

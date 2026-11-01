@@ -102,10 +102,35 @@ class VoskWake(modelDir: File) {
         try { it.setWords(true) } catch (_: Exception) {}
         warmup(it)
     }
+    private var ignoreUntil = 0L
+    private var muteSpot = false
+    private var wakeHits = 0
 
-    fun feed(samples: ShortArray, n: Int): SpotRule.Kind {
-        val final = try { rec.acceptWaveForm(samples, n) } catch (_: Exception) { return SpotRule.Kind.NONE }
-        return try {
+    fun ignoreFor(ms: Long) {
+        ignoreUntil = System.currentTimeMillis() + ms
+        wakeHits = 0
+    }
+
+    fun replay(samples: ShortArray) {
+        muteSpot = true
+        try {
+            var i = 0
+            while (i < samples.size) {
+                val m = minOf(320, samples.size - i)
+                feed(samples, i, m)
+                i += m
+            }
+        } finally {
+            muteSpot = false
+        }
+    }
+
+    fun feed(samples: ShortArray, n: Int): SpotRule.Kind = feed(samples, 0, n)
+
+    private fun feed(samples: ShortArray, off: Int, n: Int): SpotRule.Kind {
+        val chunk = if (off == 0 && n == samples.size) samples else samples.copyOfRange(off, off + n)
+        val final = try { rec.acceptWaveForm(chunk, n) } catch (_: Exception) { return SpotRule.Kind.NONE }
+        val raw = try {
             if (final) {
                 val j = JSONObject(rec.result)
                 SpotRule.classify(true, j.optString("text"), SpotRule.confidence(j))
@@ -116,6 +141,28 @@ class VoskWake(modelDir: File) {
         } catch (_: Exception) {
             SpotRule.Kind.NONE
         }
+        if (muteSpot || System.currentTimeMillis() < ignoreUntil) {
+            if (raw != SpotRule.Kind.WAKE) wakeHits = 0
+            return SpotRule.Kind.NONE
+        }
+        return confirm(raw, final)
+    }
+
+    private fun confirm(raw: SpotRule.Kind, final: Boolean): SpotRule.Kind {
+        if (raw == SpotRule.Kind.WAKE) {
+            if (final) {
+                wakeHits = 0
+                return SpotRule.Kind.WAKE
+            }
+            wakeHits++
+            if (wakeHits >= SpotRule.PARTIAL_WAKE_HITS) {
+                wakeHits = 0
+                return SpotRule.Kind.WAKE
+            }
+            return SpotRule.Kind.NONE
+        }
+        wakeHits = 0
+        return raw
     }
 
     fun close() {

@@ -13,8 +13,8 @@ import urllib.request
 from pathlib import Path
 
 
-def spot_classify(final, text, conf, wake_conf=0.28, stop_conf=0.70):
-    """Зеркало SpotRule 1.12: wake мягкий, стоп — финал и одно слово."""
+def spot_classify(final, text, conf, wake_conf=0.50, stop_conf=0.70):
+    """Зеркало SpotRule 1.13: partial — гипотеза, финал с порогом 0.50."""
     tokens = [
         t for t in re.sub(r"[^а-яёa-z0-9\s]", " ", (text or "").lower()).split()
         if t and t not in ("unk", "[unk]")
@@ -24,9 +24,77 @@ def spot_classify(final, text, conf, wake_conf=0.28, stop_conf=0.70):
     if tokens[0] in ("стоп", "хватит"):
         return "stop" if final and len(tokens) == 1 and conf >= stop_conf else "none"
     wake = ("джарвис", "джервис", "жервис", "жарвис", "дарвис", "джарвиз", "джарвес")
-    if any(t in wake for t in tokens) and conf >= wake_conf:
+    if any(t in wake for t in tokens) and (not final or conf >= wake_conf):
         return "wake"
     return "none"
+
+
+def wake_confirm(events, ignore_ms=0, mute_first=0):
+    """Зеркало VoskWake: replay/первая секунда не wake; partial — 2 кадра."""
+    hits = 0
+    out = []
+    for i, e in enumerate(events):
+        if e.get("t_ms", 0) < ignore_ms or i < mute_first:
+            hits = 0
+            out.append("none")
+            continue
+        k = spot_classify(e["final"], e["text"], e["conf"])
+        if k == "wake":
+            if e["final"]:
+                hits = 0
+                out.append("wake")
+            else:
+                hits += 1
+                if hits >= 2:
+                    hits = 0
+                    out.append("wake")
+                else:
+                    out.append("none")
+        else:
+            hits = 0
+            out.append(k)
+    return out
+
+
+def is_echo(exempt, stream_start, echo_until, heard, spoken):
+    """Зеркало WakeWord.isEcho 1.13."""
+    if exempt or stream_start >= echo_until:
+        return False
+    return near_echo(heard, spoken)
+
+
+def near_echo(heard, spoken):
+    a = re.sub(r"[^а-яёa-z0-9 ]", " ", (heard or "").lower()).strip()
+    b = re.sub(r"[^а-яёa-z0-9 ]", " ", (spoken or "").lower()).strip()
+    if len(a) < 8 or len(b) < 8:
+        return False
+    if a in b:
+        return True
+    if b in a and len(b) >= 12:
+        return True
+    aw = [t for t in a.split() if len(t) > 2]
+    bw = {t for t in b.split() if len(t) > 2}
+    if len(aw) < 4:
+        return False
+    return all(t in bw for t in aw) and len(a) <= len(b) + 6
+
+
+def has_name(text):
+    return bool(re.search(
+        r"(?:^|[^\w])(эй[,.]?\s*)?(окей[,.]?\s*)?(джарвис|джервис|жервис|жарвис|дарвис|джарвиз|джарвес|алиса)",
+        (text or "").lower(),
+    ))
+
+
+def allow_command(stt, in_convo):
+    t = (stt or "").strip()
+    if not t:
+        return False
+    if re.match(r"^\s*(эй[,.]?\s*)?(окей[,.]?\s*)?(джарвис|джервис|жервис|жарвис|дарвис|джарвиз|джарвес|алиса)[а-яё]*[,!.]?\s*$", t.lower()):
+        return False
+    if has_name(t):
+        return True
+    return in_convo
 
 _TMP = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = _TMP.name
@@ -97,17 +165,38 @@ class TabletUnitTest(unittest.TestCase):
         self.assertIn("barge-in стоп", stop)
         self.assertIn("echoUntil", src)
 
-    def test_v112_listen_policy(self):
+    def test_v113_listen_policy(self):
         src = (Path(__file__).resolve().parent / "android/tablet-voice/app/src/main/java"
                / "ru/jarvis/tablet/VoiceService.kt").read_text(encoding="utf-8")
         self.assertIn("PREROLL_MS = 2500", src)
-        self.assertIn("SILENCE_MS = 800", src)
+        self.assertIn("SILENCE_MS = 1000", src)
+        self.assertIn("MAX_UTTER_MS = 30_000L", src)
+        self.assertIn("READY_IGNORE_MS = 1000L", src)
         self.assertNotIn("HOLD_AFTER_WAKE_MS", src)
         self.assertIn("echoExempt", src)
         self.assertIn("abortListen", src)
         self.assertIn("heardPing", src)
         self.assertIn("wake готов, прогрет", src)
+        self.assertIn("ignoreFor", src)
+        self.assertIn("w.replay(extra)", src)
+        self.assertIn("stt без имени — без хода", src)
+        self.assertIn('barge || why == "после TTS"', src)
+        self.assertIn("floor * 1.35", src)
         self.assertNotIn("speakLocal(getString(R.string.yes))", src)
+        self.assertNotIn("overlapsTts", src)
+
+    def test_v113_echo_and_name_gate(self):
+        spoken = "В Москве сейчас плюс пять, без осадков, ветер слабый."
+        tts_end = 1_700_000_000_000
+        tail = tts_end + 900
+        self.assertFalse(is_echo(False, tail + 1500, tail, "Да, про погоду в Москве.", spoken))
+        self.assertFalse(is_echo(False, tail + 3000, tail, "Что ты умеешь?", spoken))
+        self.assertFalse(is_echo(True, tail - 100, tail, spoken, spoken))
+        self.assertTrue(is_echo(False, tail - 50, tail, "в москве сейчас плюс пять без осадков", spoken))
+        self.assertTrue(allow_command("Джарвис какая погода", False))
+        self.assertFalse(allow_command("Это трейсер. Мы снимаем.", False))
+        self.assertTrue(allow_command("Да, про погоду в Москве.", True))
+        self.assertFalse(allow_command("Джарвис", False))
 
     def test_spot_rule_wake_soft_stop_strict(self):
         self.assertEqual(spot_classify(False, "стоп", 0.99), "none")
@@ -115,15 +204,24 @@ class TabletUnitTest(unittest.TestCase):
         self.assertEqual(spot_classify(True, "стоп", 0.4), "none")
         self.assertEqual(spot_classify(True, "стоп", 0.9), "stop")
         self.assertEqual(spot_classify(False, "джарвис", 1.0), "wake")
-        self.assertEqual(spot_classify(True, "джарвис какая", 0.4), "wake")
+        self.assertEqual(spot_classify(True, "джарвис какая", 0.4), "none")
+        self.assertEqual(spot_classify(True, "джарвис какая", 0.55), "wake")
         self.assertEqual(spot_classify(True, "какая погода", 0.99), "none")
+        ev = [
+            {"t_ms": 50, "final": False, "text": "джарвис", "conf": 1.0},
+            {"t_ms": 100, "final": False, "text": "джарвис", "conf": 1.0},
+        ]
+        self.assertEqual(wake_confirm(ev, ignore_ms=1000), ["none", "none"])
+        self.assertEqual(wake_confirm(ev), ["none", "wake"])
         root = Path(__file__).resolve().parent / "android/tablet-voice/app/src/main/java/ru/jarvis/tablet"
         vosk = (root / "VoskPack.kt").read_text(encoding="utf-8")
         rule = (root / "SpotRule.kt").read_text(encoding="utf-8")
         voice = (root / "VoiceService.kt").read_text(encoding="utf-8")
         self.assertNotIn("text.contains", vosk)
         self.assertIn("partialResult", vosk)
-        self.assertIn("WAKE_CONF = 0.28", rule)
+        self.assertIn("ignoreFor", vosk)
+        self.assertIn("PARTIAL_WAKE_HITS = 2", rule)
+        self.assertIn("WAKE_CONF = 0.50", rule)
         self.assertIn("STOP_CONF = 0.70", rule)
         stop = voice.split("private fun onStopSpot()")[1].split("private fun abortListen")[0]
         self.assertIn("phase == Phase.LISTEN && capturing", stop)

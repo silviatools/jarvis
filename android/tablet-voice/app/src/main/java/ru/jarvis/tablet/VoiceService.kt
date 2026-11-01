@@ -203,6 +203,7 @@ class VoiceService : Service() {
                     spotter = w
                     wakeReady = true
                     wakeLoading = false
+                    w.ignoreFor(READY_IGNORE_MS)
                     replay = synchronized(capLock) { preroll.toShortArray() }
                     try { old?.close() } catch (_: Exception) {}
                     VoiceLog.add("wake готов, прогрет")
@@ -231,12 +232,7 @@ class VoiceService : Service() {
             val extra = replay
             if (extra != null) {
                 replay = null
-                var i = 0
-                while (i < extra.size) {
-                    val m = minOf(320, extra.size - i)
-                    w.feed(extra.copyOfRange(i, i + m), m)
-                    i += m
-                }
+                w.replay(extra)
             }
             when (w.feed(samples, n)) {
                 SpotRule.Kind.WAKE -> main.post { onWakeSpot() }
@@ -326,7 +322,9 @@ class VoiceService : Service() {
             listenSince = System.currentTimeMillis()
             capturing = true
         }
-        convoUntil = System.currentTimeMillis() + CONVO_MS
+        if (barge || why == "после TTS") {
+            convoUntil = System.currentTimeMillis() + CONVO_MS
+        }
         setPhase(Phase.LISTEN)
         notify(getString(R.string.notif_listen))
         VoiceLog.add("слушаю ($why) preroll=${seedMs}мс")
@@ -347,7 +345,9 @@ class VoiceService : Service() {
             val muteCloud = !echoExempt && System.currentTimeMillis() < echoUntil
             if (!capturing || muteCloud) return
             for (i in 0 until n) cap.add(samples[i])
-            val speech = rms > max(floor * 2.6, 700.0)
+            val loud = rms > max(floor * 2.6, 700.0)
+            val tail = rms > max(floor * 1.35, 280.0)
+            val speech = if (speechSeen) tail else loud
             val frameMs = n * 1000 / Ear.SR
             if (speech) {
                 speechSeen = true
@@ -454,8 +454,14 @@ class VoiceService : Service() {
             notify(getString(R.string.notif_wake))
             return
         }
-        if (!exempt && lastAnswer.isNotBlank() && WakeWord.overlapsTts(raw, lastAnswer)) {
+        if (WakeWord.isEcho(exempt, listenSince, echoUntil, raw, lastAnswer)) {
             VoiceLog.add("echo «${clip(raw)}»")
+            stayQuiet()
+            return
+        }
+        val inConvo = System.currentTimeMillis() < convoUntil
+        if (!WakeWord.allowCommand(raw, inConvo)) {
+            VoiceLog.add("stt без имени — без хода")
             stayQuiet()
             return
         }
@@ -642,8 +648,9 @@ class VoiceService : Service() {
         private const val PREROLL = Ear.SR * PREROLL_MS / 1000
         private const val BARE_IDLE_MS = 4000L
         private const val POST_WAKE_HITS = 3
-        private const val SILENCE_MS = 800
-        private const val MAX_UTTER_MS = 12_000L
+        private const val SILENCE_MS = 1000
+        private const val MAX_UTTER_MS = 30_000L
+        private const val READY_IGNORE_MS = 1000L
         val running = AtomicBoolean(false)
 
         fun start(ctx: Context) {
