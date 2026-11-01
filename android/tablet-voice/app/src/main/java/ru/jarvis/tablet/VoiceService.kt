@@ -46,6 +46,11 @@ class VoiceService : Service() {
     @Volatile private var needName = true
     @Volatile private var nameAtStart = false
     private var convoTick: Runnable? = null
+    private var spokenFull = ""
+    private var spokenOff = 0
+    private var spokenRest = ""
+    @Volatile private var bargePending = false
+    @Volatile private var outKind = "speaker"
     private val history = ArrayDeque<Pair<String, String>>()
     private var lastHeard = ""
     private var lastAnswer = ""
@@ -91,7 +96,10 @@ class VoiceService : Service() {
                 )
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
-                        main.post { VoiceLog.add("TTS start $utteranceId") }
+                        main.post { VoiceLog.add("TTS start $utteranceId out=$outKind") }
+                    }
+                    override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
+                        spokenOff = end
                     }
                     override fun onDone(utteranceId: String?) {
                         main.post { onSpeakDone("tts-done") }
@@ -133,7 +141,8 @@ class VoiceService : Service() {
         ear.start()
         ensureWake()
         armWatchdog()
-        VoiceLog.add("FGS слух как Алиса — один AudioRecord, без Google STT")
+        refreshOut()
+        VoiceLog.add("FGS слух как Алиса — один AudioRecord, без Google STT out=$outKind")
         return START_STICKY
     }
 
@@ -255,9 +264,8 @@ class VoiceService : Service() {
             return
         }
         if (phase == Phase.SPEAK) {
-            VoiceLog.add("barge-in wake")
-            stopSpeech()
-            heardPing()
+            VoiceLog.add("barge-in wake? out=$outKind")
+            pauseSpeechForBarge()
             beginListen("barge-wake", barge = true)
             return
         }
@@ -310,9 +318,8 @@ class VoiceService : Service() {
         if (!wanted) return
         listenGen++
         if (barge) {
-            echoUntil = 0
-            echoExempt = true
-            VoiceLog.add("echo сброшен (команда)")
+            echoExempt = false
+            VoiceLog.add("barge жду STT с именем out=$outKind")
         }
         val seed = (Ear.SR * seedMs / 1000).coerceAtLeast(0)
         synchronized(capLock) {
@@ -334,9 +341,14 @@ class VoiceService : Service() {
                 needName = true
                 nameAtStart = true
             }
-            barge || why == "после TTS" -> {
+            why == "barge-wake" || barge -> {
+                needName = true
+                nameAtStart = false
+                bargePending = true
+            }
+            why == "после TTS" -> {
                 needName = false
-                nameAtStart = barge
+                nameAtStart = false
                 convoUntil = System.currentTimeMillis() + CONVO_MS
                 armConvoTick()
             }
@@ -537,28 +549,62 @@ class VoiceService : Service() {
             notify(getString(R.string.notif_wake))
             return
         }
+        if (bargePending && !WakeWord.hasName(raw)) {
+            rejectBargeEcho(raw)
+            return
+        }
+        if (WakeWord.ngramEcho(raw, lastAnswer) || WakeWord.ngramEcho(raw, spokenFull)) {
+            rejectBargeEcho(raw)
+            return
+        }
         if (WakeWord.isEcho(exempt, listenSince, echoUntil, raw, lastAnswer)) {
             VoiceLog.add("echo «${clip(raw)}»")
             stayQuiet()
             return
         }
-        if (!WakeWord.allowTurn(raw, requireName, named, named)) {
+        if (!WakeWord.allowTurn(raw, requireName, named || bargePending, named)) {
             VoiceLog.add("нет имени — игнор")
             stayQuiet()
             return
         }
         val stripped = WakeWord.strip(raw)
         val cmd = if (!stripped.isNullOrBlank()) stripped else raw
+        bargePending = false
         echoExempt = false
         runCommand(cmd)
+    }
+
+    private fun rejectBargeEcho(raw: String) {
+        VoiceLog.add("barge-in без имени — эхо «${clip(raw)}»")
+        bargePending = false
+        echoExempt = false
+        val rest = spokenRest
+        spokenRest = ""
+        if (rest.isNotBlank()) speak(rest)
+        else stayQuiet()
+    }
+
+    private fun pauseSpeechForBarge() {
+        refreshOut()
+        spokenRest = if (spokenOff in 1 until spokenFull.length) spokenFull.substring(spokenOff).trim() else ""
+        cancelSpeakWatch()
+        try { tts?.stop() } catch (_: Exception) {}
+        afterTts = true
+        echoUntil = System.currentTimeMillis() + ECHO_MS
+        echoExempt = false
+        bargePending = true
+        spotter?.speaking = false
     }
 
     private fun stopSpeech() {
         cancelSpeakWatch()
         try { tts?.stop() } catch (_: Exception) {}
         spoken = ""
+        spokenRest = ""
+        bargePending = false
         afterTts = true
         echoUntil = 0
+        spotter?.speaking = false
     }
 
     private fun runCommand(text: String) {
@@ -593,16 +639,27 @@ class VoiceService : Service() {
     private fun speak(text: String) {
         val clean = ReplyText.plain(text)
         spoken = clean
+        spokenFull = clean
+        spokenOff = 0
         afterTts = false
+        bargePending = false
+        refreshOut()
         echoUntil = Long.MAX_VALUE
+        spotter?.speaking = true
+        spotter?.external = OutRoute.external(outKind)
         setPhase(Phase.SPEAK)
-        notify(getString(R.string.notif_speak))
         if (!ttsReady) {
             onSpeakDone("no-tts")
             return
         }
         tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "jarvis-ans")
         armSpeakWatch(clean)
+    }
+
+    private fun refreshOut() {
+        val am = getSystemService(AUDIO_SERVICE) as AudioManager
+        outKind = OutRoute.kind(am)
+        spotter?.external = OutRoute.external(outKind)
     }
 
     private fun armSpeakWatch(text: String) {
@@ -662,6 +719,11 @@ class VoiceService : Service() {
     private fun setPhase(p: Phase) {
         if (phase != p) VoiceLog.add("фаза $phase → $p")
         phase = p
+        val w = spotter
+        if (w != null) {
+            w.speaking = p == Phase.SPEAK
+            if (p == Phase.SPEAK) w.external = OutRoute.external(outKind)
+        }
         refreshStatus()
     }
 
@@ -744,7 +806,10 @@ class VoiceService : Service() {
             ctx.startService(Intent(ctx, VoiceService::class.java).setAction(ACTION_STOP))
         }
 
-        fun clip(s: String): String = s.replace('\n', ' ').take(48)
+        fun clip(s: String, max: Int = 160): String {
+            val one = s.replace('\n', ' ')
+            return if (one.length <= max) one else one.take(max) + "…"
+        }
     }
 }
 

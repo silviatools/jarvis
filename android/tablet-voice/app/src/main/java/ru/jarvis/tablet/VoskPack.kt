@@ -104,6 +104,8 @@ class VoskWake(modelDir: File) {
     }
     private var ignoreUntil = 0L
     private var muteSpot = false
+    @Volatile var speaking = false
+    @Volatile var external = false
 
     fun ignoreFor(ms: Long) {
         ignoreUntil = System.currentTimeMillis() + ms
@@ -131,10 +133,10 @@ class VoskWake(modelDir: File) {
         val raw = try {
             if (final) {
                 val j = JSONObject(rec.result)
-                SpotRule.classify(true, j.optString("text"), SpotRule.confidence(j))
+                SpotRule.classify(true, j.optString("text"), SpotRule.confidence(j), speaking, external)
             } else {
                 val j = JSONObject(rec.partialResult)
-                SpotRule.classify(false, j.optString("partial"), 1.0)
+                SpotRule.classify(false, j.optString("partial"), 1.0, speaking, external)
             }
         } catch (_: Exception) {
             SpotRule.Kind.NONE

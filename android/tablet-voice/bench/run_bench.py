@@ -22,6 +22,7 @@ from spot_logic import (
     classify_v12,
     classify_v13,
     is_echo,
+    ngram_echo,
     tokens,
 )
 
@@ -320,6 +321,31 @@ def main() -> int:
     bg_sec = len(tiled) / SR
     print(f"false-wake фон {bg_sec:.0f}с: 1.13={hits_v13}  1.14={hits_v14}")
 
+    tts_text = "Для поездки лучше выбрать домик в кемпинге у реки"
+    tts_wav = OUT / "tts-camp.espeak.wav"
+    espeak(tts_text, tts_wav, speed=155, pitch=45)
+    tts_pcm = pcm16(tts_wav)
+    espeak("Джарвис какая погода", OUT / "barge-jar.espeak.wav", speed=160, pitch=50)
+    jar = pcm16(OUT / "barge-jar.espeak.wav")
+    self_barge = 0
+    real_barge = 0
+
+    def has_kind(events, want, speaking=True, external=True):
+        return any(classify_new(e["final"], e["text"], e["conf"], speaking, external) == want for e in events)
+
+    for delay_ms in (50, 150, 280):
+        echo = silence(delay_ms) + [int(s * 0.85) for s in tts_pcm]
+        mixed = mix(tts_pcm + silence(400), echo, 1.0)
+        ev = feed_vosk(model, NEW_GRAMMAR, mixed, warmup=True)
+        if has_kind(ev, "wake"):
+            self_barge += 1
+        over = mixed + silence(80) + jar
+        ev2 = feed_vosk(model, NEW_GRAMMAR, over, warmup=True)
+        if has_kind(ev2, "wake"):
+            real_barge += 1
+    echo_text_ok = ngram_echo("Лучше выбрать домик.", tts_text) and ngram_echo("Для поездки", tts_text)
+    print(f"tts-echo self_barge={self_barge}/3 real_barge={real_barge}/3 ngram={echo_text_ok}")
+
     summary = {
         "wake_hit_old": wake_old, "wake_hit_new": wake_new,
         "phrase_wake_old": phrase_old, "phrase_wake_new": phrase_new,
@@ -333,6 +359,9 @@ def main() -> int:
         "false_wake_bg_sec": bg_sec,
         "false_wake_v13": hits_v13,
         "false_wake_v14": hits_v14,
+        "tts_self_barge": self_barge,
+        "tts_real_barge": real_barge,
+        "tts_ngram": echo_text_ok,
         "rows": rows,
     }
     (OUT / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

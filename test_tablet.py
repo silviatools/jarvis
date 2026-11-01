@@ -13,8 +13,12 @@ import urllib.request
 from pathlib import Path
 
 
-def spot_classify(final, text, conf, wake_conf=0.55, stop_conf=0.70):
-    """Зеркало SpotRule 1.14: wake/стоп только финал, одно слово."""
+def spot_classify(final, text, conf, wake_conf=0.55, stop_conf=0.70, speaking=False, external=False):
+    """Зеркало SpotRule 1.15: во время SPEAK порог выше, на BT/кабеле ещё выше."""
+    if speaking and external:
+        wake_conf, stop_conf = 0.82, 0.88
+    elif speaking:
+        wake_conf, stop_conf = 0.75, 0.82
     tokens = [
         t for t in re.sub(r"[^а-яёa-z0-9\s]", " ", (text or "").lower()).split()
         if t and t not in ("unk", "[unk]")
@@ -44,6 +48,33 @@ def is_echo(exempt, stream_start, echo_until, heard, spoken):
     if exempt or stream_start >= echo_until:
         return False
     return near_echo(heard, spoken)
+
+
+def ngram_echo(heard, spoken):
+    if has_name(heard):
+        return False
+    a = re.sub(r"[^а-яёa-z0-9 ]", " ", (heard or "").lower())
+    a = re.sub(r"\s+", " ", a).strip()
+    b = re.sub(r"[^а-яёa-z0-9 ]", " ", (spoken or "").lower())
+    b = re.sub(r"\s+", " ", b).strip()
+    if len(a) < 5 or len(b) < 5:
+        return False
+    if a in b or (len(a) >= 8 and b in a):
+        return True
+    aw = [t for t in a.split() if len(t) > 1]
+    bw = [t for t in b.split() if len(t) > 1]
+    if not aw:
+        return False
+    n = min(3, len(aw))
+    if any(" ".join(aw[i:i + n]) in b for i in range(len(aw) - n + 1)):
+        return True
+    hit = sum(1 for t in aw if t in bw)
+    return hit > 0 and hit * 2 >= len(aw)
+
+
+def clip_log(s, max_len=160):
+    one = (s or "").replace("\n", " ")
+    return one if len(one) <= max_len else one[:max_len] + "…"
 
 
 def near_echo(heard, spoken):
@@ -195,6 +226,29 @@ class TabletUnitTest(unittest.TestCase):
         ]
         self.assertEqual(wake_confirm(ev), ["none", "none", "none"])
         self.assertEqual(spot_classify(True, "джарвис", 0.7), "wake")
+
+    def test_v115_speak_barge_and_clip(self):
+        spoken = "Для поездки лучше выбрать домик в кемпинге у реки."
+        self.assertTrue(ngram_echo("Лучше выбрать домик.", spoken))
+        self.assertTrue(ngram_echo("Для поездки", spoken))
+        self.assertFalse(ngram_echo("Джарвис какая погода", spoken))
+        self.assertEqual(spot_classify(True, "джарвис", 0.70, speaking=True, external=True), "none")
+        self.assertEqual(spot_classify(True, "стоп", 0.80, speaking=True, external=True), "none")
+        self.assertEqual(spot_classify(True, "джарвис", 0.90, speaking=True, external=True), "wake")
+        long = "а" * 200
+        self.assertTrue(clip_log(long).endswith("…"))
+        self.assertGreater(len(clip_log(long)), 48)
+        src = (Path(__file__).resolve().parent / "android/tablet-voice/app/src/main/java"
+               / "ru/jarvis/tablet/VoiceService.kt").read_text(encoding="utf-8")
+        self.assertIn("barge-in без имени — эхо", src)
+        self.assertIn("out=", src)
+        self.assertIn("pauseSpeechForBarge", src)
+        self.assertNotIn("echo сброшен (команда)", src)
+        self.assertIn("+ \"…\"", src)
+        rule = (Path(__file__).resolve().parent / "android/tablet-voice/app/src/main/java"
+                / "ru/jarvis/tablet/SpotRule.kt").read_text(encoding="utf-8")
+        self.assertIn("SPEAK_EXT_WAKE_CONF = 0.82", rule)
+        self.assertIn("SPEAK_EXT_STOP_CONF = 0.88", rule)
 
     def test_v113_echo_and_name_gate(self):
         spoken = "В Москве сейчас плюс пять, без осадков, ветер слабый."

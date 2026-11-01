@@ -11,15 +11,37 @@ import java.util.Locale
 object SpotRule {
     const val WAKE_CONF = 0.55
     const val STOP_CONF = 0.70
+    const val SPEAK_WAKE_CONF = 0.75
+    const val SPEAK_STOP_CONF = 0.82
+    const val SPEAK_EXT_WAKE_CONF = 0.82
+    const val SPEAK_EXT_STOP_CONF = 0.88
     val WAKE = listOf("джарвис", "джервис")
     val STOP = listOf("стоп", "хватит")
 
-    fun classify(final: Boolean, text: String, conf: Double): Kind {
+    fun wakeConf(speaking: Boolean, external: Boolean): Double = when {
+        speaking && external -> SPEAK_EXT_WAKE_CONF
+        speaking -> SPEAK_WAKE_CONF
+        else -> WAKE_CONF
+    }
+
+    fun stopConf(speaking: Boolean, external: Boolean): Double = when {
+        speaking && external -> SPEAK_EXT_STOP_CONF
+        speaking -> SPEAK_STOP_CONF
+        else -> STOP_CONF
+    }
+
+    fun classify(
+        final: Boolean,
+        text: String,
+        conf: Double,
+        speaking: Boolean = false,
+        external: Boolean = false,
+    ): Kind {
         val t = tokens(text)
         if (t.isEmpty()) return Kind.NONE
         if (!final || t.size != 1) return Kind.NONE
-        if (t[0] in STOP && conf >= STOP_CONF) return Kind.STOP
-        if (t[0] in WAKE && conf >= WAKE_CONF) return Kind.WAKE
+        if (t[0] in STOP && conf >= stopConf(speaking, external)) return Kind.STOP
+        if (t[0] in WAKE && conf >= wakeConf(speaking, external)) return Kind.WAKE
         return Kind.NONE
     }
 

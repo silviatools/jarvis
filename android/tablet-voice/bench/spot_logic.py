@@ -56,16 +56,42 @@ def classify_v13(final: bool, text: str, conf: float) -> str:
     return "none"
 
 
-def classify_new(final: bool, text: str, conf: float) -> str:
-    """1.14: только финал, одно слово джарвис/джервис."""
+def classify_new(final: bool, text: str, conf: float, speaking: bool = False, external: bool = False) -> str:
+    """1.15: финал; во время SPEAK/внешний выход порог выше."""
     t = tokens(text)
     if not t or not final or len(t) != 1:
         return "none"
-    if t[0] in STOP and conf >= 0.70:
+    stop_min = 0.88 if speaking and external else 0.82 if speaking else 0.70
+    wake_min = 0.82 if speaking and external else 0.75 if speaking else 0.55
+    if t[0] in STOP and conf >= stop_min:
         return "stop"
-    if t[0] in ("джарвис", "джервис") and conf >= 0.55:
+    if t[0] in ("джарвис", "джервис") and conf >= wake_min:
         return "wake"
     return "none"
+
+
+def ngram_echo(heard: str, spoken: str) -> bool:
+    names = ("джарвис", "джервис", "жервис", "жарвис", "дарвис")
+    low = (heard or "").lower()
+    if any(n in low for n in names):
+        return False
+    a = re.sub(r"[^а-яёa-z0-9 ]", " ", low)
+    a = re.sub(r"\s+", " ", a).strip()
+    b = re.sub(r"[^а-яёa-z0-9 ]", " ", (spoken or "").lower())
+    b = re.sub(r"\s+", " ", b).strip()
+    if len(a) < 5 or len(b) < 5:
+        return False
+    if a in b or (len(a) >= 8 and b in a):
+        return True
+    aw = [t for t in a.split() if len(t) > 1]
+    if not aw:
+        return False
+    n = min(3, len(aw))
+    if any(" ".join(aw[i:i + n]) in b for i in range(0, len(aw) - n + 1)):
+        return True
+    bw = set(t for t in b.split() if len(t) > 1)
+    hit = sum(1 for t in aw if t in bw)
+    return hit > 0 and hit * 2 >= len(aw)
 
 
 class WakeGate:
