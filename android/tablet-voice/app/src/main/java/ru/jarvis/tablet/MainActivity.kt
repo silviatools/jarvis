@@ -35,6 +35,7 @@ class MainActivity : AppCompatActivity() {
         url = findViewById(R.id.url)
         password = findViewById(R.id.password)
         toggle = findViewById(R.id.toggle)
+        findViewById<TextView>(R.id.version).text = AppVer.label(this)
         url.setText(Prefs.url)
         findViewById<Button>(R.id.save).setOnClickListener { login() }
         toggle.setOnClickListener { toggleListen() }

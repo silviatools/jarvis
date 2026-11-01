@@ -20,6 +20,16 @@
             android:textStyle="bold" />
 
         <TextView
+            android:id="@+id/version"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textColor="#F0C14B"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:text="@string/version_placeholder" />
+
+        <TextView
             android:id="@+id/status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

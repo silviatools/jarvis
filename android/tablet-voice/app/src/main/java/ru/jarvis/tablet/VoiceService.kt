@@ -427,7 +427,7 @@ class VoiceService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle(getString(R.string.notif_title))
+            .setContentTitle(getString(R.string.notif_title, AppVer.label(this)))
             .setContentText(text)
             .setOngoing(true)
             .setOnlyAlertOnce(true)

@@ -6,17 +6,28 @@ plugins {
 android {
     namespace = "ru.jarvis.tablet"
     compileSdk = 34
+    signingConfigs {
+        create("sideload") {
+            storeFile = rootProject.file("keystore/jarvis-tablet.jks")
+            storePassword = "jarvis-tablet"
+            keyAlias = "jarvis"
+            keyPassword = "jarvis-tablet"
+        }
+    }
     defaultConfig {
         applicationId = "ru.jarvis.tablet"
         minSdk = 33
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("sideload")
+        }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("sideload")
         }
     }
     compileOptions {
