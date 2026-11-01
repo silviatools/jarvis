@@ -36,11 +36,18 @@ object WakeWord {
         return nearEcho(heard, spoken)
     }
 
-    fun allowCommand(stt: String, inConvo: Boolean): Boolean {
+    /**
+     * В окне продолжения имя не нужно. В WAKE — только после споттера
+     * и если в STT есть имя либо оно было в начале записи.
+     */
+    fun allowTurn(stt: String, needName: Boolean, spotterWake: Boolean, nameAtStart: Boolean): Boolean {
         val t = stt.trim()
         if (t.isBlank() || isBareWake(t)) return false
+        if (!needName) return true
+        if (!spotterWake) return false
         if (hasName(t)) return true
-        return inConvo
+        val words = t.split(Regex("\\s+")).filter { it.isNotBlank() }
+        return nameAtStart && words.size <= 3
     }
 
     fun nearEcho(heard: String, spoken: String): Boolean {

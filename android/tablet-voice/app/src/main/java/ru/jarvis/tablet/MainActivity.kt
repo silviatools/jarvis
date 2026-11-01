@@ -54,7 +54,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         bus.listener = { phase, h, a ->
-            status.text = phaseLabel(phase)
+            status.text = bus.label.ifBlank { phaseLabel(phase) }
             if (h.isNotBlank()) heard.text = h
             if (a.isNotBlank()) answer.text = a
             toggle.text = if (phase == VoiceService.Phase.OFF) getString(R.string.listen_on) else getString(R.string.listen_off)
@@ -90,7 +90,7 @@ class MainActivity : AppCompatActivity() {
     private fun phaseLabel(p: VoiceService.Phase): String = when (p) {
         VoiceService.Phase.OFF -> getString(R.string.off)
         VoiceService.Phase.WAKE -> getString(R.string.notif_wake)
-        VoiceService.Phase.LISTEN -> getString(R.string.notif_listen)
+        VoiceService.Phase.LISTEN -> bus.label.ifBlank { getString(R.string.notif_listen) }
         VoiceService.Phase.THINK -> getString(R.string.notif_think)
         VoiceService.Phase.SPEAK -> getString(R.string.notif_speak)
     }

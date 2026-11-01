@@ -13,46 +13,29 @@ import urllib.request
 from pathlib import Path
 
 
-def spot_classify(final, text, conf, wake_conf=0.50, stop_conf=0.70):
-    """Зеркало SpotRule 1.13: partial — гипотеза, финал с порогом 0.50."""
+def spot_classify(final, text, conf, wake_conf=0.55, stop_conf=0.70):
+    """Зеркало SpotRule 1.14: wake/стоп только финал, одно слово."""
     tokens = [
         t for t in re.sub(r"[^а-яёa-z0-9\s]", " ", (text or "").lower()).split()
         if t and t not in ("unk", "[unk]")
     ]
-    if not tokens:
+    if not tokens or not final or len(tokens) != 1:
         return "none"
     if tokens[0] in ("стоп", "хватит"):
-        return "stop" if final and len(tokens) == 1 and conf >= stop_conf else "none"
-    wake = ("джарвис", "джервис", "жервис", "жарвис", "дарвис", "джарвиз", "джарвес")
-    if any(t in wake for t in tokens) and (not final or conf >= wake_conf):
+        return "stop" if conf >= stop_conf else "none"
+    if tokens[0] in ("джарвис", "джервис") and conf >= wake_conf:
         return "wake"
     return "none"
 
 
 def wake_confirm(events, ignore_ms=0, mute_first=0):
-    """Зеркало VoskWake: replay/первая секунда не wake; partial — 2 кадра."""
-    hits = 0
+    """Зеркало VoskWake 1.14: replay/1 с глушатся, partial не будит."""
     out = []
     for i, e in enumerate(events):
         if e.get("t_ms", 0) < ignore_ms or i < mute_first:
-            hits = 0
             out.append("none")
             continue
-        k = spot_classify(e["final"], e["text"], e["conf"])
-        if k == "wake":
-            if e["final"]:
-                hits = 0
-                out.append("wake")
-            else:
-                hits += 1
-                if hits >= 2:
-                    hits = 0
-                    out.append("wake")
-                else:
-                    out.append("none")
-        else:
-            hits = 0
-            out.append(k)
+        out.append(spot_classify(e["final"], e["text"], e["conf"]))
     return out
 
 
@@ -87,14 +70,23 @@ def has_name(text):
 
 
 def allow_command(stt, in_convo):
+    return allow_turn(stt, need_name=not in_convo, spotter_wake=in_convo or has_name(stt), name_at_start=has_name(stt))
+
+
+def allow_turn(stt, need_name, spotter_wake, name_at_start):
     t = (stt or "").strip()
     if not t:
         return False
     if re.match(r"^\s*(эй[,.]?\s*)?(окей[,.]?\s*)?(джарвис|джервис|жервис|жарвис|дарвис|джарвиз|джарвес|алиса)[а-яё]*[,!.]?\s*$", t.lower()):
         return False
+    if not need_name:
+        return True
+    if not spotter_wake:
+        return False
     if has_name(t):
         return True
-    return in_convo
+    words = [w for w in t.split() if w]
+    return bool(name_at_start and len(words) <= 3)
 
 _TMP = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = _TMP.name
@@ -179,11 +171,30 @@ class TabletUnitTest(unittest.TestCase):
         self.assertIn("wake готов, прогрет", src)
         self.assertIn("ignoreFor", src)
         self.assertIn("w.replay(extra)", src)
-        self.assertIn("stt без имени — без хода", src)
-        self.assertIn('barge || why == "после TTS"', src)
+        self.assertIn("нет имени — игнор", src)
+        self.assertIn("окно закрыто", src)
+        self.assertIn("notif_convo", src)
+        self.assertIn("expireConvo", src)
+        self.assertIn("needName", src)
         self.assertIn("floor * 1.35", src)
         self.assertNotIn("speakLocal(getString(R.string.yes))", src)
         self.assertNotIn("overlapsTts", src)
+        self.assertNotIn("PARTIAL_WAKE_HITS", src)
+
+    def test_v114_wake_name_gate(self):
+        self.assertTrue(allow_turn("Джарвис какая погода", True, True, False))
+        self.assertTrue(allow_turn("какая погода", True, True, True))
+        self.assertFalse(allow_turn("Это трейсер. Мы снимаем рекламу.", True, True, True))
+        self.assertFalse(allow_turn("да конечно вот", True, False, False))
+        self.assertTrue(allow_turn("Да, про погоду в Москве.", False, False, False))
+        self.assertFalse(allow_turn("Джарвис", True, True, True))
+        ev = [
+            {"t_ms": 50, "final": False, "text": "джарвис", "conf": 1.0},
+            {"t_ms": 100, "final": False, "text": "джарвис", "conf": 1.0},
+            {"t_ms": 200, "final": True, "text": "джарвис какая", "conf": 0.9},
+        ]
+        self.assertEqual(wake_confirm(ev), ["none", "none", "none"])
+        self.assertEqual(spot_classify(True, "джарвис", 0.7), "wake")
 
     def test_v113_echo_and_name_gate(self):
         spoken = "В Москве сейчас плюс пять, без осадков, ветер слабый."
@@ -203,16 +214,17 @@ class TabletUnitTest(unittest.TestCase):
         self.assertEqual(spot_classify(True, "стоп какая", 0.99), "none")
         self.assertEqual(spot_classify(True, "стоп", 0.4), "none")
         self.assertEqual(spot_classify(True, "стоп", 0.9), "stop")
-        self.assertEqual(spot_classify(False, "джарвис", 1.0), "wake")
-        self.assertEqual(spot_classify(True, "джарвис какая", 0.4), "none")
-        self.assertEqual(spot_classify(True, "джарвис какая", 0.55), "wake")
+        self.assertEqual(spot_classify(False, "джарвис", 1.0), "none")
+        self.assertEqual(spot_classify(True, "джарвис какая", 0.9), "none")
+        self.assertEqual(spot_classify(True, "джарвис", 0.4), "none")
+        self.assertEqual(spot_classify(True, "джарвис", 0.7), "wake")
         self.assertEqual(spot_classify(True, "какая погода", 0.99), "none")
         ev = [
             {"t_ms": 50, "final": False, "text": "джарвис", "conf": 1.0},
             {"t_ms": 100, "final": False, "text": "джарвис", "conf": 1.0},
         ]
         self.assertEqual(wake_confirm(ev, ignore_ms=1000), ["none", "none"])
-        self.assertEqual(wake_confirm(ev), ["none", "wake"])
+        self.assertEqual(wake_confirm(ev), ["none", "none"])
         root = Path(__file__).resolve().parent / "android/tablet-voice/app/src/main/java/ru/jarvis/tablet"
         vosk = (root / "VoskPack.kt").read_text(encoding="utf-8")
         rule = (root / "SpotRule.kt").read_text(encoding="utf-8")
@@ -220,8 +232,8 @@ class TabletUnitTest(unittest.TestCase):
         self.assertNotIn("text.contains", vosk)
         self.assertIn("partialResult", vosk)
         self.assertIn("ignoreFor", vosk)
-        self.assertIn("PARTIAL_WAKE_HITS = 2", rule)
-        self.assertIn("WAKE_CONF = 0.50", rule)
+        self.assertNotIn("PARTIAL_WAKE_HITS", rule)
+        self.assertIn("WAKE_CONF = 0.55", rule)
         self.assertIn("STOP_CONF = 0.70", rule)
         stop = voice.split("private fun onStopSpot()")[1].split("private fun abortListen")[0]
         self.assertIn("phase == Phase.LISTEN && capturing", stop)

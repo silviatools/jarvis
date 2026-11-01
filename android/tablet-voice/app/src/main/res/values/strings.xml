@@ -14,6 +14,7 @@
     <string name="notif_model">Качаю модель слуха</string>
     <string name="notif_wake">Жду «Джарвис»</string>
     <string name="notif_listen">Слушаю команду</string>
+    <string name="notif_convo">Слушаю без имени %1$d с</string>
     <string name="notif_think">Думаю…</string>
     <string name="notif_speak">Говорю — можно перебить</string>
     <string name="listen_on">Слушать</string>

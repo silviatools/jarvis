@@ -104,11 +104,9 @@ class VoskWake(modelDir: File) {
     }
     private var ignoreUntil = 0L
     private var muteSpot = false
-    private var wakeHits = 0
 
     fun ignoreFor(ms: Long) {
         ignoreUntil = System.currentTimeMillis() + ms
-        wakeHits = 0
     }
 
     fun replay(samples: ShortArray) {
@@ -141,27 +139,7 @@ class VoskWake(modelDir: File) {
         } catch (_: Exception) {
             SpotRule.Kind.NONE
         }
-        if (muteSpot || System.currentTimeMillis() < ignoreUntil) {
-            if (raw != SpotRule.Kind.WAKE) wakeHits = 0
-            return SpotRule.Kind.NONE
-        }
-        return confirm(raw, final)
-    }
-
-    private fun confirm(raw: SpotRule.Kind, final: Boolean): SpotRule.Kind {
-        if (raw == SpotRule.Kind.WAKE) {
-            if (final) {
-                wakeHits = 0
-                return SpotRule.Kind.WAKE
-            }
-            wakeHits++
-            if (wakeHits >= SpotRule.PARTIAL_WAKE_HITS) {
-                wakeHits = 0
-                return SpotRule.Kind.WAKE
-            }
-            return SpotRule.Kind.NONE
-        }
-        wakeHits = 0
+        if (muteSpot || System.currentTimeMillis() < ignoreUntil) return SpotRule.Kind.NONE
         return raw
     }
 

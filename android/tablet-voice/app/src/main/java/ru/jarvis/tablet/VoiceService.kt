@@ -43,6 +43,9 @@ class VoiceService : Service() {
     @Volatile private var wanted = false
     private var spoken = ""
     @Volatile private var convoUntil = 0L
+    @Volatile private var needName = true
+    @Volatile private var nameAtStart = false
+    private var convoTick: Runnable? = null
     private val history = ArrayDeque<Pair<String, String>>()
     private var lastHeard = ""
     private var lastAnswer = ""
@@ -150,6 +153,7 @@ class VoiceService : Service() {
 
     private fun tearDown() {
         cancelSpeakWatch()
+        cancelConvoTick()
         abortListen("teardown")
         ear.stop("teardown")
         val w = spotter
@@ -273,9 +277,12 @@ class VoiceService : Service() {
         } else {
             VoiceLog.add("стоп")
         }
+        needName = true
+        nameAtStart = false
+        convoUntil = 0L
+        cancelConvoTick()
         abortListen("стоп")
         setPhase(Phase.WAKE)
-        notify(getString(R.string.notif_wake))
     }
 
     private fun abortListen(why: String) {
@@ -322,12 +329,24 @@ class VoiceService : Service() {
             listenSince = System.currentTimeMillis()
             capturing = true
         }
-        if (barge || why == "после TTS") {
-            convoUntil = System.currentTimeMillis() + CONVO_MS
+        when {
+            why == "wake" -> {
+                needName = true
+                nameAtStart = true
+            }
+            barge || why == "после TTS" -> {
+                needName = false
+                nameAtStart = barge
+                convoUntil = System.currentTimeMillis() + CONVO_MS
+                armConvoTick()
+            }
+            why == "окно" -> {
+                needName = false
+                nameAtStart = false
+            }
         }
         setPhase(Phase.LISTEN)
-        notify(getString(R.string.notif_listen))
-        VoiceLog.add("слушаю ($why) preroll=${seedMs}мс")
+        VoiceLog.add("слушаю ($why) preroll=${seedMs}мс needName=$needName")
     }
 
     private fun voicedCount(samples: List<Short>): Int {
@@ -404,27 +423,91 @@ class VoiceService : Service() {
         val ms = samples.size * 1000 / Ear.SR
         VoiceLog.add("stream ${ms}мс")
         setPhase(Phase.THINK)
-        notify(getString(R.string.notif_think))
         val token = Prefs.token
         val url = Prefs.url
         val exempt = echoExempt
+        val requireName = needName
+        val named = nameAtStart
         io.execute {
             val r = try {
                 Api.stt(url, token, Wav.pcm16(samples))
             } catch (e: Exception) {
                 SttResult(false, "", "net")
             }
-            main.post { onStt(r, gen, exempt) }
+            main.post { onStt(r, gen, exempt, requireName, named) }
         }
     }
 
     private fun stayQuiet() {
         echoExempt = false
-        setPhase(Phase.WAKE)
-        notify(getString(R.string.notif_wake))
+        if (!needName && System.currentTimeMillis() < convoUntil) {
+            setPhase(Phase.LISTEN)
+            beginListen("окно", seedMs = 200)
+            return
+        }
+        expireConvo("тишина")
     }
 
-    private fun onStt(r: SttResult, gen: Int, exempt: Boolean) {
+    private fun expireConvo(why: String) {
+        needName = true
+        nameAtStart = false
+        convoUntil = 0L
+        cancelConvoTick()
+        abortListen(why)
+        setPhase(Phase.WAKE)
+        VoiceLog.add("окно закрыто — жду имя")
+    }
+
+    private fun armConvoTick() {
+        cancelConvoTick()
+        val r = object : Runnable {
+            override fun run() {
+                if (!wanted) return
+                if (needName || convoUntil <= 0L) return
+                if (phase == Phase.THINK || phase == Phase.SPEAK) {
+                    convoTick = this
+                    main.postDelayed(this, 500)
+                    return
+                }
+                val left = convoUntil - System.currentTimeMillis()
+                if (left <= 0L) {
+                    expireConvo("таймаут")
+                    return
+                }
+                refreshStatus()
+                convoTick = this
+                main.postDelayed(this, 500)
+            }
+        }
+        convoTick = r
+        main.postDelayed(r, 500)
+    }
+
+    private fun cancelConvoTick() {
+        convoTick?.let { main.removeCallbacks(it) }
+        convoTick = null
+    }
+
+    private fun statusText(): String = when (phase) {
+        Phase.OFF -> getString(R.string.off)
+        Phase.WAKE -> getString(R.string.notif_wake)
+        Phase.LISTEN -> {
+            val sec = ((convoUntil - System.currentTimeMillis()) / 1000L).toInt()
+            if (!needName && sec >= 0) getString(R.string.notif_convo, sec)
+            else getString(R.string.notif_listen)
+        }
+        Phase.THINK -> getString(R.string.notif_think)
+        Phase.SPEAK -> getString(R.string.notif_speak)
+    }
+
+    private fun refreshStatus() {
+        val text = statusText()
+        bus.label = text
+        notify(text)
+        bus.post(phase, lastHeard, lastAnswer)
+    }
+
+    private fun onStt(r: SttResult, gen: Int, exempt: Boolean, requireName: Boolean = true, named: Boolean = false) {
         if (!wanted || gen != listenGen) {
             if (gen != listenGen) VoiceLog.add("stt abort")
             return
@@ -459,9 +542,8 @@ class VoiceService : Service() {
             stayQuiet()
             return
         }
-        val inConvo = System.currentTimeMillis() < convoUntil
-        if (!WakeWord.allowCommand(raw, inConvo)) {
-            VoiceLog.add("stt без имени — без хода")
+        if (!WakeWord.allowTurn(raw, requireName, named, named)) {
+            VoiceLog.add("нет имени — игнор")
             stayQuiet()
             return
         }
@@ -483,7 +565,6 @@ class VoiceService : Service() {
         lastHeard = text
         capturing = false
         setPhase(Phase.THINK)
-        notify(getString(R.string.notif_think))
         VoiceLog.add("ход «${clip(text)}»")
         val token = Prefs.token
         val snap = history.toList()
@@ -565,9 +646,11 @@ class VoiceService : Service() {
         cancelSpeakWatch()
         echoUntil = System.currentTimeMillis() + ECHO_MS
         spoken = ""
+        needName = false
+        nameAtStart = false
         convoUntil = System.currentTimeMillis() + CONVO_MS
+        armConvoTick()
         setPhase(Phase.LISTEN)
-        notify(getString(R.string.notif_listen))
         VoiceLog.add("TTS end ($why) — эхо ещё ${ECHO_MS}мс, rec жив")
         main.postDelayed({
             if (!wanted || phase != Phase.LISTEN || capturing) return@postDelayed
@@ -579,7 +662,7 @@ class VoiceService : Service() {
     private fun setPhase(p: Phase) {
         if (phase != p) VoiceLog.add("фаза $phase → $p")
         phase = p
-        bus.post(p, lastHeard, lastAnswer)
+        refreshStatus()
     }
 
     private fun notify(text: String) {
@@ -667,6 +750,7 @@ class VoiceService : Service() {
 
 object bus {
     @Volatile var listener: ((VoiceService.Phase, String, String) -> Unit)? = null
+    @Volatile var label: String = ""
     private val main = Handler(Looper.getMainLooper())
     fun post(phase: VoiceService.Phase, heard: String, answer: String) {
         main.post { listener?.invoke(phase, heard, answer) }

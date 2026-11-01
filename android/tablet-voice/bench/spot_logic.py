@@ -42,7 +42,7 @@ def classify_v12(final: bool, text: str, conf: float) -> str:
     return "none"
 
 
-def classify_new(final: bool, text: str, conf: float) -> str:
+def classify_v13(final: bool, text: str, conf: float) -> str:
     """1.13: partial — гипотеза, финал ≥ 0.50."""
     t = tokens(text)
     if not t:
@@ -56,29 +56,28 @@ def classify_new(final: bool, text: str, conf: float) -> str:
     return "none"
 
 
+def classify_new(final: bool, text: str, conf: float) -> str:
+    """1.14: только финал, одно слово джарвис/джервис."""
+    t = tokens(text)
+    if not t or not final or len(t) != 1:
+        return "none"
+    if t[0] in STOP and conf >= 0.70:
+        return "stop"
+    if t[0] in ("джарвис", "джервис") and conf >= 0.55:
+        return "wake"
+    return "none"
+
+
 class WakeGate:
-    """replay/ignore + 2 кадра partial."""
+    """1.14: ignore-окно, без partial-wake."""
 
     def __init__(self, ignore_ms: int = 0):
         self.ignore_ms = ignore_ms
-        self.hits = 0
 
     def push(self, t_ms: int, final: bool, text: str, conf: float) -> str:
         if t_ms < self.ignore_ms:
-            self.hits = 0
             return "none"
-        k = classify_new(final, text, conf)
-        if k == "wake":
-            if final:
-                self.hits = 0
-                return "wake"
-            self.hits += 1
-            if self.hits >= 2:
-                self.hits = 0
-                return "wake"
-            return "none"
-        self.hits = 0
-        return k
+        return classify_new(final, text, conf)
 
 
 def is_echo(exempt: bool, stream_start: int, echo_until: int, heard: str, spoken: str) -> bool:

@@ -20,6 +20,7 @@ from spot_logic import (
     classify_new,
     classify_old,
     classify_v12,
+    classify_v13,
     is_echo,
     tokens,
 )
@@ -281,6 +282,44 @@ def main() -> int:
         ignore_ms=1000,
     )
 
+    bg_lines = [
+        "да конечно вот", "жарко", "давай", "Дарья позвони", "хорошо спасибо",
+        "что ты сказал", "погода в москве", "это трейсер мы снимаем",
+        "ну ладно подожди", "сейчас некогда", "давайте посмотрим",
+        "конечно можно", "привет как дела", "я не знаю", "очень интересно",
+        "подожди секунду", "там на улице жарко", "дарья иванова",
+        "давай завтра", "вот именно",
+    ]
+    bg = []
+    for i, line in enumerate(bg_lines):
+        p = OUT / f"bg-{i}-espeak.wav"
+        espeak(line, p, speed=165, pitch=48)
+        bg.extend(pcm16(p) + silence(350))
+    target = SR * 5 * 60
+    tiled = []
+    while len(tiled) < target:
+        tiled.extend(bg)
+    tiled = tiled[:target]
+    bg_ev = feed_vosk(model, NEW_GRAMMAR, tiled, warmup=True)
+    hits_v13 = 0
+    streak = 0
+    for e in bg_ev:
+        k = classify_v13(e["final"], e["text"], e["conf"])
+        if k == "wake":
+            if e["final"]:
+                hits_v13 += 1
+                streak = 0
+            else:
+                streak += 1
+                if streak >= 2:
+                    hits_v13 += 1
+                    streak = 0
+        else:
+            streak = 0
+    hits_v14 = sum(1 for e in bg_ev if classify_new(e["final"], e["text"], e["conf"]) == "wake")
+    bg_sec = len(tiled) / SR
+    print(f"false-wake фон {bg_sec:.0f}с: 1.13={hits_v13}  1.14={hits_v14}")
+
     summary = {
         "wake_hit_old": wake_old, "wake_hit_new": wake_new,
         "phrase_wake_old": phrase_old, "phrase_wake_new": phrase_new,
@@ -291,10 +330,13 @@ def main() -> int:
         "endpoint_mid_open": closed_mid is None,
         "endpoint_end_closed": closed_end is not None,
         "replay_ignore": replay[0] == "none",
+        "false_wake_bg_sec": bg_sec,
+        "false_wake_v13": hits_v13,
+        "false_wake_v14": hits_v14,
         "rows": rows,
     }
     (OUT / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    print("=== BENCH 1.12 vs 1.13 ===")
+    print("=== BENCH 1.13 vs 1.14 ===")
     print(f"wake hits old {wake_old[0]}/{wake_old[1]}  new {wake_new[0]}/{wake_new[1]}")
     print(f"phrase→wake old {phrase_old[0]}/{phrase_old[1]}  new {phrase_new[0]}/{phrase_new[1]}")
     print(f"stop old {stop_old[0]}/{stop_old[1]}  new {stop_new[0]}/{stop_new[1]}")
