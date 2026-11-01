@@ -8095,6 +8095,45 @@ def tablet_tokens_path() -> Path:
     return Path(os.environ.get("DATA_DIR") or DATA_DIR) / TABLET_TOKENS_NAME
 
 
+VOICE_REPLY_MODES = ("short", "normal", "detailed")
+VOICE_REPLY_DEFAULT = "short"
+VOICE_DETAIL_RX = re.compile(
+    r"(?i)(?<![а-яё])(подробно|подробнее|расскажи|расскажите|рассказать|почему|по\s*шагам|развёрнут\w*|детально)(?![а-яё])"
+)
+VOICE_SHORT_PROMPT = (
+    "\n\nГОЛОС: отвечай вслух 1–2 короткие фразы, сначала суть. "
+    "Без списков, без «если хочешь», без HTML и разметки. "
+    "Инструменты вызывай как обычно — вслух только итог. "
+    "Если в фразе есть «подробно», «расскажи», «почему», «по шагам» "
+    "или явная просьба длинного ответа — отвечай подробно."
+)
+VOICE_DETAILED_PROMPT = (
+    "\n\nГОЛОС: пользователь просит подробно — можно несколько фраз и перечисления словами, без HTML."
+)
+
+
+def voice_reply_setting(app) -> str:
+    raw = ((app or {}).get("settings") or {}).get("voiceReply")
+    return raw if raw in VOICE_REPLY_MODES else VOICE_REPLY_DEFAULT
+
+
+def voice_reply_mode(app, text: str = "") -> str:
+    """Режим ответа вслух. Слова «расскажи»/«подробно»/«почему»/«по шагам» раскрывают, даже если в настройке «коротко»."""
+    if VOICE_DETAIL_RX.search(text or ""):
+        return "detailed"
+    return voice_reply_setting(app)
+
+
+def voice_reply_extra(app, text: str = "") -> str:
+    """Дописка в системный промпт только для канала «голос» (планшет и кнопка сайта). Telegram не вызывает."""
+    mode = voice_reply_mode(app, text)
+    if mode == "short":
+        return VOICE_SHORT_PROMPT
+    if mode == "detailed":
+        return VOICE_DETAILED_PROMPT
+    return ""
+
+
 def tablet_sanitize(text: str) -> str:
     """Убрать HTML, PIN/PUK/пароли и ключи из ответа, который уйдёт на динамик планшета."""
     t = text or ""
@@ -8194,6 +8233,7 @@ def handle_tablet_turn(text: str, session_id: str, history_in=None) -> dict:
     try:
         answer, nav_links = loop_fn(
             turn, api_key, model, app, site_url, True,
+            extra_system=voice_reply_extra(app, text),
             effort=conf[4], role=conf[5], func="voice", esc=esc, groups=groups, turn=stats,
             compact=bool(cfg.get("compactPrompt")), cache=bool(cfg.get("promptCache")))
     except _AssistantError as e:

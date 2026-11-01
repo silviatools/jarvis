@@ -1874,6 +1874,7 @@ const DEFAULT_SETTINGS = {
   gymBackgroundAudio: false, // звук с погашенным экраном (ценой чужой музыки)
   gymHandsFree: false,   // голосовой ввод подходов на тренировке
   voiceWakeMode: false,  // постоянная прослушка «Джарвис, ...» (пока вкладка открыта)
+  voiceReply: 'short',   // вслух: short | normal | detailed; Telegram не трогает
   gymMicRest: true,      // слушать микрофон и на отдыхе (ради «пропустить отдых»)
   gymTheme: 'dark',      // экран тренировки: 'dark' | 'light'
   gymStep: 0.5,          // шаг веса на тренировке, кг: 0.5 | 1 | 2.5
@@ -8827,6 +8828,38 @@ function AiUsageBlock() {
   );
 }
 
+function VoiceReplyBlock({ data, setData }) {
+  const cur = ['short', 'normal', 'detailed'].includes(data?.settings?.voiceReply)
+    ? data.settings.voiceReply : 'short';
+  const set = (v) => setData(d => ({
+    ...d,
+    settings: { ...DEFAULT_SETTINGS, ...ensureAiPresets(d.settings || {}), voiceReply: v, updatedAt: Date.now() },
+  }));
+  const opts = [
+    ['short', 'Коротко', '1–2 фразы, сначала суть'],
+    ['normal', 'Обычно', 'как в чате Telegram'],
+    ['detailed', 'Подробно', 'можно несколько фраз'],
+  ];
+  return (
+    <AssistantBlock id="voice" title="Голос"
+      subtitle="Насколько длинно отвечает вслух — планшет и кнопка-микрофон. Telegram не меняется">
+      <p className="text-sm text-[var(--text-muted)]">
+        По умолчанию коротко. Слова «расскажи», «подробно», «почему», «по шагам» раскрывают ответ.
+        Длину не режем по токенам и не обрываем речь по секундам.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {opts.map(([id, label, hint]) => (
+          <button key={id} type="button" onClick={() => set(id)}
+            className={`px-3 py-2 rounded-xl text-left text-sm border ${cur === id ? 'border-amber-400 bg-amber-50' : 'border-[var(--border)]'}`}>
+            <div className="font-medium">{label}</div>
+            <div className="text-[11px] text-[var(--text-subtle)]">{hint}</div>
+          </button>
+        ))}
+      </div>
+    </AssistantBlock>
+  );
+}
+
 function VoiceAssistantSettings({ data, setData }) {
   const settings = ensureAiPresets({ ...DEFAULT_SETTINGS, ...(data.settings || {}) });
   const presets = settings.aiPresets || [];
@@ -8867,6 +8900,8 @@ function VoiceAssistantSettings({ data, setData }) {
       </div>
 
       <PlannedTasksBlock data={data} />
+
+      <VoiceReplyBlock data={data} setData={setData} />
 
       <AiCostBlocks data={data} setData={setData} settings={settings} presets={presets} assignments={assignments} />
 
@@ -16211,7 +16246,31 @@ async function loadPlanTools(force) {
 }
 
 
-function buildVoiceAgentSystemPrompt(data) {
+function lastVoiceUserText(convo) {
+  for (let i = (convo || []).length - 1; i >= 0; i--) {
+    if (convo[i].role !== 'user') continue;
+    const c = convo[i].content;
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c)) return c.map(p => p.text || '').join(' ');
+  }
+  return '';
+}
+
+function voiceReplyExtra(data, text) {
+  const raw = (data && data.settings && data.settings.voiceReply) || 'short';
+  const setting = (raw === 'normal' || raw === 'detailed') ? raw : 'short';
+  const detail = /(подробно|подробнее|расскажи|расскажите|рассказать|почему|по\s*шагам|развёрнут|детально)/i.test(text || '');
+  const mode = detail ? 'detailed' : setting;
+  if (mode === 'short') {
+    return '\n\nГОЛОС: отвечай вслух 1–2 короткие фразы, сначала суть. Без списков, без «если хочешь», без HTML и разметки. Инструменты вызывай как обычно — вслух только итог. Если в фразе есть «подробно», «расскажи», «почему», «по шагам» или явная просьба длинного ответа — отвечай подробно.';
+  }
+  if (mode === 'detailed') {
+    return '\n\nГОЛОС: пользователь просит подробно — можно несколько фраз и перечисления словами, без HTML.';
+  }
+  return '';
+}
+
+function buildVoiceAgentSystemPrompt(data, userText) {
   // «База данных» — то, что пользователь рассказал о себе. Подмешиваем в
   // промпт целиком, а не ждём вызова get_data: ассистент должен понимать, с
   // кем говорит, с первой же фразы.
@@ -16265,7 +16324,7 @@ ${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT
 - Перед созданием/изменением записи по незнакомой структуре сначала вызови get_data по этому разделу, чтобы увидеть форму существующих записей (имена полей, форматы).
 - Если просят открыть/показать раздел — вызови navigate и коротко подтверди («Открываю»).
 - Если данных нет или вопрос не по теме проекта — так и скажи, не выдумывай.
-- Никогда не удаляй и не меняй финансовые данные без подтверждения, даже если пользователь говорит это как бы между делом.`;
+- Никогда не удаляй и не меняй финансовые данные без подтверждения, даже если пользователь говорит это как бы между делом.${voiceReplyExtra(data, userText)}`;
 }
 
 // Погода — не часть данных проекта (пользователь её только смотрит, ничего
@@ -16590,7 +16649,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
   await loadWatchTools();
   await loadMailTools();
   await loadPlanTools();
-  const system = buildVoiceAgentSystemPrompt(data);
+  const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
   let pendingConfirmation = false;
   for (let step = 0; step < maxSteps; step++) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -16705,7 +16764,7 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps, ef
   await loadWatchTools();
   await loadMailTools();
   await loadPlanTools();
-  const system = buildVoiceAgentSystemPrompt(data);
+  const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
   const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS].map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.input_schema },

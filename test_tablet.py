@@ -61,6 +61,16 @@ class TabletUnitTest(unittest.TestCase):
         self.assertFalse(jarvis.tablet_token_ok("x" * 40))
         self.assertEqual(ok["cookie"], jarvis.AUTH_COOKIE_VALUE)
 
+    def test_voice_reply_mode_and_extra(self):
+        self.assertEqual(jarvis.voice_reply_mode({}, "привет"), "short")
+        self.assertIn("1–2 короткие", jarvis.voice_reply_extra({}, "привет"))
+        self.assertEqual(jarvis.voice_reply_mode({}, "расскажи про погоду"), "detailed")
+        self.assertEqual(jarvis.voice_reply_mode({}, "почему так"), "detailed")
+        self.assertEqual(jarvis.voice_reply_mode({}, "сделай по шагам"), "detailed")
+        self.assertEqual(jarvis.voice_reply_mode({"settings": {"voiceReply": "normal"}}, "привет"), "normal")
+        self.assertEqual(jarvis.voice_reply_extra({"settings": {"voiceReply": "normal"}}, "привет"), "")
+        self.assertIn("просит подробно", jarvis.voice_reply_extra({}, "подробно что в бюджете"))
+
     def test_turn_no_key_and_empty(self):
         jarvis.load_app_data = lambda: {"settings": {"aiPresets": []}}
         self.assertEqual(jarvis.handle_tablet_turn("", "s")["error"], "empty")
@@ -122,6 +132,38 @@ class TabletAssistantTest(unittest.TestCase):
         self.assertIn("user", roles)
         blob = json.dumps(msgs, ensure_ascii=False)
         self.assertIn("первый", blob)
+
+    def test_tablet_gets_voice_block_telegram_does_not(self):
+        seen = self.model()
+        jarvis.handle_tablet_turn("какая погода", "dev1")
+        self.assertTrue(seen)
+        self.assertIn("ГОЛОС:", json.dumps(seen[0], ensure_ascii=False))
+        self.assertIn("1–2 короткие", json.dumps(seen[0], ensure_ascii=False))
+
+        seen.clear()
+        jarvis.handle_tablet_turn("расскажи про погоду", "dev1")
+        self.assertIn("просит подробно", json.dumps(seen[0], ensure_ascii=False))
+
+        seen.clear()
+        bot = jarvis.tg_bot
+        old = {n: getattr(bot, n) for n in (
+            "history_for", "touch", "api", "set_ctx", "send_text",
+            "current_dialog", "bump_dialog", "dialog_footer")}
+        bot.history_for = lambda cid: [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "ok"}]
+        bot.touch = lambda cid: None
+        bot.api = lambda *a, **k: None
+        bot.set_ctx = lambda ctx: None
+        bot.send_text = lambda *a, **k: None
+        bot.current_dialog = lambda cid: {"title": "x"}
+        bot.bump_dialog = lambda cid: None
+        bot.dialog_footer = lambda *a, **k: ""
+        try:
+            jarvis._handle_assistant_message("t", 1, "какая погода", [], None)
+        finally:
+            for n, v in old.items():
+                setattr(bot, n, v)
+        self.assertTrue(seen)
+        self.assertNotIn("ГОЛОС:", json.dumps(seen[0], ensure_ascii=False))
 
     def test_leaked_pin_stripped(self):
         self.model(pin_leak=True)
