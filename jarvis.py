@@ -142,6 +142,11 @@ except Exception as _e:
     tool_groups = None
     print(f"NOTE: tool_groups disabled: {_e}", flush=True)
 try:
+    import newspaper
+except Exception as _e:
+    newspaper = None
+    print(f"NOTE: newspaper disabled: {_e}", flush=True)
+try:
     import tg_bot
 except Exception as _e:
     tg_bot = None
@@ -1172,7 +1177,9 @@ def build_backup_zip() -> bytes:
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
                       "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json",
-                      "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl"}
+                      "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl",
+                      "jarvis_newspaper_cache.json", "jarvis_newspaper_state.json", "jarvis_newspaper_latest.html",
+                      "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
@@ -4371,6 +4378,111 @@ def weather_cal_tick(app_data: dict, now_str: str, today_iso: str) -> None:
     threading.Thread(target=lambda: print(f"[weather-cal] {weather_cal_sync(reason='schedule')}"), daemon=True).start()
 
 
+# ── Утренняя газета ────────────────────────────────────────────────────────
+
+NEWSPAPER_CACHE_FILE = DATA_DIR / "jarvis_newspaper_cache.json"
+NEWSPAPER_STATE_FILE = DATA_DIR / "jarvis_newspaper_state.json"
+NEWSPAPER_HTML_FILE = DATA_DIR / "jarvis_newspaper_latest.html"
+NEWSPAPER_PDF_FILE = DATA_DIR / "jarvis_newspaper_latest.pdf"
+NEWSPAPER_PNG_FILE = DATA_DIR / "jarvis_newspaper_latest.png"
+_NEWSPAPER_LOCK = threading.Lock()
+
+
+def _newspaper_state() -> dict:
+    try:
+        return json.loads(NEWSPAPER_STATE_FILE.read_text(encoding="utf-8")) if NEWSPAPER_STATE_FILE.exists() else {}
+    except Exception:
+        return {}
+
+
+def _newspaper_save_state(state: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = NEWSPAPER_STATE_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, NEWSPAPER_STATE_FILE)
+
+
+def _newspaper_calendar(day: date) -> dict:
+    # date_to равен date_from: apple_list_events сам превращает его в конец дня.
+    iso = day.isoformat()
+    return apple_list_events(iso, iso, limit=20)
+
+
+def newspaper_status() -> dict:
+    app = load_app_data()
+    state = _newspaper_state()
+    cfg = newspaper.settings(app) if newspaper else {}
+    return {
+        "ok": bool(newspaper),
+        "settings": cfg,
+        "generating": _NEWSPAPER_LOCK.locked(),
+        "latestDate": state.get("latestDate") or "",
+        "lastRunAt": state.get("lastRunAt") or "",
+        "lastReason": state.get("lastReason") or "",
+        "lastOk": state.get("lastOk"),
+        "lastError": state.get("lastError") or "",
+        "issues": state.get("issues") or [],
+        "hasPreview": NEWSPAPER_PNG_FILE.exists(),
+        "hasPdf": NEWSPAPER_PDF_FILE.exists(),
+        "appleConfigured": bool(apple_creds()),
+    }
+
+
+def newspaper_generate(reason: str = "manual", refresh: bool = True, override: dict = None) -> dict:
+    if not newspaper:
+        return {"ok": False, "error": "Модуль утренней газеты недоступен."}
+    if not _NEWSPAPER_LOCK.acquire(blocking=False):
+        return {"ok": False, "busy": True, "error": "Газета уже формируется."}
+    started = now_msk()
+    state = _newspaper_state()
+    try:
+        app = load_app_data()
+        if isinstance(override, dict):
+            app = {**app, "newspaper": {**(app.get("newspaper") or {}), **override}}
+        payload = newspaper.collect(
+            app, requests, _newspaper_calendar, NEWSPAPER_CACHE_FILE,
+            now=started, refresh=refresh,
+        )
+        output = newspaper.write_outputs(DATA_DIR, payload)
+        state.update({
+            "latestDate": payload["date"],
+            "lastRunAt": started.isoformat(),
+            "lastReason": reason,
+            "lastOk": True,
+            "lastError": "",
+            "issues": payload.get("issues") or [],
+            "output": {"pdfBytes": output["pdfBytes"], "pngBytes": output["pngBytes"]},
+        })
+        _newspaper_save_state(state)
+        return {"ok": True, "date": payload["date"], "issues": payload.get("issues") or [],
+                "pdfBytes": output["pdfBytes"], "pngBytes": output["pngBytes"]}
+    except Exception as e:
+        state.update({
+            "lastRunAt": started.isoformat(), "lastReason": reason, "lastOk": False,
+            "lastError": f"{e.__class__.__name__}: {e}",
+        })
+        _newspaper_save_state(state)
+        return {"ok": False, "error": state["lastError"]}
+    finally:
+        _NEWSPAPER_LOCK.release()
+
+
+def newspaper_tick(app_data: dict, now_str: str, today_iso: str) -> None:
+    """Каждое утро заранее собирает выпуск; принтер позднее заберёт готовый PDF."""
+    if not newspaper:
+        return
+    cfg = newspaper.settings(app_data)
+    if not cfg["enabled"] or cfg["time"] != now_str:
+        return
+    state = _newspaper_state()
+    if state.get("latestDate") == today_iso or _NEWSPAPER_LOCK.locked():
+        return
+    threading.Thread(
+        target=lambda: print(f"[newspaper] {newspaper_generate(reason='schedule', refresh=True)}", flush=True),
+        daemon=True,
+    ).start()
+
+
 # ── Текстовый ассистент в Telegram ──────────────────────────────────────────
 # Тот же принцип, что у голосовой кнопки в index (9).html: LLM с tool-calling
 # поверх данных приложения — сама решает, что прочитать и куда отправить
@@ -7366,6 +7478,10 @@ def notifier_loop():
             weather_cal_tick(load_app_data(), now_msk().strftime("%H:%M"), today_msk().isoformat())
         except Exception as e:
             print(f"Weather calendar tick error: {e}")
+        try:
+            newspaper_tick(load_app_data(), now_msk().strftime("%H:%M"), today_msk().isoformat())
+        except Exception as e:
+            print(f"Newspaper tick error: {e}")
         try:
             _plan_tick()
         except Exception as e:
@@ -10420,6 +10536,20 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {"tracks": music_list()})
         elif self.path.startswith("/api/music/"):
             self._serve_track(self.path[len("/api/music/"):].split("?", 1)[0])
+        elif route == "/api/newspaper/status":
+            self._json(200, newspaper_status())
+        elif route in ("/api/newspaper/preview", "/api/newspaper/preview.png", "/api/newspaper/today.pdf"):
+            target, ctype = {
+                "/api/newspaper/preview": (NEWSPAPER_HTML_FILE, "text/html; charset=utf-8"),
+                "/api/newspaper/preview.png": (NEWSPAPER_PNG_FILE, "image/png"),
+                "/api/newspaper/today.pdf": (NEWSPAPER_PDF_FILE, "application/pdf"),
+            }[route]
+            if not target.exists():
+                newspaper_generate(reason="preview", refresh=True)
+            if target.exists():
+                self._serve_ranged(target, ctype, "private, no-store")
+            else:
+                self._json(503, {"error": newspaper_status().get("lastError") or "Газета ещё не сформирована."})
         elif route.startswith("/api/apple/"):
             self._apple_get(route)
         elif route == "/sw.js":
@@ -10701,6 +10831,16 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 self._json(200, weather_cal_sync(preview=bool((payload or {}).get("preview")), reason="manual"))
             except Exception as e:
                 self._json(200, {"ok": False, "error": str(e)})
+        elif route == "/api/newspaper/generate":
+            length = self._content_length() or 0
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}") if length and length <= 32 * 1024 else {}
+            except Exception:
+                payload = {}
+            self._json(200, newspaper_generate(
+                reason="manual", refresh=True,
+                override=(payload or {}).get("settings") if isinstance(payload, dict) else None,
+            ))
         elif route in ("/api/study/brief", "/api/study/chats/scan"):
             length = self._content_length() or 0
             try:

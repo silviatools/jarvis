@@ -6448,6 +6448,15 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
           Погода
         </button>
         <button
+          onClick={() => setSettingsTab('newspaper')}
+          data-testid="settings-tab-newspaper"
+          className={`px-2.5 sm:px-5 py-2.5 rounded-lg text-[13px] sm:text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${
+            settingsTab === 'newspaper' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+          }`}
+        >
+          Газета
+        </button>
+        <button
           onClick={() => setSettingsTab('study')}
           className={`px-2.5 sm:px-5 py-2.5 rounded-lg text-[13px] sm:text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${
             settingsTab === 'study' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
@@ -6485,10 +6494,141 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
       {settingsTab === 'general' && <GeneralSettings data={data} setData={setData} />}
       {settingsTab === 'voice' && <VoiceAssistantSettings data={data} setData={setData} />}
       {settingsTab === 'weather' && <WeatherSettings data={data} setData={setData} />}
+      {settingsTab === 'newspaper' && <NewspaperSettings data={data} setData={setData} />}
       {settingsTab === 'study' && <StudySettings data={data} setData={setData} />}
       {settingsTab === 'telegram' && <TelegramSettings data={data} setData={setData} />}
       {settingsTab === 'market' && <MarketplaceSettings />}
       {settingsTab === 'mail' && <MailSettings data={data} setData={setData} />}
+    </div>
+  );
+}
+
+// ============== УТРЕННЯЯ ГАЗЕТА ==============
+const NEWSPAPER_DEFAULTS = {
+  enabled: false, time: '07:30', city: '', title: 'The Jarvis Daily', fontSize: 'xlarge',
+  news: true, boss: true, calendar: true, weather: true, quote: true, fact: true,
+};
+
+function NewspaperSettings({ data, setData }) {
+  const cfg = { ...NEWSPAPER_DEFAULTS, ...(data.newspaper || {}) };
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [previewKey, setPreviewKey] = useState(Date.now());
+
+  const update = (patch) => setData(d => ({
+    ...d,
+    newspaper: { ...NEWSPAPER_DEFAULTS, ...(d.newspaper || {}), ...patch, updatedAt: Date.now() },
+  }));
+  const loadStatus = React.useCallback(async () => {
+    try {
+      const r = await fetch('/api/newspaper/status', { cache: 'no-store' });
+      const j = await r.json();
+      setStatus(j);
+      return j;
+    } catch (e) {
+      setError('Не удалось получить состояние газеты.');
+      return null;
+    }
+  }, []);
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  const generate = async () => {
+    setBusy(true); setError('');
+    try {
+      const r = await fetch('/api/newspaper/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: cfg }),
+      });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'Не удалось сформировать выпуск.');
+      await loadStatus();
+      setPreviewKey(Date.now());
+    } catch (e) {
+      setError(e.message || 'Не удалось сформировать выпуск.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const blocks = [
+    ['news', '4 главные новости мира'], ['boss', 'Утренние и вечерние дела «Босса»'],
+    ['calendar', 'Планы Apple Calendar'], ['weather', 'Погода на сегодня'],
+    ['quote', 'Цитата дня'], ['fact', 'Интересный факт'],
+  ];
+  const latest = status?.lastRunAt
+    ? new Date(status.lastRunAt).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+    : '';
+
+  return (
+    <div className="space-y-3" data-testid="newspaper-settings">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="font-display text-xl mb-1">Утренняя газета</h3>
+            <p className="text-sm text-[var(--text-muted)]">
+              Одностраничный PDF A4 в классической газетной вёрстке. Jarvis собирает выпуск заранее,
+              а домашний агент позднее сможет забрать его на печать.
+            </p>
+          </div>
+          <Toggle checked={!!cfg.enabled} onChange={v => update({ enabled: v })} />
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div><label>Время выпуска, МСК</label><input type="time" value={cfg.time} onChange={e => update({ time: e.target.value })} /></div>
+          <div><label>Город для погоды</label><input value={cfg.city} onChange={e => update({ city: e.target.value })}
+            placeholder={(data.settings || {}).weatherCity || 'Москва'} /></div>
+        </div>
+        <div><label>Название газеты</label><input value={cfg.title} maxLength="80"
+          onChange={e => update({ title: e.target.value })} placeholder="The Jarvis Daily" /></div>
+        <div>
+          <label>Размер шрифта</label>
+          <select value={cfg.fontSize} onChange={e => update({ fontSize: e.target.value })}>
+            <option value="large">Крупный</option><option value="xlarge">Очень крупный</option>
+          </select>
+          <p className="text-xs text-[var(--text-subtle)] mt-1">Оба режима рассчитаны на один лист A4; длинные заголовки и списки сокращаются автоматически.</p>
+        </div>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-3">
+        <h3 className="font-display text-lg">Блоки выпуска</h3>
+        {blocks.map(([key, label]) => (
+          <div key={key} className="flex items-center justify-between gap-4 border-t border-[var(--border)] pt-3 first:border-0 first:pt-0">
+            <span className="text-sm">{label}</span><Toggle checked={!!cfg[key]} onChange={v => update({ [key]: v })} />
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div><h3 className="font-display text-lg">Превью сегодняшнего выпуска</h3>
+            <p className="text-xs text-[var(--text-subtle)] mt-1">{latest ? `Последняя сборка: ${latest}` : 'Выпуск ещё не сформирован.'}</p></div>
+          <div className="flex gap-2">
+            {status?.hasPdf && <a href={`/api/newspaper/today.pdf?v=${previewKey}`} target="_blank" rel="noreferrer"
+              className="btn-secondary text-sm px-3 py-2">Открыть PDF</a>}
+            <button type="button" onClick={generate} disabled={busy} className="btn-primary text-sm px-4 py-2 disabled:opacity-50">
+              {busy ? 'Собираю…' : status?.hasPreview ? 'Обновить выпуск' : 'Сформировать выпуск'}
+            </button>
+          </div>
+        </div>
+        {error && <div className="text-sm text-red-600">{error}</div>}
+        {status?.lastError && !error && <div className="text-sm text-red-600">{status.lastError}</div>}
+        {(status?.issues || []).length > 0 && <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1">
+          {status.issues.map((x, i) => <div key={i}>{x}</div>)}
+        </div>}
+        {!status?.appleConfigured && cfg.calendar && <div className="text-xs text-[var(--text-muted)]">
+          Apple Calendar не подключён на сервере — календарный блок покажет причину, остальные блоки продолжат работать.
+        </div>}
+        {status?.hasPreview ? (
+          <a href={`/api/newspaper/today.pdf?v=${previewKey}`} target="_blank" rel="noreferrer"
+            className="block rounded-xl overflow-hidden border border-[var(--border)] bg-[#eeeae0]">
+            <img src={`/api/newspaper/preview.png?v=${previewKey}`} alt="Превью утренней газеты" className="w-full h-auto block" />
+          </a>
+        ) : (
+          <div className="aspect-[210/297] rounded-xl border border-dashed border-[var(--border)] bg-[var(--bg)] flex items-center justify-center text-center p-8 text-sm text-[var(--text-subtle)]">
+            Нажмите «Сформировать выпуск»: Jarvis возьмёт сегодняшние дела, календарь, погоду и свежие новости.
+          </div>
+        )}
+      </div>
     </div>
   );
 }

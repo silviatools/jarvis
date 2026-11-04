@@ -19,6 +19,11 @@ jarvis_mail/
 jarvis_plan_tasks.json
 jarvis_ai_usage.jsonl
 jarvis_ai_turns.jsonl
+jarvis_newspaper_cache.json
+jarvis_newspaper_state.json
+jarvis_newspaper_latest.html
+jarvis_newspaper_latest.pdf
+jarvis_newspaper_latest.png
 jarvis_tablet_tokens.json
 android/tablet-voice/.gradle/
 android/tablet-voice/build/

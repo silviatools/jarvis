@@ -53,6 +53,10 @@
  при выполнении без пользователя `confirmed` отрезается в `execute_assistant_tool` (`_plan_scope`), новые задачи ставить нельзя.
  Хранилище — `DATA_DIR/jarvis_plan_tasks.json`; API `/api/plan/*`; список со статусом и результатом — Настройки → Ассистент → «Плановые задачи».
  Тесты — `test_plan.py`.
+- `newspaper.py` — утренняя газета A4: берёт сегодняшние дела «Босса», Apple Calendar, погоду, 4 мировые новости,
+  цитату и факт; делает крупное монохромное PDF и PNG-превью. Настройки и превью — Настройки → Газета (`data.newspaper`),
+  ручная сборка — `POST /api/newspaper/generate`, готовый файл — `/api/newspaper/today.pdf`, расписание запускает `newspaper_tick`
+  в минутном цикле. Кэш и последний выпуск — `DATA_DIR/jarvis_newspaper_*`. Тесты — `test_newspaper.py`.
 - `ai_usage.py` — модели ИИ по ролям (main / complex / background + задачи studyBrief, triage, title, notesTargets), каталог цен и
  поддерживаемых уровней рассуждений, журнал расхода `jarvis_ai_usage.jsonl` (в бэкапе) и `jarvis_ai_turns.jsonl` (14 дней, не в бэкапе).
  Настройки — `data.settings.aiModels` (Прочее → Настройки → Ассистент: блоки «Модели по ролям», «Рассуждения», «Эскалация», «Группы инструментов»,
