@@ -388,16 +388,28 @@ html,body{{margin:0;background:#dad7d0;color:var(--ink)}}body{{font-family:"Nimb
 </main></body></html>'''
 
 
+def chromium_launch_kwargs() -> dict:
+    """Выбирает полный Chromium, который ставится с `playwright install --no-shell`.
+
+    Без `channel=chromium` Playwright ищет отдельный chrome-headless-shell. Его
+    намеренно нет в Railway-образе, чтобы не хранить два браузера.
+    """
+    launch = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
+    explicit = (os.environ.get("CHROMIUM_EXECUTABLE") or os.environ.get("CHROMIUM_PATH") or "").strip()
+    executable = explicit if explicit and os.path.isfile(explicit) else (shutil.which("chromium") or "")
+    if executable:
+        launch["executable_path"] = executable
+    else:
+        launch["channel"] = "chromium"
+    return launch
+
+
 def render_outputs(html_text: str) -> tuple[bytes, bytes]:
     """Возвращает (PDF A4, PNG-превью) без внешних ресурсов."""
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as playwright:
-        launch = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
-        explicit = (os.environ.get("CHROMIUM_EXECUTABLE") or os.environ.get("CHROMIUM_PATH") or "").strip()
-        executable = explicit if explicit and os.path.isfile(explicit) else (shutil.which("chromium") or "")
-        if executable:
-            launch["executable_path"] = executable
+        launch = chromium_launch_kwargs()
         browser = playwright.chromium.launch(**launch)
         page = browser.new_page(viewport={"width": 850, "height": 1200}, device_scale_factor=1.5)
         page.set_content(html_text, wait_until="load")

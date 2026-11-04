@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import newspaper
 
@@ -102,6 +103,13 @@ class NewspaperTest(unittest.TestCase):
         second = newspaper.collect(self.app, Offline(), lambda day: {"events": []}, self.cache, now=self.now)
         self.assertEqual(second["news"], first["news"])
         self.assertTrue(any(x.startswith("Новости:") for x in second["issues"]))
+
+    def test_railway_uses_full_chromium_channel_without_headless_shell(self):
+        with patch.dict("os.environ", {"CHROMIUM_EXECUTABLE": "", "CHROMIUM_PATH": ""}), \
+             patch("newspaper.shutil.which", return_value=None):
+            launch = newspaper.chromium_launch_kwargs()
+        self.assertEqual(launch["channel"], "chromium")
+        self.assertNotIn("executable_path", launch)
 
 
 if __name__ == "__main__":
