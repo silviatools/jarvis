@@ -217,6 +217,8 @@ class BlocksTest(unittest.TestCase):
             self.assertIn(f"Событие {i:02d}", page)
         self.assertIn("08:05", page)
         self.assertIn("весь день", page)
+        self.assertIn('class="events cols-2"', page)
+        self.assertIn("grid-auto-flow:column", page)
         self.assertNotIn("и ещё", page)
         self.assertNotRegex(page, r"ещё \d")
         self.assertNotIn("overflow:hidden", page)
@@ -238,6 +240,20 @@ class BlocksTest(unittest.TestCase):
         joined = "\n".join(system for system, _user in prompts)
         self.assertIn("непрочитан", joined)
         self.assertNotIn("gpt-", joined.lower())
+
+    def test_short_plan_list_stays_one_column(self):
+        page = newspaper.render_html(newspaper.collect(
+            self.app, Requests(),
+            lambda day: {"events": [
+                {"title": "Короткий день", "start": "2026-11-05 09:00"},
+                {"title": "Второе дело", "start": "2026-11-05 10:00"},
+            ]},
+            self.cache, now=self.now,
+        ))
+        self.assertNotIn('class="events cols-2"', page)
+        self.assertIn('class="events"', page)
+        self.assertIn("Короткий день", page)
+        self.assertIn("Второе дело", page)
 
     def test_clear_sky_says_no_precipitation_and_keeps_empty_telegram(self):
         payload = newspaper.collect(

@@ -579,7 +579,7 @@ def _task_list(items: list, empty: str) -> str:
 def _event_rows(events: list, error: str) -> str:
     if not events:
         text = f"Календарь недоступен: {error}" if error else "На сегодня событий нет"
-        return f'<div class="event"><time>—</time><div><b>{_esc(text)}</b></div></div>'
+        return f'<div class="events"><div class="event"><time>—</time><div><b>{_esc(text)}</b></div></div></div>'
     rows = []
     for event in events:
         start = str(event.get("start") or "")
@@ -589,7 +589,12 @@ def _event_rows(events: list, error: str) -> str:
             f'<div class="event"><time>{_esc(tm)}</time><div><b>{_esc(event.get("title") or "Без названия")}</b>'
             f'{f"<small>{_esc(meta)}</small>" if meta else ""}</div></div>'
         )
-    return "".join(rows)
+    # Короткие названия не занимают правую половину листа: со второго ряда
+    # события идут второй колонкой, иначе день съезжает на следующую страницу.
+    if len(events) >= 5:
+        per_col = (len(events) + 1) // 2
+        return f'<div class="events cols-2" style="grid-template-rows:repeat({per_col},auto)">{"".join(rows)}</div>'
+    return f'<div class="events">{"".join(rows)}</div>'
 
 
 def _news_cards(news: list) -> str:
@@ -632,7 +637,7 @@ def render_html(payload: dict) -> str:
     calendar = ""
     if cfg.get("calendar"):
         calendar = f'''<section class="calendar"><div class="kicker">Apple Calendar</div><h2>Планы</h2>
-          <div class="events">{_event_rows(payload.get("events") or [], payload.get("calendarError") or "")}</div></section>'''
+          {_event_rows(payload.get("events") or [], payload.get("calendarError") or "")}</section>'''
     telegram = ""
     if cfg.get("telegram"):
         lines = payload.get("telegram") or ["непрочитанных нет"]
@@ -652,33 +657,34 @@ def render_html(payload: dict) -> str:
     issue_line = f'<div class="issues">Не всё загрузилось: {_esc("; ".join(issues))}</div>' if issues else ""
     return f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{_esc(cfg.get("title"))} — {_esc(payload.get("dateLabel"))}</title><style>
-@page{{size:A4;margin:8mm 9.5mm 10mm}}*{{box-sizing:border-box}}:root{{--ink:#151411;--soft:#625f57;--paper:#f8f5ec;--hair:#9c978d}}
+@page{{size:A4;margin:7mm 9mm 7mm}}*{{box-sizing:border-box}}:root{{--ink:#151411;--soft:#625f57;--paper:#f8f5ec;--hair:#9c978d}}
 html,body{{margin:0;background:#dad7d0;color:var(--ink)}}body{{font-family:"Nimbus Roman","Times New Roman",serif}}
 .page{{position:relative;display:flex;flex-direction:column;width:210mm;min-height:297mm;margin:12px auto;background:var(--paper);padding:8mm 9.5mm 7mm;box-shadow:0 8px 32px #0003}}
 .page:after{{content:"";position:absolute;inset:0;pointer-events:none;opacity:.08;background-image:radial-gradient(#000 .3px,transparent .4px);background-size:3px 3px}}
 .body{{flex:1 0 auto;position:relative;z-index:1}}
 .top,.mast,.edition,.issues,.foot{{position:relative;z-index:1}}
 .top{{display:flex;justify-content:space-between;border-bottom:.35mm solid;padding-bottom:1.5mm;font:700 2.3mm Arial,sans-serif;letter-spacing:.12em;text-transform:uppercase}}
-.mast{{text-align:center;padding:2.1mm 0 1mm}}.mast h1{{margin:0;font-family:C059,"Nimbus Roman",serif;font-size:12.5mm;line-height:.9;letter-spacing:-.05em}}
-.mast p{{margin:1mm 0 0;font-size:2.9mm;font-style:italic;letter-spacing:.12em}}.edition{{display:flex;justify-content:space-between;padding:1.5mm 0;border-top:.25mm solid;border-bottom:1mm double;font:700 2.2mm Arial,sans-serif;text-transform:uppercase}}
+.mast{{text-align:center;padding:1.2mm 0 .4mm}}.mast h1{{margin:0;font-family:C059,"Nimbus Roman",serif;font-size:11mm;line-height:.9;letter-spacing:-.05em}}
+.mast p{{margin:.6mm 0 0;font-size:2.7mm;font-style:italic;letter-spacing:.12em}}.edition{{display:flex;justify-content:space-between;padding:1.1mm 0;border-top:.25mm solid;border-bottom:.8mm double;font:700 2.2mm Arial,sans-serif;text-transform:uppercase}}
 .issues{{margin:1.7mm 0 0;padding:1mm 1.5mm;border:.2mm solid var(--hair);font:700 1.85mm Arial,sans-serif;color:var(--soft)}}
-.section-title{{display:flex;align-items:center;gap:2.5mm;margin:2.2mm 0 1.8mm;font:700 2.15mm Arial,sans-serif;letter-spacing:.15em;text-transform:uppercase}}.section-title:before,.section-title:after{{content:"";height:.25mm;background:var(--ink);flex:1}}
-.day-top{{display:grid;gap:3mm;margin-top:2.5mm;align-items:start}}.day-top.cols-2{{grid-template-columns:1fr 1fr}}.day-top>section+section{{border-left:.2mm solid var(--hair);padding-left:3mm}}
-.calendar,.telegram{{margin-top:2.5mm;padding-top:2mm;border-top:.45mm solid}}
+.section-title{{display:flex;align-items:center;gap:2.5mm;margin:1.5mm 0 1.2mm;font:700 2.15mm Arial,sans-serif;letter-spacing:.15em;text-transform:uppercase}}.section-title:before,.section-title:after{{content:"";height:.25mm;background:var(--ink);flex:1}}
+.day-top{{display:grid;gap:3mm;margin-top:1.6mm;align-items:start}}.day-top.cols-2{{grid-template-columns:1fr 1fr}}.day-top>section+section{{border-left:.2mm solid var(--hair);padding-left:3mm}}
+.calendar,.telegram{{margin-top:1.6mm;padding-top:1.2mm;border-top:.45mm solid}}
 .kicker{{font:700 1.95mm Arial,sans-serif;letter-spacing:.14em;text-transform:uppercase;color:var(--soft);margin-bottom:1mm}}h2{{margin:0 0 1.5mm;font-size:5.2mm;line-height:.95}}h4{{margin:0 0 1mm;font:700 2.05mm Arial,sans-serif;letter-spacing:.12em;text-transform:uppercase}}
 .boss-grid{{display:grid;grid-template-columns:1fr 1fr;gap:2mm}}ul{{margin:0;padding-left:4mm;font-size:2.85mm;line-height:1.2}}li{{margin-bottom:1.1mm}}.empty{{margin:0;padding:1.5mm;border:.2mm solid var(--hair);font-size:2.65mm;color:var(--soft)}}
-.event{{display:grid;grid-template-columns:16mm 1fr;gap:1.5mm;padding:1.3mm 0;border-top:.2mm solid var(--hair);break-inside:avoid;page-break-inside:avoid}}.event time{{font:700 2.3mm Arial,sans-serif}}.event b{{display:block;font-size:2.9mm;line-height:1.15;overflow-wrap:anywhere}}.event small{{display:block;margin-top:.4mm;font:2mm Arial,sans-serif;color:var(--soft)}}
-.temp{{font-size:12mm;line-height:.85;letter-spacing:-.06em;margin:1mm 0}}.condition{{font-size:3mm;font-style:italic;margin-bottom:.6mm}}.precip{{font:700 2.7mm Arial,sans-serif;line-height:1.25;margin:0 0 1.5mm}}
-table{{width:100%;border-collapse:collapse;font:2.35mm Arial,sans-serif}}td{{border-top:.2mm solid var(--hair);padding:1mm 0}}td:last-child{{text-align:right;font-weight:700}}
-.news{{margin-top:2.2mm}}.news-grid{{display:grid;grid-template-columns:1fr 1fr;gap:3.5mm 4mm;align-items:start}}.news article{{break-inside:avoid;page-break-inside:avoid}}
+.events.cols-2{{display:grid;grid-auto-flow:column;grid-template-columns:1fr 1fr;column-gap:4mm;position:relative}}.events.cols-2:before{{content:"";position:absolute;left:calc(50% - 2mm);top:0;bottom:0;border-left:.2mm solid var(--hair)}}
+.event{{display:grid;grid-template-columns:16mm 1fr;gap:1.2mm;padding:.9mm 0;border-top:.2mm solid var(--hair);break-inside:avoid;page-break-inside:avoid}}.event time{{font:700 2.3mm Arial,sans-serif}}.event b{{display:block;font-size:2.9mm;line-height:1.15;overflow-wrap:anywhere}}.event small{{display:block;margin-top:.3mm;font:2mm Arial,sans-serif;color:var(--soft)}}
+.temp{{font-size:10mm;line-height:.85;letter-spacing:-.06em;margin:.4mm 0}}.condition{{font-size:3mm;font-style:italic;margin-bottom:.4mm}}.precip{{font:700 2.7mm Arial,sans-serif;line-height:1.25;margin:0 0 1mm}}
+table{{width:100%;border-collapse:collapse;font:2.35mm Arial,sans-serif}}td{{border-top:.2mm solid var(--hair);padding:.55mm 0}}td:last-child{{text-align:right;font-weight:700}}
+.news{{margin-top:1.2mm}}.news-grid{{display:grid;grid-template-columns:1fr 1fr;gap:2.4mm 3.5mm;align-items:start}}.news article{{break-inside:avoid;page-break-inside:avoid}}
 .news h3{{margin:0;font-size:4.5mm;line-height:1.05;letter-spacing:-.015em}}.news .lead h3{{font-size:6.5mm;line-height:.98}}.num{{float:left;font-size:9mm;line-height:.72;margin:1mm 1.2mm 0 0}}
-.dek{{margin:1.3mm 0 0;font-size:3.15mm;line-height:1.28;overflow-wrap:anywhere}}.source{{display:block;margin-top:1.6mm;font:700 1.8mm Arial,sans-serif;letter-spacing:.1em;text-transform:uppercase;color:var(--soft)}}
+.dek{{margin:.8mm 0 0;font-size:3.05mm;line-height:1.2;overflow-wrap:anywhere}}.source{{display:block;margin-top:1mm;font:700 1.8mm Arial,sans-serif;letter-spacing:.1em;text-transform:uppercase;color:var(--soft)}}
 .telegram .tg-line{{margin:0;padding:1.15mm 0;border-top:.2mm solid var(--hair);font-size:3.2mm;line-height:1.3;overflow-wrap:anywhere;break-inside:avoid;page-break-inside:avoid}}.telegram .tg-line:first-of-type{{border-top:0}}
-.bottom{{margin-top:2.5mm;padding-top:2.2mm;border-top:1mm double}}.aside h4{{margin:2.4mm 0 1mm}}.aside h4:first-child{{margin-top:0}}
+.bottom{{margin-top:1.6mm;padding-top:1.3mm;border-top:.8mm double}}.aside h4{{margin:1.5mm 0 .5mm}}.aside h4:first-child{{margin-top:0}}
 blockquote{{margin:0;font-size:4.2mm;line-height:1.15;font-style:italic;overflow-wrap:anywhere}}blockquote footer{{margin-top:1mm;font:700 1.9mm Arial,sans-serif;font-style:normal;text-transform:uppercase;letter-spacing:.1em}}.aside p{{margin:0;font-size:3.15mm;line-height:1.28;overflow-wrap:anywhere}}
 .foot{{margin-top:auto;display:flex;justify-content:space-between;border-top:.2mm solid var(--hair);padding-top:1mm;font:1.7mm Arial,sans-serif;text-transform:uppercase;color:var(--soft)}}
 .xlarge ul,.xlarge .event b,.xlarge table,.xlarge .tg-line{{font-size:3.15mm}}.xlarge .news h3{{font-size:4.8mm}}.xlarge .news .lead h3{{font-size:6.9mm}}.xlarge .dek,.xlarge .aside p{{font-size:3.3mm}}
-@media print{{html,body{{background:white}}.page{{margin:0;box-shadow:none;min-height:0;width:auto;padding:0;display:block}}.page:after{{display:none}}.foot{{margin-top:4mm}}
+@media print{{html,body{{background:white}}.page{{margin:0;box-shadow:none;min-height:0;width:auto;padding:0;display:block}}.page:after{{display:none}}.foot{{margin-top:2mm}}
 .event,.news article,.tg-line,.aside,li{{break-inside:avoid;page-break-inside:avoid}}}}
 @media screen and (max-width:850px){{body{{overflow-x:auto}}.page{{margin:0}}}}
 </style></head><body><main class="page {size_class}">
