@@ -6595,8 +6595,24 @@ function NewspaperSettings({ data, setData }) {
   const agentBad = !!status && (!agent.online || printer.visible === false);
   const printStatus = ({ printed: 'Напечатано', printing: 'Печатаю…', searching: 'Ищу принтер…', error: 'Ошибка печати', idle: 'Ожидаю выпуск', check: 'Проверка' })[print.status] || '';
 
+  const apkHref = '/download/Jarvis-tablet-1.21.apk';
   return (
     <div className="space-y-3" data-testid="newspaper-settings">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-3" data-testid="tablet-apk-download">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <h3 className="font-display text-xl mb-1">Приложение для планшета</h3>
+            <p className="text-sm text-[var(--text-muted)]">
+              Версия 1.21. Файл Jarvis-tablet-1.21.apk — скачайте в этом браузере и откройте, чтобы установить или обновить.
+            </p>
+          </div>
+          <a href={apkHref} className="btn-primary text-sm px-5 py-3 text-center whitespace-nowrap" data-testid="download-tablet-apk">
+            Скачать приложение
+          </a>
+        </div>
+        <a href={apkHref} className="block text-xs text-[var(--text-subtle)] break-all">{apkHref}</a>
+      </div>
+
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div>

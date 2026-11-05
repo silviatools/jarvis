@@ -998,6 +998,56 @@ class TabletHttpTest(unittest.TestCase):
         self.assertFalse(jarvis.newspaper_agent_view({}, now=now)["online"])
         self.assertEqual(jarvis.newspaper_print_report({"status": "nope"}), {"ok": False, "error": "invalid status"})
 
+    def test_tablet_apk_downloads_with_site_cookie(self):
+        path = jarvis.TABLET_APK_ROUTE
+        self.assertEqual(path, "/download/Jarvis-tablet-1.21.apk")
+        self.assertEqual(jarvis.TABLET_APK_NAME, "Jarvis-tablet-1.21.apk")
+        self.assertIn("1.21", jarvis.TABLET_APK_NAME)
+        self.assertNotIn(path, jarvis.AUTH_PUBLIC_FILES)
+        self.assertTrue(jarvis.TABLET_APK_FILE.is_file())
+        self.assertGreater(jarvis.TABLET_APK_FILE.stat().st_size, 1_000_000)
+
+        html = jarvis.HTML_FILE.read_text(encoding="utf-8")
+        self.assertIn("Скачать приложение", html)
+        self.assertIn(path, html)
+        self.assertIn("Версия 1.21", html)
+
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", path, headers={"Cookie": f"jarvis_auth={jarvis.AUTH_COOKIE_VALUE}"})
+        full = conn.getresponse()
+        self.assertEqual(full.status, 200)
+        self.assertEqual(full.getheader("Content-Type"), "application/vnd.android.package-archive")
+        self.assertIn("attachment", full.getheader("Content-Disposition") or "")
+        self.assertIn("Jarvis-tablet-1.21.apk", full.getheader("Content-Disposition") or "")
+        self.assertEqual(int(full.getheader("Content-Length")), jarvis.TABLET_APK_FILE.stat().st_size)
+        self.assertEqual(full.read(4), b"PK\x03\x04")
+        conn.close()
+
+        anon = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}")
+        with urllib.request.urlopen(anon, timeout=10) as resp:
+            page = resp.read().decode("utf-8", "replace")
+            self.assertIn("text/html", resp.headers.get("Content-Type", ""))
+        self.assertIn("Введите код", page)
+        self.assertFalse(page.startswith("PK"))
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            headers={
+                "Cookie": f"jarvis_auth={jarvis.AUTH_COOKIE_VALUE}",
+                "Range": "bytes=0-3",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            chunk = resp.read()
+            self.assertEqual(resp.status, 206)
+            self.assertEqual(chunk, b"PK\x03\x04")
+            self.assertEqual(resp.headers.get("Content-Type"), "application/vnd.android.package-archive")
+            disp = resp.headers.get("Content-Disposition", "")
+            self.assertIn("attachment", disp)
+            self.assertIn("Jarvis-tablet-1.21.apk", disp)
+            self.assertIn(f"/{jarvis.TABLET_APK_FILE.stat().st_size}", resp.headers.get("Content-Range", ""))
+
 
 class TabletSttStreamTest(unittest.TestCase):
     def setUp(self):
