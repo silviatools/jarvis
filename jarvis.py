@@ -80,6 +80,12 @@ except ImportError:
     print("NOTE: 'requests' not installed — Telegram disabled. Run: pip3 install requests\n")
 
 DIR      = Path(__file__).parent
+# Sideload APK планшета 1.21 (сборка 22). Лежит в репозитории, чтобы Railway
+# отдал его с самого сайта. Вход тот же, что у сайта: cookie jarvis_auth.
+TABLET_APK_VERSION = "1.21"
+TABLET_APK_NAME = "Jarvis-tablet-1.21.apk"
+TABLET_APK_FILE = DIR / "android" / "tablet-voice" / "release" / TABLET_APK_NAME
+TABLET_APK_ROUTE = "/download/" + TABLET_APK_NAME
 try:
     import tg_user
     import tg_tools
@@ -10716,6 +10722,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {"tracks": music_list()})
         elif self.path.startswith("/api/music/"):
             self._serve_track(self.path[len("/api/music/"):].split("?", 1)[0])
+        elif route == TABLET_APK_ROUTE:
+            self._serve_tablet_apk()
         elif route == "/api/newspaper/status":
             self._json(200, newspaper_status())
         elif route == "/api/tablet/newspaper/job":
@@ -12899,7 +12907,19 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         ext = path.suffix.lstrip(".").lower()
         self._serve_ranged(path, MUSIC_EXT.get(ext, "application/octet-stream"), "private, max-age=86400")
 
-    def _serve_ranged(self, path, ctype: str, cache_control: str):
+    def _serve_tablet_apk(self):
+        """APK как вложение: телефонный браузер сохраняет Jarvis-tablet-1.21.apk, а не HTML."""
+        if not TABLET_APK_FILE.is_file():
+            self._json(404, {"error": "not found"})
+            return
+        self._serve_ranged(
+            TABLET_APK_FILE,
+            "application/vnd.android.package-archive",
+            "private, no-store",
+            TABLET_APK_NAME,
+        )
+
+    def _serve_ranged(self, path, ctype: str, cache_control: str, download_name: str = ""):
         """Файл целиком или кусок по заголовку Range (206) — для аудио/видео."""
         size = path.stat().st_size
         start, end = 0, size - 1
@@ -12926,6 +12946,9 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         try:
             self.send_response(206 if partial else 200)
             self.send_header("Content-Type", ctype)
+            if download_name:
+                self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
+                self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Length", str(length))
             if partial:
