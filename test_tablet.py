@@ -376,8 +376,10 @@ class TabletUnitTest(unittest.TestCase):
             self.assertIn("@+id/userRoot", user)
             self.assertNotIn("@+id/version", user)
         gradle = (Path(__file__).resolve().parent / "android/tablet-voice/app/build.gradle.kts").read_text(encoding="utf-8")
-        self.assertIn('versionName = "1.19"', gradle)
-        self.assertIn("versionCode = 20", gradle)
+        self.assertIn('versionName = "1.20"', gradle)
+        self.assertIn("versionCode = 21", gradle)
+        manifest = (root / "AndroidManifest.xml").read_text(encoding="utf-8")
+        self.assertIn("android.permission.CHANGE_NETWORK_STATE", manifest)
         recs = []
         for p in (root / "java").rglob("*.kt"):
             if "AudioRecord(" in p.read_text(encoding="utf-8"):
