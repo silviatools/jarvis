@@ -6580,10 +6580,20 @@ function NewspaperSettings({ data, setData }) {
     ? new Date(status.lastRunAt).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
     : '';
   const print = status?.print || {};
-  const agentSeen = status?.printAgentLastSeenAt
-    ? new Date(status.printAgentLastSeenAt).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+  const agent = status?.agent || {};
+  const printer = agent.printer || {};
+  const agentSeen = agent.lastSeenAt
+    ? new Date(agent.lastSeenAt).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
     : '';
-  const printStatus = ({ printed: 'Напечатано', printing: 'Печатаю…', searching: 'Ищу принтер…', error: 'Ошибка печати', idle: 'Ожидаю выпуск' })[print.status] || (agentSeen ? 'Планшет подключён' : 'Агент ещё не подключался');
+  const printerHost = String(printer.host || cfg.printerHost || '').trim();
+  const printerPort = printer.port || cfg.printerPort || 631;
+  const printerWhere = printerHost ? `${printerHost}:${printerPort}` : '';
+  const printerLine = !printerWhere ? 'адрес не задан'
+    : printer.visible === true ? 'виден'
+    : printer.visible === false ? 'не отвечает'
+    : 'ещё не проверялся';
+  const agentBad = !!status && (!agent.online || printer.visible === false);
+  const printStatus = ({ printed: 'Напечатано', printing: 'Печатаю…', searching: 'Ищу принтер…', error: 'Ошибка печати', idle: 'Ожидаю выпуск', check: 'Проверка' })[print.status] || '';
 
   return (
     <div className="space-y-3" data-testid="newspaper-settings">
@@ -6622,12 +6632,16 @@ function NewspaperSettings({ data, setData }) {
             </p></div>
           <Toggle checked={!!cfg.autoPrint} onChange={v => update({ autoPrint: v })} />
         </div>
-        <div className={`rounded-xl border p-3 text-sm ${print.status === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-[var(--border)] bg-[var(--bg)]'}`}>
-          <div className="font-medium">{printStatus}</div>
-          <div className="text-xs opacity-75 mt-1">
-            {print.printer ? `${print.printer}${print.format ? ` · ${print.format}` : ''}` : agentSeen ? `Планшет был на связи: ${agentSeen}` : 'Установите свежий APK Jarvis на Samsung Tab A9.'}
+        <div className={`rounded-xl border p-3 text-sm space-y-1 ${agentBad || print.status === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-[var(--border)] bg-[var(--bg)]'}`}>
+          <div className="font-medium" data-testid="newspaper-agent">Планшет: {status ? (agent.online ? 'на связи' : 'нет связи') : 'проверяю…'}</div>
+          <div className="font-medium" data-testid="newspaper-printer">Принтер{printerWhere ? ` ${printerWhere}` : ''}: {printerLine}</div>
+          <div className="text-xs opacity-75">
+            {agentSeen ? `Последний опрос: ${agentSeen}. ` : 'Планшет ещё не выходил на связь. '}
+            Нет связи, если опроса не было 3 минуты.
           </div>
-          {print.error && <div className="text-xs mt-2">{print.error}</div>}
+          {printer.visible === false && printer.error ? <div className="text-xs">{printer.error}</div> : null}
+          {(printStatus || print.printer) && <div className="text-xs opacity-75">{[printStatus, print.printer, print.format].filter(Boolean).join(' · ')}</div>}
+          {print.error && <div className="text-xs">{print.error}</div>}
         </div>
         <details className="text-sm">
           <summary className="cursor-pointer text-[var(--text-muted)]">Адрес принтера, если автопоиск не сработает</summary>
@@ -6641,7 +6655,7 @@ function NewspaperSettings({ data, setData }) {
           <button type="button" onClick={printNow} disabled={printBusy || !cfg.autoPrint} className="btn-secondary text-sm px-4 py-2 disabled:opacity-50">
             {printBusy ? 'Готовлю…' : 'Напечатать проверочный выпуск'}
           </button>
-          <span className="text-xs text-[var(--text-subtle)]">Задание заберёт планшет автоматически; обычно в течение 15 минут.</span>
+          <span className="text-xs text-[var(--text-subtle)]">Планшет проверяет сервер и принтер примерно раз в минуту, даже если автопечать выключена. Проверочный выпуск — отдельное задание.</span>
         </div>
       </div>
 

@@ -9,7 +9,9 @@ class App : Application() {
         super.onCreate()
         System.setProperty("jna.nosys", "true")
         Prefs.init(this)
+        VoiceLog.init(this)
         PrintScheduler.ensure(this)
+        PrintScheduler.kick(this)
         val ch = NotificationChannel(
             VoiceService.CHANNEL_ID,
             getString(R.string.channel_name),

@@ -4385,6 +4385,8 @@ NEWSPAPER_STATE_FILE = DATA_DIR / "jarvis_newspaper_state.json"
 NEWSPAPER_HTML_FILE = DATA_DIR / "jarvis_newspaper_latest.html"
 NEWSPAPER_PDF_FILE = DATA_DIR / "jarvis_newspaper_latest.pdf"
 NEWSPAPER_PNG_FILE = DATA_DIR / "jarvis_newspaper_latest.png"
+# Планшет опрашивает сервер примерно раз в минуту. Дольше 3 минут без опроса — «нет связи».
+AGENT_ONLINE_SEC = 180
 _NEWSPAPER_LOCK = threading.Lock()
 _NEWSPAPER_STATE_LOCK = threading.RLock()
 
@@ -4440,6 +4442,71 @@ def newspaper_status() -> dict:
         "print": state.get("print") if isinstance(state.get("print"), dict) else {},
         "printRequest": state.get("printRequest") if isinstance(state.get("printRequest"), dict) else {},
         "printAgentLastSeenAt": state.get("printAgentLastSeenAt") or "",
+        "agent": newspaper_agent_view(state),
+    }
+
+
+def _parse_msk(value) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=MSK)
+    return dt.astimezone(MSK)
+
+
+def newspaper_agent_view(state: dict | None, now: datetime | None = None) -> dict:
+    """Планшет на связи, если последний опрос не старше AGENT_ONLINE_SEC."""
+    state = state or {}
+    now = now or now_msk()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=MSK)
+    seen = _parse_msk(state.get("printAgentLastSeenAt"))
+    age = (now - seen).total_seconds() if seen else None
+    online = age is not None and age <= AGENT_ONLINE_SEC
+    raw = state.get("printerCheck") if isinstance(state.get("printerCheck"), dict) else {}
+    host = str(raw.get("host") or "")[:200]
+    try:
+        port = int(raw.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    if port and not 1 <= port <= 65535:
+        port = 0
+    visible = raw.get("visible")
+    if visible is not None:
+        visible = bool(visible)
+    return {
+        "online": online,
+        "lastSeenAt": state.get("printAgentLastSeenAt") or "",
+        "onlineWindowSec": AGENT_ONLINE_SEC,
+        "printer": {
+            "host": host,
+            "port": port,
+            "visible": visible,
+            "checkedAt": raw.get("checkedAt") or "",
+            "error": str(raw.get("error") or "")[:500],
+            "label": str(raw.get("label") or "")[:200],
+        },
+    }
+
+
+def _printer_check_from(payload: dict, now_iso: str) -> dict:
+    try:
+        port = int(payload.get("printerPort") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    visible = bool(payload.get("printerVisible"))
+    return {
+        "host": str(payload.get("printerHost") or "")[:200],
+        "port": port if 1 <= port <= 65535 else 0,
+        "visible": visible,
+        "checkedAt": now_iso,
+        "error": "" if visible else str(payload.get("error") or "")[:500],
+        "label": str(payload.get("printer") or "")[:200],
     }
 
 
@@ -4490,15 +4557,23 @@ def newspaper_request_print() -> dict:
 
 
 def newspaper_print_report(payload: dict) -> dict:
-    allowed = {"idle", "searching", "printing", "printed", "error"}
+    allowed = {"idle", "searching", "printing", "printed", "error", "check"}
     status = str((payload or {}).get("status") or "")
     if status not in allowed:
         return {"ok": False, "error": "invalid status"}
     job_id = str((payload or {}).get("jobId") or "")[:100]
+    now_iso = now_msk().isoformat()
+    patch = {"printAgentLastSeenAt": now_iso}
+    if isinstance(payload, dict) and "printerVisible" in payload:
+        patch["printerCheck"] = _printer_check_from(payload, now_iso)
+    # Проверка связи и принтера не затирает итог печати.
+    if status == "check":
+        _newspaper_update_state(patch)
+        return {"ok": True}
     old = _newspaper_state().get("print")
     report = {
         "status": status,
-        "updatedAt": now_msk().isoformat(),
+        "updatedAt": now_iso,
         "jobId": job_id,
         "printer": str((payload or {}).get("printer") or "")[:200],
         "format": str((payload or {}).get("format") or "")[:80],
@@ -4510,7 +4585,7 @@ def newspaper_print_report(payload: dict) -> dict:
     if status == "printed" and job_id:
         report["lastJobId"] = job_id
         report["lastPrintedAt"] = report["updatedAt"]
-    patch = {"print": report, "printAgentLastSeenAt": report["updatedAt"]}
+    patch["print"] = report
     if status == "printed" and job_id:
         history = _newspaper_state().get("printedJobs")
         history = history if isinstance(history, list) else []

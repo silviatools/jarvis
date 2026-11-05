@@ -29,18 +29,25 @@ class IppPrinter(context: Context) {
     private val wifi: Network = findWifi(context)
         ?: throw IllegalStateException("Планшет не подключён к домашнему Wi‑Fi")
 
-    fun probe(endpoint: PrinterEndpoint): IppCapabilities {
+    fun probe(endpoint: PrinterEndpoint, fallbacks: Boolean = true): IppCapabilities {
         var last: Exception? = null
-        val paths = linkedSetOf(
-            PrinterDiscovery.cleanPath(endpoint.path),
-            "/ipp/print", "/ipp/printer", "/ipp", "/printers/Pantum",
-        )
+        val paths = linkedSetOf(PrinterDiscovery.cleanPath(endpoint.path))
+        if (fallbacks) {
+            paths.add("/ipp/print")
+            paths.add("/ipp/printer")
+            paths.add("/ipp")
+            paths.add("/printers/Pantum")
+        }
         for (path in paths) {
             val target = endpoint.copy(path = path)
+            val where = "${target.host}:${target.port}${target.path}"
+            VoiceLog.add("газета: пробую $where")
             try {
                 return capabilities(target)
             } catch (e: Exception) {
                 last = e
+                val msg = (e.message ?: e.javaClass.simpleName).replace('\n', ' ').take(450)
+                VoiceLog.add("газета: $where — $msg")
             }
         }
         throw last ?: IllegalStateException("IPP принтер не ответил")

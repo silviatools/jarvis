@@ -376,8 +376,8 @@ class TabletUnitTest(unittest.TestCase):
             self.assertIn("@+id/userRoot", user)
             self.assertNotIn("@+id/version", user)
         gradle = (Path(__file__).resolve().parent / "android/tablet-voice/app/build.gradle.kts").read_text(encoding="utf-8")
-        self.assertIn('versionName = "1.20"', gradle)
-        self.assertIn("versionCode = 21", gradle)
+        self.assertIn('versionName = "1.21"', gradle)
+        self.assertIn("versionCode = 22", gradle)
         manifest = (root / "AndroidManifest.xml").read_text(encoding="utf-8")
         self.assertIn("android.permission.CHANGE_NETWORK_STATE", manifest)
         recs = []
@@ -398,6 +398,53 @@ class TabletUnitTest(unittest.TestCase):
         self.assertEqual(endpoint_clamp(1749), 1500)
         self.assertEqual(endpoint_clamp(9000), 5000)
         self.assertEqual(endpoint_clamp(2500), 2500)
+
+    def test_v121_newspaper_journal_lines_without_listen(self):
+        """Проверка газеты пишет в тот же VoiceLog, что рисует Журнал, не дожидаясь печати и кнопки «Слушать»."""
+        root = Path(__file__).resolve().parent / "android/tablet-voice/app/src/main"
+        worker = (root / "java/ru/jarvis/tablet/NewspaperPrintWorker.kt").read_text(encoding="utf-8")
+        self.assertNotIn("if (!job.enabled || !job.ready || job.jobId.isBlank()) return Result.success()", worker)
+        self.assertIn('VoiceLog.add("газета: проверяю сервер")', worker)
+        self.assertIn('VoiceLog.add("газета: сервер на связи")', worker)
+        self.assertIn('VoiceLog.add("газета: сервер нет связи — ${shortError(e)}")', worker)
+        self.assertIn('VoiceLog.add("газета: задания нет")', worker)
+        self.assertIn('VoiceLog.add("газета: задание ${job.jobId}, принтер ${host.ifBlank { "адрес пуст" }}")', worker)
+        self.assertIn('VoiceLog.add("газета: адрес принтера пуст")', worker)
+        self.assertIn('VoiceLog.add("газета: печатаю ${job.jobId}")', worker)
+        self.assertLess(worker.index("газета: проверяю сервер"), worker.index("Api.newspaperJob"))
+        self.assertLess(worker.index("газета: задания нет"), worker.index('status = "check"'))
+        self.assertLess(worker.index('status = "check"'), worker.index("газета: печатаю"))
+        ipp = (root / "java/ru/jarvis/tablet/IppPrinter.kt").read_text(encoding="utf-8")
+        probe = ipp.split("fun probe")[1].split("private fun capabilities")[0]
+        self.assertIn('VoiceLog.add("газета: пробую $where")', probe)
+        self.assertIn('VoiceLog.add("газета: $where — $msg")', probe)
+        self.assertLess(probe.index("пробую"), probe.index("capabilities(target)"))
+        log = (root / "java/ru/jarvis/tablet/VoiceLog.kt").read_text(encoding="utf-8")
+        self.assertIn("fun init", log)
+        self.assertIn("fun reload", log)
+        self.assertIn("voice-log.txt", log)
+        app = (root / "java/ru/jarvis/tablet/App.kt").read_text(encoding="utf-8")
+        self.assertLess(app.index("VoiceLog.init"), app.index("PrintScheduler.kick"))
+        ui = (root / "java/ru/jarvis/tablet/MainActivity.kt").read_text(encoding="utf-8")
+        resume = ui.split("override fun onResume")[1].split("override fun onPause")[0]
+        self.assertIn("VoiceLog.reload()", resume)
+        self.assertIn("VoiceLog.listener", resume)
+        self.assertIn("PrintScheduler.kick", resume)
+        self.assertLess(resume.index("VoiceLog.listener"), resume.index("listenOn"))
+        self.assertLess(resume.index("PrintScheduler.kick"), resume.index("listenOn"))
+        strings = (root / "res/values/strings.xml").read_text(encoding="utf-8")
+        self.assertIn("без «Слушать»", strings)
+        page = (Path(__file__).resolve().parent / "index (9).html").read_text(encoding="utf-8")
+        card = page.split("function NewspaperSettings")[1].split("function WeatherCalendarSettings")[0]
+        self.assertIn("Планшет:", card)
+        self.assertIn("на связи", card)
+        self.assertIn("нет связи", card)
+        self.assertIn("не отвечает", card)
+        self.assertIn("виден", card)
+        self.assertIn("newspaper-agent", card)
+        self.assertIn("newspaper-printer", card)
+        sched = (root / "java/ru/jarvis/tablet/PrintScheduler.kt").read_text(encoding="utf-8")
+        self.assertIn("AGAIN_SEC = 60L", sched)
 
     def test_v117_window_holds_phrase_and_slider_is_timer(self):
         """Речь с 4-й по 7-ю секунду — ход, без звука конца. Тишина — конец на 5-й и WAKE."""
@@ -893,8 +940,63 @@ class TabletHttpTest(unittest.TestCase):
             _, no_duplicate = self.req("GET", "/api/tablet/newspaper/job", token=token)
             self.assertFalse(no_duplicate["ready"])
             self.assertEqual(requested["jobId"], manual["jobId"])
+
+            code, status = self.req("GET", "/api/newspaper/status", token=token)
+            self.assertEqual(code, 200)
+            self.assertTrue(status["agent"]["online"])
+            self.assertEqual(status["agent"]["onlineWindowSec"], 180)
+            self.assertIsNone(status["agent"]["printer"]["visible"])
+
+            code, checked = self.req("POST", "/api/tablet/newspaper/report", {
+                "status": "check",
+                "jobId": "",
+                "printer": "192.168.1.100:631/ipp/print",
+                "printerHost": "192.168.1.100",
+                "printerPort": 631,
+                "printerVisible": False,
+                "error": "timeout",
+            }, token=token)
+            self.assertEqual(code, 200, checked)
+            self.assertTrue(checked["ok"])
+            _, after = self.req("GET", "/api/newspaper/status", token=token)
+            self.assertEqual(after["print"]["status"], "printed")
+            self.assertFalse(after["agent"]["printer"]["visible"])
+            self.assertEqual(after["agent"]["printer"]["host"], "192.168.1.100")
+            self.assertEqual(after["agent"]["printer"]["port"], 631)
+            self.assertEqual(after["agent"]["printer"]["error"], "timeout")
+            self.assertTrue(after["agent"]["online"])
+
+            off = dict(self.app["newspaper"])
+            off["autoPrint"] = False
+            self.app["newspaper"] = off
+            _, quiet = self.req("GET", "/api/tablet/newspaper/job", token=token)
+            self.assertFalse(quiet["enabled"])
+            self.assertFalse(quiet["ready"])
+            self.assertEqual(quiet["printer"]["host"], "192.168.1.45")
         finally:
             jarvis.NEWSPAPER_STATE_FILE, jarvis.NEWSPAPER_PDF_FILE, jarvis.NEWSPAPER_PNG_FILE = old
+
+    def test_newspaper_agent_offline_after_three_minutes(self):
+        from datetime import datetime, timedelta
+        now = datetime(2026, 11, 5, 20, 0, tzinfo=jarvis.MSK)
+        fresh = jarvis.newspaper_agent_view({
+            "printAgentLastSeenAt": (now - timedelta(minutes=2)).isoformat(),
+            "printerCheck": {"host": "192.168.1.100", "port": 631, "visible": True, "error": ""},
+        }, now=now)
+        self.assertTrue(fresh["online"])
+        self.assertTrue(fresh["printer"]["visible"])
+        edge = jarvis.newspaper_agent_view({
+            "printAgentLastSeenAt": (now - timedelta(seconds=180)).isoformat(),
+        }, now=now)
+        self.assertTrue(edge["online"])
+        stale = jarvis.newspaper_agent_view({
+            "printAgentLastSeenAt": (now - timedelta(seconds=181)).isoformat(),
+            "printerCheck": {"host": "192.168.1.100", "port": 631, "visible": False, "error": "timeout"},
+        }, now=now)
+        self.assertFalse(stale["online"])
+        self.assertFalse(stale["printer"]["visible"])
+        self.assertFalse(jarvis.newspaper_agent_view({}, now=now)["online"])
+        self.assertEqual(jarvis.newspaper_print_report({"status": "nope"}), {"ok": False, "error": "invalid status"})
 
 
 class TabletSttStreamTest(unittest.TestCase):

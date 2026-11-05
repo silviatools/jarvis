@@ -4,7 +4,7 @@
     <string name="version_placeholder">Джарвис …</string>
     <string name="version_fmt">Джарвис %1$s</string>
     <string name="log_title">Журнал слуха (МСК)</string>
-    <string name="log_empty">Включите «Слушать» — сюда пойдут rec / wake / stream / echo</string>
+    <string name="log_empty">Пока пусто. Проверка газеты пишет сюда сама, без «Слушать».</string>
     <string name="copy_log">Скопировать журнал</string>
     <string name="copy_log_ok">Журнал скопирован, %1$d строк</string>
     <string name="copy_log_empty">Журнал пуст</string>

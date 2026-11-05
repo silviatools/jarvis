@@ -110,6 +110,7 @@ class MainActivity : AppCompatActivity() {
         modeToggle.setOnClickListener {
             Prefs.devUi = !Prefs.devUi
             applyMode()
+            if (Prefs.devUi) PrintScheduler.kick(this)
         }
         findViewById<TextView>(R.id.serverLink).setOnClickListener {
             showLogin = !showLogin
@@ -167,12 +168,14 @@ class MainActivity : AppCompatActivity() {
             paintUser()
         }
         VoiceLog.listener = { text ->
-            logView.text = text
+            logView.text = text.ifBlank { getString(R.string.log_empty) }
             logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
         }
         DialogLog.listener = { renderHistory(it, animateLast = true) }
+        VoiceLog.reload()
         val snap = VoiceLog.snapshot()
-        if (snap.isNotBlank()) logView.text = snap
+        logView.text = snap.ifBlank { getString(R.string.log_empty) }
+        if (Prefs.devUi) PrintScheduler.kick(this)
         renderHistory(DialogLog.snapshot(), animateLast = false)
         if (Prefs.listenOn && Prefs.configured() && !VoiceService.running.get()) {
             VoiceService.start(this)

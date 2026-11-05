@@ -67,6 +67,9 @@ object Api {
         printer: String = "",
         format: String = "",
         error: String = "",
+        printerVisible: Boolean? = null,
+        printerHost: String = "",
+        printerPort: Int = 0,
     ): Boolean {
         val body = JSONObject()
             .put("jobId", jobId)
@@ -74,6 +77,11 @@ object Api {
             .put("printer", printer)
             .put("format", format)
             .put("error", error)
+        if (printerVisible != null) {
+            body.put("printerVisible", printerVisible)
+            body.put("printerHost", printerHost)
+            body.put("printerPort", printerPort)
+        }
         return try { post(base, "/api/tablet/newspaper/report", body, token).optBoolean("ok") } catch (_: Exception) { false }
     }
 
