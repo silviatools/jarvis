@@ -6507,11 +6507,22 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
 const NEWSPAPER_DEFAULTS = {
   enabled: false, autoPrint: true, time: '07:30', city: '', title: 'The Jarvis Daily', fontSize: 'xlarge',
   printerHost: '', printerPort: 631, printerPath: '',
-  news: true, boss: true, calendar: true, weather: true, quote: true, fact: true,
+  news: true, boss: true, calendar: true, weather: true, telegram: true, aside: true,
 };
 
+function newspaperConfig(raw) {
+  const src = raw || {};
+  const cfg = { ...NEWSPAPER_DEFAULTS, ...src };
+  if (src.aside == null && (Object.prototype.hasOwnProperty.call(src, 'quote') || Object.prototype.hasOwnProperty.call(src, 'fact'))) {
+    cfg.aside = src.quote !== false || src.fact !== false;
+  }
+  delete cfg.quote;
+  delete cfg.fact;
+  return cfg;
+}
+
 function NewspaperSettings({ data, setData }) {
-  const cfg = { ...NEWSPAPER_DEFAULTS, ...(data.newspaper || {}) };
+  const cfg = newspaperConfig(data.newspaper);
   const [status, setStatus] = useState(null);
   const [busy, setBusy] = useState(false);
   const [printBusy, setPrintBusy] = useState(false);
@@ -6520,7 +6531,7 @@ function NewspaperSettings({ data, setData }) {
 
   const update = (patch) => setData(d => ({
     ...d,
-    newspaper: { ...NEWSPAPER_DEFAULTS, ...(d.newspaper || {}), ...patch, updatedAt: Date.now() },
+    newspaper: { ...newspaperConfig(d.newspaper), ...patch, updatedAt: Date.now() },
   }));
   const loadStatus = React.useCallback(async () => {
     try {
@@ -6574,7 +6585,8 @@ function NewspaperSettings({ data, setData }) {
   const blocks = [
     ['news', '4 главные новости мира'], ['boss', 'Утренние и вечерние дела «Босса»'],
     ['calendar', 'Планы Apple Calendar'], ['weather', 'Погода на сегодня'],
-    ['quote', 'Цитата дня'], ['fact', 'Интересный факт'],
+    ['telegram', 'Непрочитанное в Telegram'],
+    ['aside', 'Цитата дня и интересный факт'],
   ];
   const latest = status?.lastRunAt
     ? new Date(status.lastRunAt).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
@@ -6621,8 +6633,8 @@ function NewspaperSettings({ data, setData }) {
           <div>
             <h3 className="font-display text-xl mb-1">Утренняя газета</h3>
             <p className="text-sm text-[var(--text-muted)]">
-              Одностраничный PDF A4 в классической газетной вёрстке. Jarvis собирает выпуск заранее,
-              а планшет автоматически забирает его на печать.
+              PDF A4 в чёрно-белой газетной вёрстке. Если текст не влезает на лист, выпуск продолжается
+              на следующей странице. Планшет забирает PDF на печать.
             </p>
           </div>
           <Toggle checked={!!cfg.enabled} onChange={v => update({ enabled: v })} />
@@ -6639,7 +6651,7 @@ function NewspaperSettings({ data, setData }) {
           <select value={cfg.fontSize} onChange={e => update({ fontSize: e.target.value })}>
             <option value="large">Крупный</option><option value="xlarge">Очень крупный</option>
           </select>
-          <p className="text-xs text-[var(--text-subtle)] mt-1">Оба режима рассчитаны на один лист A4; длинные заголовки и списки сокращаются автоматически.</p>
+          <p className="text-xs text-[var(--text-subtle)] mt-1">Длинный выпуск переносится на следующую страницу, строки не обрезаются.</p>
         </div>
       </div>
 

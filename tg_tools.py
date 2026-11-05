@@ -490,6 +490,78 @@ def unread_digest(folder="", with_text=False, include_muted=False, limit=40) -> 
     return _run(_go(), 150)
 
 
+def newspaper_unread() -> dict:
+    """Незаглушённые диалоги с непрочитанным для утренней газеты.
+
+    Свои сообщения не попадают в выборку: это не просьба к владельцу.
+    Новый вход не запрашивается — только уже сохранённая сессия Telethon.
+    """
+    if TelegramClient is None:
+        return {"connected": False, "chats": []}
+
+    async def _go():
+        c = await _get_client()
+        st = await _load(c, force=True)
+        me = st["me"]
+        dialogs = []
+        for d in st["dialogs"]:
+            marked = bool(getattr(getattr(d, "dialog", None), "unread_mark", False))
+            if _muted(d) or not (d.unread_count or marked):
+                continue
+            dialogs.append(d)
+        dialogs.sort(key=lambda d: d.date or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        chats = []
+        for d in dialogs:
+            kind_name = _kind(d.entity)
+            kind = "group" if kind_name in ("group", "channel") else "user"
+            name = d.name or "Без имени"
+            limit_n = min(int(d.unread_count or 0), 40)
+            if limit_n <= 0:
+                limit_n = 8
+            min_id = getattr(getattr(d, "dialog", None), "read_inbox_max_id", None) or 0
+            try:
+                kwargs = {"limit": limit_n}
+                if d.unread_count and min_id:
+                    kwargs["min_id"] = int(min_id)
+                messages = []
+                async for m in c.iter_messages(d.entity, **kwargs):
+                    mine = bool(getattr(m, "out", False) or (me and getattr(m, "sender_id", None) == getattr(me, "id", None)))
+                    if mine:
+                        continue
+                    text = (getattr(m, "message", None) or "").strip()
+                    if not text:
+                        media = (_media_info(m).get("media") or "")
+                        text = {
+                            "photo": "фото", "voice": "голосовое сообщение", "video": "видео",
+                            "video_note": "видеосообщение", "file": "файл", "sticker": "стикер",
+                            "audio": "аудио", "poll": "опрос", "location": "геопозиция",
+                        }.get(media, "вложение" if media else "")
+                    if not text:
+                        continue
+                    sender = getattr(m, "sender", None)
+                    who = utils.get_display_name(sender) if sender else name
+                    messages.append({"from": who or name, "text": text[:400], "mine": False})
+            except Exception:
+                chats.append({"name": name, "kind": kind, "messages": [], "unreadable": True})
+                continue
+            messages.reverse()
+            if not messages:
+                continue
+            chats.append({"name": name, "kind": kind, "messages": messages})
+        return {"connected": True, "chats": chats}
+
+    try:
+        return _run(_go(), 150)
+    except TgError as exc:
+        msg = str(exc)
+        folded = msg.casefold()
+        if "не подключ" in folded or "сессия" in folded or "telethon не установ" in folded:
+            return {"connected": False, "chats": []}
+        return {"connected": True, "chats": [], "error": msg}
+    except Exception as exc:
+        return {"connected": True, "chats": [], "error": str(exc) or exc.__class__.__name__}
+
+
 # ── Профиль, контакты, информация о чате ─────────────────────────────────
 
 def me_info() -> dict:

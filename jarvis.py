@@ -4425,8 +4425,31 @@ def _newspaper_update_state(patch: dict) -> dict:
 
 def _newspaper_calendar(day: date) -> dict:
     # date_to равен date_from: apple_list_events сам превращает его в конец дня.
+    # Лимит высокий, чтобы утренний выпуск не отрезал хвост списка на сегодня.
     iso = day.isoformat()
-    return apple_list_events(iso, iso, limit=20)
+    return apple_list_events(iso, iso, limit=1000)
+
+
+def _newspaper_complete(app):
+    """Запрос к фоновой модели из настроек. Имя модели и уровень рассуждений берутся оттуда."""
+    conf = _ai_conf(app, "background")
+    if not conf:
+        def _missing(_system, _user):
+            raise RuntimeError("нет ключа ИИ для фоновой модели")
+        return _missing
+
+    def _call(system, user):
+        return _llm_text(conf, system, user, max_tokens=1800, timeout=90, func="newspaper")
+    return _call
+
+
+def _newspaper_telegram():
+    if not tg_tools:
+        return {"connected": False, "chats": []}
+    try:
+        return tg_tools.newspaper_unread()
+    except Exception as exc:
+        return {"connected": True, "chats": [], "error": f"{exc.__class__.__name__}: {exc}"}
 
 
 def newspaper_status() -> dict:
@@ -4645,6 +4668,8 @@ def newspaper_generate(reason: str = "manual", refresh: bool = True, override: d
         payload = newspaper.collect(
             app, requests, _newspaper_calendar, NEWSPAPER_CACHE_FILE,
             now=started, refresh=refresh,
+            complete=_newspaper_complete(app),
+            telegram=_newspaper_telegram,
         )
         output = newspaper.write_outputs(DATA_DIR, payload)
         state.update({
