@@ -10,6 +10,17 @@ import java.nio.charset.StandardCharsets
 
 data class TurnResult(val ok: Boolean, val text: String, val error: String = "")
 data class SttResult(val ok: Boolean, val text: String, val error: String = "")
+data class NewspaperJob(
+    val enabled: Boolean,
+    val ready: Boolean,
+    val jobId: String,
+    val title: String,
+    val pdfUrl: String,
+    val pngUrl: String,
+    val printerHost: String,
+    val printerPort: Int,
+    val printerPath: String,
+)
 
 object Api {
     fun login(base: String, password: String): Pair<Boolean, String> {
@@ -28,6 +39,54 @@ object Api {
         } catch (_: Exception) {
             false
         }
+    }
+
+    fun newspaperJob(base: String, token: String): NewspaperJob {
+        val conn = open(base, "/api/tablet/newspaper/job", "GET", token)
+        val r = read(conn)
+        if (!r.optBoolean("ok")) throw IllegalStateException(r.optString("error", "Сервер не выдал выпуск"))
+        val printer = r.optJSONObject("printer") ?: JSONObject()
+        return NewspaperJob(
+            enabled = r.optBoolean("enabled"),
+            ready = r.optBoolean("ready"),
+            jobId = r.optString("jobId"),
+            title = r.optString("title", "Утренняя газета Jarvis"),
+            pdfUrl = r.optString("pdfUrl", "/api/newspaper/today.pdf"),
+            pngUrl = r.optString("pngUrl", "/api/newspaper/preview.png"),
+            printerHost = printer.optString("host"),
+            printerPort = printer.optInt("port", 631).coerceIn(1, 65535),
+            printerPath = printer.optString("path"),
+        )
+    }
+
+    fun newspaperReport(
+        base: String,
+        token: String,
+        jobId: String,
+        status: String,
+        printer: String = "",
+        format: String = "",
+        error: String = "",
+    ): Boolean {
+        val body = JSONObject()
+            .put("jobId", jobId)
+            .put("status", status)
+            .put("printer", printer)
+            .put("format", format)
+            .put("error", error)
+        return try { post(base, "/api/tablet/newspaper/report", body, token).optBoolean("ok") } catch (_: Exception) { false }
+    }
+
+    fun download(base: String, path: String, token: String): ByteArray {
+        val conn = open(base, path, "GET", token)
+        conn.readTimeout = 120_000
+        conn.setRequestProperty("Accept", "*/*")
+        val code = conn.responseCode
+        if (code !in 200..299) {
+            conn.disconnect()
+            throw IllegalStateException("HTTP $code при загрузке выпуска")
+        }
+        return conn.inputStream.use { it.readBytes() }.also { conn.disconnect() }
     }
 
     fun turn(base: String, token: String, text: String, history: List<Pair<String, String>>): TurnResult {

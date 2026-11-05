@@ -24,6 +24,26 @@ object Prefs {
         get() = p.getBoolean("listen", false)
         set(v) = p.edit().putBoolean("listen", v).apply()
 
+    var printerHost: String
+        get() = p.getString("printer_host", "") ?: ""
+        set(v) = p.edit().putString("printer_host", v).apply()
+
+    var printerPort: Int
+        get() = p.getInt("printer_port", 631)
+        set(v) = p.edit().putInt("printer_port", v).apply()
+
+    var printerPath: String
+        get() = p.getString("printer_path", "") ?: ""
+        set(v) = p.edit().putString("printer_path", v).apply()
+
+    var printerName: String
+        get() = p.getString("printer_name", "") ?: ""
+        set(v) = p.edit().putString("printer_name", v).apply()
+
+    var lastPrintedJob: String
+        get() = p.getString("last_printed_job", "") ?: ""
+        set(v) = p.edit().putString("last_printed_job", v).apply()
+
     /** false — экран пользователя. true — журнал разработчика. */
     var devUi: Boolean
         get() = p.getBoolean("dev_ui", false)

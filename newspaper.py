@@ -24,10 +24,14 @@ NEWS_URL = "https://news.google.com/rss/headlines/section/topic/WORLD?hl=ru&gl=R
 
 DEFAULTS = {
     "enabled": False,
+    "autoPrint": True,
     "time": "07:30",
     "city": "",
     "title": "The Jarvis Daily",
     "fontSize": "xlarge",
+    "printerHost": "",
+    "printerPort": 631,
+    "printerPath": "",
     "news": True,
     "boss": True,
     "calendar": True,
@@ -82,10 +86,20 @@ def settings(app: dict | None) -> dict:
     raw = app.get("newspaper") if isinstance(app.get("newspaper"), dict) else {}
     out = {**DEFAULTS, **raw}
     out["enabled"] = bool(out.get("enabled"))
+    out["autoPrint"] = bool(out.get("autoPrint", True))
     out["time"] = _hhmm(out.get("time"))
     out["city"] = _s(out.get("city") or (app.get("settings") or {}).get("weatherCity") or "Москва", 100)
     out["title"] = _s(out.get("title") or DEFAULTS["title"], 80)
     out["fontSize"] = "xlarge" if out.get("fontSize") == "xlarge" else "large"
+    host = _s(out.get("printerHost"), 200)
+    out["printerHost"] = host if re.fullmatch(r"[A-Za-z0-9._:-]*", host) else ""
+    try:
+        port = int(out.get("printerPort") or 631)
+    except (TypeError, ValueError):
+        port = 631
+    out["printerPort"] = port if 1 <= port <= 65535 else 631
+    path = _s(out.get("printerPath"), 200)
+    out["printerPath"] = ("/" + path.lstrip("/")) if path else ""
     for key in ("news", "boss", "calendar", "weather", "quote", "fact"):
         out[key] = bool(out.get(key, True))
     return out

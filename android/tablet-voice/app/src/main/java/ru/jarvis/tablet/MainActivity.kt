@@ -342,6 +342,8 @@ class MainActivity : AppCompatActivity() {
                     return@runOnUiThread
                 }
                 Prefs.token = tokenOrErr
+                PrintScheduler.ensure(this)
+                PrintScheduler.kick(this)
                 password.setText("")
                 userPassword.setText("")
                 showLogin = false

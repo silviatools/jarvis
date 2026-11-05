@@ -56,7 +56,9 @@
 - `newspaper.py` — утренняя газета A4: берёт сегодняшние дела «Босса», Apple Calendar, погоду, 4 мировые новости,
   цитату и факт; делает крупное монохромное PDF и PNG-превью. Настройки и превью — Настройки → Газета (`data.newspaper`),
   ручная сборка — `POST /api/newspaper/generate`, готовый файл — `/api/newspaper/today.pdf`, расписание запускает `newspaper_tick`
-  в минутном цикле. Кэш и последний выпуск — `DATA_DIR/jarvis_newspaper_*`. Тесты — `test_newspaper.py`.
+  в минутном цикле. Android-агент забирает очередь через `/api/tablet/newspaper/job`, находит IPP-принтер по mDNS и печатает
+  PDF/PCLm/PWG Raster без системного диалога; отчёт — `/api/tablet/newspaper/report`. Кэш и последний выпуск —
+  `DATA_DIR/jarvis_newspaper_*`. Тесты — `test_newspaper.py`, HTTP-поток — `test_tablet.py`.
 - `ai_usage.py` — модели ИИ по ролям (main / complex / background + задачи studyBrief, triage, title, notesTargets), каталог цен и
  поддерживаемых уровней рассуждений, журнал расхода `jarvis_ai_usage.jsonl` (в бэкапе) и `jarvis_ai_turns.jsonl` (14 дней, не в бэкапе).
  Настройки — `data.settings.aiModels` (Прочее → Настройки → Ассистент: блоки «Модели по ролям», «Рассуждения», «Эскалация», «Группы инструментов»,
@@ -69,7 +71,7 @@
  OpenAI: инструменты вместе с рассуждениями Chat Completions не принимает — при уровне ≠ none цикл идёт через Responses API (`_openai_step`, `_responses_call`; в браузере — `openaiVoiceStep`).
  Эскалация на «сложную» модель — `_TurnState.escalate` / `_needs_complex` в `jarvis.py`; промпт для кэша — `build_assistant_system_prompt(split=True)`.
 - `deck_builder.py` / `deck_skill.py` — навык «Презентации»: движок слайдов (темы, макеты, проверка качества) и интеграция.
-- `android/tablet-voice/` — sideload APK «как Алиса» на планшете (Galaxy Tab A9): foreground service микрофона, wake word «Джарвис», STT, TTS с перебиванием, автозапуск. Мозг — `POST /api/tablet/turn` (тот же `_assistant_loop_*`, cookie или токен устройства). Инструкция — `android/tablet-voice/README-sideload.md`.
+- `android/tablet-voice/` — sideload APK «как Алиса» на планшете (Galaxy Tab A9): foreground service микрофона, wake word «Джарвис», STT, TTS с перебиванием, автозапуск и независимый WorkManager-агент утренней печати по IPP. Мозг — `POST /api/tablet/turn` (тот же `_assistant_loop_*`, cookie или токен устройства). Инструкция — `android/tablet-voice/README-sideload.md`.
 - `index (9).html` — всё приложение одним файлом (React через Babel в браузере); раздел «Учёба» — `StudyView`.
   Настройки → Ассистент (`VoiceAssistantSettings`) разбит на сворачиваемые блоки `AssistantBlock` (по умолчанию закрыты):
   «Плановые задачи» (`PlannedTasksBlock`), навыки, ключи ИИ, Apple, голос и ссылки, инструкция. Новый блок — тоже через `AssistantBlock`.

@@ -6505,7 +6505,8 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
 
 // ============== УТРЕННЯЯ ГАЗЕТА ==============
 const NEWSPAPER_DEFAULTS = {
-  enabled: false, time: '07:30', city: '', title: 'The Jarvis Daily', fontSize: 'xlarge',
+  enabled: false, autoPrint: true, time: '07:30', city: '', title: 'The Jarvis Daily', fontSize: 'xlarge',
+  printerHost: '', printerPort: 631, printerPath: '',
   news: true, boss: true, calendar: true, weather: true, quote: true, fact: true,
 };
 
@@ -6513,6 +6514,7 @@ function NewspaperSettings({ data, setData }) {
   const cfg = { ...NEWSPAPER_DEFAULTS, ...(data.newspaper || {}) };
   const [status, setStatus] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [printBusy, setPrintBusy] = useState(false);
   const [error, setError] = useState('');
   const [previewKey, setPreviewKey] = useState(Date.now());
 
@@ -6531,7 +6533,11 @@ function NewspaperSettings({ data, setData }) {
       return null;
     }
   }, []);
-  useEffect(() => { loadStatus(); }, [loadStatus]);
+  useEffect(() => {
+    loadStatus();
+    const timer = setInterval(loadStatus, 15000);
+    return () => clearInterval(timer);
+  }, [loadStatus]);
 
   const generate = async () => {
     setBusy(true); setError('');
@@ -6551,6 +6557,20 @@ function NewspaperSettings({ data, setData }) {
     }
   };
 
+  const printNow = async () => {
+    setPrintBusy(true); setError('');
+    try {
+      const r = await fetch('/api/newspaper/print', { method: 'POST' });
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'Не удалось создать задание печати.');
+      await loadStatus();
+    } catch (e) {
+      setError(e.message || 'Не удалось создать задание печати.');
+    } finally {
+      setPrintBusy(false);
+    }
+  };
+
   const blocks = [
     ['news', '4 главные новости мира'], ['boss', 'Утренние и вечерние дела «Босса»'],
     ['calendar', 'Планы Apple Calendar'], ['weather', 'Погода на сегодня'],
@@ -6559,6 +6579,11 @@ function NewspaperSettings({ data, setData }) {
   const latest = status?.lastRunAt
     ? new Date(status.lastRunAt).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
     : '';
+  const print = status?.print || {};
+  const agentSeen = status?.printAgentLastSeenAt
+    ? new Date(status.printAgentLastSeenAt).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+    : '';
+  const printStatus = ({ printed: 'Напечатано', printing: 'Печатаю…', searching: 'Ищу принтер…', error: 'Ошибка печати', idle: 'Ожидаю выпуск' })[print.status] || (agentSeen ? 'Планшет подключён' : 'Агент ещё не подключался');
 
   return (
     <div className="space-y-3" data-testid="newspaper-settings">
@@ -6568,7 +6593,7 @@ function NewspaperSettings({ data, setData }) {
             <h3 className="font-display text-xl mb-1">Утренняя газета</h3>
             <p className="text-sm text-[var(--text-muted)]">
               Одностраничный PDF A4 в классической газетной вёрстке. Jarvis собирает выпуск заранее,
-              а домашний агент позднее сможет забрать его на печать.
+              а планшет автоматически забирает его на печать.
             </p>
           </div>
           <Toggle checked={!!cfg.enabled} onChange={v => update({ enabled: v })} />
@@ -6586,6 +6611,37 @@ function NewspaperSettings({ data, setData }) {
             <option value="large">Крупный</option><option value="xlarge">Очень крупный</option>
           </select>
           <p className="text-xs text-[var(--text-subtle)] mt-1">Оба режима рассчитаны на один лист A4; длинные заголовки и списки сокращаются автоматически.</p>
+        </div>
+      </div>
+
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div><h3 className="font-display text-lg">Автоматическая печать</h3>
+            <p className="text-sm text-[var(--text-muted)] mt-1">
+              Планшет сам найдёт Pantum в домашней Wi‑Fi сети и напечатает новый выпуск один раз. Компьютер не нужен.
+            </p></div>
+          <Toggle checked={!!cfg.autoPrint} onChange={v => update({ autoPrint: v })} />
+        </div>
+        <div className={`rounded-xl border p-3 text-sm ${print.status === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-[var(--border)] bg-[var(--bg)]'}`}>
+          <div className="font-medium">{printStatus}</div>
+          <div className="text-xs opacity-75 mt-1">
+            {print.printer ? `${print.printer}${print.format ? ` · ${print.format}` : ''}` : agentSeen ? `Планшет был на связи: ${agentSeen}` : 'Установите свежий APK Jarvis на Samsung Tab A9.'}
+          </div>
+          {print.error && <div className="text-xs mt-2">{print.error}</div>}
+        </div>
+        <details className="text-sm">
+          <summary className="cursor-pointer text-[var(--text-muted)]">Адрес принтера, если автопоиск не сработает</summary>
+          <div className="grid sm:grid-cols-[1fr_110px] gap-3 mt-3">
+            <div><label>IP или имя принтера</label><input value={cfg.printerHost || ''} onChange={e => update({ printerHost: e.target.value.trim() })} placeholder="Например, 192.168.1.45" /></div>
+            <div><label>Порт IPP</label><input type="number" min="1" max="65535" value={cfg.printerPort || 631} onChange={e => update({ printerPort: Number(e.target.value) || 631 })} /></div>
+          </div>
+          <div className="mt-3"><label>Путь IPP</label><input value={cfg.printerPath || ''} onChange={e => update({ printerPath: e.target.value })} placeholder="Автоматически; обычно /ipp/print" /></div>
+        </details>
+        <div className="flex flex-wrap items-center gap-3">
+          <button type="button" onClick={printNow} disabled={printBusy || !cfg.autoPrint} className="btn-secondary text-sm px-4 py-2 disabled:opacity-50">
+            {printBusy ? 'Готовлю…' : 'Напечатать проверочный выпуск'}
+          </button>
+          <span className="text-xs text-[var(--text-subtle)]">Задание заберёт планшет автоматически; обычно в течение 15 минут.</span>
         </div>
       </div>
 

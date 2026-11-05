@@ -4386,20 +4386,32 @@ NEWSPAPER_HTML_FILE = DATA_DIR / "jarvis_newspaper_latest.html"
 NEWSPAPER_PDF_FILE = DATA_DIR / "jarvis_newspaper_latest.pdf"
 NEWSPAPER_PNG_FILE = DATA_DIR / "jarvis_newspaper_latest.png"
 _NEWSPAPER_LOCK = threading.Lock()
+_NEWSPAPER_STATE_LOCK = threading.RLock()
 
 
 def _newspaper_state() -> dict:
-    try:
-        return json.loads(NEWSPAPER_STATE_FILE.read_text(encoding="utf-8")) if NEWSPAPER_STATE_FILE.exists() else {}
-    except Exception:
-        return {}
+    with _NEWSPAPER_STATE_LOCK:
+        try:
+            return json.loads(NEWSPAPER_STATE_FILE.read_text(encoding="utf-8")) if NEWSPAPER_STATE_FILE.exists() else {}
+        except Exception:
+            return {}
 
 
 def _newspaper_save_state(state: dict) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = NEWSPAPER_STATE_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, NEWSPAPER_STATE_FILE)
+    with _NEWSPAPER_STATE_LOCK:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = NEWSPAPER_STATE_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, NEWSPAPER_STATE_FILE)
+
+
+def _newspaper_update_state(patch: dict) -> dict:
+    """Атомарно дополняет состояние, не затирая отчёт планшета во время рендера."""
+    with _NEWSPAPER_STATE_LOCK:
+        state = _newspaper_state()
+        state.update(patch)
+        _newspaper_save_state(state)
+        return state
 
 
 def _newspaper_calendar(day: date) -> dict:
@@ -4425,7 +4437,93 @@ def newspaper_status() -> dict:
         "hasPreview": NEWSPAPER_PNG_FILE.exists(),
         "hasPdf": NEWSPAPER_PDF_FILE.exists(),
         "appleConfigured": bool(apple_creds()),
+        "print": state.get("print") if isinstance(state.get("print"), dict) else {},
+        "printRequest": state.get("printRequest") if isinstance(state.get("printRequest"), dict) else {},
+        "printAgentLastSeenAt": state.get("printAgentLastSeenAt") or "",
     }
+
+
+def newspaper_print_job() -> dict:
+    """Задание для домашнего Android-агента. Сам принтер из интернета недоступен."""
+    cfg = newspaper.settings(load_app_data()) if newspaper else {}
+    state = _newspaper_state()
+    latest_date = str(state.get("latestDate") or "")
+    request = state.get("printRequest") if isinstance(state.get("printRequest"), dict) else {}
+    manual_pending = bool(request.get("id") and request.get("status") != "printed")
+    job_id = f"manual:{request.get('id')}" if manual_pending else (f"daily:{latest_date}" if latest_date else "")
+    printed_jobs = state.get("printedJobs") if isinstance(state.get("printedJobs"), list) else []
+    is_today = latest_date == today_msk().isoformat()
+    ready = bool(
+        job_id and NEWSPAPER_PDF_FILE.exists() and NEWSPAPER_PNG_FILE.exists()
+        and (manual_pending or (cfg.get("enabled") and cfg.get("autoPrint") and is_today))
+        and job_id not in printed_jobs
+    )
+    _newspaper_update_state({"printAgentLastSeenAt": now_msk().isoformat()})
+    return {
+        "ok": True,
+        "enabled": bool(cfg.get("autoPrint")),
+        "ready": ready,
+        "jobId": job_id,
+        "date": latest_date,
+        "title": f"{cfg.get('title') or 'Jarvis'} · {latest_date}",
+        "pdfUrl": "/api/newspaper/today.pdf",
+        "pngUrl": "/api/newspaper/preview.png",
+        "printer": {
+            "host": cfg.get("printerHost") or "",
+            "port": cfg.get("printerPort") or 631,
+            "path": cfg.get("printerPath") or "",
+        },
+    }
+
+
+def newspaper_request_print() -> dict:
+    """Создаёт отдельное задание для кнопки проверки, даже если выпуск уже печатался."""
+    state = _newspaper_state()
+    if not NEWSPAPER_PDF_FILE.exists() or not NEWSPAPER_PNG_FILE.exists() or \
+            state.get("latestDate") != today_msk().isoformat():
+        made = newspaper_generate(reason="print", refresh=True)
+        if not made.get("ok"):
+            return made
+    request = {"id": secrets.token_hex(8), "createdAt": now_msk().isoformat(), "status": "waiting"}
+    _newspaper_update_state({"printRequest": request})
+    return {"ok": True, "jobId": f"manual:{request['id']}"}
+
+
+def newspaper_print_report(payload: dict) -> dict:
+    allowed = {"idle", "searching", "printing", "printed", "error"}
+    status = str((payload or {}).get("status") or "")
+    if status not in allowed:
+        return {"ok": False, "error": "invalid status"}
+    job_id = str((payload or {}).get("jobId") or "")[:100]
+    old = _newspaper_state().get("print")
+    report = {
+        "status": status,
+        "updatedAt": now_msk().isoformat(),
+        "jobId": job_id,
+        "printer": str((payload or {}).get("printer") or "")[:200],
+        "format": str((payload or {}).get("format") or "")[:80],
+        "error": str((payload or {}).get("error") or "")[:500],
+    }
+    if isinstance(old, dict) and old.get("lastJobId"):
+        report["lastJobId"] = old["lastJobId"]
+        report["lastPrintedAt"] = old.get("lastPrintedAt") or ""
+    if status == "printed" and job_id:
+        report["lastJobId"] = job_id
+        report["lastPrintedAt"] = report["updatedAt"]
+    patch = {"print": report, "printAgentLastSeenAt": report["updatedAt"]}
+    if status == "printed" and job_id:
+        history = _newspaper_state().get("printedJobs")
+        history = history if isinstance(history, list) else []
+        completed = [job_id]
+        latest_date = str(_newspaper_state().get("latestDate") or "")
+        if job_id.startswith("manual:") and latest_date:
+            completed.append(f"daily:{latest_date}")
+        patch["printedJobs"] = ([x for x in history if x not in completed] + completed)[-32:]
+    request = _newspaper_state().get("printRequest")
+    if status == "printed" and isinstance(request, dict) and job_id == f"manual:{request.get('id')}":
+        patch["printRequest"] = {**request, "status": "printed", "printedAt": report["updatedAt"]}
+    _newspaper_update_state(patch)
+    return {"ok": True}
 
 
 def newspaper_generate(reason: str = "manual", refresh: bool = True, override: dict = None) -> dict:
@@ -4453,7 +4551,11 @@ def newspaper_generate(reason: str = "manual", refresh: bool = True, override: d
             "issues": payload.get("issues") or [],
             "output": {"pdfBytes": output["pdfBytes"], "pngBytes": output["pngBytes"]},
         })
-        _newspaper_save_state(state)
+        _newspaper_update_state({
+            "latestDate": state["latestDate"], "lastRunAt": state["lastRunAt"],
+            "lastReason": state["lastReason"], "lastOk": state["lastOk"],
+            "lastError": state["lastError"], "issues": state["issues"], "output": state["output"],
+        })
         return {"ok": True, "date": payload["date"], "issues": payload.get("issues") or [],
                 "pdfBytes": output["pdfBytes"], "pngBytes": output["pngBytes"]}
     except Exception as e:
@@ -4461,18 +4563,21 @@ def newspaper_generate(reason: str = "manual", refresh: bool = True, override: d
             "lastRunAt": started.isoformat(), "lastReason": reason, "lastOk": False,
             "lastError": f"{e.__class__.__name__}: {e}",
         })
-        _newspaper_save_state(state)
+        _newspaper_update_state({
+            "lastRunAt": state["lastRunAt"], "lastReason": state["lastReason"],
+            "lastOk": state["lastOk"], "lastError": state["lastError"],
+        })
         return {"ok": False, "error": state["lastError"]}
     finally:
         _NEWSPAPER_LOCK.release()
 
 
 def newspaper_tick(app_data: dict, now_str: str, today_iso: str) -> None:
-    """Каждое утро заранее собирает выпуск; принтер позднее заберёт готовый PDF."""
+    """Собирает выпуск в заданное время или при первом тике после него."""
     if not newspaper:
         return
     cfg = newspaper.settings(app_data)
-    if not cfg["enabled"] or cfg["time"] != now_str:
+    if not cfg["enabled"] or now_str < cfg["time"]:
         return
     state = _newspaper_state()
     if state.get("latestDate") == today_iso or _NEWSPAPER_LOCK.locked():
@@ -10538,6 +10643,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._serve_track(self.path[len("/api/music/"):].split("?", 1)[0])
         elif route == "/api/newspaper/status":
             self._json(200, newspaper_status())
+        elif route == "/api/tablet/newspaper/job":
+            self._json(200, newspaper_print_job())
         elif route in ("/api/newspaper/preview", "/api/newspaper/preview.png", "/api/newspaper/today.pdf"):
             target, ctype = {
                 "/api/newspaper/preview": (NEWSPAPER_HTML_FILE, "text/html; charset=utf-8"),
@@ -10841,6 +10948,16 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 reason="manual", refresh=True,
                 override=(payload or {}).get("settings") if isinstance(payload, dict) else None,
             ))
+        elif route == "/api/newspaper/print":
+            self._json(200, newspaper_request_print())
+        elif route == "/api/tablet/newspaper/report":
+            length = self._content_length() or 0
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}") if length and length <= 32 * 1024 else {}
+            except Exception:
+                payload = {}
+            result = newspaper_print_report(payload if isinstance(payload, dict) else {})
+            self._json(200 if result.get("ok") else 400, result)
         elif route in ("/api/study/brief", "/api/study/chats/scan"):
             length = self._content_length() or 0
             try:

@@ -111,6 +111,13 @@ class NewspaperTest(unittest.TestCase):
         self.assertEqual(launch["channel"], "chromium")
         self.assertNotIn("executable_path", launch)
 
+    def test_print_settings_are_safe_and_enabled_by_default(self):
+        cfg = newspaper.settings({"newspaper": {"printerHost": "192.168.1.45", "printerPath": "ipp/print"}})
+        self.assertTrue(cfg["autoPrint"])
+        self.assertEqual(cfg["printerPort"], 631)
+        self.assertEqual(cfg["printerPath"], "/ipp/print")
+        self.assertEqual(newspaper.settings({"newspaper": {"printerHost": "http://bad/path"}})["printerHost"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

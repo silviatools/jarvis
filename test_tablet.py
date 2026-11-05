@@ -376,8 +376,8 @@ class TabletUnitTest(unittest.TestCase):
             self.assertIn("@+id/userRoot", user)
             self.assertNotIn("@+id/version", user)
         gradle = (Path(__file__).resolve().parent / "android/tablet-voice/app/build.gradle.kts").read_text(encoding="utf-8")
-        self.assertIn('versionName = "1.18"', gradle)
-        self.assertIn("versionCode = 19", gradle)
+        self.assertIn('versionName = "1.19"', gradle)
+        self.assertIn("versionCode = 20", gradle)
         recs = []
         for p in (root / "java").rglob("*.kt"):
             if "AudioRecord(" in p.read_text(encoding="utf-8"):
@@ -848,6 +848,51 @@ class TabletHttpTest(unittest.TestCase):
         code, body = self.req("POST", "/api/tablet/turn", {"text": "ещё раз"}, cookie=True)
         self.assertEqual(code, 200)
         self.assertTrue(body["ok"])
+
+    def test_newspaper_job_reports_and_deduplicates_prints(self):
+        code, _ = self.req("GET", "/api/tablet/newspaper/job")
+        self.assertEqual(code, 401)
+        code, body = self.req("POST", "/api/tablet/login", {"password": jarvis.AUTH_PASSWORD})
+        self.assertEqual(code, 200)
+        token = body["token"]
+        day = jarvis.today_msk().isoformat()
+        root = Path(self.tmp.name)
+        old = (jarvis.NEWSPAPER_STATE_FILE, jarvis.NEWSPAPER_PDF_FILE, jarvis.NEWSPAPER_PNG_FILE)
+        jarvis.NEWSPAPER_STATE_FILE = root / "state.json"
+        jarvis.NEWSPAPER_PDF_FILE = root / "paper.pdf"
+        jarvis.NEWSPAPER_PNG_FILE = root / "paper.png"
+        self.app["newspaper"] = {"enabled": True, "autoPrint": True, "printerHost": "192.168.1.45"}
+        try:
+            jarvis.NEWSPAPER_STATE_FILE.write_text(json.dumps({"latestDate": day}), encoding="utf-8")
+            jarvis.NEWSPAPER_PDF_FILE.write_bytes(b"pdf")
+            jarvis.NEWSPAPER_PNG_FILE.write_bytes(b"png")
+            code, job = self.req("GET", "/api/tablet/newspaper/job", token=token)
+            self.assertEqual(code, 200)
+            self.assertTrue(job["ready"])
+            self.assertEqual(job["jobId"], f"daily:{day}")
+            self.assertEqual(job["printer"]["host"], "192.168.1.45")
+
+            code, report = self.req("POST", "/api/tablet/newspaper/report", {
+                "jobId": job["jobId"], "status": "printed", "printer": "Pantum", "format": "image/pwg-raster",
+            }, token=token)
+            self.assertEqual(code, 200)
+            self.assertTrue(report["ok"])
+            _, done = self.req("GET", "/api/tablet/newspaper/job", token=token)
+            self.assertFalse(done["ready"])
+
+            code, requested = self.req("POST", "/api/newspaper/print", {}, token=token)
+            self.assertEqual(code, 200)
+            _, manual = self.req("GET", "/api/tablet/newspaper/job", token=token)
+            self.assertTrue(manual["ready"])
+            self.assertTrue(manual["jobId"].startswith("manual:"))
+            self.req("POST", "/api/tablet/newspaper/report", {
+                "jobId": manual["jobId"], "status": "printed", "printer": "Pantum",
+            }, token=token)
+            _, no_duplicate = self.req("GET", "/api/tablet/newspaper/job", token=token)
+            self.assertFalse(no_duplicate["ready"])
+            self.assertEqual(requested["jobId"], manual["jobId"])
+        finally:
+            jarvis.NEWSPAPER_STATE_FILE, jarvis.NEWSPAPER_PDF_FILE, jarvis.NEWSPAPER_PNG_FILE = old
 
 
 class TabletSttStreamTest(unittest.TestCase):
