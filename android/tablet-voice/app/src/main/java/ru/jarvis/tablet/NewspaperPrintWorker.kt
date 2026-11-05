@@ -1,6 +1,7 @@
 package ru.jarvis.tablet
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.work.Worker
 import androidx.work.WorkerParameters
 
@@ -46,43 +47,53 @@ class NewspaperPrintWorker(
         } else {
             VoiceLog.add("газета: задание ${job.jobId}, принтер ${host.ifBlank { "адрес пуст" }}")
         }
-
-        val probe = try {
-            checkPrinter(host, job.printerPort, job.printerPath, fallbacks = hasJob)
-        } catch (e: Exception) {
-            val error = shortError(e)
-            ProbeHit(false, error, null, host.ifBlank { "адрес пуст" }, "error")
-        }
-        VoiceLog.add(printerLine(probe))
-        val recorded = Api.newspaperReport(
-            base, token,
-            jobId = if (hasJob) job.jobId else "",
-            status = "check",
-            printer = probe.where,
-            error = if (probe.ok) "" else probe.error,
-            printerVisible = probe.ok,
-            printerHost = host,
-            printerPort = job.printerPort,
-            printerOutcome = probe.outcome,
-        )
-        if (!recorded) VoiceLog.add("газета: сервер не записал проверку принтера")
-
-        if (!hasJob) return Result.success()
-        var caps = probe.caps
-        if (caps == null && probe.outcome != "error") {
-            caps = discoverPrinter()
-        }
-        if (Prefs.lastPrintedJob == job.jobId) {
-            VoiceLog.add("газета: задание ${job.jobId} уже напечатано")
-            Api.newspaperReport(base, token, job.jobId, "printed", caps?.endpoint?.label ?: probe.where)
+        if (hasJob && sweepRecent(job.jobId)) {
+            VoiceLog.add("газета: задание ${job.jobId} уже проверялось, повторный перебор пропущен")
             return Result.success()
         }
-        if (caps == null) {
-            VoiceLog.add("газета: печать не начата — ${probe.error.ifBlank { "принтер недоступен" }}")
-            return Result.success()
+
+        var sweepJob = ""
+        try {
+            if (hasJob) sweepJob = job.jobId
+            val probe = try {
+                checkPrinter(host, job.printerPort, job.printerPath, fallbacks = hasJob)
+            } catch (e: Exception) {
+                val error = shortError(e)
+                ProbeHit(false, error, null, host.ifBlank { "адрес пуст" }, outcomeFor(error))
+            }
+            VoiceLog.add(printerLine(probe))
+            val recorded = Api.newspaperReport(
+                base, token,
+                jobId = if (hasJob) job.jobId else "",
+                status = "check",
+                printer = probe.where,
+                error = if (probe.ok) "" else probe.error,
+                printerVisible = probe.ok,
+                printerHost = host,
+                printerPort = job.printerPort,
+                printerOutcome = probe.outcome,
+            )
+            if (!recorded) VoiceLog.add("газета: сервер не записал проверку принтера")
+
+            if (!hasJob) return Result.success()
+            var caps = probe.caps
+            if (caps == null && probe.outcome != "error") {
+                caps = discoverPrinter(host, job.printerPort)
+            }
+            if (Prefs.lastPrintedJob == job.jobId) {
+                VoiceLog.add("газета: задание ${job.jobId} уже напечатано")
+                Api.newspaperReport(base, token, job.jobId, "printed", caps?.endpoint?.label ?: probe.where)
+                return Result.success()
+            }
+            if (caps == null) {
+                VoiceLog.add("газета: печать не начата — ${probe.error.ifBlank { "принтер недоступен" }}")
+                return Result.success()
+            }
+            PrinterDiscovery(applicationContext).remember(caps.endpoint.copy(name = caps.printerName))
+            return printReady(base, token, job, caps)
+        } finally {
+            if (sweepJob.isNotBlank()) noteSweep(sweepJob)
         }
-        PrinterDiscovery(applicationContext).remember(caps.endpoint.copy(name = caps.printerName))
-        return printReady(base, token, job, caps)
     }
 
     private fun checkPrinter(host: String, port: Int, path: String, fallbacks: Boolean): ProbeHit {
@@ -92,14 +103,7 @@ class NewspaperPrintWorker(
         }
         val endpoint = PrinterEndpoint("Pantum", host, port.coerceIn(1, 65535), path)
         val where = "${endpoint.host}:${endpoint.port}${PrinterDiscovery.cleanPath(endpoint.path)}"
-        val ipp = try {
-            IppPrinter(applicationContext)
-        } catch (e: Exception) {
-            val error = shortError(e)
-            VoiceLog.add("газета: пробую $where")
-            VoiceLog.add("газета: $where — $error")
-            return ProbeHit(false, error, null, where, outcomeFor(error))
-        }
+        val ipp = IppPrinter(applicationContext)
         return try {
             val caps = ipp.probe(endpoint, fallbacks)
             val at = "${caps.endpoint.host}:${caps.endpoint.port}${caps.endpoint.path}"
@@ -107,42 +111,53 @@ class NewspaperPrintWorker(
         } catch (e: Exception) {
             val error = shortError(e)
             ProbeHit(false, error, null, where, outcomeFor(error))
+        } finally {
+            ipp.close()
         }
     }
 
-    /** Запасной поиск только когда есть задание, а сохранённый адрес не ответил. Ошибки пишутся сразу. */
-    private fun discoverPrinter(): IppCapabilities? {
+    /** Запасной поиск только когда есть задание, а сохранённый адрес не ответил. Тот же хост второй раз не перебираем. */
+    private fun discoverPrinter(triedHost: String, triedPort: Int): IppCapabilities? {
         val discovery = PrinterDiscovery(applicationContext)
-        val ipp = try {
-            IppPrinter(applicationContext)
-        } catch (e: Exception) {
-            VoiceLog.add("газета: mDNS — ${shortError(e)}")
-            return null
-        }
-        val cached = discovery.cached()
-        if (cached != null) {
-            try {
-                return ipp.probe(cached, fallbacks = true)
-            } catch (_: Exception) {
-                // Адрес и ошибка уже в журнале.
+        val ipp = IppPrinter(applicationContext)
+        try {
+            val cached = discovery.cached()
+            if (cached != null && !samePrinter(cached.host, cached.port, triedHost, triedPort)) {
+                try {
+                    return ipp.probe(cached, fallbacks = true)
+                } catch (e: PrinterRouteException) {
+                    VoiceLog.add("газета: ${shortError(e)}")
+                    return null
+                } catch (_: Exception) {
+                    // Адрес и ошибка уже в журнале.
+                }
             }
-        }
-        VoiceLog.add("газета: ищу Pantum в Wi‑Fi")
-        val found = try {
-            discovery.discover()
-        } catch (e: Exception) {
-            VoiceLog.add("газета: mDNS — ${shortError(e)}")
-            null
-        }
-        if (found == null) {
-            VoiceLog.add("газета: mDNS ничего не нашёл")
-            return null
-        }
-        VoiceLog.add("газета: mDNS нашёл ${found.host}:${found.port}${found.path}")
-        return try {
-            ipp.probe(found, fallbacks = true)
-        } catch (_: Exception) {
-            null
+            VoiceLog.add("газета: ищу Pantum в Wi‑Fi")
+            val found = try {
+                discovery.discover()
+            } catch (e: Exception) {
+                VoiceLog.add("газета: mDNS — ${shortError(e)}")
+                null
+            }
+            if (found == null) {
+                VoiceLog.add("газета: mDNS ничего не нашёл")
+                return null
+            }
+            if (samePrinter(found.host, found.port, triedHost, triedPort)) {
+                VoiceLog.add("газета: mDNS нашёл ${found.host}:${found.port}${found.path}, это тот же принтер, повторный перебор пропущен")
+                return null
+            }
+            VoiceLog.add("газета: mDNS нашёл ${found.host}:${found.port}${found.path}")
+            return try {
+                ipp.probe(found, fallbacks = true)
+            } catch (e: PrinterRouteException) {
+                VoiceLog.add("газета: ${shortError(e)}")
+                null
+            } catch (_: Exception) {
+                null
+            }
+        } finally {
+            ipp.close()
         }
     }
 
@@ -169,7 +184,12 @@ class NewspaperPrintWorker(
             }
             val target = "${caps.endpoint.host}:${caps.endpoint.port}${caps.endpoint.path}"
             VoiceLog.add("газета: отправляю $target")
-            IppPrinter(applicationContext).print(caps, job.title, format, document)
+            val ipp = IppPrinter(applicationContext)
+            try {
+                ipp.print(caps, job.title, format, document)
+            } finally {
+                ipp.close()
+            }
             Prefs.lastPrintedJob = job.jobId
             Api.newspaperReport(base, token, job.jobId, "printed", caps.endpoint.label, format)
             VoiceLog.add("газета: напечатана ${job.jobId} ${caps.endpoint.label} $format")
@@ -184,6 +204,9 @@ class NewspaperPrintWorker(
 
     private fun printerLine(probe: ProbeHit): String {
         val why = probe.error.ifBlank { "нет ответа" }
+        if (probe.outcome == "error" && ("это VPN" in probe.error || "EPERM" in probe.error)) {
+            return "газета: ${probe.error.removePrefix("газета: ")}"
+        }
         return when (probe.outcome) {
             "seen" -> "газета: принтер ${probe.where} виден"
             "down" -> "газета: принтер ${probe.where} не отвечает — $why"
@@ -193,12 +216,18 @@ class NewspaperPrintWorker(
 
     private fun outcomeFor(error: String): String {
         val low = error.lowercase()
+        if ("это vpn" in low || "eperm" in low || "bindsocket" in low || "binding socket" in low || "vpn не пускает" in low) {
+            return "error"
+        }
         val down = listOf(
             "timeout", "timed out", "unreachable", "connection refused", "econnrefused",
             "failed to connect", "no route", "не отвечает",
         )
         return if (down.any { it in low }) "down" else "error"
     }
+
+    private fun samePrinter(host: String, port: Int, otherHost: String, otherPort: Int): Boolean =
+        host.isNotBlank() && host.equals(otherHost, ignoreCase = true) && port == otherPort
 
     private fun chooseFormat(formats: List<String>): String {
         val byLower = formats.associateBy { it.lowercase() }
@@ -228,5 +257,18 @@ class NewspaperPrintWorker(
 
     companion object {
         private val gate = Any()
+        private const val SWEEP_GAP_MS = 45_000L
+        @Volatile private var sweepJob = ""
+        @Volatile private var sweepAt = 0L
+
+        private fun sweepRecent(jobId: String): Boolean {
+            if (jobId.isBlank() || jobId != sweepJob) return false
+            return SystemClock.elapsedRealtime() - sweepAt < SWEEP_GAP_MS
+        }
+
+        private fun noteSweep(jobId: String) {
+            sweepJob = jobId
+            sweepAt = SystemClock.elapsedRealtime()
+        }
     }
 }
