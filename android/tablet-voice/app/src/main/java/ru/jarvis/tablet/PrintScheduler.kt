@@ -13,8 +13,9 @@ import java.util.concurrent.TimeUnit
 /** Надёжный фон: живёт после перезагрузки и не зависит от включённого микрофона. */
 object PrintScheduler {
     private const val PERIODIC = "jarvis-newspaper-periodic"
-    private const val NOW = "jarvis-newspaper-now"
-    private const val SOON = "jarvis-newspaper-soon"
+    private const val CHAIN_A = "jarvis-newspaper-a"
+    private const val CHAIN_B = "jarvis-newspaper-b"
+    const val TAG_B = "jarvis-chain-b"
     private const val AGAIN_SEC = 60L
 
     private val connected = Constraints.Builder()
@@ -22,31 +23,40 @@ object PrintScheduler {
         .build()
 
     fun ensure(context: Context) {
+        val wm = WorkManager.getInstance(context)
+        // Старая цепочка APPEND на том же имени после ошибки больше не ставила следующий опрос.
+        wm.cancelUniqueWork("jarvis-newspaper-soon")
+        wm.cancelUniqueWork("jarvis-newspaper-now")
         val request = PeriodicWorkRequestBuilder<NewspaperPrintWorker>(15, TimeUnit.MINUTES)
             .setConstraints(connected)
             .build()
-        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-            PERIODIC,
-            ExistingPeriodicWorkPolicy.KEEP,
-            request,
-        )
+        wm.enqueueUniquePeriodicWork(PERIODIC, ExistingPeriodicWorkPolicy.KEEP, request)
     }
 
     fun kick(context: Context) {
         if (!Prefs.configured()) return
-        val request = OneTimeWorkRequestBuilder<NewspaperPrintWorker>()
-            .setConstraints(connected)
-            .build()
-        WorkManager.getInstance(context).enqueueUniqueWork(NOW, ExistingWorkPolicy.KEEP, request)
+        enqueue(context, CHAIN_A, 0, tagB = false)
     }
 
-    /** Следующий опрос через минуту. Окно «на связи» на сайте — 3 минуты. */
-    fun again(context: Context) {
+    /**
+     * Следующий опрос через минуту, на другом имени, чем текущая работа.
+     * REPLACE своего имени из doWork отменял бы сам опрос.
+     */
+    fun again(context: Context, fromB: Boolean) {
         if (!Prefs.configured()) return
-        val request = OneTimeWorkRequestBuilder<NewspaperPrintWorker>()
+        if (fromB) enqueue(context, CHAIN_A, AGAIN_SEC, tagB = false)
+        else enqueue(context, CHAIN_B, AGAIN_SEC, tagB = true)
+    }
+
+    private fun enqueue(context: Context, name: String, delaySec: Long, tagB: Boolean) {
+        val builder = OneTimeWorkRequestBuilder<NewspaperPrintWorker>()
             .setConstraints(connected)
-            .setInitialDelay(AGAIN_SEC, TimeUnit.SECONDS)
-            .build()
-        WorkManager.getInstance(context).enqueueUniqueWork(SOON, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
+        if (delaySec > 0) builder.setInitialDelay(delaySec, TimeUnit.SECONDS)
+        if (tagB) builder.addTag(TAG_B)
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            name,
+            ExistingWorkPolicy.REPLACE,
+            builder.build(),
+        )
     }
 }

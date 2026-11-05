@@ -6588,14 +6588,17 @@ function NewspaperSettings({ data, setData }) {
   const printerHost = String(printer.host || cfg.printerHost || '').trim();
   const printerPort = printer.port || cfg.printerPort || 631;
   const printerWhere = printerHost ? `${printerHost}:${printerPort}` : '';
-  const printerLine = !printerWhere ? 'адрес не задан'
-    : printer.visible === true ? 'виден'
-    : printer.visible === false ? 'не отвечает'
+  const printerOutcome = String(printer.outcome || '');
+  const printerLine = !printerWhere && printer.visible == null && !printerOutcome ? 'адрес не задан'
+    : printer.visible === true || printerOutcome === 'seen' ? 'виден'
+    : printerOutcome === 'error' ? 'ошибка'
+    : printer.visible === false || printerOutcome === 'down' ? 'не отвечает'
     : 'ещё не проверялся';
-  const agentBad = !!status && (!agent.online || printer.visible === false);
+  const printerBad = printerOutcome === 'error' || printer.visible === false;
+  const agentBad = !!status && !agent.online;
   const printStatus = ({ printed: 'Напечатано', printing: 'Печатаю…', searching: 'Ищу принтер…', error: 'Ошибка печати', idle: 'Ожидаю выпуск', check: 'Проверка' })[print.status] || '';
 
-  const apkHref = '/download/Jarvis-tablet-1.21.apk';
+  const apkHref = 'https://github.com/silviatools/jarvis/releases/download/tablet-1.22/Jarvis-tablet-1.22.apk';
   return (
     <div className="space-y-3" data-testid="newspaper-settings">
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-3" data-testid="tablet-apk-download">
@@ -6603,7 +6606,7 @@ function NewspaperSettings({ data, setData }) {
           <div>
             <h3 className="font-display text-xl mb-1">Приложение для планшета</h3>
             <p className="text-sm text-[var(--text-muted)]">
-              Версия 1.21. Файл Jarvis-tablet-1.21.apk — скачайте в этом браузере и откройте, чтобы установить или обновить.
+              Версия 1.22. Файл Jarvis-tablet-1.22.apk — откройте ссылку на телефоне и установите или обновите.
             </p>
           </div>
           <a href={apkHref} className="btn-primary text-sm px-5 py-3 text-center whitespace-nowrap" data-testid="download-tablet-apk">
@@ -6648,9 +6651,9 @@ function NewspaperSettings({ data, setData }) {
             </p></div>
           <Toggle checked={!!cfg.autoPrint} onChange={v => update({ autoPrint: v })} />
         </div>
-        <div className={`rounded-xl border p-3 text-sm space-y-1 ${agentBad || print.status === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-[var(--border)] bg-[var(--bg)]'}`}>
-          <div className="font-medium" data-testid="newspaper-agent">Планшет: {status ? (agent.online ? 'на связи' : 'нет связи') : 'проверяю…'}</div>
-          <div className="font-medium" data-testid="newspaper-printer">Принтер{printerWhere ? ` ${printerWhere}` : ''}: {printerLine}</div>
+        <div className={`rounded-xl border p-3 text-sm space-y-1 ${agentBad || printerBad || print.status === 'error' ? 'border-red-200 bg-red-50' : 'border-[var(--border)] bg-[var(--bg)]'}`}>
+          <div className={`font-medium ${agentBad ? 'text-red-700' : ''}`} data-testid="newspaper-agent">Планшет: {status ? (agent.online ? 'на связи' : 'нет связи') : 'проверяю…'}</div>
+          <div className={`font-medium ${printerBad ? 'text-red-700' : ''}`} data-testid="newspaper-printer">Принтер{printerWhere ? ` ${printerWhere}` : ''}: {printerLine}</div>
           <div className="text-xs opacity-75">
             {agentSeen ? `Последний опрос: ${agentSeen}. ` : 'Планшет ещё не выходил на связь. '}
             Нет связи, если опроса не было 3 минуты.

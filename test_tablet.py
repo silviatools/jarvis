@@ -376,8 +376,8 @@ class TabletUnitTest(unittest.TestCase):
             self.assertIn("@+id/userRoot", user)
             self.assertNotIn("@+id/version", user)
         gradle = (Path(__file__).resolve().parent / "android/tablet-voice/app/build.gradle.kts").read_text(encoding="utf-8")
-        self.assertIn('versionName = "1.21"', gradle)
-        self.assertIn("versionCode = 22", gradle)
+        self.assertIn('versionName = "1.22"', gradle)
+        self.assertIn("versionCode = 23", gradle)
         manifest = (root / "AndroidManifest.xml").read_text(encoding="utf-8")
         self.assertIn("android.permission.CHANGE_NETWORK_STATE", manifest)
         recs = []
@@ -445,6 +445,31 @@ class TabletUnitTest(unittest.TestCase):
         self.assertIn("newspaper-printer", card)
         sched = (root / "java/ru/jarvis/tablet/PrintScheduler.kt").read_text(encoding="utf-8")
         self.assertIn("AGAIN_SEC = 60L", sched)
+
+    def test_v122_bind_failure_keeps_polling_and_reports_printer(self):
+        """EPERM на bindSocket не валит задание и не обрывает минутный опрос."""
+        root = Path(__file__).resolve().parent / "android/tablet-voice/app/src/main"
+        ipp = (root / "java/ru/jarvis/tablet/IppPrinter.kt").read_text(encoding="utf-8")
+        self.assertIn('VoiceLog.add("газета: привязка к Wi‑Fi запрещена, пробую обычную сеть")', ipp)
+        self.assertIn("isBindFailure", ipp)
+        self.assertIn("binding socket", ipp)
+        send = ipp.split("private fun send")[1].split("private fun markBindBlocked")[0]
+        self.assertLess(send.index("markBindBlocked()"), send.rindex("post(endpoint, bytes"))
+        worker = (root / "java/ru/jarvis/tablet/NewspaperPrintWorker.kt").read_text(encoding="utf-8")
+        self.assertNotIn("Result.retry()", worker)
+        self.assertIn("PrintScheduler.again(applicationContext, fromB)", worker)
+        self.assertLess(worker.index("finally"), worker.index("PrintScheduler.again(applicationContext, fromB)"))
+        self.assertLess(worker.index("printerLine(probe)"), worker.index('status = "check"'))
+        self.assertIn('printerOutcome = probe.outcome', worker)
+        self.assertIn('"газета: принтер ${probe.where} ошибка — $why"', worker)
+        self.assertIn('"газета: принтер ${probe.where} не отвечает — $why"', worker)
+        sched = (root / "java/ru/jarvis/tablet/PrintScheduler.kt").read_text(encoding="utf-8")
+        self.assertIn("CHAIN_A", sched)
+        self.assertIn("CHAIN_B", sched)
+        self.assertIn("AGAIN_SEC = 60L", sched)
+        self.assertIn("ExistingWorkPolicy.REPLACE", sched)
+        self.assertNotIn("APPEND_OR_REPLACE", sched)
+        self.assertIn('cancelUniqueWork("jarvis-newspaper-soon")', sched)
 
     def test_v117_window_holds_phrase_and_slider_is_timer(self):
         """Речь с 4-й по 7-ю секунду — ход, без звука конца. Тишина — конец на 5-й и WAKE."""
@@ -973,6 +998,29 @@ class TabletHttpTest(unittest.TestCase):
             self.assertFalse(quiet["enabled"])
             self.assertFalse(quiet["ready"])
             self.assertEqual(quiet["printer"]["host"], "192.168.1.45")
+
+            code, failed = self.req("POST", "/api/tablet/newspaper/report", {
+                "jobId": "daily:x",
+                "status": "error",
+                "error": "Binding socket to network 101 failed: EPERM (Operation not permitted)",
+            }, token=token)
+            self.assertEqual(code, 200, failed)
+            code, checked_bind = self.req("POST", "/api/tablet/newspaper/report", {
+                "status": "check",
+                "printerHost": "192.168.1.100",
+                "printerPort": 631,
+                "printerVisible": False,
+                "printerOutcome": "error",
+                "error": "timeout после обычной сети",
+            }, token=token)
+            self.assertEqual(code, 200, checked_bind)
+            _, cleared = self.req("GET", "/api/newspaper/status", token=token)
+            self.assertTrue(cleared["agent"]["online"])
+            self.assertEqual(cleared["agent"]["printer"]["outcome"], "error")
+            self.assertFalse(cleared["agent"]["printer"]["visible"])
+            self.assertIn("timeout", cleared["agent"]["printer"]["error"])
+            self.assertEqual(cleared["print"].get("status"), "idle")
+            self.assertEqual(cleared["print"].get("error") or "", "")
         finally:
             jarvis.NEWSPAPER_STATE_FILE, jarvis.NEWSPAPER_PDF_FILE, jarvis.NEWSPAPER_PNG_FILE = old
 
@@ -1000,17 +1048,19 @@ class TabletHttpTest(unittest.TestCase):
 
     def test_tablet_apk_downloads_with_site_cookie(self):
         path = jarvis.TABLET_APK_ROUTE
-        self.assertEqual(path, "/download/Jarvis-tablet-1.21.apk")
-        self.assertEqual(jarvis.TABLET_APK_NAME, "Jarvis-tablet-1.21.apk")
-        self.assertIn("1.21", jarvis.TABLET_APK_NAME)
+        release = "https://github.com/silviatools/jarvis/releases/download/tablet-1.22/Jarvis-tablet-1.22.apk"
+        self.assertEqual(path, "/download/Jarvis-tablet-1.22.apk")
+        self.assertEqual(jarvis.TABLET_APK_NAME, "Jarvis-tablet-1.22.apk")
+        self.assertIn("1.22", jarvis.TABLET_APK_NAME)
         self.assertNotIn(path, jarvis.AUTH_PUBLIC_FILES)
         self.assertTrue(jarvis.TABLET_APK_FILE.is_file())
         self.assertGreater(jarvis.TABLET_APK_FILE.stat().st_size, 1_000_000)
 
         html = jarvis.HTML_FILE.read_text(encoding="utf-8")
         self.assertIn("Скачать приложение", html)
-        self.assertIn(path, html)
-        self.assertIn("Версия 1.21", html)
+        self.assertIn(release, html)
+        self.assertNotIn("Jarvis-tablet-1.21.apk", html)
+        self.assertIn("Версия 1.22", html)
 
         import http.client
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
@@ -1019,7 +1069,7 @@ class TabletHttpTest(unittest.TestCase):
         self.assertEqual(full.status, 200)
         self.assertEqual(full.getheader("Content-Type"), "application/vnd.android.package-archive")
         self.assertIn("attachment", full.getheader("Content-Disposition") or "")
-        self.assertIn("Jarvis-tablet-1.21.apk", full.getheader("Content-Disposition") or "")
+        self.assertIn("Jarvis-tablet-1.22.apk", full.getheader("Content-Disposition") or "")
         self.assertEqual(int(full.getheader("Content-Length")), jarvis.TABLET_APK_FILE.stat().st_size)
         self.assertEqual(full.read(4), b"PK\x03\x04")
         conn.close()
@@ -1045,7 +1095,7 @@ class TabletHttpTest(unittest.TestCase):
             self.assertEqual(resp.headers.get("Content-Type"), "application/vnd.android.package-archive")
             disp = resp.headers.get("Content-Disposition", "")
             self.assertIn("attachment", disp)
-            self.assertIn("Jarvis-tablet-1.21.apk", disp)
+            self.assertIn("Jarvis-tablet-1.22.apk", disp)
             self.assertIn(f"/{jarvis.TABLET_APK_FILE.stat().st_size}", resp.headers.get("Content-Range", ""))
 
 

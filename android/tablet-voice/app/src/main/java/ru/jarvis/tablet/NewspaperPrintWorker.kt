@@ -9,9 +9,19 @@ class NewspaperPrintWorker(
     params: WorkerParameters,
 ) : Worker(context, params) {
     override fun doWork(): Result {
-        val result = synchronized(gate) { runCheck() }
-        PrintScheduler.again(applicationContext)
-        return result
+        val fromB = PrintScheduler.TAG_B in tags
+        return try {
+            synchronized(gate) { runCheck() }
+        } catch (e: Exception) {
+            VoiceLog.add("газета: ошибка ${shortError(e)}")
+            Result.success()
+        } finally {
+            try {
+                PrintScheduler.again(applicationContext, fromB)
+            } catch (e: Exception) {
+                VoiceLog.add("газета: не удалось запланировать опрос — ${shortError(e)}")
+            }
+        }
     }
 
     private fun runCheck(): Result {
@@ -37,7 +47,13 @@ class NewspaperPrintWorker(
             VoiceLog.add("газета: задание ${job.jobId}, принтер ${host.ifBlank { "адрес пуст" }}")
         }
 
-        val probe = checkPrinter(host, job.printerPort, job.printerPath, fallbacks = hasJob)
+        val probe = try {
+            checkPrinter(host, job.printerPort, job.printerPath, fallbacks = hasJob)
+        } catch (e: Exception) {
+            val error = shortError(e)
+            ProbeHit(false, error, null, host.ifBlank { "адрес пуст" }, "error")
+        }
+        VoiceLog.add(printerLine(probe))
         val recorded = Api.newspaperReport(
             base, token,
             jobId = if (hasJob) job.jobId else "",
@@ -47,13 +63,13 @@ class NewspaperPrintWorker(
             printerVisible = probe.ok,
             printerHost = host,
             printerPort = job.printerPort,
+            printerOutcome = probe.outcome,
         )
         if (!recorded) VoiceLog.add("газета: сервер не записал проверку принтера")
-        VoiceLog.add(printerLine(probe))
 
         if (!hasJob) return Result.success()
         var caps = probe.caps
-        if (caps == null && !probe.error.contains("Wi‑Fi") && !probe.error.contains("Wi-Fi")) {
+        if (caps == null && probe.outcome != "error") {
             caps = discoverPrinter()
         }
         if (Prefs.lastPrintedJob == job.jobId) {
@@ -62,9 +78,7 @@ class NewspaperPrintWorker(
             return Result.success()
         }
         if (caps == null) {
-            val error = probe.error.ifBlank { "Принтер не отвечает" }
-            VoiceLog.add("газета: печать не начата — $error")
-            Api.newspaperReport(base, token, job.jobId, "error", error = error)
+            VoiceLog.add("газета: печать не начата — ${probe.error.ifBlank { "принтер недоступен" }}")
             return Result.success()
         }
         PrinterDiscovery(applicationContext).remember(caps.endpoint.copy(name = caps.printerName))
@@ -74,7 +88,7 @@ class NewspaperPrintWorker(
     private fun checkPrinter(host: String, port: Int, path: String, fallbacks: Boolean): ProbeHit {
         if (host.isBlank()) {
             VoiceLog.add("газета: адрес принтера пуст")
-            return ProbeHit(false, "адрес пуст", null, "адрес пуст")
+            return ProbeHit(false, "адрес пуст", null, "адрес пуст", "error")
         }
         val endpoint = PrinterEndpoint("Pantum", host, port.coerceIn(1, 65535), path)
         val where = "${endpoint.host}:${endpoint.port}${PrinterDiscovery.cleanPath(endpoint.path)}"
@@ -84,14 +98,15 @@ class NewspaperPrintWorker(
             val error = shortError(e)
             VoiceLog.add("газета: пробую $where")
             VoiceLog.add("газета: $where — $error")
-            return ProbeHit(false, error, null, where)
+            return ProbeHit(false, error, null, where, outcomeFor(error))
         }
         return try {
             val caps = ipp.probe(endpoint, fallbacks)
             val at = "${caps.endpoint.host}:${caps.endpoint.port}${caps.endpoint.path}"
-            ProbeHit(true, "", caps, at)
+            ProbeHit(true, "", caps, at, "seen")
         } catch (e: Exception) {
-            ProbeHit(false, shortError(e), null, where)
+            val error = shortError(e)
+            ProbeHit(false, error, null, where, outcomeFor(error))
         }
     }
 
@@ -167,9 +182,23 @@ class NewspaperPrintWorker(
         }
     }
 
-    private fun printerLine(probe: ProbeHit): String =
-        if (probe.ok) "газета: принтер ${probe.where} виден"
-        else "газета: принтер ${probe.where} не отвечает — ${probe.error.ifBlank { "нет ответа" }}"
+    private fun printerLine(probe: ProbeHit): String {
+        val why = probe.error.ifBlank { "нет ответа" }
+        return when (probe.outcome) {
+            "seen" -> "газета: принтер ${probe.where} виден"
+            "down" -> "газета: принтер ${probe.where} не отвечает — $why"
+            else -> "газета: принтер ${probe.where} ошибка — $why"
+        }
+    }
+
+    private fun outcomeFor(error: String): String {
+        val low = error.lowercase()
+        val down = listOf(
+            "timeout", "timed out", "unreachable", "connection refused", "econnrefused",
+            "failed to connect", "no route", "не отвечает",
+        )
+        return if (down.any { it in low }) "down" else "error"
+    }
 
     private fun chooseFormat(formats: List<String>): String {
         val byLower = formats.associateBy { it.lowercase() }
@@ -194,6 +223,7 @@ class NewspaperPrintWorker(
         val error: String,
         val caps: IppCapabilities?,
         val where: String,
+        val outcome: String,
     )
 
     companion object {

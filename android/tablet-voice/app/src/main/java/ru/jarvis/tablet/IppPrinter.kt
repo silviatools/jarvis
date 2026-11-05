@@ -15,6 +15,7 @@ import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 data class IppCapabilities(
@@ -26,8 +27,7 @@ data class IppCapabilities(
 )
 
 class IppPrinter(context: Context) {
-    private val wifi: Network = findWifi(context)
-        ?: throw IllegalStateException("Планшет не подключён к домашнему Wi‑Fi")
+    private var wifi: Network? = findWifi(context)
 
     fun probe(endpoint: PrinterEndpoint, fallbacks: Boolean = true): IppCapabilities {
         var last: Exception? = null
@@ -112,21 +112,53 @@ class IppPrinter(context: Context) {
         IppOutputStream(body).write(packet)
         if (document != null) body.write(document)
         val bytes = body.toByteArray()
-        val conn = wifi.openConnection(httpUrl(endpoint)) as HttpURLConnection
+        return try {
+            post(endpoint, bytes, document != null)
+        } catch (e: Exception) {
+            if (skipBind.get() || !isBindFailure(e)) throw e
+            markBindBlocked()
+            post(endpoint, bytes, document != null)
+        }
+    }
+
+    /** One UI запрещает bindSocket к сети Wi‑Fi из фоновой работы. Обычный сокет и так идёт в ту же сеть. */
+    private fun markBindBlocked() {
+        skipBind.set(true)
+        wifi = null
+        if (bindLogged.compareAndSet(false, true)) {
+            VoiceLog.add("газета: привязка к Wi‑Fi запрещена, пробую обычную сеть")
+        }
+    }
+
+    private fun post(endpoint: PrinterEndpoint, bytes: ByteArray, printing: Boolean): IppPacket {
+        val url = httpUrl(endpoint)
+        val net = if (skipBind.get()) null else wifi
+        val conn = (net?.openConnection(url) ?: url.openConnection()) as HttpURLConnection
         conn.requestMethod = "POST"
         conn.connectTimeout = 8_000
-        conn.readTimeout = if (document == null) 15_000 else 120_000
+        conn.readTimeout = if (printing) 120_000 else 15_000
         conn.doOutput = true
         conn.setFixedLengthStreamingMode(bytes.size)
         conn.setRequestProperty("Content-Type", "application/ipp")
         conn.setRequestProperty("Accept", "application/ipp")
-        conn.outputStream.use { it.write(bytes) }
-        val http = conn.responseCode
-        if (http !in 200..299) {
+        try {
+            conn.outputStream.use { it.write(bytes) }
+            val http = conn.responseCode
+            if (http !in 200..299) throw IllegalStateException("Принтер вернул HTTP $http")
+            return conn.inputStream.use { IppInputStream(it).readPacket() }
+        } finally {
             conn.disconnect()
-            throw IllegalStateException("Принтер вернул HTTP $http")
         }
-        return conn.inputStream.use { IppInputStream(it).readPacket() }.also { conn.disconnect() }
+    }
+
+    private fun isBindFailure(e: Throwable): Boolean {
+        var cur: Throwable? = e
+        while (cur != null) {
+            val msg = (cur.message ?: "").lowercase()
+            if ("bindsocket" in msg || "binding socket" in msg || "eperm" in msg) return true
+            cur = cur.cause
+        }
+        return false
     }
 
     private fun ensureSuccess(response: IppPacket) {
@@ -145,6 +177,8 @@ class IppPrinter(context: Context) {
 
     companion object {
         private val ids = AtomicInteger(1000)
+        private val skipBind = AtomicBoolean(false)
+        private val bindLogged = AtomicBoolean(false)
 
         private fun findWifi(context: Context): Network? {
             val cm = context.getSystemService(ConnectivityManager::class.java)

@@ -80,10 +80,11 @@ except ImportError:
     print("NOTE: 'requests' not installed — Telegram disabled. Run: pip3 install requests\n")
 
 DIR      = Path(__file__).parent
-# Sideload APK планшета 1.21 (сборка 22). Лежит в репозитории, чтобы Railway
-# отдал его с самого сайта. Вход тот же, что у сайта: cookie jarvis_auth.
-TABLET_APK_VERSION = "1.21"
-TABLET_APK_NAME = "Jarvis-tablet-1.21.apk"
+# Sideload APK планшета 1.22 (сборка 23). Лежит в репозитории, чтобы Railway
+# отдал его с самого сайта. Кнопка на сайте ведёт на GitHub Release — так файл
+# открывается с телефона. Вход на запасной маршрут тот же: cookie jarvis_auth.
+TABLET_APK_VERSION = "1.22"
+TABLET_APK_NAME = "Jarvis-tablet-1.22.apk"
 TABLET_APK_FILE = DIR / "android" / "tablet-voice" / "release" / TABLET_APK_NAME
 TABLET_APK_ROUTE = "/download/" + TABLET_APK_NAME
 try:
@@ -4493,11 +4494,17 @@ def newspaper_agent_view(state: dict | None, now: datetime | None = None) -> dic
             "host": host,
             "port": port,
             "visible": visible,
+            "outcome": str(raw.get("outcome") or "")[:16],
             "checkedAt": raw.get("checkedAt") or "",
             "error": str(raw.get("error") or "")[:500],
             "label": str(raw.get("label") or "")[:200],
         },
     }
+
+
+def _bind_print_error(text: str) -> bool:
+    low = (text or "").lower()
+    return "eperm" in low or "bindsocket" in low or "binding socket" in low
 
 
 def _printer_check_from(payload: dict, now_iso: str) -> dict:
@@ -4506,10 +4513,16 @@ def _printer_check_from(payload: dict, now_iso: str) -> dict:
     except (TypeError, ValueError):
         port = 0
     visible = bool(payload.get("printerVisible"))
+    outcome = str(payload.get("printerOutcome") or "").strip().lower()
+    if outcome not in ("seen", "down", "error"):
+        outcome = "seen" if visible else "down"
+    if visible:
+        outcome = "seen"
     return {
         "host": str(payload.get("printerHost") or "")[:200],
         "port": port if 1 <= port <= 65535 else 0,
         "visible": visible,
+        "outcome": outcome,
         "checkedAt": now_iso,
         "error": "" if visible else str(payload.get("error") or "")[:500],
         "label": str(payload.get("printer") or "")[:200],
@@ -4572,8 +4585,16 @@ def newspaper_print_report(payload: dict) -> dict:
     patch = {"printAgentLastSeenAt": now_iso}
     if isinstance(payload, dict) and "printerVisible" in payload:
         patch["printerCheck"] = _printer_check_from(payload, now_iso)
-    # Проверка связи и принтера не затирает итог печати.
+    # Успешный заход на сервер уже в printAgentLastSeenAt. Ошибка принтера его не стирает.
     if status == "check":
+        old_print = _newspaper_state().get("print")
+        if isinstance(old_print, dict) and _bind_print_error(str(old_print.get("error") or "")):
+            cleared = dict(old_print)
+            cleared["error"] = ""
+            if cleared.get("status") == "error":
+                cleared["status"] = "idle"
+            cleared["updatedAt"] = now_iso
+            patch["print"] = cleared
         _newspaper_update_state(patch)
         return {"ok": True}
     old = _newspaper_state().get("print")
@@ -12908,7 +12929,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         self._serve_ranged(path, MUSIC_EXT.get(ext, "application/octet-stream"), "private, max-age=86400")
 
     def _serve_tablet_apk(self):
-        """APK как вложение: телефонный браузер сохраняет Jarvis-tablet-1.21.apk, а не HTML."""
+        """APK как вложение: телефонный браузер сохраняет Jarvis-tablet-1.22.apk, а не HTML."""
         if not TABLET_APK_FILE.is_file():
             self._json(404, {"error": "not found"})
             return
