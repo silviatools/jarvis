@@ -46,6 +46,37 @@ test('empty list, errors and unrelated responses are distinguished', async () =>
   assert.equal(delivery.delivery.rows.length, 1);
 });
 
+test('diagnostics report unmatched endpoints and schema without secrets or customer values', async () => {
+  const state = await captureFixture({ data: { products: [{ orderId: 'PRIVATE-ORDER',
+    name: 'PRIVATE-PRODUCT', phone: '+79991234567', address: 'PRIVATE-ADDRESS' }] },
+    token: 'TOKEN-SECRET', password: 'PASSWORD-SECRET' },
+    'https://www.wildberries.ru/webapi/lk/myorders/delivery/new-format/123456789?token=URL-SECRET');
+  assert.equal(state.delivery, null);
+  const log = state.debug.events[0];
+  assert.equal(log.status, 200);
+  assert.equal(log.reason, 'endpoint_unmatched');
+  assert.equal(log.path, '/webapi/lk/myorders/delivery/new-format/:id');
+  assert.equal(log.shape.token, 'redacted');
+  assert.equal(log.shape.data.products.item.name, 'string');
+  const text = JSON.stringify(state.debug);
+  for (const value of ['PRIVATE-ORDER', 'PRIVATE-PRODUCT', '79991234567', 'PRIVATE-ADDRESS', 'TOKEN-SECRET', 'PASSWORD-SECRET', 'URL-SECRET', '123456789']) {
+    assert.equal(text.includes(value), false, value);
+  }
+  const failed = await captureFixture({ data: [{ unknownValue: 'not for logs' }] });
+  assert.equal(failed.debug.events[0].reason, 'schema_unrecognized');
+});
+
+test('fetch accepts URL objects and records API errors rather than empty account', async () => {
+  const state = await captureFixture({ orders: [{ orderId: 'r1', name: 'Книга' }] },
+    new URL('https://www.wildberries.ru/webapi/lk/myorders/archive/get'));
+  assert.equal(state.orders.rows.length, 1);
+  assert.equal(state.debug.events[0].reason, 'rows_parsed');
+  const failed = await captureFixture({ error: 'private error value', data: [] });
+  assert.equal(failed.orders, null);
+  assert.equal(failed.debug.events[0].reason, 'api_error');
+  assert.equal(JSON.stringify(failed.debug).includes('private error value'), false);
+});
+
 function readerFixture(text, found) {
   const noop = () => {};
   const context = vm.createContext({ URL, Date, AbortSignal, setTimeout,
@@ -88,9 +119,9 @@ test('worker polls, reads only its WB tab, uploads result and retries failed upl
     chrome: {
       storage: { local, session: { get: async () => ({}), set: async () => {} } },
       tabs: { create: async options => { navigations.push(options); return { id: 7 }; },
-        reload: async () => {}, get: async () => ({ id: 7, url: result.url, status: 'complete' }) },
+        reload: async () => {}, get: async () => ({ id: 7, url: result.url, status: 'loading' }) },
       scripting: { executeScript: async () => [{ result }] },
-      runtime: { onInstalled: { addListener: noop }, onStartup: { addListener: noop }, onMessage: { addListener: noop } },
+      runtime: { getManifest: () => ({ version: '0.1.1' }), onInstalled: { addListener: noop }, onStartup: { addListener: noop }, onMessage: { addListener: noop } },
       alarms: { onAlarm: { addListener: noop } }
     } });
   vm.runInContext(backgroundCode, context);
@@ -100,6 +131,9 @@ test('worker polls, reads only its WB tab, uploads result and retries failed upl
   await vm.runInContext('tick()', context);
   assert.equal(values.pending, undefined);
   assert.equal(requests.filter(r => r.url.endsWith('/result')).length, 2);
+  assert.equal(values.readLogs.length, 1);
+  assert.equal(values.readLogs[0].trigger, 'jarvis');
+  assert.equal(JSON.stringify(values.readLogs).includes('Книга'), false);
   assert.equal(navigations.length, 1, 'retry must not read a different order snapshot');
   assert.equal(navigations[0].url, result.url);
   assert.equal(navigations[0].active, false);
@@ -107,6 +141,11 @@ test('worker polls, reads only its WB tab, uploads result and retries failed upl
     assert.equal(options.credentials, 'omit');
     assert.equal(options.redirect, 'error');
   }
+  const sentResult = JSON.parse(requests.find(r => r.url.endsWith('/result')).options.body).result;
+  assert.equal('diagnostic' in sentResult, false, 'diagnostics stay on the PC');
+  assert.equal(values.readLogs[0].tabStatus, 'loading', 'read a loaded list while images are still loading');
+  for (let i = 0; i < 10; i++) await vm.runInContext('recordRead({ok:false,code:"unreadable"}, "manual")', context);
+  assert.equal(values.readLogs.length, 6);
   const rejected = await vm.runInContext('readWb("https://evil.test/")', context);
   assert.equal(rejected.ok, false);
   assert.equal(navigations.length, 1);

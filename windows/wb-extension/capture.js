@@ -2,7 +2,39 @@
 // Retain only order fields, never request headers, tokens, cookies or raw JSON.
 (() => {
   if (window.__jarvisWbRead) return;
-  const state = window.__jarvisWbRead = { orders: null, delivery: null };
+  const state = window.__jarvisWbRead = { orders: null, delivery: null,
+    debug: { version: '0.1.1', fetchSeen: 0, xhrSeen: 0, events: [] } };
+  const installedFetch = () => window.fetch === wrappedFetch;
+  state.hooksActive = () => ({ fetch: installedFetch(), xhr: XMLHttpRequest.prototype.send === wrappedSend });
+  function endpoint(raw) {
+    try {
+      const u = new URL(raw, location.href);
+      if (u.protocol !== 'https:' || !(u.hostname === 'wildberries.ru' || u.hostname.endsWith('.wildberries.ru')
+          || u.hostname === 'wb.ru' || u.hostname.endsWith('.wb.ru'))) return null;
+      if (!/\/api\/|\/webapi\/|\/lk\/|delivery|purchases|myorders/.test(u.pathname)) return null;
+      // No query/fragment, opaque ids, personal path segments or account values.
+      const path = u.pathname.split('/').map(part =>
+        /^[a-z][a-z-]{0,36}$/.test(part) || /^v\d{1,2}$/.test(part) ? part : part ? ':id' : '').join('/');
+      return { host: u.hostname, path };
+    } catch (_) { return null; }
+  }
+  function shape(node, depth = 0, budget = { left: 40 }) {
+    if (--budget.left < 0) return 'not inspected';
+    if (node === null) return 'null';
+    if (Array.isArray(node)) return { arrayLength: node.length, item: depth < 4 && node.length ? shape(node[0], depth + 1, budget) : 'not inspected' };
+    if (typeof node !== 'object') return typeof node; // types, NEVER scalar values
+    if (depth >= 4) return 'object';
+    return Object.fromEntries(Object.keys(node).filter(key => /^[A-Za-z_]{1,40}$/.test(key)).slice(0, 16)
+      .map(key => [key, /token|authorization|cookie|secret|password/i.test(key) ? 'redacted' : shape(node[key], depth + 1, budget)]));
+  }
+  function note(raw, transport, status, reason, data) {
+    const target = endpoint(raw);
+    if (!target) return;
+    const entry = { ...target, transport, status: Number(status) || 0, section: section(raw) || 'unmatched', reason };
+    if (data !== undefined) entry.shape = shape(data);
+    state.debug.events.push(entry);
+    state.debug.events = state.debug.events.slice(-24);
+  }
   function section(url) {
     try {
       const u = new URL(url, location.href);
@@ -53,29 +85,38 @@
   }
   function capture(url, status, data) {
     const key = section(url);
-    if (!key || status !== 200 || !data || data.error || data.errors || data.success === false) return;
+    if (!key) return 'endpoint_unmatched';
+    if (status !== 200) return 'http_error';
+    if (!data || data.error || data.errors || data.success === false) return 'api_error';
     const rows = [];
     parse(data, rows);
     const unique = [...new Map(rows.map(row => [row.id + '\n' + row.name, row])).values()];
-    if (!unique.length && !emptyList(data)) return;
+    if (!unique.length && !emptyList(data)) return 'schema_unrecognized';
     const old = state[key];
     const combined = [...(old?.rows || []), ...unique];
     const merged = [...new Map(combined.map(row => [row.id + '\n' + row.name, row])).values()];
     state[key] = { rows: merged.slice(0, 40), empty: !merged.length, at: Date.now(), truncated: merged.length >= 40 };
+    return merged.length ? 'rows_parsed' : 'empty_list';
   }
   const originalFetch = window.fetch;
-  window.fetch = function (...args) {
+  function wrappedFetch(...args) {
+    state.debug.fetchSeen++;
     const pending = originalFetch.apply(this, args);
-    const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
-    if (section(url)) pending.then(response => {
+    const url = args[0] instanceof URL ? args[0].href : typeof args[0] === 'string' ? args[0] : args[0]?.url;
+    if (endpoint(url)) pending.then(response => {
       const length = Number(response.headers.get('content-length') || 0);
-      if (length > 2000000) return;
+      if (length > 2000000) { note(url, 'fetch', response.status, 'body_too_large'); return; }
       response.clone().text().then(text => {
-        if (text.length <= 2000000) capture(url, response.status, JSON.parse(text));
-      }).catch(() => {});
-    }).catch(() => {});
+        if (text.length > 2000000) { note(url, 'fetch', response.status, 'body_too_large'); return; }
+        try {
+          const data = JSON.parse(text);
+          note(url, 'fetch', response.status, capture(url, response.status, data), data);
+        } catch (_) { note(url, 'fetch', response.status, 'not_json'); }
+      }).catch(() => note(url, 'fetch', response.status, 'body_unreadable'));
+    }).catch(() => note(url, 'fetch', 0, 'network_error'));
     return pending;
-  };
+  }
+  window.fetch = wrappedFetch;
   const open = XMLHttpRequest.prototype.open;
   const send = XMLHttpRequest.prototype.send;
   const urls = new WeakMap();
@@ -83,16 +124,20 @@
     urls.set(this, String(url));
     return open.call(this, method, url, ...rest);
   };
-  XMLHttpRequest.prototype.send = function (...args) {
+  function wrappedSend(...args) {
+    state.debug.xhrSeen++;
     const url = urls.get(this);
-    if (section(url)) this.addEventListener('load', () => {
+    if (endpoint(url)) this.addEventListener('load', () => {
       try {
-        if (this.responseType === 'json') capture(url, this.status, this.response);
+        if (this.responseType === 'json') note(url, 'xhr', this.status, capture(url, this.status, this.response), this.response);
         else if ((!this.responseType || this.responseType === 'text') && this.responseText.length <= 2000000) {
-          capture(url, this.status, JSON.parse(this.responseText));
+          const data = JSON.parse(this.responseText);
+          note(url, 'xhr', this.status, capture(url, this.status, data), data);
         }
-      } catch (_) { /* no readable order response */ }
+        else note(url, 'xhr', this.status, 'body_unreadable');
+      } catch (_) { note(url, 'xhr', this.status, 'not_json'); }
     }, { once: true });
     return send.apply(this, args);
-  };
+  }
+  XMLHttpRequest.prototype.send = wrappedSend;
 })();
