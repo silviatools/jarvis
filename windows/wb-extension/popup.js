@@ -1,4 +1,5 @@
 const byId = id => document.getElementById(id);
+byId('version').textContent = 'Версия ' + chrome.runtime.getManifest().version;
 async function refresh() {
   const config = await chrome.storage.local.get(['server', 'enabled', 'lastPoll', 'lastRead', 'readOk', 'readCode', 'error', 'readLogs']);
   if (!byId('server').value) byId('server').value = config.server || '';
@@ -42,7 +43,7 @@ byId('diagnose').addEventListener('click', async () => {
   byId('diagnosticStatus').textContent = 'Читаю WB и записываю логи, до 30 секунд…';
   try {
     const reply = await chrome.runtime.sendMessage({ type: 'diagnose' });
-    byId('diagnosticStatus').textContent = reply?.ok ? 'Проверка записана. Нажмите «Скопировать логи».' : reply?.error || 'Не удалось запустить проверку.';
+    byId('diagnosticStatus').textContent = reply?.ok ? 'Проверка записана. Нажмите «Скопировать логи».' : reply?.error || 'Фоновый обработчик не ответил. Закройте окно и обновите расширение круговой стрелкой в chrome://extensions.';
     await refresh();
   } catch (_) { byId('diagnosticStatus').textContent = 'Не удалось связаться с расширением. Перезагрузите его в chrome://extensions.'; }
   finally { byId('diagnose').disabled = false; }

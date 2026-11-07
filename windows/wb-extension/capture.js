@@ -3,7 +3,11 @@
 (() => {
   if (window.__jarvisWbRead) return;
   const state = window.__jarvisWbRead = { orders: null, delivery: null,
-    debug: { version: '0.1.1', fetchSeen: 0, xhrSeen: 0, events: [] } };
+    debug: { version: '0.1.2', fetchSeen: 0, xhrSeen: 0, events: [] } };
+  // Current WB deliveries arrive from three sources. Retain normalized fields
+  // only and join status histories to the explicitly active rids.
+  const delivery = { primarySeen: false, primaryEmpty: false, supplementalSeen: false, supplementalEmpty: false,
+    active: new Set(), rows: new Map(), statuses: new Map() };
   const installedFetch = () => window.fetch === wrappedFetch;
   state.hooksActive = () => ({ fetch: installedFetch(), xhr: XMLHttpRequest.prototype.send === wrappedSend });
   function endpoint(raw) {
@@ -18,48 +22,51 @@
       return { host: u.hostname, path };
     } catch (_) { return null; }
   }
-  function shape(node, depth = 0, budget = { left: 40 }) {
+  function shape(node, depth = 0, budget = { left: 40 }, maxDepth = 4) {
     if (--budget.left < 0) return 'not inspected';
     if (node === null) return 'null';
-    if (Array.isArray(node)) return { arrayLength: node.length, item: depth < 4 && node.length ? shape(node[0], depth + 1, budget) : 'not inspected' };
+    if (Array.isArray(node)) return { arrayLength: node.length, item: depth < maxDepth && node.length ? shape(node[0], depth + 1, budget, maxDepth) : 'not inspected' };
     if (typeof node !== 'object') return typeof node; // types, NEVER scalar values
-    if (depth >= 4) return 'object';
+    if (depth >= maxDepth) return 'object';
     return Object.fromEntries(Object.keys(node).filter(key => /^[A-Za-z_]{1,40}$/.test(key)).slice(0, 16)
-      .map(key => [key, /token|authorization|cookie|secret|password/i.test(key) ? 'redacted' : shape(node[key], depth + 1, budget)]));
+      .map(key => [key, /token|authorization|cookie|secret|password|trackerkey|session|shard/i.test(key) ? 'redacted' : shape(node[key], depth + 1, budget, maxDepth)]));
   }
   function note(raw, transport, status, reason, data) {
     const target = endpoint(raw);
     if (!target) return;
     const entry = { ...target, transport, status: Number(status) || 0, section: section(raw) || 'unmatched', reason };
-    if (data !== undefined) entry.shape = shape(data);
+    if (data !== undefined) entry.shape = shape(data, 0, { left: section(raw) ? 100 : 40 }, section(raw) ? 6 : 4);
     state.debug.events.push(entry);
     state.debug.events = state.debug.events.slice(-24);
   }
   function section(url) {
     try {
       const u = new URL(url, location.href);
-      if (u.protocol !== 'https:' || !(u.hostname === 'wildberries.ru' || u.hostname.endsWith('.wildberries.ru'))) return '';
+      if (u.protocol !== 'https:') return '';
+      if (u.hostname === 'status-tracker.wb.ru' && /^\/api\/v\d+\/statuses\/?$/.test(u.pathname)) return 'delivery';
+      if (u.hostname === 'wbxoofex.wildberries.ru' && /^\/api\/v\d+\/orders\/?$/.test(u.pathname)) return 'delivery';
+      if (!(u.hostname === 'wildberries.ru' || u.hostname.endsWith('.wildberries.ru'))) return '';
       if (/\/delivery\/offices|\/srids\/?$/.test(u.pathname)) return '';
       if (/\/myorders\/delivery\/(active|pending)|\/delivery\/get/.test(u.pathname)) return 'delivery';
       if (/\/myorders\/archive\/get|\/archive\/getbyrids|\/shopper\/api\/v2\/purchases\/list/.test(u.pathname)) return 'orders';
     } catch (_) { /* unrelated response */ }
     return '';
   }
-  const scalar = value => ['string', 'number'].includes(typeof value) && String(value).trim();
+  const scalar = value => ['string', 'number', 'bigint'].includes(typeof value) && String(value).trim();
   const clean = (value, max) => String(value).replace(/\b(?:\+?7|8)[\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}\b/g, '[телефон скрыт]').slice(0, max);
   function pick(flat, keys, max) {
     for (const key of keys) if (scalar(flat[key])) return clean(flat[key], max);
     return '';
   }
-  function parse(node, rows, inherited = '', depth = 0) {
+  function parse(node, rows, inherited = '', depth = 0, keepIdentity = false) {
     if (depth > 7 || rows.length >= 40) return;
     if (Array.isArray(node)) {
-      for (const item of node.slice(0, 100)) parse(item, rows, inherited, depth + 1);
+      for (const item of node.slice(0, 100)) parse(item, rows, inherited, depth + 1, keepIdentity);
       return;
     }
     if (!node || typeof node !== 'object') return;
     const flat = Object.fromEntries(Object.entries(node).map(([k, v]) => [k.toLowerCase().replace(/[^a-z0-9]/g, ''), v]));
-    const id = pick(flat, ['orderid', 'rid', 'srid'], 80) || inherited;
+    const id = pick(flat, ['rid', 'srid', 'orderid'], 80) || inherited;
     const name = pick(flat, ['goodsname', 'imtname', 'name', 'title'], 160);
     const status = pick(flat, ['statusname', 'trackingstatus'], 100) || (typeof flat.status === 'string' ? clean(flat.status, 100) : '');
     // Plain numeric "price" is ambiguous across WB endpoints (roubles/kopecks).
@@ -67,14 +74,100 @@
     let price = '';
     if (typeof flat.price === 'string' && /₽|руб/i.test(flat.price)) price = clean(flat.price, 40);
     if (typeof flat.priceu === 'number' && Number.isFinite(flat.priceu)) price = (flat.priceu / 100).toLocaleString('ru-RU') + ' ₽';
-    const date = pick(flat, ['orderdate', 'deliverydate', 'orderdatestring', 'createdat', 'date'], 50);
+    const date = pick(flat, ['orderdate', 'deliverydate', 'orderdatestring', 'orderdt', 'createdat', 'date'], 50);
     let pvz = pick(flat, ['pooaddress', 'deliveryaddress', 'officeaddress', 'pvzaddress'], 180);
     if (!pvz && flat.office && typeof flat.office === 'object') pvz = pick(flat.office, ['address'], 180);
-    if (id && (name || status)) rows.push({ id, name, price, status, date, pvz });
+    if (id && (name || status || keepIdentity)) rows.push({ id, name, price, status, date, pvz });
     for (const [key, item] of Object.entries(node)) {
       if (/office|address|customer|recipient|payment|supplier|seller|brand|user/i.test(key)) continue;
-      if (item && typeof item === 'object') parse(item, rows, id, depth + 1);
+      if (item && typeof item === 'object') parse(item, rows, id, depth + 1, keepIdentity);
     }
+  }
+  function addDeliveryRow(row, active = true) {
+    if (!row.id) return;
+    if (active) delivery.active.add(row.id);
+    const previous = delivery.rows.get(row.id) || {};
+    delivery.rows.set(row.id, { ...previous, ...Object.fromEntries(Object.entries(row).filter(([, value]) => value !== '')) });
+  }
+  function statusRank(value) {
+    const raw = String(value || '');
+    if (/^\d+$/.test(raw)) return BigInt(raw);
+    const millis = Date.parse(raw);
+    return Number.isFinite(millis) ? BigInt(millis) : 0n;
+  }
+  function collectStatuses(node, depth = 0) {
+    if (depth > 4 || !node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node.slice(0, 200)) collectStatuses(item, depth + 1);
+      return;
+    }
+    const flat = Object.fromEntries(Object.entries(node).map(([k, v]) => [k.toLowerCase().replace(/[^a-z0-9]/g, ''), v]));
+    const id = pick(flat, ['rid', 'srid'], 80);
+    const status = pick(flat, ['statusname', 'trackingstatus'], 100);
+    if (id && status) {
+      const rank = statusRank(flat.date);
+      const previous = delivery.statuses.get(id);
+      if (!previous || rank >= previous.rank) delivery.statuses.set(id, { status, rank });
+    }
+    for (const key of ['data', 'result', 'statuses', 'payload']) if (node[key]) collectStatuses(node[key], depth + 1);
+  }
+  function publishDelivery() {
+    // Tracker histories may include old received orders. They can enrich an
+    // active id, but must NEVER create a delivery by themselves.
+    const rows = [...delivery.active].slice(0, 40).map(id => {
+      const row = { id, ...(delivery.rows.get(id) || {}) };
+      const latest = delivery.statuses.get(id);
+      if (latest) row.status = latest.status;
+      return row;
+    });
+    const missing = rows.filter(row => !row.name && !row.status).length;
+    state.debug.deliveryJoin = { primarySeen: delivery.primarySeen, supplementalSeen: delivery.supplementalSeen,
+      activeIds: delivery.active.size, supplementalIds: delivery.rows.size,
+      statusIds: delivery.statuses.size, unresolvedIds: missing };
+    state.delivery = null;
+    if (rows.length && !missing && delivery.primarySeen && delivery.supplementalSeen) {
+      state.delivery = { rows, empty: false, at: Date.now(), truncated: delivery.active.size > 40 };
+      return 'rows_joined';
+    }
+    if (!rows.length && delivery.primaryEmpty && delivery.supplementalEmpty) {
+      state.delivery = { rows: [], empty: true, at: Date.now(), truncated: false };
+      return 'empty_list';
+    }
+    return 'waiting_delivery_sources';
+  }
+  function captureCurrentDelivery(url, data) {
+    const u = new URL(url, location.href);
+    if (u.hostname === 'status-tracker.wb.ru') {
+      collectStatuses(data);
+      return publishDelivery();
+    }
+    if (u.hostname === 'wbxoofex.wildberries.ru') {
+      if (!Array.isArray(data.data)) return 'schema_unrecognized';
+      delivery.supplementalSeen = true;
+      delivery.supplementalEmpty = !data.data.length;
+      for (const order of data.data.slice(0, 100)) {
+        if (!order || !Array.isArray(order.rids)) continue;
+        for (const item of order.rids.slice(0, 100)) {
+          if (!item || typeof item !== 'object') continue;
+          const rows = [];
+          const flat = Object.fromEntries(Object.entries(item).map(([k, v]) => [k.toLowerCase().replace(/[^a-z0-9]/g, ''), v]));
+          const id = pick(flat, ['rid', 'srid', 'id'], 80);
+          parse(item, rows, id, 0, true);
+          for (const row of rows) addDeliveryRow(row, false);
+        }
+      }
+      return publishDelivery();
+    }
+    const value = data.value;
+    if (!value || !Array.isArray(value.positions) || !Array.isArray(value.notFound)) return '';
+    if (value.broken === true) return 'api_error';
+    delivery.primarySeen = true;
+    delivery.primaryEmpty = !value.positions.length && !value.notFound.length;
+    const rows = [];
+    parse(value.positions, rows, '', 0, true);
+    for (const row of rows) addDeliveryRow(row);
+    for (const id of value.notFound.slice(0, 100)) if (scalar(id)) delivery.active.add(clean(id, 80));
+    return publishDelivery();
   }
   function emptyList(node, depth = 0) {
     if (depth > 3) return false;
@@ -88,6 +181,10 @@
     if (!key) return 'endpoint_unmatched';
     if (status !== 200) return 'http_error';
     if (!data || data.error || data.errors || data.success === false) return 'api_error';
+    if (key === 'delivery') {
+      const joined = captureCurrentDelivery(url, data);
+      if (joined) return joined;
+    }
     const rows = [];
     parse(data, rows);
     const unique = [...new Map(rows.map(row => [row.id + '\n' + row.name, row])).values()];

@@ -77,6 +77,76 @@ test('fetch accepts URL objects and records API errors rather than empty account
   assert.equal(JSON.stringify(failed.debug).includes('private error value'), false);
 });
 
+async function deliverySequence(responses) {
+  class Xhr { open() {} send() {} addEventListener() {} }
+  const context = vm.createContext({ URL, Map, Set, WeakMap, Date,
+    location: { href: 'https://www.wildberries.ru/lk/myorders/delivery' },
+    XMLHttpRequest: Xhr,
+    window: { fetch: async url => new Response(JSON.stringify(responses.get(String(url)))) } });
+  vm.runInContext(captureCode, context);
+  const snapshots = [];
+  for (const url of responses.keys()) {
+    await context.window.fetch(url);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    snapshots.push(JSON.parse(JSON.stringify(context.window.__jarvisWbRead)));
+  }
+  return snapshots;
+}
+
+const primaryUrl = 'https://www.wildberries.ru/webapi/v2/lk/myorders/delivery/active';
+const supplementalUrl = 'https://wbxoofex.wildberries.ru/api/v2/orders';
+const trackerUrl = 'https://status-tracker.wb.ru/api/v6/statuses';
+
+test('current WB joins active notFound/rids with latest tracker status; old history stays out', async () => {
+  const [primary, supplemental, complete] = await deliverySequence(new Map([
+    [primaryUrl, { resultState: 0, value: { positions: [], notFound: ['live-rid', 'legacy-rid'], archiveRids: [], broken: false } }],
+    [supplementalUrl, { data: [{ id: 'parent-order', rids: [{ rid: 'live-rid', name: 'Товар' },
+      { rid: 'historic-only', name: 'Уже получен' }] }] }],
+    [trackerUrl, [
+      [{ rid: 'live-rid', status_name: 'В пути', date: '1731000000000000000' },
+       { rid: 'live-rid', status_name: 'Оформлен', date: '1730000000000000000' }],
+      [{ rid: 'legacy-rid', status_name: 'Готов к выдаче', date: '1732000000000000000' }],
+      [{ rid: 'historic-only', status_name: 'Получен', date: '1733000000000000000' }]
+    ]]
+  ]));
+  assert.equal(primary.delivery, null, 'notFound is not an empty account');
+  assert.equal(supplemental.delivery, null, 'wait for the still unresolved active rid');
+  assert.equal(complete.delivery.rows.length, 2);
+  const current = complete.delivery.rows.find(row => row.id === 'live-rid');
+  assert.equal(current.name, 'Товар');
+  assert.equal(current.status, 'В пути', 'numeric dates compare as bigint, not arrival order');
+  assert.equal(complete.delivery.rows.some(row => row.id === 'historic-only'), false);
+  assert.equal(complete.debug.deliveryJoin.activeIds, 2);
+  assert.equal(complete.debug.events.at(-1).reason, 'rows_joined');
+});
+
+test('join supports different response order and id fields inside rids', async () => {
+  const snapshots = await deliverySequence(new Map([
+    [trackerUrl, [[{ rid: 'r-1', status_name: 'В пути', date: '1731000000000' }]]],
+    [supplementalUrl, { data: [{ id: 'parent', rids: [{ id: 'r-1' }] }] }],
+    [primaryUrl, { value: { positions: [], notFound: ['r-1'], broken: false } }]
+  ]));
+  assert.equal(snapshots[0].delivery, null);
+  assert.equal(snapshots[1].delivery, null, 'do not publish before primary delivery response');
+  assert.equal(snapshots[2].delivery.rows[0].status, 'В пути');
+});
+
+test('current empty lists require both sources and never use tracker history as active orders', async () => {
+  const snapshots = await deliverySequence(new Map([
+    [trackerUrl, [[{ rid: 'old', status_name: 'Получен', date: '1731000000000' }]]],
+    [primaryUrl, { value: { positions: [], notFound: [], broken: false } }],
+    [supplementalUrl, { data: [] }]
+  ]));
+  assert.equal(snapshots[1].delivery, null);
+  assert.equal(snapshots[2].delivery.empty, true);
+  assert.equal(snapshots[2].delivery.rows.length, 0);
+  const broken = await deliverySequence(new Map([
+    [primaryUrl, { value: { positions: [], notFound: [], broken: true } }],
+    [supplementalUrl, { data: [] }]
+  ]));
+  assert.equal(broken[1].delivery, null);
+});
+
 function readerFixture(text, found) {
   const noop = () => {};
   const context = vm.createContext({ URL, Date, AbortSignal, setTimeout,
