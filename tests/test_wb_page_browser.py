@@ -32,13 +32,14 @@ class PageReadTest(unittest.TestCase):
     def tearDown(self):
         self.page.close()
 
-    def read(self, html, rows):
+    def read(self, html, rows, selected_fields=None, include_details=False):
         self.page.set_content('<base href="https://www.wildberries.ru/">' + html)
         for script in ('field-utils.js', 'page-data.js'):
             self.page.add_script_tag(content=(ROOT / script).read_text())
         self.page.evaluate('rows => window.__jarvisWbRead={delivery:{at:Date.now(),rows}}', rows)
-        return self.page.evaluate('''source => new Function('location', 'return ('+source+')("delivery",[])')(
-            new URL('https://www.wildberries.ru/lk/myorders/delivery'))''', self.reader)
+        return self.page.evaluate('''args => new Function('location','selected','details', 'return ('+args.source+')("delivery",selected,details)')(
+            new URL('https://www.wildberries.ru/lk/myorders/delivery'), args.selected, args.details)''',
+            {'source': self.reader, 'selected': selected_fields or [], 'details': include_details})
 
     def test_extract_without_api_article_but_never_pair_by_order(self):
         result = self.read('''<section class="delivery-list">
@@ -93,6 +94,18 @@ class PageReadTest(unittest.TestCase):
         self.assertNotIn('payable', result['rows'][0])
         field = next(field for field in result['fieldCatalog'] if field['path'] == 'page.payment_captions.*')
         self.assertEqual(field['examples'], ['Оплата при получении'])
+
+    def test_extra_fields_are_used_only_when_details_are_requested(self):
+        rows = [{'id': 'rid', 'name': 'Товар', 'status': 'В пути', 'price': '755 ₽',
+                 'details': {'office': {'workTime': '09–21'}, 'item': {'token': 'SECRET'}}}]
+        compact = self.read('<h1>Доставки</h1>', rows, selected_fields=['office.workTime'])
+        self.assertEqual(compact['rows'][0]['extra_fields'], [])
+        self.assertTrue(any(field['path'] == 'office.workTime' for field in compact['fieldCatalog']))
+        detailed = self.read('<h1>Доставки</h1>', rows, selected_fields=['office.workTime'], include_details=True)
+        self.assertEqual(detailed['rows'][0]['extra_fields'], [{'path': 'office.workTime', 'value': '09–21'}])
+        automatic = self.read('<h1>Доставки</h1>', rows, include_details=True)
+        self.assertTrue(any(field['path'] == 'office.workTime' for field in automatic['rows'][0]['extra_fields']))
+        self.assertNotIn('SECRET', str(automatic))
 
     def test_existing_article_joins_page_without_rid_and_rejects_foreign_links(self):
         result = self.read('''<a href="https://evil.example/catalog/123456/detail.aspx" title="Чужой">Чужой</a>

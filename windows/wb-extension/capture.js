@@ -4,7 +4,7 @@
 (() => {
   if (window.__jarvisWbRead) return;
   const state = window.__jarvisWbRead = { orders: null, delivery: null,
-    debug: { version: '0.2.2', fetchSeen: 0, xhrSeen: 0, events: [] } };
+    debug: { version: '0.2.3', fetchSeen: 0, xhrSeen: 0, events: [] } };
   const fieldsHelper = window.JarvisWbFields;
   // Current WB deliveries arrive from three sources. Retain normalized fields
   // only and join status histories to the explicitly active rids.
@@ -105,6 +105,14 @@
     parse(item, rows, '__descriptor__', 0, true);
     const fields = {};
     for (const row of rows) for (const field of ['name', 'price', 'status', 'pvz']) if (row[field]) fields[field] = row[field];
+    // Confirmed against this buyer API and the prices displayed by WB:
+    // item.price in a RUB order is integer kopecks. total_price is a
+    // different field and must not replace the item's actual price.
+    if (order.currency === 'RUB' && (typeof item.price === 'number' || typeof item.price === 'string' || typeof item.price === 'bigint')
+        && /^\d+$/.test(String(item.price))) {
+      const minor = Number(item.price);
+      if (Number.isSafeInteger(minor)) fields.price = (minor / 100).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' ₽';
+    }
     const article = pick(flat, ['nmid', 'nomenclatureid', 'article'], 15);
     if (/^\d{4,15}$/.test(article)) fields.article = article;
     fields.brand = pick(flat, ['brand', 'brandname'], 100);

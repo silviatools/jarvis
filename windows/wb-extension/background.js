@@ -20,7 +20,7 @@ async function post(config, route, body) {
 }
 
 // Serialized into the page by Chrome. Read only; no cookies or localStorage.
-function readPage(key, selectedFields = []) {
+function readPage(key, selectedFields = [], includeDetails = false) {
   const url = new URL(location.href);
   const text = (document.body?.innerText || '').slice(0, 16000).toLowerCase();
   const state = window.__jarvisWbRead;
@@ -102,7 +102,10 @@ function readPage(key, selectedFields = []) {
       if (imageUrl) row.image_url = imageUrl;
       const safeDetails = helper ? helper.sanitize(details) : {};
       detailsList.push(safeDetails);
-      const extras = helper ? helper.select(safeDetails, selectedFields) : [];
+      const requestedFields = includeDetails && !selectedFields.length && helper
+        ? helper.inventory([safeDetails]).filter(field => !field.types.some(type => type === 'object' || type === 'array')).map(field => field.path)
+        : selectedFields;
+      const extras = includeDetails && helper ? helper.select(safeDetails, requestedFields) : [];
       row.extra_fields = [];
       for (const field of extras) {
         if (row.extra_fields.length >= 100 || extraBudget < field.path.length + field.value.length) { detailsTruncated = true; break; }
@@ -131,7 +134,7 @@ function readPage(key, selectedFields = []) {
   return { ok: false, code: 'unreadable', diagnostic: { ...diagnostic, stage: state ? 'waiting_for_list' : 'capture_missing' } };
 }
 
-async function readWb(section, foreground = false) {
+async function readWb(section, foreground = false, includeDetails = false) {
   if (!Object.prototype.hasOwnProperty.call(URLS, section)) return { ok: false, code: 'browser' };
   let tabId;
   let stage = 'open_tab';
@@ -179,7 +182,7 @@ async function readWb(section, foreground = false) {
       let snapshots;
       try {
         snapshots = await chrome.scripting.executeScript({
-          target: { tabId }, world: 'MAIN', func: readPage, args: [key, selectedFields]
+          target: { tabId }, world: 'MAIN', func: readPage, args: [key, selectedFields, includeDetails]
         });
       } catch (_) {
         // The document can change during navigation. Retry without losing the
@@ -241,7 +244,7 @@ async function tick() {
     if (response.job) {
       const current = await chrome.storage.local.get(['server', 'token', 'enabled']);
       if (!current.enabled || current.server !== config.server || current.token !== config.token) return;
-      const result = await readWb(response.job.section);
+      const result = await readWb(response.job.section, false, response.job.details === true);
       await recordRead(result, 'jarvis');
       const after = await chrome.storage.local.get(['server', 'token', 'enabled']);
       if (!after.enabled || after.server !== config.server || after.token !== config.token) return;

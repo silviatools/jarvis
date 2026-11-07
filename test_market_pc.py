@@ -29,10 +29,10 @@ class PcTest(unittest.TestCase):
     def poll(self, token=None):
         return pc.device_call('/api/market/pc/poll', token or self.token, {})
 
-    def start_read(self, section='delivery', timeout=2):
+    def start_read(self, section='delivery', timeout=2, include_details=False):
         self.poll()
         results = []
-        thread = threading.Thread(target=lambda: results.append(pc.request(section, timeout=timeout)))
+        thread = threading.Thread(target=lambda: results.append(pc.request(section, timeout=timeout, include_details=include_details)))
         thread.start()
         for _ in range(100):
             status, response = self.poll()
@@ -50,7 +50,8 @@ class PcTest(unittest.TestCase):
         self.assertEqual(self.poll('bad')[0], 401)
         thread, results, job = self.start_read()
         self.assertEqual(job['section'], 'delivery')
-        self.assertEqual(set(job), {'id', 'section'})
+        self.assertEqual(set(job), {'id', 'section', 'details'})
+        self.assertFalse(job['details'])
         self.assertIsNone(self.poll()[1]['job'])
         self.assertEqual(pc.request('orders')['code'], 'busy')
         self.assertEqual(self.result(job, {
@@ -131,7 +132,7 @@ class PcTest(unittest.TestCase):
                       'product_url': 'https://evil.example/', 'details': {'token': 'SECRET'},
                       'extra_fields': [{'path': 'office.workTime', 'value': '09–21'},
                                        {'path': 'item.token', 'value': 'SECRET'},
-                                       {'path': 'item.session_id', 'value': 'SECRET'}]}]})
+                                       {'path': 'item.session_id', 'value': 'SECRET'}]}]}, include_details=True)
         self.assertTrue(result['ok'])
         self.assertIn('Товар: Книга', result['text'])
         self.assertIn('Часы работы ПВЗ: 09–21', result['text'])
@@ -146,7 +147,7 @@ class PcTest(unittest.TestCase):
             'rows': [{'id': 'r-1', 'status': 'В пути'}],
             'page_products': [{'article': '123456', 'name': 'Товар', 'image_url': 'https://basket-01.wbbasket.ru/photo.webp?token=hidden'},
                               {'article': 'not-an-article', 'name': 'Skip'}],
-            'page_amount_due_labels': ['1 500 ₽']})
+            'page_amount_due_labels': ['1 500 ₽']}, include_details=True)
         self.assertTrue(result['ok'])
         self.assertNotIn('payable', result['rows'][0])
         self.assertNotIn('article', result['rows'][0])
@@ -156,6 +157,35 @@ class PcTest(unittest.TestCase):
         self.assertIn('НЕ сопоставленные', result['text'])
         self.assertEqual(result['page_amount_due_labels'], ['1 500 ₽'])
         self.assertNotIn('hidden', json.dumps(result))
+
+    def test_default_answer_is_name_price_status_and_details_require_explicit_request(self):
+        payload = {'ok': True, 'cabinet': True, 'url': 'https://www.wildberries.ru/lk/myorders/delivery',
+                   'rows': [{'id': 'r1', 'name': 'Товар', 'price': '755 ₽', 'status': 'В пути',
+                             'brand': 'Бренд', 'pvz': 'Адрес ПВЗ', 'date': '08.11.2026', 'pvz_hours': '09–21',
+                             'extra_fields': [{'path': 'office.workTime', 'value': '09–21'}]}],
+                   'page_amount_due_labels': ['755 ₽']}
+        compact = pc._clean_result('delivery', payload)
+        self.assertIn('Цена: 755 ₽', compact['text'])
+        self.assertNotIn('Адрес ПВЗ', json.dumps(compact, ensure_ascii=False))
+        self.assertNotIn('pvz_hours', compact['rows'][0])
+        self.assertNotIn('extra_fields', compact['rows'][0])
+        self.assertFalse(compact['details_included'])
+        self.assertEqual(compact['page_amount_due_labels'], [])
+        thread, results, job = self.start_read(include_details=True)
+        self.assertTrue(job['details'])
+        self.result(job, payload)
+        thread.join(1)
+        self.assertTrue(results[0]['details_included'])
+        self.assertIn('ПВЗ: Адрес ПВЗ', results[0]['text'])
+        self.assertIn('office.workTime: 09–21', results[0]['text'])
+
+    def test_assistant_details_flag_propagates_only_when_true(self):
+        with patch.object(pc, 'request', return_value={'ok': True}) as request:
+            market_skill.execute('market_delivery', {'shop': 'wb', 'details': True})
+            request.assert_called_once_with('delivery', include_details=True)
+            request.reset_mock()
+            market_skill.execute('market_delivery', {'shop': 'wb', 'details': 'false'})
+            request.assert_called_once_with('delivery')
 
 
 class HttpTest(unittest.TestCase):

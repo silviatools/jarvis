@@ -37,7 +37,7 @@ byId('all').addEventListener('click', () => { shown().filter(selectable).forEach
 byId('none').addEventListener('click', () => { shown().forEach(field => selected.delete(field.path)); render(); });
 byId('save').addEventListener('click', async () => {
   await chrome.storage.local.set({ selectedFields: [...selected].slice(0, 600) });
-  byId('status').textContent = 'Выбор сохранён. Спросите Джарвиса о доставках заново. Большие ответы сокращаются, полный каталог остаётся здесь.';
+  byId('status').textContent = 'Выбор сохранён для подробных ответов по вашему запросу. В обычных ответах остаются название, цена и статус. Большие подробные ответы сокращаются.';
 });
 byId('copy').addEventListener('click', async () => {
   const text = JSON.stringify({ version: chrome.runtime.getManifest().version, at: receivedAt, fields: catalog, selected: [...selected] }, null, 2);

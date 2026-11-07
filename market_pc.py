@@ -106,7 +106,7 @@ def _error(code):
     return {"ok": False, "shop": "wb", "source": "pc", "code": code, "error": ERRORS[code]}
 
 
-def request(section, timeout=JOB_SECONDS):
+def request(section, timeout=JOB_SECONDS, include_details=False):
     if not isinstance(section, str) or section not in SECTIONS:
         return {"ok": False, "error": "На ПК пока доступны только покупки, доставки и проверка входа WB."}
     with _lock:
@@ -115,7 +115,7 @@ def request(section, timeout=JOB_SECONDS):
         if _jobs:
             return _error("busy")
         jid = secrets.token_urlsafe(18)
-        job = {"section": section, "expires": time.time() + timeout, "event": threading.Event(),
+        job = {"section": section, "details": include_details is True, "expires": time.time() + timeout, "event": threading.Event(),
                "claimed": False, "result": None, "key_hash": _config().get("key_hash")}
         _jobs[jid] = job
     try:
@@ -139,7 +139,7 @@ def device_call(route, token, payload):
             for jid, job in _jobs.items():
                 if not job["claimed"] and job["expires"] > time.time() and not job["event"].is_set():
                     job["claimed"] = True
-                    return 200, {"ok": True, "job": {"id": jid, "section": job["section"]}}
+                    return 200, {"ok": True, "job": {"id": jid, "section": job["section"], "details": job["details"]}}
             return 200, {"ok": True, "job": None}
         if route != "/api/market/pc/result":
             return 404, {"ok": False, "error": "not found"}
@@ -150,7 +150,7 @@ def device_call(route, token, payload):
             return 409, {"ok": False, "error": "job expired"}
         if job["event"].is_set():
             return 200, {"ok": True}  # delivery retry, don't overwrite the result
-        result = _clean_result(job["section"], payload.get("result"))
+        result = _clean_result(job["section"], payload.get("result"), include_details=job["details"])
         job["result"] = result
         _live["session"] = result.get("session", "unknown")
         _live["checked"] = time.time()
@@ -158,7 +158,7 @@ def device_call(route, token, payload):
         return 200, {"ok": True}
 
 
-def _clean_result(section, raw):
+def _clean_result(section, raw, include_details=False):
     # Import lazily: market_skill routes reads here, and owns the existing
     # phone/secret redaction and the common order presentation.
     import market_skill
@@ -219,10 +219,13 @@ def _clean_result(section, raw):
                 continue
             row["extra_fields"].append({"path": path, "value": market_skill.mask_phones(market_skill.scrub_secrets(value))[:600]})
         if row.get("id") and (row.get("name") or row.get("status")):
+            if not include_details:
+                row = {key: value for key, value in row.items()
+                       if key in {"id", "name", "price", "status", "article", "product_url", "image_url"}}
             rows.append(row)
     if section != "status" and not rows and raw.get("empty") is not True:
         return _error("unreadable")
-    text = "Кабинет WB на ПК открыт." if section == "status" else market_skill.format_wb_rows(rows)
+    text = "Кабинет WB на ПК открыт." if section == "status" else market_skill.format_wb_rows(rows, concise=not include_details)
     if not text:
         text = "Доставок нет." if section == "delivery" else "Покупок нет."
     page_products = []
@@ -242,7 +245,7 @@ def _clean_result(section, raw):
         text += "\n\nТовары со страницы доставок, ещё НЕ сопоставленные со статусами (порядок не устанавливает связь):\n"
         for product in page_products:
             text += (product["name"] or "Товар") + " · артикул " + product["article"] + " · " + product["product_url"] + "\n"
-    labels = raw.get("page_amount_due_labels")
+    labels = raw.get("page_amount_due_labels") if include_details else []
     labels = [market_skill.mask_phones(market_skill.scrub_secrets(value))[:180]
               for value in (labels[:12] if isinstance(labels, list) else []) if isinstance(value, str)]
     if labels:
@@ -250,7 +253,8 @@ def _clean_result(section, raw):
     return {"ok": True, "shop": "wb", "source": "pc", "section": section, "session": "active",
             "url": "https://www.wildberries.ru" + parsed.path, "rows": rows, "text": text[:12000],
             "page_products": page_products, "page_amount_due_labels": labels,
-            "truncated": raw.get("truncated") is True, "details_truncated": raw.get("details_truncated") is True}
+            "truncated": raw.get("truncated") is True, "details_included": include_details,
+            "details_truncated": include_details and raw.get("details_truncated") is True}
 
 
 def extension_zip():

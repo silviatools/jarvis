@@ -218,6 +218,19 @@ test('field catalogue covers observed scalar fields and safely selects requested
   assert.equal(chosen[1].value, '["M","L"]');
 });
 
+test('confirmed RUB item prices convert from kopecks without using total_price', async () => {
+  const snapshots = await deliverySequence(new Map([
+    [primaryUrl, { value: { positions: [], notFound: ['r0', 'r1', 'r2', 'cents'], broken: false } }],
+    [supplementalUrl, { data: [{ id: 'order', currency: 'RUB', rids: [
+      { rid: 'r0', name: 'Один', price: 75500, total_price: 77900 },
+      { rid: 'r1', name: 'Два', price: 101700, total_price: 104900 },
+      { rid: 'r2', name: 'Три', price: 48900, total_price: 50500 },
+      { rid: 'cents', name: 'С копейками', price: 12345 }
+    ] }] }]
+  ]));
+  assert.deepEqual(snapshots.at(-1).delivery.rows.map(row => row.price.replace(/\s/g, '')), ['755₽', '1017₽', '489₽', '123,45₽']);
+});
+
 function readerFixture(text, found) {
   const noop = () => {};
   const context = vm.createContext({ URL, Date, AbortSignal, setTimeout,

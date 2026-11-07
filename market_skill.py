@@ -69,13 +69,15 @@ _SHOP = {"type": "string", "enum": ["ozon", "wb"], "description": "ozon или w
 TOOLS = [
     {"name": "market_orders",
      "description": "Покупки в кабинете покупателя. Для Wildberries это уже полученные заказы, не то, что сейчас в пути (для пути — market_delivery). Нужны прокси и живая сессия.",
-     "input_schema": {"type": "object", "properties": {"shop": _SHOP}, "required": ["shop"]}},
+     "input_schema": {"type": "object", "properties": {"shop": _SHOP,
+         "details": {"type": "boolean", "description": "Для WB через ПК: true только по запросу дополнительных сведений (ПВЗ, даты, оплата, размер, поля API). По умолчанию название, цена товара и статус."}}, "required": ["shop"]}},
     {"name": "market_order",
      "description": "Карточка одного заказа в кабинете покупателя. order_id — номер заказа со страницы заказов.",
      "input_schema": {"type": "object", "properties": {"shop": _SHOP, "order_id": _STR}, "required": ["shop", "order_id"]}},
     {"name": "market_delivery",
      "description": "Доставки в пути: статус, дата и ПВЗ. Для Wildberries это не список покупок и не возвраты. Можно сузить до order_id.",
-     "input_schema": {"type": "object", "properties": {"shop": _SHOP, "order_id": _STR}, "required": ["shop"]}},
+     "input_schema": {"type": "object", "properties": {"shop": _SHOP, "order_id": _STR,
+         "details": {"type": "boolean", "description": "Для WB через ПК: true только если пользователь прямо просит дополнительные сведения — ПВЗ, даты, часы, оплату, размер или поля API. Иначе false: название, цена товара, статус."}}, "required": ["shop"]}},
     {"name": "market_returns",
      "description": "Возвраты в личном кабинете покупателя. Для Wildberries отдельная страница, не доставки и не покупки.",
      "input_schema": {"type": "object", "properties": {"shop": _SHOP}, "required": ["shop"]}},
@@ -107,7 +109,8 @@ PROMPT = (
     "market_returns (возвраты), market_order (один заказ), market_favorites, market_profile "
     "(чтение) и market_cancel_order (меняет кабинет). У WB это три разные страницы, не подменяй одну другой. "
     "shop — ozon или wb. Читать можно без спроса. "
-    "Если в ответе есть строки «Заказ …», перескажи номер, товар, цену, статус, дату и ПВЗ оттуда. "
+    "Если в ответе есть строки «Заказ …», используй факты оттуда. Для обычного ответа WB через ПК показывай название товара, цену и статус; "
+    "технические rid и полный список полей не перечисляй. Для других подключений используй номер, товар, цену, статус, дату и ПВЗ. "
     "Если строк нет — так и скажи, заказы не выдумывай. "
     "Отмена заказа — только после явного «да»: первый вызов без confirmed вернёт needs_confirmation, опиши заказ и спроси, "
     "повтор с confirmed:true только следующим сообщением. Если на странице нет кнопки отмены или страница не подтвердила отмену — "
@@ -119,9 +122,15 @@ PROMPT = (
     "Если ПК не на связи — попроси открыть Chrome с расширением Джарвиса. "
     "Повторный вход для ПК выполняется в Chrome на Windows. Прототип ПК читает только покупки и доставки; "
     "truncated:true означает неполный список, не называй его всей историей покупок. "
-    "В ответах ПК показывай название товара, бренд/вариант, артикул, цену, статус, ожидаемую дату, ПВЗ и часы работы, если они есть. "
+    "ФОРМАТ WB ПО УМОЛЧАНИЮ: «Название товара — цена ₽ — статус». Ссылку можно использовать в названии; фото — по запросу. "
+    "Не добавляй общий итог, остаток к оплате и перечисление отсутствующих полей без просьбы пользователя. "
+    "артикул, бренд, размер, даты, ПВЗ, часы работы, суммы оплаты и технические поля — только по прямому запросу пользователя. "
+    "Для такого запроса вызови market_delivery/market_orders с details:true и отвечай только на заданный вопрос. "
+    "Без прямого запроса details не включай, даже если в расширении выбраны дополнительные поля. "
+    "Поле price в ответе ПК — подтверждённая цена товара в рублях из item.price/100. Не подменяй её total_price или ценой карточки. "
     "Дополнительные поля выбраны пользователем в расширении: product.* — данные карточки, её цена не равна цене заказа; "
-    "item.* и order.* — исходные поля позиции и заказа. Числовые цены без известной единицы не превращай в рубли. "
+    "item.* и order.* — исходные поля позиции и заказа. Для RUB-заказа item.price подтверждён в копейках; "
+    "для других числовых денежных полей без известной единицы не придумывай рублёвую сумму. "
     "page.amount_due_labels — подписи «к оплате» со всей страницы, не сумма для каждой позиции; не складывай их и не приписывай одному товару. "
     "Коды pay_state/pay_type без расшифровки не означают сумму к оплате. details_truncated:true — часть выбранных полей не вместилась. "
     "page_products — товары, прочитанные на странице без подтверждённой связи с rid: покажи их отдельно, не сопоставляй со статусами по порядку. "
@@ -1684,7 +1693,7 @@ def _apply_read_session(shop, result) -> dict:
     return {"error": OFFLINE_ERROR, "shop": shop, "status": "expired"}
 
 
-def _read(shop, section, order_id, state) -> dict:
+def _read(shop, section, order_id, state, details=False) -> dict:
     if not skill_on(state):
         return {"error": "Навык «Маркетплейсы» выключен: Настройки → Ассистент → Навыки ассистента."}
     sid = _known_shop(shop)
@@ -1697,7 +1706,7 @@ def _read(shop, section, order_id, state) -> dict:
     if sid == "wb" and market_pc.enabled():
         if order_id:
             return {"ok": False, "error": "На ПК пока доступен общий список покупок и доставок WB без выбора заказа."}
-        return market_pc.request(section)
+        return market_pc.request(section, include_details=True) if details else market_pc.request(section)
     blocked = _require_session(sid)
     if blocked:
         return blocked
@@ -2088,12 +2097,19 @@ def parse_wb_orders(data) -> list:
     return [row for row in merged if row.get("name") or row["id"] not in named]
 
 
-def format_wb_rows(rows) -> str:
+def format_wb_rows(rows, concise=False) -> str:
     blocks = []
     for row in rows[:30]:
         lines = ["Заказ " + row.get("id", "")]
         if row.get("name"):
             lines.append("Товар: " + row["name"])
+        if concise:
+            if row.get("price"):
+                lines.append("Цена: " + row["price"])
+            if row.get("status"):
+                lines.append("Статус: " + row["status"])
+            blocks.append("\n".join(lines))
+            continue
         for field, label in (("brand", "Бренд"), ("size", "Размер / вариант"), ("article", "Артикул"), ("quantity", "Количество")):
             if row.get(field):
                 lines.append(label + ": " + row[field])
@@ -2392,7 +2408,7 @@ def execute(name: str, inp: dict, state=None) -> dict:
     section = _SECTION.get(name)
     if not section:
         return {"error": "unknown_tool"}
-    return _read(inp.get("shop"), section, (inp.get("order_id") or "").strip(), state)
+    return _read(inp.get("shop"), section, (inp.get("order_id") or "").strip(), state, details=inp.get("details") is True)
 
 
 def _cancel(shop, order_id, confirmed, state) -> dict:
