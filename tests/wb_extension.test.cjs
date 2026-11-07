@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
 const captureCode = fs.readFileSync('windows/wb-extension/capture.js', 'utf8');
+const fieldCode = fs.readFileSync('windows/wb-extension/field-utils.js', 'utf8');
 const backgroundCode = fs.readFileSync('windows/wb-extension/background.js', 'utf8');
 
 function captureFixture(body, url = 'https://www.wildberries.ru/webapi/lk/myorders/archive/get') {
@@ -11,6 +12,7 @@ function captureFixture(body, url = 'https://www.wildberries.ru/webapi/lk/myorde
   const context = vm.createContext({ URL, Map, WeakMap, Date, console,
     location: { href: 'https://www.wildberries.ru/lk/myorders/archive' },
     XMLHttpRequest: Xhr, window: { fetch: async () => new Response(JSON.stringify(body)) } });
+  vm.runInContext(fieldCode, context);
   vm.runInContext(captureCode, context);
   return context.window.fetch(url).then(async response => {
     assert.deepEqual(await response.json(), body, 'observer must not consume site response');
@@ -83,6 +85,7 @@ async function deliverySequence(responses) {
     location: { href: 'https://www.wildberries.ru/lk/myorders/delivery' },
     XMLHttpRequest: Xhr,
     window: { fetch: async url => new Response(JSON.stringify(responses.get(String(url)))) } });
+  vm.runInContext(fieldCode, context);
   vm.runInContext(captureCode, context);
   const snapshots = [];
   for (const url of responses.keys()) {
@@ -147,6 +150,58 @@ test('current empty lists require both sources and never use tracker history as 
   assert.equal(broken[1].delivery, null);
 });
 
+test('EB order/item mapping enriches the right article, price, variant and pickup point', async () => {
+  const order = 'a'.repeat(32), other = 'b'.repeat(32);
+  const one = `eb6.i${order}.0.0`, two = `eb6.i${order}.1.0`, unknown = `eb6.i${other}.0.0`;
+  const snapshots = await deliverySequence(new Map([
+    [supplementalUrl, { data: [{ id: order, order_dt: 1794081600, dst_office_id: 12,
+      deliveries: [{ id: 'dest', full_address: 'Адрес доставки' }],
+      rids: [{ nm_id: 111111, chrt_id: 55, delivery_id: 'dest', quantity: 1, priceU: 199900, token: 'PRIVATE-TOKEN' },
+        { nm_id: 222222, delivery_id: 'dest', quantity: 2 }] }] }],
+    [primaryUrl, { value: { positions: [], notFound: [one, two, unknown], broken: false } }],
+    [trackerUrl, [[{ rid: one, status_name: 'В пути', date: '1731000000000' }],
+      [{ rid: two, status_name: 'Готов', date: '1731000000000' }], [{ rid: unknown, status_name: 'Готов', date: '1731000000000' }]]],
+    ['https://www.wildberries.ru/webapi/lk/myorders/delivery/offices', { value: { 12: { address: 'Адрес ПВЗ', workTime: '09:00–21:00', sign: 'PRIVATE-SIGN' } } }],
+    ['https://card.wb.ru/cards/v4/detail?nm=111111;222222', { products: [
+      { id: 111111, name: 'Первый товар', brand: 'Бренд', priceU: 5000, sizes: [{ optionId: 55, origName: 'M' }, { optionId: 56, origName: 'L' }] },
+      { id: 222222, name: 'Второй товар' }, { id: 333333, name: 'Чужой товар' }] }]
+  ]));
+  const complete = snapshots.at(-1), rows = complete.delivery.rows;
+  const first = rows.find(row => row.id === one), second = rows.find(row => row.id === two);
+  assert.equal(first.article, '111111');
+  assert.equal(first.name, 'Первый товар');
+  assert.equal(first.brand, 'Бренд');
+  assert.equal(first.size, 'M');
+  assert.equal(first.price.replace(/\s/g, ''), '1999₽', 'catalogue price must not replace order price');
+  assert.equal(first.pvz, 'Адрес доставки');
+  assert.equal(first.pvz_hours, '09:00–21:00');
+  assert.equal(second.name, 'Второй товар');
+  assert.equal(second.quantity, '2');
+  assert.equal(rows.find(row => row.id === unknown).article, undefined, 'do not guess another order by index');
+  const data = JSON.stringify(first.details);
+  assert.equal(data.includes('PRIVATE-TOKEN'), false);
+  assert.equal(data.includes('PRIVATE-SIGN'), false);
+  assert.equal(first.details.office.workTime, '09:00–21:00');
+});
+
+test('field catalogue covers observed scalar fields and safely selects requested paths', () => {
+  const context = vm.createContext({ window: {}, URL });
+  vm.runInContext(fieldCode, context);
+  const helper = context.window.JarvisWbFields;
+  const details = helper.sanitize({ item: { nm_id: 111111, token: 'SECRET', pay_state: 7 },
+    office: { workTime: '09:00–21:00', address: 'Адрес', cookie: 'COOKIE' },
+    product: { name: 'Товар', sizes: [{ name: 'M', price: 1234 }, { name: 'L', price: 1500 }] } });
+  const fields = helper.inventory([details]);
+  assert.ok(fields.some(field => field.path === 'product.sizes.*.price' && field.types.includes('number')));
+  assert.ok(fields.some(field => field.path === 'office.workTime' && field.examples[0] === '09:00–21:00'));
+  assert.equal(JSON.stringify(fields).includes('SECRET'), false);
+  assert.equal(fields.some(field => /token|cookie/.test(field.path)), false);
+  const chosen = helper.select(details, ['office.workTime', 'product.sizes.*.name', 'item.token']);
+  assert.equal(chosen.length, 2);
+  assert.equal(chosen[0].value, '09:00–21:00');
+  assert.equal(chosen[1].value, '["M","L"]');
+});
+
 function readerFixture(text, found) {
   const noop = () => {};
   const context = vm.createContext({ URL, Date, AbortSignal, setTimeout,
@@ -179,7 +234,8 @@ test('worker polls, reads only its WB tab, uploads result and retries failed upl
     remove: async keys => { for (const k of Array.isArray(keys) ? keys : [keys]) delete values[k]; }
   };
   const result = { ok: true, cabinet: true, url: 'https://www.wildberries.ru/lk/myorders/delivery',
-    rows: [{ id: 'r1', name: 'Книга', status: 'В пути' }] };
+    rows: [{ id: 'r1', name: 'Книга', status: 'В пути' }],
+    fieldCatalog: [{ path: 'product.name', types: ['string'], examples: ['LOCAL-ONLY-PRODUCT'], rows: 1 }] };
   const context = vm.createContext({ URL, Date, AbortSignal, setTimeout: callback => queueMicrotask(callback),
     fetch: async (url, options) => {
       requests.push({ url, options });
@@ -213,6 +269,9 @@ test('worker polls, reads only its WB tab, uploads result and retries failed upl
   }
   const sentResult = JSON.parse(requests.find(r => r.url.endsWith('/result')).options.body).result;
   assert.equal('diagnostic' in sentResult, false, 'diagnostics stay on the PC');
+  assert.equal('fieldCatalog' in sentResult, false, 'entire catalogue/examples stay on PC');
+  assert.equal(values.fieldCatalog[0].examples[0], 'LOCAL-ONLY-PRODUCT');
+  assert.equal(JSON.stringify(values.readLogs).includes('LOCAL-ONLY-PRODUCT'), false, 'examples are not diagnostic logs');
   assert.equal(values.readLogs[0].tabStatus, 'loading', 'read a loaded list while images are still loading');
   for (let i = 0; i < 10; i++) await vm.runInContext('recordRead({ok:false,code:"unreadable"}, "manual")', context);
   assert.equal(values.readLogs.length, 6);

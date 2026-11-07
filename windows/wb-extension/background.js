@@ -20,7 +20,7 @@ async function post(config, route, body) {
 }
 
 // Serialized into the page by Chrome. Read only; no cookies or localStorage.
-function readPage(key) {
+function readPage(key, selectedFields = []) {
   const url = new URL(location.href);
   const text = (document.body?.innerText || '').slice(0, 16000).toLowerCase();
   const state = window.__jarvisWbRead;
@@ -59,8 +59,50 @@ function readPage(key) {
   const found = state?.[key];
   // A heading alone is not proof that the account's list was loaded.
   if (found && Date.now() - found.at < 60000) {
+    const helper = window.JarvisWbFields;
+    let extraBudget = 12000;
+    let detailsTruncated = false;
+    const detailsList = [];
+    const rows = found.rows.map(source => {
+      const { details: originalDetails, office_id, ...row } = source;
+      const details = { ...(originalDetails || {}) };
+      let imageUrl = '';
+      if (row.article) {
+        // Only a link to this position's known article may supply its title.
+        for (const link of document.querySelectorAll('a[href*="/catalog/"]')) {
+          let article;
+          try { article = /^\/catalog\/(\d+)\/detail\.aspx/.exec(new URL(link.href, location.href).pathname)?.[1]; } catch (_) { continue; }
+          if (article !== row.article) continue;
+          const label = link.getAttribute('title') || link.getAttribute('aria-label')
+            || link.querySelector('[class*="good-name"], [class*="product-name"], [class*="goods-name"], [class*="title"]')?.textContent
+            || link.querySelector('img[alt]')?.getAttribute('alt') || link.innerText;
+          const name = (label || '').replace(/\s+/g, ' ').trim();
+          if (!row.name && name.length > 2 && !/^(подробнее|открыть|перейти|фото|изображение|\d+[\s₽руб.]*)$/i.test(name)) row.name = name.slice(0, 160);
+          const image = link.querySelector('img');
+          imageUrl = image?.currentSrc || image?.src || imageUrl;
+          if (row.name) break;
+        }
+      }
+      const paymentLabels = [...(document.body?.innerText || '').matchAll(/(?:к оплате|осталось оплатить)\s*:?\s*([\d \u00a0\u202f]+(?:[.,]\d{1,2})?\s*(?:₽|руб\.?))/gi)]
+        .map(match => match[1].trim()).slice(0, 10);
+      details.page = { article: row.article || null, name: row.name || null,
+        image_url: imageUrl || null, amount_due_labels: [...new Set(paymentLabels)] }; // page labels, not per-item or a computed total
+      const safeDetails = helper ? helper.sanitize(details) : {};
+      detailsList.push(safeDetails);
+      const extras = helper ? helper.select(safeDetails, selectedFields) : [];
+      row.extra_fields = [];
+      for (const field of extras) {
+        if (row.extra_fields.length >= 100 || extraBudget < field.path.length + field.value.length) { detailsTruncated = true; break; }
+        row.extra_fields.push(field);
+        extraBudget -= field.path.length + field.value.length;
+      }
+      return row;
+    });
+    diagnostic.rowsWithName = rows.filter(row => row.name).length;
+    diagnostic.rowsWithArticle = rows.filter(row => row.article).length;
     return { ok: true, cabinet: true, url: location.origin + location.pathname,
-      rows: found.rows, empty: found.empty, truncated: found.truncated,
+      rows, empty: found.empty, truncated: found.truncated, details_truncated: detailsTruncated,
+      fieldCatalog: helper ? helper.inventory(detailsList) : [],
       diagnostic: { ...diagnostic, stage: 'list_read' } };
   }
   return { ok: false, code: 'unreadable', diagnostic: { ...diagnostic, stage: state ? 'waiting_for_list' : 'capture_missing' } };
@@ -97,7 +139,10 @@ async function readWb(section) {
     stage = 'reload_tab';
     await chrome.tabs.reload(tabId);
     const key = section === 'orders' ? 'orders' : 'delivery';
+    const settings = await chrome.storage.local.get(['selectedFields']);
+    const selectedFields = Array.isArray(settings.selectedFields) ? settings.selectedFields.filter(value => typeof value === 'string').slice(0, 600) : [];
     let result = { ok: false, code: 'unreadable' };
+    let firstRead = 0;
     for (attempt = 1; attempt <= 30; attempt++) {
       await pause(1000);
       stage = 'read_tab';
@@ -111,7 +156,7 @@ async function readWb(section) {
       let snapshots;
       try {
         snapshots = await chrome.scripting.executeScript({
-          target: { tabId }, world: 'MAIN', func: readPage, args: [key]
+          target: { tabId }, world: 'MAIN', func: readPage, args: [key, selectedFields]
         });
       } catch (_) {
         // The document can change during navigation. Retry without losing the
@@ -120,7 +165,12 @@ async function readWb(section) {
         continue;
       }
       result = snapshots[0]?.result || result;
-      if (result.ok || result.code === 'login') return finish(result);
+      if (result.code === 'login') return finish(result);
+      if (result.ok) {
+        if (!firstRead) firstRead = attempt;
+        // Metadata/card responses and visible titles can arrive after statuses.
+        if (section === 'status' || result.empty || (result.rows?.every(row => row.name) && attempt - firstRead >= 2) || attempt - firstRead >= 10) return finish(result);
+      }
       // Keep waiting through the site's browser check instead of calling it expired.
     }
     return finish(result);
@@ -131,6 +181,7 @@ async function readWb(section) {
 }
 
 async function recordRead(result, trigger) {
+  if (Array.isArray(result.fieldCatalog)) await chrome.storage.local.set({ fieldCatalog: result.fieldCatalog, fieldCatalogAt: Date.now() });
   // Deliberately omit rows, text, credentials, server URL and arbitrary errors.
   const report = { at: new Date().toISOString(), trigger, ok: result.ok === true,
     code: result.code || '', ...(result.diagnostic || {}) };
@@ -171,7 +222,7 @@ async function tick() {
       await recordRead(result, 'jarvis');
       const after = await chrome.storage.local.get(['server', 'token', 'enabled']);
       if (!after.enabled || after.server !== config.server || after.token !== config.token) return;
-      const { diagnostic, ...upload } = result;
+      const { diagnostic, fieldCatalog, ...upload } = result;
       const pending = { id: response.job.id, result: upload };
       await chrome.storage.local.set({ pending });
       await post(config, 'result', pending);

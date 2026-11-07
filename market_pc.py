@@ -9,6 +9,7 @@ import hmac
 import io
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -182,10 +183,27 @@ def _clean_result(section, raw):
         if not isinstance(item, dict):
             continue
         row = {}
-        for field, limit in {"id": 80, "name": 160, "price": 40, "status": 100, "date": 50, "pvz": 180}.items():
+        for field, limit in {"id": 80, "name": 160, "price": 40, "status": 100, "date": 50, "pvz": 180,
+                             "brand": 100, "size": 60, "quantity": 30, "payable": 60,
+                             "delivery_date": 60, "pvz_hours": 200}.items():
             value = item.get(field)
             if isinstance(value, (str, int, float)) and not isinstance(value, bool):
                 row[field] = market_skill.mask_phones(market_skill.scrub_secrets(str(value)))[:limit]
+        article = str(item.get("article") or "")
+        if re.fullmatch(r"\d{4,15}", article):
+            row["article"] = article
+            row["product_url"] = f"https://www.wildberries.ru/catalog/{article}/detail.aspx"
+        extras = item.get("extra_fields")
+        row["extra_fields"] = []
+        for extra in (extras[:100] if isinstance(extras, list) else []):
+            if not isinstance(extra, dict):
+                continue
+            path, value = extra.get("path"), extra.get("value")
+            if (not isinstance(path, str) or not isinstance(value, str) or len(path) > 180
+                    or not re.fullmatch(r"(?:order|item|delivery|office|product|status|page)(?:\.[A-Za-z0-9_*]+)+", path)
+                    or re.search(r"token|password|secret|cookie|authorization|(?:^|\.)(?:sign|signature|tracker_key|trackerkey|session_id|sessionid|shard_key|user_id|client_id|phone|email|card_number|bank_account)(?:\.|$)", path, re.I)):
+                continue
+            row["extra_fields"].append({"path": path, "value": market_skill.mask_phones(market_skill.scrub_secrets(value))[:600]})
         if row.get("id") and (row.get("name") or row.get("status")):
             rows.append(row)
     if section != "status" and not rows and raw.get("empty") is not True:
@@ -195,13 +213,13 @@ def _clean_result(section, raw):
         text = "Доставок нет." if section == "delivery" else "Покупок нет."
     return {"ok": True, "shop": "wb", "source": "pc", "section": section, "session": "active",
             "url": "https://www.wildberries.ru" + parsed.path, "rows": rows, "text": text[:12000],
-            "truncated": raw.get("truncated") is True}
+            "truncated": raw.get("truncated") is True, "details_truncated": raw.get("details_truncated") is True}
 
 
 def extension_zip():
     root = Path(__file__).parent / "windows" / "wb-extension"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as out:
-        for name in ("manifest.json", "background.js", "capture.js", "popup.html", "popup.js", "README.txt"):
+        for name in ("manifest.json", "background.js", "field-utils.js", "capture.js", "popup.html", "popup.js", "fields.html", "fields.js", "README.txt"):
             out.write(root / name, name)
     return buf.getvalue()

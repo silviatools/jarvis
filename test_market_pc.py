@@ -118,10 +118,27 @@ class PcTest(unittest.TestCase):
 
     def test_download_archive(self):
         with zipfile.ZipFile(io.BytesIO(pc.extension_zip())) as archive:
-            self.assertEqual(len(archive.namelist()), 6)
+            self.assertEqual(len(archive.namelist()), 9)
             manifest = json.loads(archive.read('manifest.json'))
             self.assertNotIn('cookies', manifest['permissions'])
             self.assertNotIn(self.token.encode(), archive.read('background.js'))
+
+    def test_product_fields_and_user_selected_details_reach_assistant(self):
+        result = pc._clean_result('delivery', {
+            'ok': True, 'cabinet': True, 'url': 'https://www.wildberries.ru/lk/myorders/delivery',
+            'rows': [{'id': 'r-1', 'name': 'Книга', 'status': 'В пути', 'article': '123456',
+                      'brand': 'Издательство', 'pvz_hours': '09–21', 'delivery_date': '08.11.2026',
+                      'product_url': 'https://evil.example/', 'details': {'token': 'SECRET'},
+                      'extra_fields': [{'path': 'office.workTime', 'value': '09–21'},
+                                       {'path': 'item.token', 'value': 'SECRET'},
+                                       {'path': 'item.session_id', 'value': 'SECRET'}]}]})
+        self.assertTrue(result['ok'])
+        self.assertIn('Товар: Книга', result['text'])
+        self.assertIn('Часы работы ПВЗ: 09–21', result['text'])
+        self.assertIn('office.workTime: 09–21', result['text'])
+        self.assertIn('https://www.wildberries.ru/catalog/123456/detail.aspx', result['text'])
+        self.assertNotIn('SECRET', json.dumps(result))
+        self.assertNotIn('evil.example', json.dumps(result))
 
 
 class HttpTest(unittest.TestCase):

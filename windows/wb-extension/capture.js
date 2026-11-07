@@ -1,13 +1,15 @@
 // Runs only on WB. Observe responses the page itself requests; issue no API calls.
-// Retain only order fields, never request headers, tokens, cookies or raw JSON.
+// Retain sanitized order/product/PVZ fields, never headers or credentials.
+// Diagnostic logs contain only schemas; the local field catalogue has examples.
 (() => {
   if (window.__jarvisWbRead) return;
   const state = window.__jarvisWbRead = { orders: null, delivery: null,
-    debug: { version: '0.1.2', fetchSeen: 0, xhrSeen: 0, events: [] } };
+    debug: { version: '0.2.0', fetchSeen: 0, xhrSeen: 0, events: [] } };
+  const fieldsHelper = window.JarvisWbFields;
   // Current WB deliveries arrive from three sources. Retain normalized fields
   // only and join status histories to the explicitly active rids.
   const delivery = { primarySeen: false, primaryEmpty: false, supplementalSeen: false, supplementalEmpty: false,
-    active: new Set(), rows: new Map(), statuses: new Map() };
+    active: new Set(), rows: new Map(), statuses: new Map(), items: [], products: new Map(), offices: new Map() };
   const installedFetch = () => window.fetch === wrappedFetch;
   state.hooksActive = () => ({ fetch: installedFetch(), xhr: XMLHttpRequest.prototype.send === wrappedSend });
   function endpoint(raw) {
@@ -15,7 +17,7 @@
       const u = new URL(raw, location.href);
       if (u.protocol !== 'https:' || !(u.hostname === 'wildberries.ru' || u.hostname.endsWith('.wildberries.ru')
           || u.hostname === 'wb.ru' || u.hostname.endsWith('.wb.ru'))) return null;
-      if (!/\/api\/|\/webapi\/|\/lk\/|delivery|purchases|myorders/.test(u.pathname)) return null;
+      if (!/\/api\/|\/webapi\/|\/lk\/|delivery|purchases|myorders|\/cards\//.test(u.pathname)) return null;
       // No query/fragment, opaque ids, personal path segments or account values.
       const path = u.pathname.split('/').map(part =>
         /^[a-z][a-z-]{0,36}$/.test(part) || /^v\d{1,2}$/.test(part) ? part : part ? ':id' : '').join('/');
@@ -28,7 +30,7 @@
     if (Array.isArray(node)) return { arrayLength: node.length, item: depth < maxDepth && node.length ? shape(node[0], depth + 1, budget, maxDepth) : 'not inspected' };
     if (typeof node !== 'object') return typeof node; // types, NEVER scalar values
     if (depth >= maxDepth) return 'object';
-    return Object.fromEntries(Object.keys(node).filter(key => /^[A-Za-z_]{1,40}$/.test(key)).slice(0, 16)
+    return Object.fromEntries(Object.keys(node).filter(key => /^[A-Za-z_]{1,40}$/.test(key)).slice(0, maxDepth > 4 ? 40 : 16)
       .map(key => [key, /token|authorization|cookie|secret|password|trackerkey|session|shard/i.test(key) ? 'redacted' : shape(node[key], depth + 1, budget, maxDepth)]));
   }
   function note(raw, transport, status, reason, data) {
@@ -89,6 +91,69 @@
     const previous = delivery.rows.get(row.id) || {};
     delivery.rows.set(row.id, { ...previous, ...Object.fromEntries(Object.entries(row).filter(([, value]) => value !== '')) });
   }
+  const flatten = node => Object.fromEntries(Object.entries(node || {}).map(([k, v]) => [k.toLowerCase().replace(/[^a-z0-9]/g, ''), v]));
+  function displayDate(value) {
+    const raw = String(value || '');
+    if (!/^\d{10}(?:\d{3})?$/.test(raw)) return ''; // unknown timestamp units are not guessed
+    const date = new Date(Number(raw) * (raw.length === 10 ? 1000 : 1));
+    if (date.getUTCFullYear() < 2000 || date.getUTCFullYear() > 2100) return '';
+    return date.toLocaleDateString('ru-RU', { timeZone: 'Europe/Moscow' });
+  }
+  function describeItem(order, item) {
+    const flat = flatten(item);
+    const rows = [];
+    parse(item, rows, '__descriptor__', 0, true);
+    const fields = {};
+    for (const row of rows) for (const field of ['name', 'price', 'status', 'pvz']) if (row[field]) fields[field] = row[field];
+    const article = pick(flat, ['nmid', 'nomenclatureid', 'article'], 15);
+    if (/^\d{4,15}$/.test(article)) fields.article = article;
+    fields.brand = pick(flat, ['brand', 'brandname'], 100);
+    fields.size = pick(flat, ['size', 'techsize', 'origsize', 'originalsize'], 60);
+    fields.quantity = pick(flat, ['quantity', 'qty', 'count'], 30);
+    const payable = pick(flat, ['amountdue', 'amountdueatpickup', 'topay', 'paymentamount'], 60);
+    if (/₽|руб/i.test(payable)) fields.payable = payable;
+    fields.date = displayDate(order.order_dt);
+    fields.delivery_date = displayDate(item.estimated_delivery_time || item.delivery_time);
+    const destinations = Array.isArray(order.deliveries) ? order.deliveries : [];
+    const destination = destinations.find(d => String(d.id) === String(item.delivery_id));
+    if (destination && typeof destination.full_address === 'string') fields.pvz = clean(destination.full_address, 180);
+    fields.details = fieldsHelper.sanitize({ order: Object.fromEntries(Object.entries(order).filter(([key]) => !['rids', 'deliveries'].includes(key))),
+      item, delivery: destination || {} });
+    fields.office_id = String(order.dst_office_id || destination?.office_id || '');
+    return fields;
+  }
+  function bindDeliveryItems() {
+    for (const item of delivery.items) {
+      const ids = item.id ? [item.id] : [...delivery.active].filter(id => {
+        // Match an EXISTING active EB rid to this exact order and item index.
+        // Never create a guessed rid or match goods by list position alone.
+        const match = /^eb\d+\.i([a-f0-9]{32})\.(\d+)\.(\d+)$/i.exec(id);
+        return match && match[1].toLowerCase() === item.orderKey && Number(match[2]) === item.index;
+      });
+      for (const id of ids) addDeliveryRow({ id, ...item.fields }, false);
+    }
+  }
+  function productResponse(raw) {
+    try {
+      const u = new URL(raw, location.href);
+      return u.protocol === 'https:' && (u.hostname === 'wildberries.ru' || u.hostname.endsWith('.wildberries.ru')
+        || u.hostname === 'wb.ru' || u.hostname.endsWith('.wb.ru')) && /\/cards\/(?:v\d+\/)?detail\/?$/.test(u.pathname);
+    } catch (_) { return false; }
+  }
+  function collectProducts(data) {
+    const products = data?.products || data?.data?.products;
+    if (!Array.isArray(products)) return 'product_schema_unrecognized';
+    for (const product of products.slice(0, 100)) {
+      if (!product || typeof product !== 'object') continue;
+      const flat = flatten(product);
+      const article = pick(flat, ['id', 'nmid'], 15);
+      const name = pick(flat, ['name', 'goodsname', 'imtname'], 160);
+      if (/^\d{4,15}$/.test(article) && name) delivery.products.set(article,
+        { name, brand: pick(flat, ['brand', 'brandname'], 100), details: fieldsHelper.sanitize(product) });
+    }
+    publishDelivery();
+    return 'products_observed';
+  }
   function statusRank(value) {
     const raw = String(value || '');
     if (/^\d+$/.test(raw)) return BigInt(raw);
@@ -107,23 +172,48 @@
     if (id && status) {
       const rank = statusRank(flat.date);
       const previous = delivery.statuses.get(id);
-      if (!previous || rank >= previous.rank) delivery.statuses.set(id, { status, rank });
+      if (!previous || rank >= previous.rank) delivery.statuses.set(id, { status, rank, details: fieldsHelper.sanitize(node) });
     }
     for (const key of ['data', 'result', 'statuses', 'payload']) if (node[key]) collectStatuses(node[key], depth + 1);
   }
   function publishDelivery() {
+    bindDeliveryItems();
     // Tracker histories may include old received orders. They can enrich an
     // active id, but must NEVER create a delivery by themselves.
     const rows = [...delivery.active].slice(0, 40).map(id => {
       const row = { id, ...(delivery.rows.get(id) || {}) };
+      row.details = { ...(row.details || {}) };
       const latest = delivery.statuses.get(id);
-      if (latest) row.status = latest.status;
+      if (latest) { row.status = latest.status; row.details.status = latest.details; }
+      const product = delivery.products.get(row.article);
+      if (product) {
+        if (!row.name) row.name = product.name;
+        if (!row.brand) row.brand = product.brand;
+        row.details.product = product.details;
+        const chrt = row.details.item?.chrt_id ?? row.details.item?.chrtId;
+        const variants = Array.isArray(product.details.sizes) ? product.details.sizes : [];
+        const variant = chrt === undefined ? null : variants.find(size => String(size.optionId ?? size.chrt_id ?? size.chrtId) === String(chrt));
+        if (!row.size && variant) row.size = pick(flatten(variant), ['origname', 'name', 'techsize'], 60);
+      }
+      const office = delivery.offices.get(row.office_id);
+      if (office) {
+        row.details.office = office;
+        if (!row.pvz) row.pvz = pick(flatten(office), ['address', 'fulladdress'], 180);
+        const flatOffice = flatten(office);
+        row.pvz_hours = pick(flatOffice, ['worktime', 'workhours', 'workingtime', 'workinghours', 'schedule'], 200);
+        if (!row.pvz_hours) {
+          const schedule = flatOffice.worktime || flatOffice.workinghours || flatOffice.schedule;
+          if (schedule && typeof schedule === 'object') row.pvz_hours = JSON.stringify(schedule).slice(0, 200);
+        }
+      }
       return row;
     });
     const missing = rows.filter(row => !row.name && !row.status).length;
     state.debug.deliveryJoin = { primarySeen: delivery.primarySeen, supplementalSeen: delivery.supplementalSeen,
       activeIds: delivery.active.size, supplementalIds: delivery.rows.size,
-      statusIds: delivery.statuses.size, unresolvedIds: missing };
+      statusIds: delivery.statuses.size, unresolvedIds: missing,
+      rowsWithArticle: rows.filter(row => row.article).length, rowsWithName: rows.filter(row => row.name).length,
+      productsObserved: delivery.products.size };
     state.delivery = null;
     if (rows.length && !missing && delivery.primarySeen && delivery.supplementalSeen) {
       state.delivery = { rows, empty: false, at: Date.now(), truncated: delivery.active.size > 40 };
@@ -135,6 +225,19 @@
     }
     return 'waiting_delivery_sources';
   }
+  function collectOffices(data) {
+    function walk(node, id = '', depth = 0) {
+      if (!node || typeof node !== 'object' || depth > 5) return;
+      if (Array.isArray(node)) { for (const item of node.slice(0, 2000)) walk(item, '', depth + 1); return; }
+      const flat = flatten(node);
+      const key = pick(flat, ['officeid', 'id'], 30) || id;
+      if (key && (flat.address || flat.fulladdress)) delivery.offices.set(key, fieldsHelper.sanitize(node));
+      for (const [name, item] of Object.entries(node).slice(0, 2000)) if (item && typeof item === 'object') walk(item, /^\d+$/.test(name) ? name : '', depth + 1);
+    }
+    walk(data.value || data);
+    publishDelivery();
+    return 'offices_observed';
+  }
   function captureCurrentDelivery(url, data) {
     const u = new URL(url, location.href);
     if (u.hostname === 'status-tracker.wb.ru') {
@@ -145,15 +248,15 @@
       if (!Array.isArray(data.data)) return 'schema_unrecognized';
       delivery.supplementalSeen = true;
       delivery.supplementalEmpty = !data.data.length;
+      delivery.items = [];
       for (const order of data.data.slice(0, 100)) {
         if (!order || !Array.isArray(order.rids)) continue;
-        for (const item of order.rids.slice(0, 100)) {
+        for (const [index, item] of order.rids.slice(0, 100).entries()) {
           if (!item || typeof item !== 'object') continue;
-          const rows = [];
-          const flat = Object.fromEntries(Object.entries(item).map(([k, v]) => [k.toLowerCase().replace(/[^a-z0-9]/g, ''), v]));
+          const flat = flatten(item);
           const id = pick(flat, ['rid', 'srid', 'id'], 80);
-          parse(item, rows, id, 0, true);
-          for (const row of rows) addDeliveryRow(row, false);
+          const orderKey = String(order.id || '').replace(/-/g, '').toLowerCase();
+          delivery.items.push({ id, orderKey, index, fields: describeItem(order, item) });
         }
       }
       return publishDelivery();
@@ -178,9 +281,12 @@
   }
   function capture(url, status, data) {
     const key = section(url);
-    if (!key) return 'endpoint_unmatched';
+    const offices = /\/myorders\/delivery\/offices\/?$/.test(new URL(url, location.href).pathname);
+    if (!key && !productResponse(url) && !offices) return 'endpoint_unmatched';
     if (status !== 200) return 'http_error';
     if (!data || data.error || data.errors || data.success === false) return 'api_error';
+    if (productResponse(url)) return collectProducts(data);
+    if (offices) return collectOffices(data);
     if (key === 'delivery') {
       const joined = captureCurrentDelivery(url, data);
       if (joined) return joined;

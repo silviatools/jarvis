@@ -63,5 +63,6 @@ byId('clearLogs').addEventListener('click', async () => {
   byId('diagnosticStatus').textContent = 'Логи удалены.';
   await refresh();
 });
+byId('fields').addEventListener('click', () => chrome.tabs.create({ url: chrome.runtime.getURL('fields.html') }));
 refresh();
 setInterval(refresh, 2000);

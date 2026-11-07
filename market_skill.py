@@ -119,6 +119,11 @@ PROMPT = (
     "Если ПК не на связи — попроси открыть Chrome с расширением Джарвиса. "
     "Повторный вход для ПК выполняется в Chrome на Windows. Прототип ПК читает только покупки и доставки; "
     "truncated:true означает неполный список, не называй его всей историей покупок. "
+    "В ответах ПК показывай название товара, бренд/вариант, артикул, цену, статус, ожидаемую дату, ПВЗ и часы работы, если они есть. "
+    "Дополнительные поля выбраны пользователем в расширении: product.* — данные карточки, её цена не равна цене заказа; "
+    "item.* и order.* — исходные поля позиции и заказа. Числовые цены без известной единицы не превращай в рубли. "
+    "page.amount_due_labels — подписи «к оплате» со всей страницы, не сумма для каждой позиции; не складывай их и не приписывай одному товару. "
+    "Коды pay_state/pay_type без расшифровки не означают сумму к оплате. details_truncated:true — часть выбранных полей не вместилась. "
     "Новый вход для серверного подключения — в Настройки → Маркетплейсы: у Ozon код из СМС, "
     "у Wildberries код в приложении (уведомление или колокольчик). "
     "Телефон в профиле уже замаскирован, не восстанавливай его.\n\n"
@@ -2087,6 +2092,9 @@ def format_wb_rows(rows) -> str:
         lines = ["Заказ " + row.get("id", "")]
         if row.get("name"):
             lines.append("Товар: " + row["name"])
+        for field, label in (("brand", "Бренд"), ("size", "Размер / вариант"), ("article", "Артикул"), ("quantity", "Количество")):
+            if row.get(field):
+                lines.append(label + ": " + row[field])
         if row.get("price"):
             lines.append("Цена: " + row["price"])
         if row.get("status"):
@@ -2095,6 +2103,11 @@ def format_wb_rows(rows) -> str:
             lines.append("Дата: " + row["date"])
         if row.get("pvz"):
             lines.append("ПВЗ: " + row["pvz"])
+        for field, label in (("delivery_date", "Ожидается"), ("pvz_hours", "Часы работы ПВЗ"), ("payable", "К оплате"), ("product_url", "Товар на WB")):
+            if row.get(field):
+                lines.append(label + ": " + row[field])
+        for field in row.get("extra_fields") or []:
+            lines.append("Дополнительное поле " + field["path"] + ": " + field["value"])
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 
