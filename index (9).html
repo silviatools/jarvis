@@ -6140,6 +6140,62 @@ function MarketManual({ shop, onHide, onDone, onCancel }) {
   );
 }
 
+function MarketplacePcSettings({ pc, onRefresh }) {
+  const [token, setToken] = React.useState('');
+  const [busy, setBusy] = React.useState('');
+  const [message, setMessage] = React.useState('');
+  const [result, setResult] = React.useState('');
+  const [error, setError] = React.useState('');
+  const act = async (action, section) => {
+    setBusy(section || action); setMessage(''); setError(''); setResult('');
+    try {
+      const response = await fetch('/api/market/pc/' + action, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(section ? { section } : {})
+      });
+      const j = await response.json();
+      if (!response.ok || j.ok === false) setError(j.error || 'Не получилось выполнить запрос.');
+      else {
+        if (j.token) setToken(j.token);
+        if (action === 'disconnect') setToken('');
+        setMessage(j.message || '');
+        if (j.text) setResult(j.text + (j.truncated ? '\n\nПоказана только загруженная часть списка.' : ''));
+      }
+      onRefresh();
+    } catch (e) { setError('Нет ответа от Джарвиса: ' + e.message); }
+    finally { setBusy(''); }
+  };
+  const session = { active: 'Кабинет открыт', expired: 'Нужен вход на ПК', blocked: 'Проверка браузера WB', unknown: 'Вход ещё не подтверждён' };
+  return <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5 space-y-3" data-testid="market-pc">
+    <div className="flex flex-wrap justify-between gap-2">
+      <h3 className="font-display text-lg">WB на Windows-ПК</h3>
+      <span className="text-sm">{!pc.enabled ? 'Не подключён' : pc.online ? 'ПК на связи' : 'ПК не на связи'}</span>
+    </div>
+    <p className="text-sm text-[var(--text-muted)]">Покупки и доставки через ваш Chrome. Прокси не нужен. ПК и Chrome должны работать; повторный вход выполняется на ПК.</p>
+    <ol className="list-decimal pl-5 space-y-1 text-sm text-[var(--text-muted)]">
+      <li>Создайте отдельный профиль Chrome «Джарвис» на Windows 10 и войдите в WB.</li>
+      <li><a className="underline" href="/api/market/pc/download">Скачайте расширение</a>, распакуйте ZIP. В chrome://extensions включите режим разработчика и загрузите распакованную папку.</li>
+      <li>Создайте ключ ниже. В расширении укажите адрес {window.location.origin} и ключ, затем нажмите «Подключить».</li>
+    </ol>
+    <div className="flex flex-wrap gap-2">
+      <button className="btn-secondary text-sm px-3 py-2" disabled={!!busy} onClick={() => act('pair')}>{pc.enabled ? 'Заменить ключ ПК' : 'Создать ключ ПК'}</button>
+      {pc.enabled && <button className="btn-secondary text-sm px-3 py-2" disabled={!!busy} onClick={() => act('disconnect')}>Отключить ПК</button>}
+    </div>
+    {token && <label className="block text-sm">Ключ ПК — скопируйте сейчас, после закрытия страницы он не показывается:
+      <input className="mt-1 w-full border border-[var(--border)] bg-[var(--bg)] rounded-lg p-2 font-mono text-xs" readOnly value={token} onFocus={e => e.target.select()} autoComplete="off" />
+    </label>}
+    {pc.enabled && <>
+      <p className="text-sm text-[var(--text-muted)]">{pc.online ? session[pc.session] || session.unknown : 'Откройте Chrome на ПК и проверьте подключение в расширении.'} Связь обновляется примерно каждые 30 секунд.</p>
+      <div className="flex flex-wrap gap-2">{[['status', 'Проверить вход'], ['delivery', 'Доставки'], ['orders', 'Покупки']].map(([key, title]) =>
+        <button key={key} className="btn-secondary text-sm px-3 py-2" disabled={!!busy || !pc.online} onClick={() => act('check', key)}>{busy === key ? 'Читаю на ПК…' : title}</button>)}</div>
+      {busy && <p className="text-sm text-[var(--text-muted)]">Первое чтение может занять до 90 секунд.</p>}
+    </>}
+    {message && <p className="text-sm text-[var(--text-muted)]">{message}</p>}
+    {error && <p className="text-sm text-red-600" role="alert">{error}</p>}
+    {result && <pre className="text-sm whitespace-pre-wrap max-h-80 overflow-auto">{result}</pre>}
+  </div>;
+}
+
 function MarketplaceSettings() {
   const [st, setSt] = React.useState(null);
   const [proxy, setProxy] = React.useState('');
@@ -6221,6 +6277,7 @@ function MarketplaceSettings() {
 
   return (
     <div className="space-y-3" data-testid="market-settings">
+      <MarketplacePcSettings pc={(st && st.pc) || {}} onRefresh={load} />
       <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
         <h3 className="font-display text-lg mb-1">Прокси</h3>
         <p className="text-sm text-[var(--text-muted)] mb-3">
@@ -6269,7 +6326,7 @@ function MarketplaceSettings() {
 
       {!hasProxy && st && (
         <div className="text-sm text-amber-600" data-testid="market-no-proxy">
-          Без сохранённого прокси вход не начнётся: с IP сервера кабинет не открывается.
+          Для серверного входа нужен прокси. Подключение WB через Windows-ПК настраивается отдельно выше.
         </div>
       )}
       {err && <div className="text-sm text-red-600" data-testid="market-error">{err}</div>}
@@ -6281,6 +6338,12 @@ function MarketplaceSettings() {
       )}
 
       {MARKET_SHOPS.map(shop => {
+        if (shop.id === 'wb' && st && st.pc && st.pc.enabled) return (
+          <div key={shop.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5" data-testid="market-shop-wb">
+            <h3 className="font-display text-lg mb-1">Wildberries · через ПК</h3>
+            <p className="text-sm text-[var(--text-muted)]">Покупки и доставки читает Chrome на Windows. Подключение и проверка входа — в блоке «WB на Windows-ПК» выше.</p>
+          </div>
+        );
         const row = shops[shop.id] || { status: 'none', label: 'Нет сессии', phone_mask: '' };
         const active = row.status === 'active';
         const waiting = row.status === 'awaiting_code';

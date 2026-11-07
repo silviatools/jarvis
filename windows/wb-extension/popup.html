@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>Джарвис — WB</title>
+<style>
+body{font:14px system-ui,sans-serif;width:340px;padding:16px;color:#24212e}h1{font-size:19px;margin-top:0}label{display:block;margin:12px 0}input{box-sizing:border-box;width:100%;padding:9px;margin-top:5px;border:1px solid #bbb;border-radius:7px}button{padding:9px 12px;margin:3px 3px 3px 0;cursor:pointer}p{line-height:1.45}.muted{color:#666;font-size:12px}#status{white-space:pre-wrap}#error{color:#b42318}
+</style></head><body>
+<h1>Джарвис · Wildberries</h1>
+<p>Войдите в WB в этом профиле Chrome. Расширение читает только покупки и доставки.</p>
+<label>Адрес вашего Джарвиса<input id="server" type="url" placeholder="https://…up.railway.app" autocomplete="off"></label>
+<label>Ключ ПК из настроек Джарвиса<input id="token" type="password" autocomplete="off" placeholder="wbpc_…"></label>
+<button id="connect">Подключить</button><button id="disconnect">Остановить</button>
+<button id="open">Открыть WB</button><button id="poll">Обновить связь</button>
+<p id="status" role="status"></p><p id="error" role="alert"></p>
+<p class="muted">Chrome и ПК должны работать. Связь обновляется примерно каждые 30 секунд. Cookies и коды входа не отправляются Джарвису.</p>
+<script src="popup.js"></script></body></html>

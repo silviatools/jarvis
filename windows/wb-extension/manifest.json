@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Джарвис — WB на моём ПК",
+  "version": "0.1.0",
+  "minimum_chrome_version": "120",
+  "description": "Чтение покупок и доставок WB для вашего Джарвиса. Вход остаётся в Chrome.",
+  "permissions": ["storage", "alarms", "scripting"],
+  "host_permissions": ["https://www.wildberries.ru/*"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_popup": "popup.html"},
+  "content_scripts": [{
+    "matches": ["https://www.wildberries.ru/*"],
+    "js": ["capture.js"],
+    "run_at": "document_start",
+    "world": "MAIN"
+  }]
+}

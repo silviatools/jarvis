@@ -22,6 +22,7 @@ import re
 import secrets
 import threading
 import time
+import market_pc
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
@@ -45,10 +46,12 @@ STATUS_LABEL = {
 SKILLS = [
     {"id": SKILL_ID, "title": "Маркетплейсы", "risk": "write", "default": True,
      "desc": (
-         "Личные кабинеты покупателя Ozon и Wildberries. У Wildberries это разные страницы: "
+         "Личные кабинеты покупателя Ozon и Wildberries. WB можно читать через Chrome на вашем Windows-ПК "
+         "(Настройки → Маркетплейсы → WB на Windows-ПК): покупки и доставки без серверного прокси. "
+         "ПК и Chrome должны работать. У Wildberries это разные страницы: "
          "market_orders — покупки (уже полученные), market_delivery — что в пути, market_returns — возвраты. "
          "Ещё карточка заказа, избранное и краткий профиль (телефон маской). Не кабинет продавца и не цены с витрины. "
-         "Нужен сохранённый мобильный HTTP(S)-прокси с липким IP (Настройки → Маркетплейсы) и живая сессия: "
+         "Для серверного подключения нужен сохранённый мобильный HTTP(S)-прокси с липким IP (Настройки → Маркетплейсы) и живая сессия: "
          "без прокси кабинет с сервера не открывается, смена IP сессию сбрасывает. Если сессия слетела, "
          "инструменты так и скажут — нужен новый вход: у Ozon код из СМС, у Wildberries уведомление в приложении. Если антибот не пускает, статус "
          "«Заблокировано антиботом»: это не «сессия слетела». Отмена заказа, если кнопка есть на странице, "
@@ -112,7 +115,11 @@ PROMPT = (
     "так и скажи, не выдумывай заказы. Если кабинет не открылся или сессия не активна — так и скажи "
     "и направь в Настройки → Маркетплейсы. Если ответ «заблокировано антиботом» — так и скажи, "
     "это не слетевшая сессия. Не советуй выключать VPN: это текст страницы магазина, не наш шаг. "
-    "Новый вход — в Настройки → Маркетплейсы: у Ozon код из СМС, "
+    "Если WB подключён через ПК, покупки и доставки читаются на этом ПК, без серверного прокси. "
+    "Если ПК не на связи — попроси открыть Chrome с расширением Джарвиса. "
+    "Повторный вход для ПК выполняется в Chrome на Windows. Прототип ПК читает только покупки и доставки; "
+    "truncated:true означает неполный список, не называй его всей историей покупок. "
+    "Новый вход для серверного подключения — в Настройки → Маркетплейсы: у Ozon код из СМС, "
     "у Wildberries код в приложении (уведомление или колокольчик). "
     "Телефон в профиле уже замаскирован, не восстанавливай его.\n\n"
 )
@@ -899,6 +906,7 @@ def public_status() -> dict:
         "shops": shops,
         "journal": journal,
         "manual": {"open": manual_is_open(), "shop": manual_shop()},
+        "pc": market_pc.public_status(),
     }
 
 
@@ -1679,6 +1687,10 @@ def _read(shop, section, order_id, state) -> dict:
         return {"error": "Нужен номер заказа."}
     if order_id and not _ORDER_RE.fullmatch(order_id):
         return {"error": "Некорректный номер заказа."}
+    if sid == "wb" and market_pc.enabled():
+        if order_id:
+            return {"ok": False, "error": "На ПК пока доступен общий список покупок и доставок WB без выбора заказа."}
+        return market_pc.request(section)
     blocked = _require_session(sid)
     if blocked:
         return blocked
@@ -2376,6 +2388,8 @@ def _cancel(shop, order_id, confirmed, state) -> dict:
         return {"error": "Неизвестный магазин: укажите ozon или wb."}
     if not _ORDER_RE.fullmatch(order_id or ""):
         return {"error": "Некорректный номер заказа."}
+    if sid == "wb" and market_pc.enabled():
+        return {"ok": False, "error": "Подключение WB через ПК пока работает только на чтение. Отмените заказ вручную в Chrome."}
     if not confirmed:
         return {
             "needs_confirmation": True,

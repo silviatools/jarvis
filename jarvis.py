@@ -41,6 +41,7 @@ from urllib.parse import parse_qs, quote, urljoin
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 import tablet_stt
+import market_pc
 from foods_data import FOODS, FOOD_CATEGORIES
 from off_products_data import OFF_PRODUCTS
 
@@ -1183,7 +1184,7 @@ def build_backup_zip() -> bytes:
             zf.write(path, arcname=arcname)
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
-                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json",
+                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json",
                       "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl",
                       "jarvis_newspaper_cache.json", "jarvis_newspaper_state.json", "jarvis_newspaper_latest.html",
                       "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png"}
@@ -1196,6 +1197,10 @@ def build_backup_zip() -> bytes:
                 add_file(p, f"code/{p.name}")
 
         # 2. Core data files
+        # The Windows extension is part of the restoreable application code.
+        for p in sorted((DIR / "windows" / "wb-extension").glob("*")):
+            if p.is_file():
+                add_file(p, f"code/windows/wb-extension/{p.name}")
         for fname in data_names:
             fp = DATA_DIR / fname
             if fp.exists():
@@ -10806,6 +10811,15 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {"skills": assistant_skills_catalog()})
         elif route == "/api/market/status":
             self._json(200, market_skill.public_status() if market_skill else {"ok": False, "error": "Кабинеты маркетплейсов на сервере недоступны."})
+        elif route == "/api/market/pc/download":
+            blob = market_pc.extension_zip()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", 'attachment; filename="jarvis-wb-windows.zip"')
+            self.send_header("Content-Length", str(len(blob)))
+            self.send_header("Cache-Control", "private, no-store")
+            self.end_headers()
+            self.wfile.write(blob)
         elif route == "/api/market/manual/frame":
             blob = b""
             if market_skill:
@@ -10916,6 +10930,9 @@ class JarvisHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         route = self.path.split("?", 1)[0].rstrip("/") or "/"
+        if route in market_pc.DEVICE_ROUTES:
+            self._market_pc_device_post(route)
+            return
         if route == "/login":
             self._handle_login_post()
             return
@@ -12588,6 +12605,28 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         except Exception as e:
             self._json(200, {"ok": False, "error": webpush.redact(str(e))})
 
+    def _market_pc_device_post(self, route: str):
+        """Only these two endpoints accept the restricted WB device key."""
+        length = self._content_length()
+        if length is None or length < 0 or length > 96 * 1024:
+            self._json(413, {"ok": False, "error": "invalid body size"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, UnicodeError):
+            self._json(400, {"ok": False, "error": "invalid JSON"})
+            return
+        auth = self.headers.get("Authorization") or ""
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        status, result = market_pc.device_call(route, token, payload)
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        body = json.dumps(result).encode()
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _market_post(self, route: str):
         """Прокси, вход в кабинеты Ozon/WB и вызов их инструментов голосовым ассистентом."""
         if market_skill is None:
@@ -12605,7 +12644,17 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         if not isinstance(payload, dict):
             payload = {}
         try:
-            if route == "/api/market/proxy":
+            if route == "/api/market/pc/pair":
+                self._json(200, market_pc.pair())
+            elif route == "/api/market/pc/disconnect":
+                self._json(200, market_pc.disconnect())
+            elif route == "/api/market/pc/check":
+                state = (load_app_data() or {}).get("telegramSkills")
+                if not market_skill.skill_on(state):
+                    self._json(200, {"ok": False, "error": "Навык «Маркетплейсы» выключен."})
+                else:
+                    self._json(200, market_pc.request(payload.get("section") or "status"))
+            elif route == "/api/market/proxy":
                 self._json(200, market_skill.save_proxy(payload.get("proxy") or ""))
             elif route == "/api/market/proxy/check":
                 self._json(200, market_skill.check_ip())
