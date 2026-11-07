@@ -215,7 +215,7 @@ def _clean_result(section, raw):
             path, value = extra.get("path"), extra.get("value")
             if (not isinstance(path, str) or not isinstance(value, str) or len(path) > 180
                     or not re.fullmatch(r"(?:order|item|delivery|office|product|status|page)(?:\.[A-Za-z0-9_*]+)+", path)
-                    or re.search(r"token|password|secret|cookie|authorization|(?:^|\.)(?:sign|signature|tracker_key|trackerkey|session_id|sessionid|shard_key|user_id|client_id|phone|email|card_number|bank_account)(?:\.|$)", path, re.I)):
+                    or re.search(r"token|password|secret|cookie|authorization|(?:^|\.)(?:sign|signature|payload|link_3_ds|tracker_key|trackerkey|session_id|sessionid|shard_key|user_id|client_id|phone|email|card_number|bank_account)(?:\.|$)", path, re.I)):
                 continue
             row["extra_fields"].append({"path": path, "value": market_skill.mask_phones(market_skill.scrub_secrets(value))[:600]})
         if row.get("id") and (row.get("name") or row.get("status")):

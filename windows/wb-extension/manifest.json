@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Джарвис — WB на моём ПК",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "minimum_chrome_version": "120",
   "description": "Чтение покупок и доставок WB для вашего Джарвиса. Вход остаётся в Chrome.",
   "permissions": ["storage", "alarms", "scripting"],

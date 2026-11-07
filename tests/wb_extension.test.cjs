@@ -169,7 +169,7 @@ test('EB order/item mapping enriches the right article, price, variant and picku
   const snapshots = await deliverySequence(new Map([
     [supplementalUrl, { data: [{ id: order, order_dt: 1794081600, dst_office_id: 12,
       deliveries: [{ id: 'dest', full_address: 'Адрес доставки' }],
-      rids: [{ nm_id: 111111, chrt_id: 55, delivery_id: 'dest', quantity: 1, priceU: 199900, token: 'PRIVATE-TOKEN' },
+      rids: [{ nm_id: 111111, name: 'Storage Organizers', chrt_id: 55, delivery_id: 'dest', quantity: 1, priceU: 199900, token: 'PRIVATE-TOKEN' },
         { nm_id: 222222, delivery_id: 'dest', quantity: 2 }] }] }],
     [primaryUrl, { value: { positions: [], notFound: [one, two, unknown], broken: false } }],
     [trackerUrl, [[{ rid: one, status_name: 'В пути', date: '1731000000000' }],
@@ -183,6 +183,7 @@ test('EB order/item mapping enriches the right article, price, variant and picku
   const first = rows.find(row => row.id === one), second = rows.find(row => row.id === two);
   assert.equal(first.article, '111111');
   assert.equal(first.name, 'Первый товар');
+  assert.equal(first.details.item.name, 'Storage Organizers', 'retain the order label separately from the actual product title');
   assert.equal(first.brand, 'Бренд');
   assert.equal(first.size, 'M');
   assert.equal(first.price.replace(/\s/g, ''), '1999₽', 'catalogue price must not replace order price');
@@ -203,12 +204,14 @@ test('field catalogue covers observed scalar fields and safely selects requested
   const helper = context.window.JarvisWbFields;
   const details = helper.sanitize({ item: { nm_id: 111111, token: 'SECRET', pay_state: 7 },
     office: { workTime: '09:00–21:00', address: 'Адрес', cookie: 'COOKIE' },
-    product: { name: 'Товар', sizes: [{ name: 'M', price: 1234 }, { name: 'L', price: 1500 }] } });
+    product: { name: 'Товар', sizes: [{ name: 'M', price: 1234, payload: 'OPAQUE-SIGNED-DATA' }, { name: 'L', price: 1500 }] } });
   const fields = helper.inventory([details]);
   assert.ok(fields.some(field => field.path === 'product.sizes.*.price' && field.types.includes('number')));
   assert.ok(fields.some(field => field.path === 'office.workTime' && field.examples[0] === '09:00–21:00'));
   assert.equal(JSON.stringify(fields).includes('SECRET'), false);
   assert.equal(fields.some(field => /token|cookie/.test(field.path)), false);
+  assert.equal(fields.some(field => /payload/.test(field.path)), false);
+  assert.equal(helper.allowedPath('product.sizes.*.payload'), false);
   const chosen = helper.select(details, ['office.workTime', 'product.sizes.*.name', 'item.token']);
   assert.equal(chosen.length, 2);
   assert.equal(chosen[0].value, '09:00–21:00');

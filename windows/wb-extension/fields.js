@@ -24,9 +24,11 @@ function render() {
 }
 async function load() {
   const data = await chrome.storage.local.get(['fieldCatalog', 'fieldCatalogAt', 'selectedFields']);
-  catalog = Array.isArray(data.fieldCatalog) ? data.fieldCatalog : [];
+  catalog = Array.isArray(data.fieldCatalog) ? data.fieldCatalog.filter(field =>
+    !window.JarvisWbFields || window.JarvisWbFields.allowedPath(field.path)) : [];
   receivedAt = data.fieldCatalogAt || 0;
-  selected = new Set(Array.isArray(data.selectedFields) ? data.selectedFields : []);
+  selected = new Set((Array.isArray(data.selectedFields) ? data.selectedFields : []).filter(path =>
+    !window.JarvisWbFields || window.JarvisWbFields.allowedPath(path)));
   render();
 }
 byId('search').addEventListener('input', render);

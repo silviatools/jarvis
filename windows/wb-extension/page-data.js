@@ -18,23 +18,32 @@
     }
     return [...new Set(result)].slice(0, 12);
   }
+  function safeImageUrl(candidate) {
+    if (!candidate) return '';
+    try {
+      const u = new URL(candidate, location.href);
+      if (u.protocol === 'https:' && ['wildberries.ru', 'wb.ru', 'wbbasket.ru', 'wbstatic.net', 'wbcontent.net']
+        .some(domain => u.hostname === domain || u.hostname.endsWith('.' + domain))) return u.origin + u.pathname;
+    } catch (_) { /* not a product image URL */ }
+    return '';
+  }
   function safeImage(image) {
     if (!image) return '';
     const candidates = [image.currentSrc, image.getAttribute('data-src'), image.getAttribute('src'),
       (image.getAttribute('data-srcset') || image.getAttribute('srcset') || '').split(',')[0]?.trim().split(/\s+/)[0]];
     for (const candidate of candidates) {
       if (!candidate) continue;
-      try {
-        const u = new URL(candidate, location.href);
-        if (u.protocol === 'https:' && ['wildberries.ru', 'wb.ru', 'wbbasket.ru', 'wbstatic.net', 'wbcontent.net']
-          .some(domain => u.hostname === domain || u.hostname.endsWith('.' + domain))) return u.origin + u.pathname;
-      } catch (_) { /* try another lazy image attribute */ }
+      const url = safeImageUrl(candidate);
+      if (url) return url;
     }
     return '';
   }
-  function read(activeIds = []) {
+  function read(activeIds = [], knownArticles = []) {
     const active = new Set(activeIds);
     const products = new Map();
+    const images = [...document.querySelectorAll('img')].slice(0, 2000);
+    const imageResources = typeof performance !== 'undefined' ? performance.getEntriesByType('resource')
+      .filter(entry => entry.initiatorType === 'img').slice(-2000) : [];
     const multipleArticles = new WeakMap();
     let candidates = 0, excluded = 0;
     for (const link of document.querySelectorAll('a[href*="/catalog/"]')) {
@@ -87,12 +96,34 @@
       products.set(article, previous);
       if (products.size >= 80) break;
     }
+    // WB can render an image beside (rather than inside) its product link.
+    // Only a loaded URL containing the exact article/images path may bind it.
+    for (const article of new Set([...products.keys(), ...knownArticles.filter(value => /^\d{4,15}$/.test(value))])) {
+      let product = products.get(article);
+      if (product?.image_url) continue;
+      const matches = url => url && new URL(url).pathname.includes('/' + article + '/images/');
+      let imageUrl = images.map(safeImage).find(matches) || '';
+      if (!imageUrl) imageUrl = imageResources.map(entry => safeImageUrl(entry.name)).find(matches) || '';
+      if (!imageUrl) continue;
+      if (!product) product = { article, name: '', image_url: '', rids: [], scope: 'delivery_section' };
+      product.image_url = imageUrl;
+      products.set(article, product);
+    }
     const labels = moneyLabels(document.body?.innerText || '');
+    const paymentCaptions = new Set();
+    for (const node of document.querySelectorAll('button,[role="button"],[class*="pay"],[class*="payment"],[data-testid*="pay"]')) {
+      const caption = normalize(node.innerText);
+      if (caption.length > 2 && caption.length <= 180 && /оплат|при получении/i.test(caption)) paymentCaptions.add(caption);
+      if (paymentCaptions.size >= 12) break;
+    }
     return { products: [...products.values()].map(({ name_quality, ...product }) => product), amount_due_labels: labels,
+      payment_captions: [...paymentCaptions],
       diagnostic: { catalogLinks: candidates, excludedRecommendations: excluded, pageProducts: products.size,
         deliverySectionProducts: [...products.values()].filter(product => product.scope === 'delivery_section').length,
         productsBoundByRid: [...products.values()].filter(product => product.rids.length).length,
-        paymentLabels: labels.length } };
+        paymentLabels: labels.length, paymentCaptions: paymentCaptions.size,
+        imageElements: images.length, loadedImageResources: imageResources.length,
+        productsWithImage: [...products.values()].filter(product => product.image_url).length } };
   }
   window.JarvisWbPage = { read, moneyLabels };
 })();

@@ -63,7 +63,7 @@ function readPage(key, selectedFields = []) {
     let extraBudget = 12000;
     let detailsTruncated = false;
     const detailsList = [];
-    const pageData = window.JarvisWbPage?.read(found.rows.map(row => row.id))
+    const pageData = window.JarvisWbPage?.read(found.rows.map(row => row.id), found.rows.map(row => row.article).filter(Boolean))
       || { products: [], amount_due_labels: [], diagnostic: { readerMissing: true } };
     diagnostic.page = pageData.diagnostic;
     const rows = found.rows.map(source => {
@@ -98,7 +98,7 @@ function readPage(key, selectedFields = []) {
       const paymentLabels = pageData.amount_due_labels;
       details.page = { article: row.article || null, name: row.name || null,
         image_url: imageUrl || null, binding: row.article ? 'matched_article_or_rid' : 'status_only',
-        amount_due_labels: [...new Set(paymentLabels)] }; // page labels, not per-item or a computed total
+        amount_due_labels: [...new Set(paymentLabels)], payment_captions: pageData.payment_captions || [] }; // page labels, not per-item or a computed total
       if (imageUrl) row.image_url = imageUrl;
       const safeDetails = helper ? helper.sanitize(details) : {};
       detailsList.push(safeDetails);
@@ -115,7 +115,8 @@ function readPage(key, selectedFields = []) {
     const unmatchedProducts = pageData.products.filter(product => !boundArticles.has(product.article));
     for (const product of unmatchedProducts) detailsList.push({ page: { article: product.article,
       name: product.name || null, image_url: product.image_url || null, binding: 'unmatched_page_product',
-      scope: product.scope, amount_due_labels: pageData.amount_due_labels } });
+      scope: product.scope, amount_due_labels: pageData.amount_due_labels,
+      payment_captions: pageData.payment_captions || [] } });
     if (typeof state.unmatchedItemDetails === 'function') detailsList.push(...state.unmatchedItemDetails());
     diagnostic.rowsWithName = rows.filter(row => row.name).length;
     diagnostic.rowsWithArticle = rows.filter(row => row.article).length;

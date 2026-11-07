@@ -1,6 +1,6 @@
 // Shared, local-only catalogue helpers. No network, credentials or HTML output.
 (() => {
-  const blocked = /^(?:.*token.*|.*password.*|.*secret.*|authorization|cookie|cookies|sign|signature|tracker_key|trackerkey|session_id|sessionid|shard_key|shardkey|user_shard_id|encrypted_user_id|user_id|client_id|phone|email|contact|card_number|bank_account)$/i;
+  const blocked = /^(?:.*token.*|.*password.*|.*secret.*|authorization|cookie|cookies|sign|signature|payload|link_3_ds|tracker_key|trackerkey|session_id|sessionid|shard_key|shardkey|user_shard_id|encrypted_user_id|user_id|client_id|phone|email|contact|card_number|bank_account)$/i;
   function sanitize(node, depth = 0, budget = { left: 1200 }) {
     if (--budget.left < 0 || depth > 8) return '[ограничено]';
     if (node === null || typeof node === 'boolean') return node;
@@ -57,5 +57,6 @@
     }
     return out;
   }
-  window.JarvisWbFields = { sanitize, inventory, select };
+  const allowedPath = path => typeof path === 'string' && path.split('.').every(key => !blocked.test(key));
+  window.JarvisWbFields = { sanitize, inventory, select, allowedPath };
 })();

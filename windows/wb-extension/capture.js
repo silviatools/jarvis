@@ -4,7 +4,7 @@
 (() => {
   if (window.__jarvisWbRead) return;
   const state = window.__jarvisWbRead = { orders: null, delivery: null,
-    debug: { version: '0.2.1', fetchSeen: 0, xhrSeen: 0, events: [] } };
+    debug: { version: '0.2.2', fetchSeen: 0, xhrSeen: 0, events: [] } };
   const fieldsHelper = window.JarvisWbFields;
   // Current WB deliveries arrive from three sources. Retain normalized fields
   // only and join status histories to the explicitly active rids.
@@ -192,7 +192,9 @@
       if (latest) { row.status = latest.status; row.details.status = latest.details; }
       const product = delivery.products.get(row.article);
       if (product) {
-        if (!row.name) row.name = product.name;
+        // The order may carry an English customs/category label. Keep it in
+        // details.item.name, but present the exact article's storefront title.
+        row.name = product.name;
         if (!row.brand) row.brand = product.brand;
         row.details.product = product.details;
         const chrt = row.details.item?.chrt_id ?? row.details.item?.chrtId;

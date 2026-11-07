@@ -77,6 +77,23 @@ class PageReadTest(unittest.TestCase):
         result = self.read('<p>К оплате 1500</p><span>2 товара</span>', [{'id': 'rid', 'status': 'В пути'}])
         self.assertEqual(result['page_amount_due_labels'], ['К оплате 1500'])
 
+    def test_product_image_outside_link_binds_by_article_in_loaded_path(self):
+        result = self.read('''<div class="delivery-card">
+            <img src="data:image/gif;base64,AA==" data-src="https://basket-01.wbbasket.ru/vol12/part123/123456/images/c246x328/1.webp?token=strip">
+            <a href="/catalog/123456/detail.aspx" title="Товар">Товар</a>
+            <img src="data:image/gif;base64,AA==" data-src="https://basket-01.wbbasket.ru/vol12/part123/654321/images/1.webp">
+            </div>''', [{'id': 'rid', 'article': '123456', 'name': 'Товар', 'status': 'В пути'}])
+        self.assertEqual(result['rows'][0]['image_url'], 'https://basket-01.wbbasket.ru/vol12/part123/123456/images/c246x328/1.webp')
+        field = next(field for field in result['fieldCatalog'] if field['path'] == 'page.image_url')
+        self.assertNotIn('token', field['examples'][0])
+
+    def test_payment_captions_do_not_fabricate_an_amount_due(self):
+        result = self.read('<button>Оплата при получении</button>', [{'id': 'rid', 'status': 'В пути'}])
+        self.assertEqual(result['page_amount_due_labels'], [])
+        self.assertNotIn('payable', result['rows'][0])
+        field = next(field for field in result['fieldCatalog'] if field['path'] == 'page.payment_captions.*')
+        self.assertEqual(field['examples'], ['Оплата при получении'])
+
     def test_existing_article_joins_page_without_rid_and_rejects_foreign_links(self):
         result = self.read('''<a href="https://evil.example/catalog/123456/detail.aspx" title="Чужой">Чужой</a>
             <div class="delivery-card"><a href="/catalog/123456/detail.aspx" title="Правильный товар">Товар</a></div>''',
