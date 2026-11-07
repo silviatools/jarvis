@@ -4,7 +4,7 @@
 (() => {
   if (window.__jarvisWbRead) return;
   const state = window.__jarvisWbRead = { orders: null, delivery: null,
-    debug: { version: '0.2.0', fetchSeen: 0, xhrSeen: 0, events: [] } };
+    debug: { version: '0.2.1', fetchSeen: 0, xhrSeen: 0, events: [] } };
   const fieldsHelper = window.JarvisWbFields;
   // Current WB deliveries arrive from three sources. Retain normalized fields
   // only and join status histories to the explicitly active rids.
@@ -124,7 +124,7 @@
   }
   function bindDeliveryItems() {
     for (const item of delivery.items) {
-      const ids = item.id ? [item.id] : [...delivery.active].filter(id => {
+      const ids = item.id && delivery.active.has(item.id) ? [item.id] : [...delivery.active].filter(id => {
         // Match an EXISTING active EB rid to this exact order and item index.
         // Never create a guessed rid or match goods by list position alone.
         const match = /^eb\d+\.i([a-f0-9]{32})\.(\d+)\.(\d+)$/i.exec(id);
@@ -133,6 +133,11 @@
       for (const id of ids) addDeliveryRow({ id, ...item.fields }, false);
     }
   }
+  state.unmatchedItemDetails = () => delivery.items.filter(item => ![...delivery.active].some(id => {
+    if (item.id === id) return true;
+    const match = /^eb\d+\.i([a-f0-9]{32})\.(\d+)\.(\d+)$/i.exec(id);
+    return match && match[1].toLowerCase() === item.orderKey && Number(match[2]) === item.index;
+  })).slice(0, 40).map(item => ({ ...item.fields.details, page: { binding: 'unmatched_api_item' } }));
   function productResponse(raw) {
     try {
       const u = new URL(raw, location.href);
@@ -214,6 +219,8 @@
       statusIds: delivery.statuses.size, unresolvedIds: missing,
       rowsWithArticle: rows.filter(row => row.article).length, rowsWithName: rows.filter(row => row.name).length,
       productsObserved: delivery.products.size };
+    state.debug.deliveryJoin.supplementalItems = delivery.items.length;
+    state.debug.deliveryJoin.validOrderKeys = delivery.items.filter(item => /^[a-f0-9]{32}$/.test(item.orderKey)).length;
     state.delivery = null;
     if (rows.length && !missing && delivery.primarySeen && delivery.supplementalSeen) {
       state.delivery = { rows, empty: false, at: Date.now(), truncated: delivery.active.size > 40 };
@@ -255,7 +262,8 @@
           if (!item || typeof item !== 'object') continue;
           const flat = flatten(item);
           const id = pick(flat, ['rid', 'srid', 'id'], 80);
-          const orderKey = String(order.id || '').replace(/-/g, '').toLowerCase();
+          const keys = String(order.id || '').replace(/-/g, '').toLowerCase().match(/[a-f0-9]{32}/g) || [];
+          const orderKey = keys.length === 1 ? keys[0] : '';
           delivery.items.push({ id, orderKey, index, fields: describeItem(order, item) });
         }
       }

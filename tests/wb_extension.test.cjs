@@ -134,6 +134,19 @@ test('join supports different response order and id fields inside rids', async (
   assert.equal(snapshots[2].delivery.rows[0].status, 'В пути');
 });
 
+test('an unrelated item id does not block verified EB order/index matching', async () => {
+  const order = 'a'.repeat(32), rid = `eb6.i${order}.0.0`;
+  const snapshots = await deliverySequence(new Map([
+    [primaryUrl, { value: { positions: [], notFound: [rid], broken: false } }],
+    [supplementalUrl, { data: [{ id: 'order:' + order, rids: [{ id: 999, nm_id: 123456, name: 'Товар' }] }] }],
+    [trackerUrl, [[{ rid, status_name: 'В пути', date: '1731000000000' }]]]
+  ]));
+  const row = snapshots.at(-1).delivery.rows[0];
+  assert.equal(row.id, rid);
+  assert.equal(row.article, '123456');
+  assert.equal(row.name, 'Товар');
+});
+
 test('current empty lists require both sources and never use tracker history as active orders', async () => {
   const snapshots = await deliverySequence(new Map([
     [trackerUrl, [[{ rid: 'old', status_name: 'Получен', date: '1731000000000' }]]],
@@ -225,6 +238,7 @@ test('cabinet shell never becomes no orders; login and browser check remain erro
 
 test('worker polls, reads only its WB tab, uploads result and retries failed upload', async () => {
   const noop = () => {};
+  let messageListener;
   const values = { server: 'https://jarvis.example', token: 'wbpc_test', enabled: true };
   const requests = [], navigations = [];
   let jobs = [{ id: 'j1', section: 'delivery' }], failUpload = true;
@@ -247,7 +261,7 @@ test('worker polls, reads only its WB tab, uploads result and retries failed upl
       tabs: { create: async options => { navigations.push(options); return { id: 7 }; },
         reload: async () => {}, get: async () => ({ id: 7, url: result.url, status: 'loading' }) },
       scripting: { executeScript: async () => [{ result }] },
-      runtime: { getManifest: () => ({ version: '0.1.1' }), onInstalled: { addListener: noop }, onStartup: { addListener: noop }, onMessage: { addListener: noop } },
+      runtime: { id: 'test-extension', getManifest: () => ({ version: '0.2.1' }), onInstalled: { addListener: noop }, onStartup: { addListener: noop }, onMessage: { addListener: listener => { messageListener = listener; } } },
       alarms: { onAlarm: { addListener: noop } }
     } });
   vm.runInContext(backgroundCode, context);
@@ -278,4 +292,11 @@ test('worker polls, reads only its WB tab, uploads result and retries failed upl
   const rejected = await vm.runInContext('readWb("https://evil.test/")', context);
   assert.equal(rejected.ok, false);
   assert.equal(navigations.length, 1);
+  let acknowledgement;
+  const keepPort = messageListener({ type: 'diagnose' }, { id: 'test-extension' }, reply => { acknowledgement = reply; });
+  assert.equal(keepPort, false);
+  assert.equal(acknowledgement.started, true, 'acknowledge before opening a tab closes the popup');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(navigations.at(-1).active, true, 'manual page check can load lazy content in foreground');
+  assert.equal(values.readLogs.at(-1).trigger, 'manual', 'result saved independently of popup lifetime');
 });

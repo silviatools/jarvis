@@ -63,11 +63,23 @@ function readPage(key, selectedFields = []) {
     let extraBudget = 12000;
     let detailsTruncated = false;
     const detailsList = [];
+    const pageData = window.JarvisWbPage?.read(found.rows.map(row => row.id))
+      || { products: [], amount_due_labels: [], diagnostic: { readerMissing: true } };
+    diagnostic.page = pageData.diagnostic;
     const rows = found.rows.map(source => {
       const { details: originalDetails, office_id, ...row } = source;
       const details = { ...(originalDetails || {}) };
       let imageUrl = '';
-      if (row.article) {
+      if (!row.article) {
+        const linked = pageData.products.filter(product => product.rids.includes(row.id));
+        if (linked.length === 1) row.article = linked[0].article;
+      }
+      const pageProduct = pageData.products.find(product => product.article === row.article);
+      if (pageProduct) {
+        if (!row.name) row.name = pageProduct.name;
+        imageUrl = pageProduct.image_url;
+      }
+      if (row.article && !window.JarvisWbPage) {
         // Only a link to this position's known article may supply its title.
         for (const link of document.querySelectorAll('a[href*="/catalog/"]')) {
           let article;
@@ -83,10 +95,11 @@ function readPage(key, selectedFields = []) {
           if (row.name) break;
         }
       }
-      const paymentLabels = [...(document.body?.innerText || '').matchAll(/(?:к оплате|осталось оплатить)\s*:?\s*([\d \u00a0\u202f]+(?:[.,]\d{1,2})?\s*(?:₽|руб\.?))/gi)]
-        .map(match => match[1].trim()).slice(0, 10);
+      const paymentLabels = pageData.amount_due_labels;
       details.page = { article: row.article || null, name: row.name || null,
-        image_url: imageUrl || null, amount_due_labels: [...new Set(paymentLabels)] }; // page labels, not per-item or a computed total
+        image_url: imageUrl || null, binding: row.article ? 'matched_article_or_rid' : 'status_only',
+        amount_due_labels: [...new Set(paymentLabels)] }; // page labels, not per-item or a computed total
+      if (imageUrl) row.image_url = imageUrl;
       const safeDetails = helper ? helper.sanitize(details) : {};
       detailsList.push(safeDetails);
       const extras = helper ? helper.select(safeDetails, selectedFields) : [];
@@ -98,17 +111,26 @@ function readPage(key, selectedFields = []) {
       }
       return row;
     });
+    const boundArticles = new Set(rows.map(row => row.article).filter(Boolean));
+    const unmatchedProducts = pageData.products.filter(product => !boundArticles.has(product.article));
+    for (const product of unmatchedProducts) detailsList.push({ page: { article: product.article,
+      name: product.name || null, image_url: product.image_url || null, binding: 'unmatched_page_product',
+      scope: product.scope, amount_due_labels: pageData.amount_due_labels } });
+    if (typeof state.unmatchedItemDetails === 'function') detailsList.push(...state.unmatchedItemDetails());
     diagnostic.rowsWithName = rows.filter(row => row.name).length;
     diagnostic.rowsWithArticle = rows.filter(row => row.article).length;
     return { ok: true, cabinet: true, url: location.origin + location.pathname,
       rows, empty: found.empty, truncated: found.truncated, details_truncated: detailsTruncated,
       fieldCatalog: helper ? helper.inventory(detailsList) : [],
+      page_products: unmatchedProducts.filter(product => product.scope === 'delivery_section').slice(0, 40)
+        .map(({ article, name, image_url }) => ({ article, name, image_url })),
+      page_amount_due_labels: pageData.amount_due_labels,
       diagnostic: { ...diagnostic, stage: 'list_read' } };
   }
   return { ok: false, code: 'unreadable', diagnostic: { ...diagnostic, stage: state ? 'waiting_for_list' : 'capture_missing' } };
 }
 
-async function readWb(section) {
+async function readWb(section, foreground = false) {
   if (!Object.prototype.hasOwnProperty.call(URLS, section)) return { ok: false, code: 'browser' };
   let tabId;
   let stage = 'open_tab';
@@ -128,9 +150,9 @@ async function readWb(section) {
         if (old.url?.startsWith('https://www.wildberries.ru/lk/myorders/')) tabId = old.id;
       } catch (_) { /* closed by the user */ }
     }
-    if (tabId !== undefined) await chrome.tabs.update(tabId, { url: URLS[section] });
+    if (tabId !== undefined) await chrome.tabs.update(tabId, { url: URLS[section], ...(foreground ? { active: true } : {}) });
     else {
-      const tab = await chrome.tabs.create({ url: URLS[section], active: false });
+      const tab = await chrome.tabs.create({ url: URLS[section], active: foreground });
       tabId = tab.id;
       await chrome.storage.session.set({ wbTab: tabId });
     }
@@ -195,7 +217,7 @@ async function diagnose() {
   if (running) return { ok: false, error: 'Чтение WB уже идёт. Дождитесь результата.' };
   running = true;
   try {
-    const result = await readWb('delivery');
+    const result = await readWb('delivery', true);
     await recordRead(result, 'manual');
     return { ok: true };
   } finally { running = false; }
@@ -250,7 +272,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message?.type === 'diagnose') {
-    diagnose().then(sendResponse).catch(() => sendResponse({ ok: false, error: 'Не удалось записать диагностику.' }));
-    return true;
+    if (running) {
+      sendResponse({ ok: false, error: 'Чтение WB уже идёт. Дождитесь результата.' });
+      return false;
+    }
+    // Activating the WB tab closes the toolbar popup. Acknowledge now; the
+    // check writes its result to storage without depending on that popup port.
+    diagnose().catch(() => chrome.storage.local.set({ error: 'Не удалось записать диагностику.' }));
+    sendResponse({ ok: true, started: true });
+    return false;
   }
 });

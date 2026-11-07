@@ -118,7 +118,7 @@ class PcTest(unittest.TestCase):
 
     def test_download_archive(self):
         with zipfile.ZipFile(io.BytesIO(pc.extension_zip())) as archive:
-            self.assertEqual(len(archive.namelist()), 9)
+            self.assertEqual(len(archive.namelist()), 10)
             manifest = json.loads(archive.read('manifest.json'))
             self.assertNotIn('cookies', manifest['permissions'])
             self.assertNotIn(self.token.encode(), archive.read('background.js'))
@@ -139,6 +139,23 @@ class PcTest(unittest.TestCase):
         self.assertIn('https://www.wildberries.ru/catalog/123456/detail.aspx', result['text'])
         self.assertNotIn('SECRET', json.dumps(result))
         self.assertNotIn('evil.example', json.dumps(result))
+
+    def test_unbound_page_products_and_payment_are_kept_separate_from_order_rows(self):
+        result = pc._clean_result('delivery', {
+            'ok': True, 'cabinet': True, 'url': 'https://www.wildberries.ru/lk/myorders/delivery',
+            'rows': [{'id': 'r-1', 'status': 'В пути'}],
+            'page_products': [{'article': '123456', 'name': 'Товар', 'image_url': 'https://basket-01.wbbasket.ru/photo.webp?token=hidden'},
+                              {'article': 'not-an-article', 'name': 'Skip'}],
+            'page_amount_due_labels': ['1 500 ₽']})
+        self.assertTrue(result['ok'])
+        self.assertNotIn('payable', result['rows'][0])
+        self.assertNotIn('article', result['rows'][0])
+        self.assertEqual(result['page_products'][0]['name'], 'Товар')
+        self.assertEqual(result['page_products'][0]['image_url'], 'https://basket-01.wbbasket.ru/photo.webp')
+        self.assertEqual(len(result['page_products']), 1)
+        self.assertIn('НЕ сопоставленные', result['text'])
+        self.assertEqual(result['page_amount_due_labels'], ['1 500 ₽'])
+        self.assertNotIn('hidden', json.dumps(result))
 
 
 class HttpTest(unittest.TestCase):

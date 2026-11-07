@@ -162,6 +162,17 @@ def _clean_result(section, raw):
     # Import lazily: market_skill routes reads here, and owns the existing
     # phone/secret redaction and the common order presentation.
     import market_skill
+    def image_url(value):
+        try:
+            u = urlparse(value if isinstance(value, str) else "")
+            host = (u.hostname or "").lower()
+            if u.scheme == "https" and not u.username and not u.password and any(
+                    host == domain or host.endswith("." + domain)
+                    for domain in ("wildberries.ru", "wb.ru", "wbbasket.ru", "wbstatic.net", "wbcontent.net")):
+                return ("https://" + u.netloc + u.path)[:600]
+        except ValueError:
+            pass
+        return ""
     if not isinstance(raw, dict):
         return _error("unreadable")
     if raw.get("ok") is not True:
@@ -193,6 +204,9 @@ def _clean_result(section, raw):
         if re.fullmatch(r"\d{4,15}", article):
             row["article"] = article
             row["product_url"] = f"https://www.wildberries.ru/catalog/{article}/detail.aspx"
+        photo = image_url(item.get("image_url"))
+        if photo:
+            row["image_url"] = photo
         extras = item.get("extra_fields")
         row["extra_fields"] = []
         for extra in (extras[:100] if isinstance(extras, list) else []):
@@ -211,8 +225,31 @@ def _clean_result(section, raw):
     text = "Кабинет WB на ПК открыт." if section == "status" else market_skill.format_wb_rows(rows)
     if not text:
         text = "Доставок нет." if section == "delivery" else "Покупок нет."
+    page_products = []
+    observed = raw.get("page_products")
+    for item in (observed[:40] if isinstance(observed, list) else []):
+        if not isinstance(item, dict) or not re.fullmatch(r"\d{4,15}", str(item.get("article") or "")):
+            continue
+        article = str(item["article"])
+        name = item.get("name") if isinstance(item.get("name"), str) else ""
+        product = {"article": article, "name": market_skill.mask_phones(market_skill.scrub_secrets(name))[:160],
+                   "product_url": f"https://www.wildberries.ru/catalog/{article}/detail.aspx"}
+        photo = image_url(item.get("image_url"))
+        if photo:
+            product["image_url"] = photo
+        page_products.append(product)
+    if page_products:
+        text += "\n\nТовары со страницы доставок, ещё НЕ сопоставленные со статусами (порядок не устанавливает связь):\n"
+        for product in page_products:
+            text += (product["name"] or "Товар") + " · артикул " + product["article"] + " · " + product["product_url"] + "\n"
+    labels = raw.get("page_amount_due_labels")
+    labels = [market_skill.mask_phones(market_skill.scrub_secrets(value))[:180]
+              for value in (labels[:12] if isinstance(labels, list) else []) if isinstance(value, str)]
+    if labels:
+        text += "\nПодписи об оплате на всей странице (не итог и не сумма для каждого товара): " + "; ".join(labels)
     return {"ok": True, "shop": "wb", "source": "pc", "section": section, "session": "active",
             "url": "https://www.wildberries.ru" + parsed.path, "rows": rows, "text": text[:12000],
+            "page_products": page_products, "page_amount_due_labels": labels,
             "truncated": raw.get("truncated") is True, "details_truncated": raw.get("details_truncated") is True}
 
 
@@ -220,6 +257,6 @@ def extension_zip():
     root = Path(__file__).parent / "windows" / "wb-extension"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as out:
-        for name in ("manifest.json", "background.js", "field-utils.js", "capture.js", "popup.html", "popup.js", "fields.html", "fields.js", "README.txt"):
+        for name in ("manifest.json", "background.js", "field-utils.js", "page-data.js", "capture.js", "popup.html", "popup.js", "fields.html", "fields.js", "README.txt"):
             out.write(root / name, name)
     return buf.getvalue()

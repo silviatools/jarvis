@@ -43,7 +43,9 @@ byId('diagnose').addEventListener('click', async () => {
   byId('diagnosticStatus').textContent = 'Читаю WB и записываю логи, до 30 секунд…';
   try {
     const reply = await chrome.runtime.sendMessage({ type: 'diagnose' });
-    byId('diagnosticStatus').textContent = reply?.ok ? 'Проверка записана. Нажмите «Скопировать логи».' : reply?.error || 'Фоновый обработчик не ответил. Закройте окно и обновите расширение круговой стрелкой в chrome://extensions.';
+    byId('diagnosticStatus').textContent = reply?.ok
+      ? (reply.started ? 'Проверка запущена. Подождите до 30 секунд и откройте расширение снова — результат сохранится.' : 'Проверка записана. Нажмите «Скопировать логи».')
+      : reply?.error || 'Фоновый обработчик не ответил. Закройте окно и обновите расширение круговой стрелкой в chrome://extensions.';
     await refresh();
   } catch (_) { byId('diagnosticStatus').textContent = 'Не удалось связаться с расширением. Перезагрузите его в chrome://extensions.'; }
   finally { byId('diagnose').disabled = false; }

@@ -9,5 +9,6 @@ body{font:15px system-ui,sans-serif;max-width:1250px;margin:32px auto;padding:0 
 <p id="summary"></p><input id="search" type="search" placeholder="Поиск: price, work, address, name, size…">
 <div><button id="refresh">Обновить список</button><button id="all">Выбрать показанные</button><button id="none">Снять показанные</button><button id="save">Сохранить выбор</button><button id="copy">Скопировать каталог</button></div>
 <p id="status" role="status"></p>
-<table><thead><tr><th>В ответ</th><th>Поле WB</th><th>Тип / позиции</th><th>Примеры полученных значений</th></tr></thead><tbody id="rows"></tbody></table>
+<p class="muted">page.binding показывает связь: matched_article_or_rid — товар сопоставлен; status_only — только статус; unmatched_page_product — отдельная карточка страницы; unmatched_api_item — данные API, ещё не связанные со статусом. Не сопоставляйте такие записи по порядку.</p>
+<table><thead><tr><th>В ответ</th><th>Поле WB</th><th>Тип / записи</th><th>Примеры полученных значений</th></tr></thead><tbody id="rows"></tbody></table>
 <script src="fields.js"></script></body></html>
