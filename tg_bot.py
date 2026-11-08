@@ -29,6 +29,7 @@ except ImportError:  # сервер без requests живёт, бот — не�
     requests = None
 
 import file_tools
+import tg_history
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path(__file__).parent)))
 STATE_FILE = DATA_DIR / "jarvis_tg_bot_state.json"
@@ -72,7 +73,12 @@ def api(token: str, method: str, payload: dict = None, files: dict = None, timeo
         raise TgApiError(f"{method}: {e}")
     if not j.get("ok"):
         raise TgApiError(j.get("description") or f"{method}: HTTP {r.status_code}")
-    return j.get("result")
+    result = j.get("result")
+    try:
+        tg_history.record_api_result(method, result)
+    except Exception as exc:
+        print(f"  bot history save: {type(exc).__name__}", flush=True)
+    return result
 
 
 # ── форматирование (HTML для Telegram) ───────────────────────────────────────
@@ -268,6 +274,10 @@ def send_text(token: str, chat_id, text: str, reply_markup: dict = None, reply_t
             payload.pop("parse_mode")
             res = api(token, "sendMessage", payload)
         ids.append(res["message_id"])
+        try:
+            tg_history.record(chat_id, res["message_id"], "assistant", strip_tags(chunk))
+        except Exception as exc:
+            print(f"  bot history save: {type(exc).__name__}", flush=True)
     return ids
 
 
@@ -956,10 +966,10 @@ PROMPT_SECTION = (
     "«[Переслано от …]». Просто работай с этим текстом (перескажи, ответь, выдели задачи). Если расшифровка не "
     "получилась — в сообщении будет пометка почему, перескажи её пользователю.\n"
     "• Название диалога («💬 Диалог: …») под каждым твоим ответом добавляется автоматически — сам его не пиши и не "
-    "упоминай, если не спрашивают. Новый диалог начинается после паузы или команды /new: контекст прошлого ты не видишь.\n"
+    "упоминай, если не спрашивают. Новый диалог начинается после паузы или команды /new.\n"
     "• Ответ любой длины показывается целиком (сам режется на несколько сообщений) — не сокращай ради лимита Telegram.\n"
     "• Контекст диалога сохраняется, пока переписка идёт без пауз дольше 10 минут; после — начинается с чистого листа "
-    "(пользователь может сбросить вручную командой /new).\n"
+    "(пользователь может начать новую тему вручную командой /new). Доступ к архиву определяется включёнными навыками.\n"
     "После инструментов финальный ответ — коротко, без дублирования отправленного.\n\n"
 )
 
@@ -975,14 +985,14 @@ _convo_guard = threading.Lock()
 
 def chat_lock(chat_id) -> threading.Lock:
     with _convo_guard:
-        return _convo_meta.setdefault(chat_id, {"ts": 0.0, "lock": threading.Lock()})["lock"]
+        return _convo_meta.setdefault(chat_id, {"ts": 0.0, "lock": threading.RLock()})["lock"]
 
 
 def history_for(chat_id) -> list:
     """История чата. Если пауза с последней активности дольше TTL — контекст
     сбрасывается. Вызывать под chat_lock(chat_id)."""
     with _convo_guard:
-        meta = _convo_meta.setdefault(chat_id, {"ts": 0.0, "lock": threading.Lock()})
+        meta = _convo_meta.setdefault(chat_id, {"ts": 0.0, "lock": threading.RLock()})
         hist = _convo.setdefault(chat_id, [])
         if hist and time.time() - meta["ts"] > context_ttl_seconds():
             hist.clear()
@@ -992,7 +1002,7 @@ def history_for(chat_id) -> list:
 
 def touch(chat_id):
     with _convo_guard:
-        _convo_meta.setdefault(chat_id, {"ts": 0.0, "lock": threading.Lock()})["ts"] = time.time()
+        _convo_meta.setdefault(chat_id, {"ts": 0.0, "lock": threading.RLock()})["ts"] = time.time()
 
 
 def reset(chat_id):
@@ -1025,7 +1035,13 @@ def current_dialog(chat_id):
 
 def start_dialog(chat_id, title: str):
     with _convo_guard:
-        _dialogs[chat_id] = {"title": title, "started": time.time(), "n": 1}
+        _dialogs[chat_id] = {"id": uuid.uuid4().hex, "title": title, "started": time.time(), "n": 1}
+
+
+def rename_dialog(chat_id, title):
+    with _convo_guard:
+        if chat_id in _dialogs:
+            _dialogs[chat_id]["title"] = title
 
 
 def bump_dialog(chat_id):
@@ -1069,7 +1085,7 @@ def dialog_footer(chat_id, is_new: bool) -> str:
     if prev:
         why = (f"пауза больше {int(context_ttl_seconds() // 60)} минут" if prev["reason"] == "pause"
                else "вы сбросили его командой /new")
-        out += f"\n<i>Прошлый диалог «{html.escape(prev['title'])}» закрыт ({why}) — его контекст я больше не вижу.</i>"
+        out += f"\n<i>Прошлый диалог «{html.escape(prev['title'])}» закрыт ({why}).</i>"
     return out
 
 
@@ -1110,8 +1126,20 @@ def seed_dialog(chat_id, title: str, user_text: str, assistant_text: str, resume
         with _convo_guard:
             hist = _convo.setdefault(chat_id, [])
             hist[:] = [{"role": "user", "content": user_text}, {"role": "assistant", "content": assistant_text}]
-            _convo_meta.setdefault(chat_id, {"ts": 0.0, "lock": threading.Lock()})["ts"] = time.time()
-            _dialogs[chat_id] = {"title": title, "started": time.time(), "n": 1, "resumed": resumed}
+            _convo_meta.setdefault(chat_id, {"ts": 0.0, "lock": threading.RLock()})["ts"] = time.time()
+            _dialogs[chat_id] = {"id": uuid.uuid4().hex, "title": title, "started": time.time(), "n": 1, "resumed": resumed}
+            _dialog_prev.pop(chat_id, None)
+
+
+def seed_history(chat_id, title, messages, dialog_id=""):
+    """Restore a bounded discussion while holding the same per-chat lock as a turn."""
+    with chat_lock(chat_id):
+        with _convo_guard:
+            _convo[chat_id] = list(messages)
+            trim(_convo[chat_id])
+            _convo_meta.setdefault(chat_id, {"ts": 0.0, "lock": threading.RLock()})["ts"] = time.time()
+            _dialogs[chat_id] = {"id": dialog_id or uuid.uuid4().hex, "title": title,
+                                "started": time.time(), "n": max(1, len(messages) // 2), "resumed": True}
             _dialog_prev.pop(chat_id, None)
 
 

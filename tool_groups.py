@@ -14,12 +14,13 @@ import re
 import threading
 import time
 
-ALWAYS = ("core", "plan")
+ALWAYS = ("core", "plan", "bot_history")
 
 # группа → (название, инструменты точными именами, префиксы имён)
 GROUPS = {
     "core": {"title": "Данные и записи", "names": ["get_data", "navigate", "create_record", "update_record", "delete_record", "tools_more"], "prefixes": []},
     "plan": {"title": "Напоминания и плановые задачи", "names": [], "prefixes": ["plan_"]},
+    "bot_history": {"title": "История нашего чата с ботом", "names": ["tg_bot_history"], "prefixes": []},
     "house": {"title": "Канбан «Задачи»", "names": [], "prefixes": ["kanban_"]},
     "food": {"title": "Питание и готовка", "names": ["log_diet_compliance", "log_checklist_answer"], "prefixes": ["cooking_plan_"]},
     "apple": {"title": "Apple Календарь и Напоминания", "names": [], "prefixes": ["calendar_", "reminders_"]},
@@ -43,6 +44,7 @@ GROUPS = {
 
 # Ключевые слова — основы слов (без окончаний), нижний регистр.
 KEYWORDS = {
+    "bot_history": r"истори|вспомни|помнишь|мы обсуждал|ты (?:писал|отвечал|говорил)|наш.{0,12}(?:чат|переписк|диалог)",
     "house": r"канбан|задач|доск|колонк|подзадач|в работу|сделать до",
     "food": r"диет|ккал|калор|готовк|продукт|порци|рацион|чеклист.{0,10}(питани|день)|завтрак|обед|ужин",
     "apple": r"календар|событи|встреч|напомин.{0,12}(apple|айфон|iphone)|в напоминани|reminders|на айфон|будильник|созвон",

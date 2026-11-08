@@ -1204,7 +1204,7 @@ def _filter(name):
 
 
 def read_history(peer, limit=30, date_from="", date_to="", offset_id=0, ids=None, thread_id=None,
-                 media_type="", from_user="") -> dict:
+                 media_type="", from_user="", before_timestamp=0) -> dict:
     limit = max(1, min(int(limit or 30), MAX_RESULTS))
     d_from, d_to = _parse_date(date_from), _parse_date(date_to, end=True)
     flt = _filter(media_type)
@@ -1220,6 +1220,8 @@ def read_history(peer, limit=30, date_from="", date_to="", offset_id=0, ids=None
         kw = {"limit": limit}
         if d_to:
             kw["offset_date"] = d_to
+        if before_timestamp:
+            kw["offset_date"] = datetime.fromtimestamp(float(before_timestamp), timezone.utc)
         if offset_id:
             kw["offset_id"] = int(offset_id)
         thread = await _topic_id(c, ent, thread_id) if thread_id else None

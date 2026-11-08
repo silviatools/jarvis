@@ -43,6 +43,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import tablet_stt
 import market_pc
 import wb_watch_skill
+import tg_history
 from foods_data import FOODS, FOOD_CATEGORIES
 from off_products_data import OFF_PRODUCTS
 
@@ -1106,6 +1107,9 @@ def load_app_data() -> dict:
         return {}
 
 
+tg_history.get_state = lambda: (load_app_data() or {}).get("telegramSkills")
+
+
 def save_app_data(app: dict):
     with APP_DATA_LOCK:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1145,6 +1149,7 @@ Jarvis — резервная копия проекта и данных
               jarvis_subscribers.json    — подписчики ТГ-бота
               jarvis_notify_config.json  — старый конфиг уведомлений
               jarvis_market.json         — прокси и сессии кабинетов Ozon/WB
+              jarvis_tg_history.sqlite3  — история переписки с ассистентом
               photos/                    — загруженные фото («Моё тело»)
               files/                     — загруженные файлы («Режим»)
 
@@ -1185,7 +1190,7 @@ def build_backup_zip() -> bytes:
             zf.write(path, arcname=arcname)
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
-                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_wb_pickup.json",
+                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_wb_pickup.json", "jarvis_tg_history.sqlite3",
                       "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl",
                       "jarvis_newspaper_cache.json", "jarvis_newspaper_state.json", "jarvis_newspaper_latest.html",
                       "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png"}
@@ -1194,7 +1199,7 @@ def build_backup_zip() -> bytes:
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
         #    skips data JSONs — when DATA_DIR == DIR they belong under data/ only)
         for p in sorted(DIR.iterdir()):
-            if p.is_file() and p.name not in data_names and p.name not in ("jarvis_tg_user.json", "jarvis_ai_turns.jsonl", "jarvis_tablet_tokens.json") and p.suffix != ".tmp":
+            if p.is_file() and p.name not in data_names and not p.name.startswith(tg_history.STORE_NAME + "-") and p.name not in ("jarvis_tg_user.json", "jarvis_ai_turns.jsonl", "jarvis_tablet_tokens.json") and p.suffix != ".tmp":
                 add_file(p, f"code/{p.name}")
 
         # 2. Core data files
@@ -1205,7 +1210,12 @@ def build_backup_zip() -> bytes:
         for fname in data_names:
             fp = DATA_DIR / fname
             if fp.exists():
-                add_file(fp, f"data/{fname}")
+                if fname == tg_history.STORE_NAME:
+                    blob = tg_history.backup_bytes()
+                    if blob is not None:
+                        zf.writestr(f"data/{fname}", blob)
+                else:
+                    add_file(fp, f"data/{fname}")
 
         # 3. User-uploaded content (body photos, mode training-program files)
         for sub in ("photos", "files"):
@@ -6064,6 +6074,7 @@ def _prompt_sections(app, with_tg: bool, groups) -> str:
     tg_any = ("tg_read", "tg_write", "tg_topics", "tg_org", "tg_danger")
     return (
         (deck_skill.prompt_section(st) if deck_skill and on("deck") else "")
+        + (tg_history.prompt_section(st) if on("bot_history") else "")
         + (study_skills.prompt_section(st) if study_skills and on("study") else "")
         + (market_skill.prompt_section(st) if market_skill and on("market") else "")
         + (tg_watch_skill.prompt_section(st) if tg_watch_skill and with_tg and on("tg_watch") else "")
@@ -6104,6 +6115,9 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
     inp = inp or {}
     if getattr(_plan_scope, "on", False) and "confirmed" in inp:
         inp = {k: v for k, v in inp.items() if k != "confirmed"}   # согласие не подделать: без пользователя его нет
+    if name in tg_history.TOOL_NAMES:
+        return tg_history.execute(inp, (app or {}).get("telegramSkills"), tg_bot.get_ctx() if tg_bot else None,
+                                  _bot_history_remote)
     if plan_skill and name in plan_skill.TOOL_NAMES:
         ctx = tg_bot.get_ctx() if tg_bot else None
         return plan_skill.execute(name, inp, (app or {}).get("telegramSkills"), getattr(ctx, "chat_id", None),
@@ -6724,11 +6738,132 @@ def _user_turn_content(provider: str, text: str, images: list):
             for i in images] + [{"type": "text", "text": text or "Что на фото?"}]
 
 
-def handle_assistant_message(token: str, chat_id, text: str, images: list = None, message_id: int = None):
+def _bot_history_remote(ctx, inp):
+    """Only the owner's fixed dialogue with THIS bot; never accept a peer from the model."""
+    if not (tg_user and tg_tools and tg_user.is_owner_chat(ctx.chat_id)):
+        return None
+    try:
+        me = tg_bot.api(ctx.token, "getMe")
+        username = me.get("username") or ""
+        if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+            return {"ok": False, "source": "telegram", "error": "Не удалось определить текущего бота."}
+        peer = "@" + username
+        limit = max(1, min(60, int(inp.get("limit") or 30)))
+        if inp.get("query"):
+            if inp.get("before_id"):
+                return {"ok": False, "source": "telegram", "error": "Для поиска в Telegram укажите query без before_id; можно увеличить limit до 60."}
+            result = tg_tools.search_messages(peer=peer, query=inp["query"], limit=limit)
+        else:
+            result = tg_tools.read_history(peer=peer, limit=limit, offset_id=int(inp.get("before_id") or 0),
+                                           before_timestamp=inp.get("before_timestamp") or 0)
+        messages = []
+        for msg in sorted(result.get("messages") or [], key=lambda m: m["id"]):
+            text = msg.get("text") or ""
+            if msg.get("media") and not text:
+                text = "[Вложение: " + str(msg["media"]) + "]"
+            messages.append({"mid": msg["id"], "role": "user" if msg.get("from") == "я" else "assistant",
+                             "text": text, "date": msg.get("date"), "reply_to": msg.get("reply_to"), "media": msg.get("media")})
+        out = {"ok": True, "source": "telegram", "scope": "current_bot_chat", "messages": tg_history._rows(messages),
+               "note": "Это id личного Telegram; не используйте их для обращений к локальному архиву Bot API."}
+        if result.get("older_than_id"):
+            out["before_id"] = result["older_than_id"]
+        return out
+    except Exception as exc:
+        print(f"  bot live history: {type(exc).__name__}", flush=True)
+        return {"ok": False, "source": "telegram", "error": "Не удалось прочитать историю личного Telegram. Можно попробовать source=archive."}
+
+
+def _prepare_bot_reply(token, chat_id, reply, quote, settings):
+    """Read the exact target first, then restore only its own discussion."""
+    mid = reply.get("message_id")
+    target_chat = (reply.get("chat") or {}).get("id", chat_id)
+    if str(target_chat) != str(chat_id):
+        return "", []
+    tg_bot.history_for(chat_id)  # expire the old working context BEFORE restoring
+    stored = tg_history.lookup(chat_id, mid) if mid else None
+    target_text = stored["text"] if stored else tg_history.message_text(reply)
+    if reply.get("text"):
+        # Telegram's current payload wins over a cached copy after an edit.
+        target_text = str(reply["text"])
+    target_images = []
+    needs_transcript = any(reply.get(k) for k in ("voice", "audio", "video", "video_note")) and "— расшифровка]" not in target_text
+    if (not stored or reply.get("photo") or reply.get("document") or needs_transcript) and any(reply.get(k) for k in ("photo", "document", "voice", "audio", "video", "video_note")):
+        try:
+            parsed, target_images, unsupported = tg_bot.extract_attachments(token, reply, find_openai_key(settings))
+            target_text = parsed or target_text
+            if unsupported:
+                target_text += "\n[Вложение не прочитано: " + unsupported + "]"
+        except Exception:
+            target_text += "\n[Вложение не удалось прочитать]"
+    if stored and target_text != stored["text"]:
+        tg_history.record(chat_id, mid, stored["role"], target_text, reply.get("date"))
+    restored = False
+    discussion = tg_history.context(chat_id, mid) if stored else []
+    current = tg_bot.current_dialog(chat_id) or {}
+    if discussion and stored.get("dialog"):
+        if stored["dialog"] != current.get("id") or not tg_bot.history_for(chat_id):
+            tg_bot.seed_history(chat_id, stored.get("title") or "Продолжение переписки",
+                                tg_history.history_messages(discussion), stored["dialog"])
+        restored = True
+    elif mid:
+        restored = tg_bot.restore_anchor(chat_id, mid)
+    if not restored and discussion:
+        # A notification/file sent outside a turn has no dialogue id yet.
+        # Its first reply starts a discussion rooted in that exact message.
+        title = stored.get("title") or tg_bot.fallback_title(target_text)
+        tg_bot.seed_history(chat_id, title, tg_history.history_messages(discussion), f"message:{mid}")
+        root = tg_bot.current_dialog(chat_id) or {}
+        tg_history.record(chat_id, mid, stored["role"], target_text, reply.get("date"),
+                          dialog=root.get("id") or "", title=title)
+        restored = True
+    if not restored and not stored and reply.get("date") and (reply.get("text") or reply.get("caption")):
+        # MTProto ids may differ from Bot API ids. Locate this exact message
+        # by text AND date, never by the numeric id of a different account.
+        result = _bot_history_remote(tg_bot.Ctx(token, chat_id, None), {
+            "limit": 30, "before_timestamp": reply["date"] + 1}) or {}
+        rows = result.get("messages") or []
+        original = (reply.get("text") or reply.get("caption")).strip()
+        stamp = datetime.fromtimestamp(reply["date"], MSK).strftime("%Y-%m-%d %H:%M")
+        matches = [i for i, row in enumerate(rows) if row.get("date") == stamp and row.get("text", "").strip() == original]
+        if len(matches) == 1:
+            rows = rows[:matches[0] + 1]
+            tg_bot.seed_history(chat_id, tg_bot.fallback_title(original), tg_history.history_messages(rows))
+            restored = True
+    if not stored and mid:
+        role = "assistant" if (reply.get("from") or {}).get("is_bot") and (reply.get("chat") or {}).get("type") == "private" else "user"
+        root = (tg_bot.current_dialog(chat_id) or {}) if restored else {}
+        tg_history.record(chat_id, mid, role, target_text, reply.get("date"),
+                          (reply.get("reply_to_message") or {}).get("message_id"),
+                          dialog=root.get("id") or "", title=root.get("title") or "")
+    return tg_history.reply_block(reply, target_text, quote), target_images
+
+
+def handle_assistant_message(token: str, chat_id, text: str, images: list = None, message_id: int = None,
+                             reply_message: dict = None, reply_quote: dict = None, message_date=None):
     # Сообщения одного чата идут строго по очереди: иначе при быстрой переписке
     # история диалога перемешивается между потоками.
     with tg_bot.chat_lock(chat_id):
-        _handle_assistant_message(token, chat_id, text, images or [], message_id)
+        original_text, turn_images = text, list(images or [])
+        try:
+            app = load_app_data() or {}
+            if tg_history.skill_on(app.get("telegramSkills")):
+                if reply_message:
+                    try:
+                        prefix, reply_images = _prepare_bot_reply(token, chat_id, reply_message, reply_quote, app.get("settings") or {})
+                        text = prefix + text
+                        turn_images = reply_images + turn_images
+                    except Exception as exc:
+                        print(f"  bot reply context: {type(exc).__name__}", flush=True)
+                        text = tg_history.reply_block(reply_message, tg_history.message_text(reply_message), reply_quote) + text
+                try:
+                    tg_history.record(chat_id, message_id, "user", original_text + (" [фото]" if images else ""), message_date,
+                                      (reply_message or {}).get("message_id"))
+                except Exception as exc:
+                    print(f"  bot history save: {type(exc).__name__}", flush=True)
+            _handle_assistant_message(token, chat_id, text, turn_images, message_id, archive_text=original_text,
+                                      reply_to=(reply_message or {}).get("message_id"), message_date=message_date)
+        finally:
+            tg_history.set_dialog()
 
 
 def _record_turn(stats: dict, cfg: dict, func: str, text: str, chat_id=None):
@@ -6744,7 +6879,8 @@ def _record_turn(stats: dict, cfg: dict, func: str, text: str, chat_id=None):
         print(f"  ai usage turn: {e}", flush=True)
 
 
-def _handle_assistant_message(token: str, chat_id, text: str, images: list, message_id):
+def _handle_assistant_message(token: str, chat_id, text: str, images: list, message_id,
+                              archive_text=None, reply_to=None, message_date=None):
     def say(msg: str):
         try:
             tg_bot.send_text(token, chat_id, msg)
@@ -6781,17 +6917,28 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
     title_box = {}
     title_thread = None
     if is_new:
+        tg_bot.start_dialog(chat_id, tg_bot.fallback_title(text))
         title_thread = threading.Thread(
             target=lambda: title_box.update(t=generate_dialog_title(title_conf[0], title_conf[1], title_conf[2], text,
                                                                     effort=title_conf[4])), daemon=True)
         title_thread.start()
+
+    dialog = tg_bot.current_dialog(chat_id) or {}
+    tg_history.set_dialog(chat_id, dialog.get("id"), dialog.get("title") or "")
+    try:
+        tg_history.record(chat_id, message_id, "user", archive_text if archive_text is not None else text + (" [фото]" if images else ""),
+                          message_date, reply_to)
+    except Exception as exc:
+        print(f"  bot history save: {type(exc).__name__}", flush=True)
 
     def dialog_tag() -> str:
         """Подпись с названием диалога; вызывать, когда ответ точно ушёл в историю."""
         if is_new:
             if title_thread:
                 title_thread.join(timeout=12)
-            tg_bot.start_dialog(chat_id, title_box.get("t") or tg_bot.fallback_title(text))
+            tg_bot.rename_dialog(chat_id, title_box.get("t") or tg_bot.fallback_title(text))
+            dialog = tg_bot.current_dialog(chat_id) or {}
+            tg_history.set_dialog(chat_id, dialog.get("id"), dialog.get("title") or "")
         else:
             tg_bot.bump_dialog(chat_id)
         return tg_bot.dialog_footer(chat_id, is_new)
@@ -6867,13 +7014,8 @@ def _dispatch_user_message(token: str, chat_id, msg: dict):
         return
     if unsupported:
         text = (text + "\n\n" if text else "") + f"[Вложение не прочитано: {unsupported}]"
-    rid = (msg.get("reply_to_message") or {}).get("message_id")
-    if rid:
-        try:   # ответ на отчёт бота (сбор по задаче, учебные чаты) — вернуть контекст этого отчёта
-            tg_bot.restore_anchor(chat_id, rid)
-        except Exception as e:
-            print(f"  anchor restore: {e}")
-    handle_assistant_message(token, chat_id, text, images, msg.get("message_id"))
+    handle_assistant_message(token, chat_id, text, images, msg.get("message_id"),
+                             reply_message=msg.get("reply_to_message"), reply_quote=msg.get("quote"), message_date=msg.get("date"))
 
 
 # ── Навыки «Учёбы»: сбор информации по задаче и контроль учебных чатов ───────────
@@ -6957,7 +7099,7 @@ def _assistant_tool_list(app, with_tg: bool) -> list:
         (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + \
         _study_skill_tools(app) + _market_skill_tools(app) + _watch_skill_tools(app, with_tg) + _mail_skill_tools(app) + \
-        _plan_skill_tools(app)
+        _plan_skill_tools(app) + (tg_history.TOOLS if tg_history.skill_on((app or {}).get("telegramSkills")) else [])
 
 
 def assistant_skills_catalog() -> list:
@@ -6967,6 +7109,7 @@ def assistant_skills_catalog() -> list:
         + (tg_tools.skills_catalog() if tg_tools else [])
         + (market_skill.SKILLS if market_skill else [])
         + wb_watch_skill.SKILLS
+        + tg_history.SKILLS
         + (tg_watch_skill.SKILLS if tg_watch_skill else [])
         + (mail_skill.SKILLS if mail_skill else [])
         + (plan_skill.SKILLS if plan_skill else [])
@@ -7673,6 +7816,15 @@ def updates_loop():
                         tg_post(token, "answerCallbackQuery", {"callback_query_id": cq.get("id")})
                 except Exception as e:
                     print(f"  callback error: {e}")
+                continue
+            edited = upd.get("edited_message") or upd.get("edited_channel_post")
+            if edited:
+                if edited.get("text") or edited.get("caption"):
+                    try:
+                        tg_history.record((edited.get("chat") or {}).get("id"), edited.get("message_id"),
+                                          "user", tg_history.message_text(edited), edited.get("date"))
+                    except Exception as exc:
+                        print(f"  bot history edit: {type(exc).__name__}", flush=True)
                 continue
             msg = upd.get("message") or upd.get("channel_post")
             if not msg:
