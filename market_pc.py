@@ -21,6 +21,7 @@ STORE_NAME = "jarvis_market_pc.json"
 ONLINE_SECONDS = 100
 JOB_SECONDS = 90
 SECTIONS = {"status", "orders", "delivery"}
+SHOPS = {"wb": "WB", "ozon": "Ozon"}
 DEVICE_ROUTES = {"/api/market/pc/poll", "/api/market/pc/result"}
 ERRORS = {
     "offline": "ПК с Wildberries не на связи. Откройте Chrome с расширением Джарвиса на Windows.",
@@ -31,10 +32,11 @@ ERRORS = {
     "blocked": "Wildberries проверяет или блокирует браузер. Откройте кабинет на ПК.",
     "unreadable": "Кабинет WB не удалось прочитать. Откройте покупки или доставки на ПК и повторите запрос.",
     "browser": "Не удалось открыть вкладку WB на ПК. Проверьте Chrome и расширение.",
+    "unsupported": "Обновите расширение Джарвиса на ПК до версии с поддержкой Ozon и разрешите доступ к ozon.ru.",
 }
 _lock = threading.RLock()
 _jobs = {}
-_live = {"seen": 0, "session": "unknown", "checked": 0}
+_live = {"seen": 0, "session": "unknown", "checked": 0, "capabilities": ["wb"], "shops": {}}
 
 
 def _path():
@@ -63,15 +65,20 @@ def public_status():
             "last_seen": int(_live["seen"]) if on else 0,
             "session": _live["session"] if on else "unknown",
             "checked": int(_live["checked"]) if on else 0,
+            "capabilities": list(_live["capabilities"]) if on else [],
+            "shops": {shop: {"supported": on and shop in _live["capabilities"],
+                             "session": _live["shops"].get(shop, {}).get("session", "unknown") if on else "unknown",
+                             "checked": int(_live["shops"].get(shop, {}).get("checked", 0)) if on else 0}
+                      for shop in SHOPS},
         }
 
 
 def _cancel_jobs():
     for job in _jobs.values():
-        job["result"] = _error("revoked")
+        job["result"] = _error("revoked", job.get("shop", "wb"))
         job["event"].set()
     _jobs.clear()
-    _live.update(seen=0, session="unknown", checked=0)
+    _live.update(seen=0, session="unknown", checked=0, capabilities=["wb"], shops={})
 
 
 def pair():
@@ -92,7 +99,7 @@ def disconnect():
     with _lock:
         _path().unlink(missing_ok=True)
         _cancel_jobs()
-    return {"ok": True, "message": "ПК отключён. WB снова использует серверный способ подключения."}
+    return {"ok": True, "message": "ПК отключён. Маркетплейсы снова используют серверный способ подключения."}
 
 
 def _valid(token):
@@ -102,26 +109,31 @@ def _valid(token):
             and hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), digest))
 
 
-def _error(code):
-    return {"ok": False, "shop": "wb", "source": "pc", "code": code, "error": ERRORS[code]}
+def _error(code, shop="wb"):
+    message = ERRORS[code]
+    if shop == "ozon":
+        message = message.replace("Wildberries", "Ozon").replace("WB", "Ozon")
+    return {"ok": False, "shop": shop, "source": "pc", "code": code, "error": message}
 
 
-def request(section, timeout=JOB_SECONDS, include_details=False):
-    if not isinstance(section, str) or section not in SECTIONS:
-        return {"ok": False, "error": "На ПК пока доступны только покупки, доставки и проверка входа WB."}
+def request(section, timeout=JOB_SECONDS, include_details=False, shop="wb"):
+    if not isinstance(shop, str) or shop not in SHOPS or not isinstance(section, str) or section not in SECTIONS:
+        return {"ok": False, "error": "На ПК доступны только покупки, доставки и проверка входа WB и Ozon."}
     with _lock:
         if not public_status()["online"]:
-            return _error("offline")
+            return _error("offline", shop)
+        if shop not in _live["capabilities"]:
+            return _error("unsupported", shop)
         if _jobs:
-            return _error("busy")
+            return _error("busy", shop)
         jid = secrets.token_urlsafe(18)
-        job = {"section": section, "details": include_details is True, "expires": time.time() + timeout, "event": threading.Event(),
+        job = {"shop": shop, "section": section, "details": include_details is True, "expires": time.time() + timeout, "event": threading.Event(),
                "claimed": False, "result": None, "key_hash": _config().get("key_hash")}
         _jobs[jid] = job
     try:
         if not job["event"].wait(timeout):
-            return _error("timeout")
-        return job["result"] or _error("unreadable")
+            return _error("timeout", shop)
+        return job["result"] or _error("unreadable", shop)
     finally:
         with _lock:
             _jobs.pop(jid, None)
@@ -136,10 +148,17 @@ def device_call(route, token, payload):
             return 400, {"ok": False, "error": "invalid payload"}
         _live["seen"] = time.time()
         if route == "/api/market/pc/poll":
+            advertised = payload.get("capabilities", ["wb"])
+            if not isinstance(advertised, list):
+                return 400, {"ok": False, "error": "invalid capabilities"}
+            _live["capabilities"] = [shop for shop in SHOPS if shop in advertised]
             for jid, job in _jobs.items():
-                if not job["claimed"] and job["expires"] > time.time() and not job["event"].is_set():
+                if job["shop"] in _live["capabilities"] and not job["claimed"] and job["expires"] > time.time() and not job["event"].is_set():
                     job["claimed"] = True
-                    return 200, {"ok": True, "job": {"id": jid, "section": job["section"], "details": job["details"]}}
+                    wire = {"id": jid, "section": job["section"], "details": job["details"]}
+                    if job["shop"] != "wb":
+                        wire["shop"] = job["shop"]
+                    return 200, {"ok": True, "job": wire}
             return 200, {"ok": True, "job": None}
         if route != "/api/market/pc/result":
             return 404, {"ok": False, "error": "not found"}
@@ -150,51 +169,64 @@ def device_call(route, token, payload):
             return 409, {"ok": False, "error": "job expired"}
         if job["event"].is_set():
             return 200, {"ok": True}  # delivery retry, don't overwrite the result
-        result = _clean_result(job["section"], payload.get("result"), include_details=job["details"])
+        result = _clean_result(job["section"], payload.get("result"), include_details=job["details"], shop=job["shop"])
         job["result"] = result
-        _live["session"] = result.get("session", "unknown")
-        _live["checked"] = time.time()
+        _live["shops"][job["shop"]] = {"session": result.get("session", "unknown"), "checked": time.time()}
+        if job["shop"] == "wb":
+            _live["session"] = result.get("session", "unknown")
+            _live["checked"] = time.time()
         job["event"].set()
         return 200, {"ok": True}
 
 
-def _clean_result(section, raw, include_details=False):
+def _clean_result(section, raw, include_details=False, shop="wb"):
     # Import lazily: market_skill routes reads here, and owns the existing
     # phone/secret redaction and the common order presentation.
     import market_skill
+    if shop not in SHOPS:
+        return _error("unreadable")
+    def error(code):
+        return _error(code, shop)
     def image_url(value):
         try:
             u = urlparse(value if isinstance(value, str) else "")
             host = (u.hostname or "").lower()
             if u.scheme == "https" and not u.username and not u.password and any(
                     host == domain or host.endswith("." + domain)
-                    for domain in ("wildberries.ru", "wb.ru", "wbbasket.ru", "wbstatic.net", "wbcontent.net")):
+                    for domain in (("ozone.ru", "ozon.ru") if shop == "ozon" else ("wildberries.ru", "wb.ru", "wbbasket.ru", "wbstatic.net", "wbcontent.net"))):
                 return ("https://" + u.netloc + u.path)[:600]
         except ValueError:
             pass
         return ""
     if not isinstance(raw, dict):
-        return _error("unreadable")
+        return error("unreadable")
     if raw.get("ok") is not True:
         code = raw.get("code")
         code = code if isinstance(code, str) and code in {"login", "blocked", "unreadable", "browser"} else "unreadable"
-        return {**_error(code), "session": "expired" if code == "login" else "blocked" if code == "blocked" else "unknown"}
+        return {**error(code), "session": "expired" if code == "login" else "blocked" if code == "blocked" else "unknown"}
     url = raw.get("url")
     try:
         parsed = urlparse(url if isinstance(url, str) else "")
         expected = "/lk/myorders/archive" if section == "orders" else "/lk/myorders/delivery"
-        if (parsed.scheme != "https" or parsed.netloc != "www.wildberries.ru"
+        if shop == "ozon":
+            from urllib.parse import parse_qs
+            expected = "/my/orderlist"
+            archive = parse_qs(parsed.query).get("selectedTab") == ["archive"]
+            if archive != (section == "orders"):
+                return error("unreadable")
+        host = "www.ozon.ru" if shop == "ozon" else "www.wildberries.ru"
+        if (parsed.scheme != "https" or parsed.netloc != host
                 or parsed.path.rstrip("/") != expected or raw.get("cabinet") is not True):
-            return _error("unreadable")
+            return error("unreadable")
     except ValueError:
-        return _error("unreadable")
+        return error("unreadable")
     rows = []
     candidates = raw.get("rows")
     for item in (candidates[:40] if isinstance(candidates, list) else []):
         if not isinstance(item, dict):
             continue
         row = {}
-        for field, limit in {"id": 80, "name": 160, "price": 40, "status": 100, "date": 50, "pvz": 180,
+        for field, limit in {"id": 120, "name": 160, "price": 40, "status": 100, "date": 50, "pvz": 180,
                              "brand": 100, "size": 60, "quantity": 30, "payable": 60,
                              "delivery_date": 60, "pvz_hours": 200}.items():
             value = item.get(field)
@@ -203,7 +235,7 @@ def _clean_result(section, raw, include_details=False):
         article = str(item.get("article") or "")
         if re.fullmatch(r"\d{4,15}", article):
             row["article"] = article
-            row["product_url"] = f"https://www.wildberries.ru/catalog/{article}/detail.aspx"
+            row["product_url"] = f"https://www.ozon.ru/product/{article}/" if shop == "ozon" else f"https://www.wildberries.ru/catalog/{article}/detail.aspx"
         photo = image_url(item.get("image_url"))
         if photo:
             row["image_url"] = photo
@@ -224,8 +256,8 @@ def _clean_result(section, raw, include_details=False):
                        if key in {"id", "name", "price", "status", "article", "product_url", "image_url"}}
             rows.append(row)
     if section != "status" and not rows and raw.get("empty") is not True:
-        return _error("unreadable")
-    text = "Кабинет WB на ПК открыт." if section == "status" else market_skill.format_wb_rows(rows, concise=not include_details)
+        return error("unreadable")
+    text = f"Кабинет {SHOPS[shop]} на ПК открыт." if section == "status" else market_skill.format_wb_rows(rows, concise=not include_details, shop=shop)
     if not text:
         text = "Доставок нет." if section == "delivery" else "Покупок нет."
     page_products = []
@@ -236,7 +268,7 @@ def _clean_result(section, raw, include_details=False):
         article = str(item["article"])
         name = item.get("name") if isinstance(item.get("name"), str) else ""
         product = {"article": article, "name": market_skill.mask_phones(market_skill.scrub_secrets(name))[:160],
-                   "product_url": f"https://www.wildberries.ru/catalog/{article}/detail.aspx"}
+                   "product_url": f"https://www.ozon.ru/product/{article}/" if shop == "ozon" else f"https://www.wildberries.ru/catalog/{article}/detail.aspx"}
         photo = image_url(item.get("image_url"))
         if photo:
             product["image_url"] = photo
@@ -250,8 +282,8 @@ def _clean_result(section, raw, include_details=False):
               for value in (labels[:12] if isinstance(labels, list) else []) if isinstance(value, str)]
     if labels:
         text += "\nПодписи об оплате на всей странице (не итог и не сумма для каждого товара): " + "; ".join(labels)
-    return {"ok": True, "shop": "wb", "source": "pc", "section": section, "session": "active",
-            "url": "https://www.wildberries.ru" + parsed.path, "rows": rows, "text": text[:12000],
+    return {"ok": True, "shop": shop, "source": "pc", "section": section, "session": "active",
+            "url": "https://" + host + parsed.path + ("?selectedTab=archive" if shop == "ozon" and section == "orders" else ""), "rows": rows, "text": text[:12000],
             "page_products": page_products, "page_amount_due_labels": labels,
             "truncated": raw.get("truncated") is True, "details_included": include_details,
             "details_truncated": include_details and raw.get("details_truncated") is True}
@@ -261,6 +293,6 @@ def extension_zip():
     root = Path(__file__).parent / "windows" / "wb-extension"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as out:
-        for name in ("manifest.json", "background.js", "field-utils.js", "page-data.js", "capture.js", "popup.html", "popup.js", "fields.html", "fields.js", "README.txt"):
+        for name in ("manifest.json", "background.js", "field-utils.js", "page-data.js", "capture.js", "ozon-capture.js", "popup.html", "popup.js", "fields.html", "fields.js", "README.txt"):
             out.write(root / name, name)
     return buf.getvalue()

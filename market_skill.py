@@ -46,8 +46,8 @@ STATUS_LABEL = {
 SKILLS = [
     {"id": SKILL_ID, "title": "Маркетплейсы", "risk": "write", "default": True,
      "desc": (
-         "Личные кабинеты покупателя Ozon и Wildberries. WB можно читать через Chrome на вашем Windows-ПК "
-         "(Настройки → Маркетплейсы → WB на Windows-ПК): покупки и доставки без серверного прокси. "
+         "Личные кабинеты покупателя Ozon и Wildberries. Оба можно читать через Chrome на вашем Windows-ПК "
+         "(Настройки → Маркетплейсы → WB и Ozon на Windows-ПК): покупки и доставки без серверного прокси. "
          "ПК и Chrome должны работать. У Wildberries это разные страницы: "
          "market_orders — покупки (уже полученные), market_delivery — что в пути, market_returns — возвраты. "
          "Ещё карточка заказа, избранное и краткий профиль (телефон маской). Не кабинет продавца и не цены с витрины. "
@@ -68,16 +68,16 @@ _SHOP = {"type": "string", "enum": ["ozon", "wb"], "description": "ozon или w
 
 TOOLS = [
     {"name": "market_orders",
-     "description": "Покупки в кабинете покупателя. Для Wildberries это уже полученные заказы, не то, что сейчас в пути (для пути — market_delivery). Нужны прокси и живая сессия.",
+     "description": "Покупки в кабинете покупателя. Через ПК — архив WB или завершённые заказы Ozon; активные доставки — market_delivery. Нужен подключённый ПК с Chrome; для серверного способа — прокси и сессия.",
      "input_schema": {"type": "object", "properties": {"shop": _SHOP,
-         "details": {"type": "boolean", "description": "Для WB через ПК: true только по запросу дополнительных сведений (ПВЗ, даты, оплата, размер, поля API). По умолчанию название, цена товара и статус."}}, "required": ["shop"]}},
+         "details": {"type": "boolean", "description": "Для WB и Ozon через ПК: true только по запросу дополнительных сведений (ПВЗ, даты, оплата, размер, поля API). По умолчанию название, цена товара и статус."}}, "required": ["shop"]}},
     {"name": "market_order",
      "description": "Карточка одного заказа в кабинете покупателя. order_id — номер заказа со страницы заказов.",
      "input_schema": {"type": "object", "properties": {"shop": _SHOP, "order_id": _STR}, "required": ["shop", "order_id"]}},
     {"name": "market_delivery",
      "description": "Доставки в пути: статус, дата и ПВЗ. Для Wildberries это не список покупок и не возвраты. Можно сузить до order_id.",
      "input_schema": {"type": "object", "properties": {"shop": _SHOP, "order_id": _STR,
-         "details": {"type": "boolean", "description": "Для WB через ПК: true только если пользователь прямо просит дополнительные сведения — ПВЗ, даты, часы, оплату, размер или поля API. Иначе false: название, цена товара, статус."}}, "required": ["shop"]}},
+         "details": {"type": "boolean", "description": "Для WB и Ozon через ПК: true только если пользователь прямо просит дополнительные сведения — ПВЗ, даты, часы, оплату, размер или поля API. Иначе false: название, цена товара, статус."}}, "required": ["shop"]}},
     {"name": "market_returns",
      "description": "Возвраты в личном кабинете покупателя. Для Wildberries отдельная страница, не доставки и не покупки.",
      "input_schema": {"type": "object", "properties": {"shop": _SHOP}, "required": ["shop"]}},
@@ -111,14 +111,14 @@ PROMPT = (
     "shop — ozon или wb. Читать можно без спроса. "
     "Если в ответе есть строки «Заказ …», используй факты оттуда. Для обычного ответа WB через ПК показывай название товара, цену и статус; "
     "технические rid и полный список полей не перечисляй. Для других подключений используй номер, товар, цену, статус, дату и ПВЗ. "
-    "Если строк нет — так и скажи, заказы не выдумывай. "
+    "Для Ozon через ПК тоже показывай название, цену товара и статус. Если строк нет — так и скажи, заказы не выдумывай. "
     "Отмена заказа — только после явного «да»: первый вызов без confirmed вернёт needs_confirmation, опиши заказ и спроси, "
     "повтор с confirmed:true только следующим сообщением. Если на странице нет кнопки отмены или страница не подтвердила отмену — "
     "так и скажи, не говори, что заказ отменён. Если инструмент вернул, что нет прокси, нет сессии или сессия слетела — "
     "так и скажи, не выдумывай заказы. Если кабинет не открылся или сессия не активна — так и скажи "
     "и направь в Настройки → Маркетплейсы. Если ответ «заблокировано антиботом» — так и скажи, "
     "это не слетевшая сессия. Не советуй выключать VPN: это текст страницы магазина, не наш шаг. "
-    "Если WB подключён через ПК, покупки и доставки читаются на этом ПК, без серверного прокси. "
+    "Если WB или Ozon подключён через ПК, покупки и доставки читаются на этом ПК, без серверного прокси. "
     "Если ПК не на связи — попроси открыть Chrome с расширением Джарвиса. "
     "Повторный вход для ПК выполняется в Chrome на Windows. Прототип ПК читает только покупки и доставки; "
     "truncated:true означает неполный список, не называй его всей историей покупок. "
@@ -127,7 +127,10 @@ PROMPT = (
     "артикул, бренд, размер, даты, ПВЗ, часы работы, суммы оплаты и технические поля — только по прямому запросу пользователя. "
     "Для такого запроса вызови market_delivery/market_orders с details:true и отвечай только на заданный вопрос. "
     "Без прямого запроса details не включай, даже если в расширении выбраны дополнительные поля. "
-    "Поле price в ответе ПК — подтверждённая цена товара в рублях из item.price/100. Не подменяй её total_price или ценой карточки. "
+    "Поле price WB в ответе ПК — подтверждённая цена товара в рублях из item.price/100. Для Ozon это денежная подпись позиции заказа; "
+    "числа без подтверждённой валюты и единицы не переводятся в рубли. Не подменяй цену товара суммой заказа, к оплате или ценой карточки. "
+    "У Ozon статус относится к конкретной посылке, один заказ может содержать посылки с разными статусами. "
+    "delivery.group у Ozon — сведения общей группы доставки; её суммы не являются ценой отдельного товара. "
     "Дополнительные поля выбраны пользователем в расширении: product.* — данные карточки, её цена не равна цене заказа; "
     "item.* и order.* — исходные поля позиции и заказа. Для RUB-заказа item.price подтверждён в копейках; "
     "для других числовых денежных полей без известной единицы не придумывай рублёвую сумму. "
@@ -1703,9 +1706,11 @@ def _read(shop, section, order_id, state, details=False) -> dict:
         return {"error": "Нужен номер заказа."}
     if order_id and not _ORDER_RE.fullmatch(order_id):
         return {"error": "Некорректный номер заказа."}
-    if sid == "wb" and market_pc.enabled():
+    if market_pc.enabled():
         if order_id:
-            return {"ok": False, "error": "На ПК пока доступен общий список покупок и доставок WB без выбора заказа."}
+            return {"ok": False, "error": "На ПК пока доступен общий список покупок и доставок " + SHOP_TITLE[sid] + " без выбора заказа."}
+        if sid == "ozon":
+            return market_pc.request(section, include_details=details, shop="ozon")
         return market_pc.request(section, include_details=True) if details else market_pc.request(section)
     blocked = _require_session(sid)
     if blocked:
@@ -2097,7 +2102,7 @@ def parse_wb_orders(data) -> list:
     return [row for row in merged if row.get("name") or row["id"] not in named]
 
 
-def format_wb_rows(rows, concise=False) -> str:
+def format_wb_rows(rows, concise=False, shop="wb") -> str:
     blocks = []
     for row in rows[:30]:
         lines = ["Заказ " + row.get("id", "")]
@@ -2121,7 +2126,7 @@ def format_wb_rows(rows, concise=False) -> str:
             lines.append("Дата: " + row["date"])
         if row.get("pvz"):
             lines.append("ПВЗ: " + row["pvz"])
-        for field, label in (("delivery_date", "Ожидается"), ("pvz_hours", "Часы работы ПВЗ"), ("payable", "К оплате"), ("product_url", "Товар на WB"), ("image_url", "Фото товара")):
+        for field, label in (("delivery_date", "Ожидается"), ("pvz_hours", "Часы работы ПВЗ"), ("payable", "К оплате"), ("product_url", "Товар на " + ("Ozon" if shop == "ozon" else "WB")), ("image_url", "Фото товара")):
             if row.get(field):
                 lines.append(label + ": " + row[field])
         for field in row.get("extra_fields") or []:
@@ -2419,8 +2424,8 @@ def _cancel(shop, order_id, confirmed, state) -> dict:
         return {"error": "Неизвестный магазин: укажите ozon или wb."}
     if not _ORDER_RE.fullmatch(order_id or ""):
         return {"error": "Некорректный номер заказа."}
-    if sid == "wb" and market_pc.enabled():
-        return {"ok": False, "error": "Подключение WB через ПК пока работает только на чтение. Отмените заказ вручную в Chrome."}
+    if market_pc.enabled():
+        return {"ok": False, "error": "Подключение " + SHOP_TITLE[sid] + " через ПК пока работает только на чтение. Отмените заказ вручную в Chrome."}
     if not confirmed:
         return {
             "needs_confirmation": True,

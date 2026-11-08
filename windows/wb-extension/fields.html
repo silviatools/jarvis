@@ -1,14 +1,16 @@
-<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Поля Wildberries — Джарвис</title>
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Поля WB и Ozon — Джарвис</title>
 <style>
 body{font:15px system-ui,sans-serif;max-width:1250px;margin:32px auto;padding:0 20px;color:#24212e}h1{font-size:26px}p{line-height:1.5}input[type=search]{padding:10px;width:min(500px,90%)}button{padding:9px 13px;margin:5px 5px 5px 0;cursor:pointer}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{text-align:left;padding:10px;border-bottom:1px solid #ddd;vertical-align:top}td:nth-child(2){font-family:monospace;overflow-wrap:anywhere}td:last-child{max-width:430px;white-space:pre-wrap;overflow-wrap:anywhere}.muted{color:#666}#status{color:#6140a0}thead{position:sticky;top:0;background:white}label{cursor:pointer}
 </style></head><body>
-<h1>Поля Wildberries</h1>
-<p>Здесь собраны поля, которые WB отдал для текущих доставок. Обычный ответ Джарвиса: название товара, цена и статус. Дополнительные сведения используются только по вашему прямому запросу. Отметьте поля для таких подробных ответов; если ничего не выбрано, расширение использует доступные безопасные поля.</p>
-<p class="muted"><b>order / item</b> — заказ и конкретная позиция; <b>delivery / office</b> — доставка и ПВЗ; <b>product</b> — карточка товара (её цены могут отличаться от цены заказа); <b>status</b> — последний статус; <b>page</b> — данные, прочитанные со страницы. Для RUB-заказов item.price подтверждён в копейках: 75500 → 755 ₽. Единицы других чисел и коды состояний оплаты требуют проверки.</p>
+<h1>Поля товаров и ПВЗ</h1>
+<label>Магазин <select id="shop"><option value="wb">Wildberries</option><option value="ozon">Ozon</option></select></label>
+<p>Здесь собраны поля, которые выбранный магазин отдал для загруженных заказов. Обычный ответ Джарвиса: название товара, цена и статус. Дополнительные сведения используются только по вашему прямому запросу. Отметьте поля для таких подробных ответов; если ничего не выбрано, расширение использует доступные безопасные поля.</p>
+<p class="muted"><b>order / item</b> — заказ и конкретная позиция; <b>delivery / office</b> — доставка и ПВЗ; <b>product</b> — карточка товара (её цены могут отличаться от цены заказа); <b>status</b> — последний статус; <b>page</b> — данные, прочитанные со страницы. Только у WB для RUB-заказов item.price подтверждён в копейках: 75500 → 755 ₽. Единицы других чисел и коды состояний оплаты требуют проверки.</p>
 <p class="muted">Примеры могут содержать сведения о ваших товарах и ПВЗ. Каталог хранится на ПК. На сервер отправляются основные данные и только выбранные дополнительные поля — до 100 на позицию, с ограничением общего размера. Cookies, токены, подписи и банковские реквизиты исключены. Каталог охватывает загруженные ответы WB, а не все возможные данные маркетплейса.</p>
 <p id="summary"></p><input id="search" type="search" placeholder="Поиск: price, work, address, name, size…">
 <div><button id="refresh">Обновить список</button><button id="all">Выбрать показанные</button><button id="none">Снять показанные</button><button id="save">Сохранить выбор</button><button id="copy">Скопировать каталог</button></div>
 <p id="status" role="status"></p>
 <p class="muted">page.binding показывает связь: matched_article_or_rid — товар сопоставлен; status_only — только статус; unmatched_page_product — отдельная карточка страницы; unmatched_api_item — данные API, ещё не связанные со статусом. Не сопоставляйте такие записи по порядку.</p>
-<table><thead><tr><th>В подробный ответ</th><th>Поле WB</th><th>Тип / записи</th><th>Примеры полученных значений</th></tr></thead><tbody id="rows"></tbody></table>
+<p class="muted">Ozon: цена берётся из денежной подписи товара в заказе; числовые поля без валюты не пересчитываются. Статусы относятся к посылкам, которые могут отличаться внутри одного заказа. Каталоги и выбор полей WB и Ozon хранятся отдельно.</p>
+<table><thead><tr><th>В подробный ответ</th><th>Поле</th><th>Тип / записи</th><th>Примеры полученных значений</th></tr></thead><tbody id="rows"></tbody></table>
 <script src="field-utils.js"></script><script src="fields.js"></script></body></html>

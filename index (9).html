@@ -6141,6 +6141,7 @@ function MarketManual({ shop, onHide, onDone, onCancel }) {
 }
 
 function MarketplacePcSettings({ pc, onRefresh }) {
+  const [shop, setShop] = React.useState('wb');
   const [token, setToken] = React.useState('');
   const [busy, setBusy] = React.useState('');
   const [message, setMessage] = React.useState('');
@@ -6151,7 +6152,7 @@ function MarketplacePcSettings({ pc, onRefresh }) {
     try {
       const response = await fetch('/api/market/pc/' + action, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(section ? { section } : {})
+        body: JSON.stringify(section ? { section, shop } : {})
       });
       const j = await response.json();
       if (!response.ok || j.ok === false) setError(j.error || 'Не получилось выполнить запрос.');
@@ -6165,15 +6166,16 @@ function MarketplacePcSettings({ pc, onRefresh }) {
     } catch (e) { setError('Нет ответа от Джарвиса: ' + e.message); }
     finally { setBusy(''); }
   };
-  const session = { active: 'Кабинет открыт', expired: 'Нужен вход на ПК', blocked: 'Проверка браузера WB', unknown: 'Вход ещё не подтверждён' };
+  const session = { active: 'Кабинет открыт', expired: 'Нужен вход на ПК', blocked: 'Проверка браузера магазина', unknown: 'Вход ещё не подтверждён' };
+  const shopState = (pc.shops || {})[shop] || (shop === 'wb' ? pc : {});
   return <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5 space-y-3" data-testid="market-pc">
     <div className="flex flex-wrap justify-between gap-2">
-      <h3 className="font-display text-lg">WB на Windows-ПК</h3>
+      <h3 className="font-display text-lg">WB и Ozon на Windows-ПК</h3>
       <span className="text-sm">{!pc.enabled ? 'Не подключён' : pc.online ? 'ПК на связи' : 'ПК не на связи'}</span>
     </div>
     <p className="text-sm text-[var(--text-muted)]">Покупки и доставки через ваш Chrome. Прокси не нужен. ПК и Chrome должны работать; повторный вход выполняется на ПК.</p>
     <ol className="list-decimal pl-5 space-y-1 text-sm text-[var(--text-muted)]">
-      <li>Создайте отдельный профиль Chrome «Джарвис» на Windows 10 и войдите в WB.</li>
+      <li>Создайте отдельный профиль Chrome «Джарвис» на Windows 10 и войдите в WB и Ozon.</li>
       <li><a className="underline" href="/api/market/pc/download">Скачайте расширение</a>, распакуйте ZIP. В chrome://extensions включите режим разработчика и загрузите распакованную папку.</li>
       <li>Создайте ключ ниже. В расширении укажите адрес {window.location.origin} и ключ, затем нажмите «Подключить».</li>
     </ol>
@@ -6185,7 +6187,9 @@ function MarketplacePcSettings({ pc, onRefresh }) {
       <input className="mt-1 w-full border border-[var(--border)] bg-[var(--bg)] rounded-lg p-2 font-mono text-xs" readOnly value={token} onFocus={e => e.target.select()} autoComplete="off" />
     </label>}
     {pc.enabled && <>
-      <p className="text-sm text-[var(--text-muted)]">{pc.online ? session[pc.session] || session.unknown : 'Откройте Chrome на ПК и проверьте подключение в расширении.'} Связь обновляется примерно каждые 30 секунд.</p>
+      <label className="block text-sm">Кабинет <select className="ml-2 border border-[var(--border)] rounded-lg p-2 bg-[var(--bg)]" value={shop} disabled={!!busy} onChange={e => { setShop(e.target.value); setResult(''); setError(''); }}><option value="wb">Wildberries</option><option value="ozon">Ozon</option></select></label>
+      <p className="text-sm text-[var(--text-muted)]">{pc.online ? session[shopState.session] || session.unknown : 'Откройте Chrome на ПК и проверьте подключение в расширении.'} Связь обновляется примерно каждые 30 секунд.</p>
+      {shop === 'ozon' && !shopState.supported && <p className="text-sm text-amber-600">Для Ozon обновите расширение до 0.3.0 или новее и разрешите доступ к ozon.ru. Ключ ПК остаётся прежним.</p>}
       <div className="flex flex-wrap gap-2">{[['status', 'Проверить вход'], ['delivery', 'Доставки'], ['orders', 'Покупки']].map(([key, title]) =>
         <button key={key} className="btn-secondary text-sm px-3 py-2" disabled={!!busy || !pc.online} onClick={() => act('check', key)}>{busy === key ? 'Читаю на ПК…' : title}</button>)}</div>
       {busy && <p className="text-sm text-[var(--text-muted)]">Первое чтение может занять до 90 секунд.</p>}

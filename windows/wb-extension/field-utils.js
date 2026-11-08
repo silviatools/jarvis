@@ -9,6 +9,7 @@
     if (typeof node === 'string') {
       let text = node.replace(/\b(?:\+?7|8)[\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}\b/g, '[телефон скрыт]');
       if (/^https?:\/\//.test(text)) { try { const u = new URL(text); text = u.origin + u.pathname; } catch (_) { return ''; } }
+      else if (text.startsWith('/')) text = text.split(/[?#]/, 1)[0];
       return text.slice(0, 1500);
     }
     if (Array.isArray(node)) return node.slice(0, 80).map(item => sanitize(item, depth + 1, budget));

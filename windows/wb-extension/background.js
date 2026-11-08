@@ -206,23 +206,90 @@ async function readWb(section, foreground = false, includeDetails = false) {
   }
 }
 
-async function recordRead(result, trigger) {
-  if (Array.isArray(result.fieldCatalog)) await chrome.storage.local.set({ fieldCatalog: result.fieldCatalog, fieldCatalogAt: Date.now() });
-  // Deliberately omit rows, text, credentials, server URL and arbitrary errors.
-  const report = { at: new Date().toISOString(), trigger, ok: result.ok === true,
-    code: result.code || '', ...(result.diagnostic || {}) };
-  const { readLogs = [] } = await chrome.storage.local.get(['readLogs']);
-  await chrome.storage.local.set({ readLogs: [...readLogs.slice(-5), report],
-    lastRead: Date.now(), readOk: result.ok === true, readCode: result.code || '' });
-  console.info('Jarvis WB diagnostic', report);
+async function readOzonPage(key, selectedFields = [], includeDetails = false, detailOffset = 0) {
+  const url = new URL(location.href), text = (document.body?.innerText || '').slice(0, 16000).toLowerCase();
+  const state = window.__jarvisOzonRead;
+  const diagnostic = { shop: 'ozon', path: url.pathname, readyState: document.readyState,
+    captureLoaded: !!state, hooks: state?.hooksActive?.() || null, network: state?.debug || null };
+  const fail = (code, stage) => ({ ok: false, code, diagnostic: { ...diagnostic, stage } });
+  if (url.origin !== 'https://www.ozon.ru' || /ozonid|\/login|\/auth/.test(url.pathname)
+      || /войдите,? чтобы (?:увидеть|посмотреть)|введите (?:номер телефона|код из смс)/.test(text)
+      || [...document.querySelectorAll('input[type="tel"],input[autocomplete="one-time-code"]')].some(input => input.getClientRects().length)) return fail('login', 'login_page');
+  if (/доступ ограничен|подтвердите, что вы|проверяем браузер|captcha|access denied/.test(text)) return fail('blocked', 'browser_check');
+  if (url.pathname.replace(/\/$/, '') !== '/my/orderlist' || (url.searchParams.get('selectedTab') === 'archive') !== (key === 'orders')) return fail('unreadable', 'wrong_section');
+  if (!state) return fail('unreadable', 'capture_missing');
+  state.scan();
+  if (key !== 'status' && state.list) await state.enrich(detailOffset);
+  const result = state.read(key, selectedFields, includeDetails);
+  if (!result) return fail('unreadable', 'waiting_for_list');
+  diagnostic.rowsWithName = result.rows.filter(row => row.name).length;
+  diagnostic.rowsWithPrice = result.rows.filter(row => row.price).length;
+  diagnostic.verifiedPositions = result.rows.filter(row => row.id.startsWith('ozon:')).length;
+  diagnostic.nextDetailOffset = state.debug.nextDetailOffset;
+  return { ...result, ok: true, cabinet: true, url: url.origin + url.pathname + (key === 'orders' ? '?selectedTab=archive' : ''),
+    diagnostic: { ...diagnostic, stage: 'list_read' } };
 }
 
-async function diagnose() {
-  if (running) return { ok: false, error: 'Чтение WB уже идёт. Дождитесь результата.' };
+async function readOzon(section, foreground = false, includeDetails = false) {
+  if (!Object.prototype.hasOwnProperty.call(URLS, section)) return { ok: false, code: 'browser' };
+  const url = 'https://www.ozon.ru/my/orderlist' + (section === 'orders' ? '?selectedTab=archive' : '');
+  const started = Date.now();
+  let attempt = 0;
+  const finish = result => ({ ...result, diagnostic: { ...(result.diagnostic || {}), shop: 'ozon', section,
+    version: chrome.runtime.getManifest().version, attempts: attempt, elapsedMs: Date.now() - started } });
+  try {
+    let tabId;
+    const previous = await chrome.storage.session.get('ozonTab');
+    if (Number.isInteger(previous.ozonTab)) {
+      try { const old = await chrome.tabs.get(previous.ozonTab); if (old.url?.startsWith('https://www.ozon.ru/my/orderlist')) tabId = old.id; } catch (_) { /* closed */ }
+    }
+    if (tabId !== undefined) await chrome.tabs.update(tabId, { url, ...(foreground ? { active: true } : {}) });
+    else { const tab = await chrome.tabs.create({ url, active: foreground }); tabId = tab.id; await chrome.storage.session.set({ ozonTab: tabId }); }
+    await chrome.tabs.reload(tabId);
+    const config = await chrome.storage.local.get(['ozonSelectedFields', 'ozonDetailOffsets']);
+    const selected = Array.isArray(config.ozonSelectedFields) ? config.ozonSelectedFields.filter(value => typeof value === 'string').slice(0, 600) : [];
+    let result = { ok: false, code: 'unreadable', diagnostic: { stage: 'waiting_for_list' } };
+    for (attempt = 1; attempt <= 30; attempt++) {
+      await pause(1000);
+      const tab = await chrome.tabs.get(tabId);
+      if (!tab.url?.startsWith('https://www.ozon.ru/')) { if (tab.status !== 'complete') continue; return finish({ ok: false, code: 'login' }); }
+      try {
+        const snapshot = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: readOzonPage,
+          args: [section, selected, includeDetails, config.ozonDetailOffsets?.[section] || 0] });
+        result = snapshot[0]?.result || result;
+        if (Number.isInteger(result.diagnostic?.nextDetailOffset)) await chrome.storage.local.set({
+          ozonDetailOffsets: { ...(config.ozonDetailOffsets || {}), [section]: result.diagnostic.nextDetailOffset } });
+      } catch (_) { continue; }
+      if (result.ok || result.code === 'login') return finish(result);
+    }
+    return finish(result);
+  } catch (_) { return finish({ ok: false, code: 'browser', diagnostic: { stage: 'browser_error' } }); }
+}
+
+const readShop = (shop, ...args) => shop === 'wb' ? readWb(...args) : shop === 'ozon' ? readOzon(...args) : Promise.resolve({ ok: false, code: 'browser' });
+
+async function recordRead(result, trigger, shop = 'wb') {
+  if (Array.isArray(result.fieldCatalog)) await chrome.storage.local.set(shop === 'ozon'
+    ? { ozonFieldCatalog: result.fieldCatalog, ozonFieldCatalogAt: Date.now() }
+    : { fieldCatalog: result.fieldCatalog, fieldCatalogAt: Date.now() });
+  // Deliberately omit rows, text, credentials, server URL and arbitrary errors.
+  const report = { at: new Date().toISOString(), trigger, shop, ok: result.ok === true,
+    code: result.code || '', ...(result.diagnostic || {}) };
+  const key = shop === 'ozon' ? 'ozonReadLogs' : 'readLogs';
+  const logs = await chrome.storage.local.get([key]);
+  await chrome.storage.local.set({ [key]: [...(logs[key] || []).slice(-5), report],
+    [shop === 'ozon' ? 'ozonLastRead' : 'lastRead']: Date.now(),
+    [shop === 'ozon' ? 'ozonReadOk' : 'readOk']: result.ok === true,
+    [shop === 'ozon' ? 'ozonReadCode' : 'readCode']: result.code || '' });
+  console.info('Jarvis marketplace diagnostic', report);
+}
+
+async function diagnose(shop = 'wb') {
+  if (running) return { ok: false, error: 'Чтение кабинета уже идёт. Дождитесь результата.' };
   running = true;
   try {
-    const result = await readWb('delivery', true);
-    await recordRead(result, 'manual');
+    const result = await readShop(shop, 'delivery', true);
+    await recordRead(result, 'manual', shop);
     return { ok: true };
   } finally { running = false; }
 }
@@ -239,13 +306,14 @@ async function tick() {
       await post(config, 'result', config.pending);
       await chrome.storage.local.remove('pending');
     }
-    const response = await post(config, 'poll', {});
+    const response = await post(config, 'poll', { capabilities: ['wb', 'ozon'] });
     await chrome.storage.local.set({ lastPoll: Date.now(), error: '' });
     if (response.job) {
       const current = await chrome.storage.local.get(['server', 'token', 'enabled']);
       if (!current.enabled || current.server !== config.server || current.token !== config.token) return;
-      const result = await readWb(response.job.section, false, response.job.details === true);
-      await recordRead(result, 'jarvis');
+      const shop = response.job.shop || 'wb';
+      const result = await readShop(shop, response.job.section, false, response.job.details === true);
+      await recordRead(result, 'jarvis', shop);
       const after = await chrome.storage.local.get(['server', 'token', 'enabled']);
       if (!after.enabled || after.server !== config.server || after.token !== config.token) return;
       const { diagnostic, fieldCatalog, ...upload } = result;
@@ -277,12 +345,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type === 'diagnose') {
     if (running) {
-      sendResponse({ ok: false, error: 'Чтение WB уже идёт. Дождитесь результата.' });
+      sendResponse({ ok: false, error: 'Чтение кабинета уже идёт. Дождитесь результата.' });
       return false;
     }
     // Activating the WB tab closes the toolbar popup. Acknowledge now; the
     // check writes its result to storage without depending on that popup port.
-    diagnose().catch(() => chrome.storage.local.set({ error: 'Не удалось записать диагностику.' }));
+    if (!['wb', 'ozon'].includes(message.shop || 'wb')) return false;
+    diagnose(message.shop || 'wb').catch(() => chrome.storage.local.set({ error: 'Не удалось записать диагностику.' }));
     sendResponse({ ok: true, started: true });
     return false;
   }

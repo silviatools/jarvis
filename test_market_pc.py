@@ -119,7 +119,8 @@ class PcTest(unittest.TestCase):
 
     def test_download_archive(self):
         with zipfile.ZipFile(io.BytesIO(pc.extension_zip())) as archive:
-            self.assertEqual(len(archive.namelist()), 10)
+            self.assertEqual(len(archive.namelist()), 11)
+            self.assertIn('ozon-capture.js', archive.namelist())
             manifest = json.loads(archive.read('manifest.json'))
             self.assertNotIn('cookies', manifest['permissions'])
             self.assertNotIn(self.token.encode(), archive.read('background.js'))

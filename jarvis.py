@@ -1190,7 +1190,7 @@ def build_backup_zip() -> bytes:
             zf.write(path, arcname=arcname)
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
-                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_wb_pickup.json", "jarvis_tg_history.sqlite3",
+                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_wb_pickup.json", "jarvis_ozon_pickup.json", "jarvis_tg_history.sqlite3",
                       "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl",
                       "jarvis_newspaper_cache.json", "jarvis_newspaper_state.json", "jarvis_newspaper_latest.html",
                       "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png"}
@@ -7463,6 +7463,7 @@ def _wb_pickup_notify(text):
 
 def _wb_pickup_tick():
     wb_watch_skill.tick(load_app_data, lambda: market_pc.request("delivery"), _wb_pickup_notify)
+    wb_watch_skill.tick(load_app_data, lambda: market_pc.request("delivery", shop="ozon"), _wb_pickup_notify, shop="ozon")
 
 
 _study_brief_running = set()
@@ -10986,7 +10987,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             blob = market_pc.extension_zip()
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
-            self.send_header("Content-Disposition", 'attachment; filename="jarvis-wb-windows.zip"')
+            self.send_header("Content-Disposition", 'attachment; filename="jarvis-marketplaces-windows.zip"')
             self.send_header("Content-Length", str(len(blob)))
             self.send_header("Cache-Control", "private, no-store")
             self.end_headers()
@@ -12824,7 +12825,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 if not market_skill.skill_on(state):
                     self._json(200, {"ok": False, "error": "Навык «Маркетплейсы» выключен."})
                 else:
-                    self._json(200, market_pc.request(payload.get("section") or "status"))
+                    self._json(200, market_pc.request(payload.get("section") or "status", shop=payload.get("shop") or "wb"))
             elif route == "/api/market/proxy":
                 self._json(200, market_skill.save_proxy(payload.get("proxy") or ""))
             elif route == "/api/market/proxy/check":

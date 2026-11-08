@@ -1,14 +1,30 @@
 const byId = id => document.getElementById(id);
+const shop = () => byId('shop').value === 'ozon' ? 'ozon' : 'wb';
+const title = () => shop() === 'ozon' ? 'Ozon' : 'WB';
+const logKey = () => shop() === 'ozon' ? 'ozonReadLogs' : 'readLogs';
+let selectionLoaded = false;
+byId('shop').addEventListener('change', async () => {
+  selectionLoaded = true;
+  await chrome.storage.local.set({ popupShop: shop() });
+  await refresh();
+});
 byId('version').textContent = 'Версия ' + chrome.runtime.getManifest().version;
 async function refresh() {
-  const config = await chrome.storage.local.get(['server', 'enabled', 'lastPoll', 'lastRead', 'readOk', 'readCode', 'error', 'readLogs']);
+  const config = await chrome.storage.local.get(['server', 'enabled', 'lastPoll', 'lastRead', 'readOk', 'readCode', 'error', 'readLogs', 'ozonLastRead', 'ozonReadOk', 'ozonReadCode', 'ozonReadLogs', 'popupShop']);
+  if (!selectionLoaded) { byId('shop').value = config.popupShop === 'ozon' ? 'ozon' : 'wb'; selectionLoaded = true; }
+  const name = title(), ozon = shop() === 'ozon';
+  byId('open').textContent = 'Открыть ' + name;
+  byId('diagnosticTitle').textContent = 'Диагностика ' + name;
+  byId('diagnose').textContent = 'Проверить ' + name + ' (открыть вкладку)';
   if (!byId('server').value) byId('server').value = config.server || '';
   const lines = [config.enabled ? 'Подключение включено.' : 'Подключение остановлено.'];
   if (config.lastPoll) lines.push('Связь: ' + new Date(config.lastPoll).toLocaleTimeString('ru-RU'));
-  if (config.lastRead) lines.push(config.readOk ? 'Последнее чтение WB прошло.' : 'WB не прочитан: ' + (config.readCode || 'откройте кабинет'));
+  const lastRead = ozon ? config.ozonLastRead : config.lastRead;
+  if (lastRead) lines.push((ozon ? config.ozonReadOk : config.readOk) ? 'Последнее чтение ' + name + ' прошло.' : name + ' не прочитан: ' + ((ozon ? config.ozonReadCode : config.readCode) || 'откройте кабинет'));
   byId('status').textContent = lines.join('\n');
   byId('error').textContent = config.error || '';
-  const logs = config.readLogs?.length ? JSON.stringify({ extensionVersion: chrome.runtime.getManifest().version, checks: config.readLogs }, null, 2) : '';
+  const checks = config[logKey()];
+  const logs = checks?.length ? JSON.stringify({ extensionVersion: chrome.runtime.getManifest().version, shop: shop(), checks }, null, 2) : '';
   if (byId('logs').value !== logs) byId('logs').value = logs;
 }
 byId('connect').addEventListener('click', async () => {
@@ -36,13 +52,13 @@ byId('disconnect').addEventListener('click', async () => {
   await chrome.storage.local.remove(['token', 'pending']);
   await refresh();
 });
-byId('open').addEventListener('click', () => chrome.tabs.create({ url: 'https://www.wildberries.ru/lk/myorders/delivery' }));
+byId('open').addEventListener('click', () => chrome.tabs.create({ url: shop() === 'ozon' ? 'https://www.ozon.ru/my/orderlist' : 'https://www.wildberries.ru/lk/myorders/delivery' }));
 byId('poll').addEventListener('click', () => chrome.runtime.sendMessage({ type: 'poll' }, refresh));
 byId('diagnose').addEventListener('click', async () => {
   byId('diagnose').disabled = true;
-  byId('diagnosticStatus').textContent = 'Читаю WB и записываю логи, до 30 секунд…';
+  byId('diagnosticStatus').textContent = 'Читаю ' + title() + ' и записываю логи, до минуты…';
   try {
-    const reply = await chrome.runtime.sendMessage({ type: 'diagnose' });
+    const reply = await chrome.runtime.sendMessage({ type: 'diagnose', shop: shop() });
     byId('diagnosticStatus').textContent = reply?.ok
       ? (reply.started ? 'Проверка запущена. Подождите до 30 секунд и откройте расширение снова — результат сохранится.' : 'Проверка записана. Нажмите «Скопировать логи».')
       : reply?.error || 'Фоновый обработчик не ответил. Закройте окно и обновите расширение круговой стрелкой в chrome://extensions.';
@@ -51,7 +67,7 @@ byId('diagnose').addEventListener('click', async () => {
   finally { byId('diagnose').disabled = false; }
 });
 byId('copyLogs').addEventListener('click', async () => {
-  if (!byId('logs').value) { byId('diagnosticStatus').textContent = 'Сначала нажмите «Проверить WB».'; return; }
+  if (!byId('logs').value) { byId('diagnosticStatus').textContent = 'Сначала нажмите «Проверить ' + title() + '».'; return; }
   try {
     await navigator.clipboard.writeText(byId('logs').value);
     byId('diagnosticStatus').textContent = 'Логи скопированы. Их можно вставить в чат.';
@@ -61,10 +77,10 @@ byId('copyLogs').addEventListener('click', async () => {
   }
 });
 byId('clearLogs').addEventListener('click', async () => {
-  await chrome.storage.local.remove('readLogs');
+  await chrome.storage.local.remove(logKey());
   byId('diagnosticStatus').textContent = 'Логи удалены.';
   await refresh();
 });
-byId('fields').addEventListener('click', () => chrome.tabs.create({ url: chrome.runtime.getURL('fields.html') }));
+byId('fields').addEventListener('click', () => chrome.tabs.create({ url: chrome.runtime.getURL('fields.html') + '?shop=' + shop() }));
 refresh();
 setInterval(refresh, 2000);
