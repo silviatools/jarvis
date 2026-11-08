@@ -42,6 +42,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 import tablet_stt
 import market_pc
+import wb_watch_skill
 from foods_data import FOODS, FOOD_CATEGORIES
 from off_products_data import OFF_PRODUCTS
 
@@ -1184,7 +1185,7 @@ def build_backup_zip() -> bytes:
             zf.write(path, arcname=arcname)
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
-                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json",
+                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_wb_pickup.json",
                       "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl",
                       "jarvis_newspaper_cache.json", "jarvis_newspaper_state.json", "jarvis_newspaper_latest.html",
                       "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png"}
@@ -6965,6 +6966,7 @@ def assistant_skills_catalog() -> list:
         + (study_skills.SKILLS if study_skills else [])
         + (tg_tools.skills_catalog() if tg_tools else [])
         + (market_skill.SKILLS if market_skill else [])
+        + wb_watch_skill.SKILLS
         + (tg_watch_skill.SKILLS if tg_watch_skill else [])
         + (mail_skill.SKILLS if mail_skill else [])
         + (plan_skill.SKILLS if plan_skill else [])
@@ -7305,6 +7307,19 @@ def _plan_tick():
         return
     for task in plan_skill.claim_due():
         threading.Thread(target=_plan_worker, args=(task,), daemon=True, name="plan-" + task["id"]).start()
+
+
+def _wb_pickup_notify(text):
+    """Personal WB data goes only to the connected Telegram account owner."""
+    token = get_token()
+    uid = (tg_user._load_cfg() or {}).get("user_id") if tg_user else None
+    if not (token and uid and tg_bot):
+        return False
+    return bool(tg_bot.send_text(token, uid, text))
+
+
+def _wb_pickup_tick():
+    wb_watch_skill.tick(load_app_data, lambda: market_pc.request("delivery"), _wb_pickup_notify)
 
 
 _study_brief_running = set()
@@ -7726,6 +7741,10 @@ def notifier_loop():
             _plan_tick()
         except Exception as e:
             print(f"plan tick error: {e.__class__.__name__}: {e}", flush=True)
+        try:
+            _wb_pickup_tick()
+        except Exception as e:
+            print(f"WB pickup tick error: {e.__class__.__name__}", flush=True)
         if mail_skill:
             try:
                 mail_skill.ensure_poller()
