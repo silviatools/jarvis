@@ -43,6 +43,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import tablet_stt
 import market_pc
 import wb_watch_skill
+import route_skill
 import tg_history
 import widget_skill
 import calendar_ics
@@ -1193,7 +1194,7 @@ def build_backup_zip() -> bytes:
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
                       "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_wb_pickup.json", "jarvis_ozon_pickup.json", "jarvis_tg_history.sqlite3",
-                      "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl",
+                      "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl", "jarvis_routes.json",
                       "jarvis_newspaper_cache.json", "jarvis_newspaper_state.json", "jarvis_newspaper_latest.html",
                       "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png"}
 
@@ -1201,7 +1202,7 @@ def build_backup_zip() -> bytes:
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
         #    skips data JSONs — when DATA_DIR == DIR they belong under data/ only)
         for p in sorted(DIR.iterdir()):
-            if p.is_file() and p.name not in data_names and not p.name.startswith(tg_history.STORE_NAME + "-") and p.name not in ("jarvis_tg_user.json", "jarvis_ai_turns.jsonl", "jarvis_tablet_tokens.json") and p.suffix != ".tmp":
+            if p.is_file() and p.name not in data_names and not p.name.startswith(tg_history.STORE_NAME + "-") and p.name not in ("jarvis_tg_user.json", "jarvis_ai_turns.jsonl", "jarvis_tablet_tokens.json", route_skill.KEYS_NAME) and p.suffix != ".tmp":
                 add_file(p, f"code/{p.name}")
 
         # 2. Core data files
@@ -6120,6 +6121,7 @@ def _prompt_sections(app, with_tg: bool, groups) -> str:
         + (tg_watch_skill.prompt_section(st) if tg_watch_skill and with_tg and on("tg_watch") else "")
         + (mail_skill.prompt_section(st) if mail_skill and on("mail") else "")
         + (plan_skill.prompt_section(st) if plan_skill and on("plan") else "")
+        + (route_skill.prompt_section(st) if on("routes") else "")
         + (tg_tools.prompt_section(st) if with_tg and on(*tg_any) else "")
     )
 
@@ -6153,6 +6155,21 @@ _plan_scope = threading.local()   # .on — идёт плановая задач
 
 def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_tg: bool = False) -> dict:
     inp = inp or {}
+    if name in route_skill.TOOL_NAMES:
+        if not route_skill.skill_on((app or {}).get("telegramSkills")):
+            return {"error": "Навык «Места, маршруты и пробки» выключен."}
+        ctx = tg_bot.get_ctx() if tg_bot else None
+        if ctx is not None and not (tg_user and tg_user.is_owner_chat(ctx.chat_id)):
+            return {"error": "Личные адреса и маршруты доступны только владельцу в личном чате."}
+        chat = getattr(ctx, "chat_id", None)
+        if chat is None and tg_user:
+            chat = (tg_user._load_cfg() or {}).get("user_id")
+        if name == "route_watch" and not (get_token() and tg_bot):
+            return {"error": "Для уведомлений подключите Telegram-бота."}
+        if name == "route_watch" and not (chat and tg_user and tg_user.is_owner_chat(chat)):
+            return {"error": "Для уведомления подключите личный Telegram владельца в настройках."}
+        return route_skill.execute(name, inp, (app or {}).get("telegramSkills"), chat,
+                                   getattr(_plan_scope, "on", False), (app or {}).get("settings"))
     if getattr(_plan_scope, "on", False) and "confirmed" in inp:
         inp = {k: v for k, v in inp.items() if k != "confirmed"}   # согласие не подделать: без пользователя его нет
     if name in widget_skill.TOOL_NAMES:
@@ -7161,7 +7178,9 @@ def _assistant_tool_list(app, with_tg: bool) -> list:
         (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + \
         _study_skill_tools(app) + _market_skill_tools(app) + _watch_skill_tools(app, with_tg) + _mail_skill_tools(app) + \
-        _plan_skill_tools(app) + (tg_history.TOOLS if tg_history.skill_on((app or {}).get("telegramSkills")) else [])
+        _plan_skill_tools(app) + (tg_history.TOOLS if tg_history.skill_on((app or {}).get("telegramSkills")) else []) + \
+        (route_skill.TOOLS if route_skill.skill_on((app or {}).get("telegramSkills")) and
+         (not tg_bot or tg_bot.get_ctx() is None or (tg_user and tg_user.is_owner_chat(tg_bot.get_ctx().chat_id))) else [])
 
 
 def assistant_skills_catalog() -> list:
@@ -7176,6 +7195,7 @@ def assistant_skills_catalog() -> list:
         + (tg_watch_skill.SKILLS if tg_watch_skill else [])
         + (mail_skill.SKILLS if mail_skill else [])
         + (plan_skill.SKILLS if plan_skill else [])
+        + route_skill.SKILLS
     )
 
 
@@ -7527,6 +7547,13 @@ def _wb_pickup_notify(text):
 def _wb_pickup_tick():
     wb_watch_skill.tick(load_app_data, lambda: market_pc.request("delivery"), _wb_pickup_notify)
     wb_watch_skill.tick(load_app_data, lambda: market_pc.request("delivery", shop="ozon"), _wb_pickup_notify, shop="ozon")
+
+
+def _route_notify(chat, text):
+    token = get_token()
+    if not (token and tg_bot and tg_user and tg_user.is_owner_chat(chat)):
+        return False
+    return bool(tg_bot.send_text(token, chat, text))
 
 
 _study_brief_running = set()
@@ -7973,6 +8000,10 @@ def notifier_loop():
             _wb_pickup_tick()
         except Exception as e:
             print(f"WB pickup tick error: {e.__class__.__name__}", flush=True)
+        try:
+            route_skill.tick(load_app_data, _route_notify)
+        except Exception as e:
+            print(f"Route tick error: {e.__class__.__name__}", flush=True)
         if mail_skill:
             try:
                 mail_skill.ensure_poller()
@@ -10784,6 +10815,14 @@ def link_preview(raw_url: str) -> tuple:
 
 class JarvisHandler(SimpleHTTPRequestHandler):
 
+    def send_head(self):
+        # New routing credentials must never be served as static files, even
+        # when DATA_DIR is the source directory or the URL is percent-encoded.
+        if Path(self.translate_path(self.path)).name in (route_skill.KEYS_NAME, route_skill.KEYS_NAME + ".tmp"):
+            self.send_error(404)
+            return None
+        return super().send_head()
+
     def do_OPTIONS(self):
         self.send_response(200)
         self._cors()
@@ -11105,6 +11144,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif route == "/api/plan/tools":
             state = (load_app_data() or {}).get("telegramSkills")
             self._json(200, plan_skill.voice_payload(state) if plan_skill else {"tools": [], "prompt": ""})
+        elif route == "/api/routes/tools":
+            self._json(200, route_skill.voice_payload((load_app_data() or {}).get("telegramSkills")))
+        elif route == "/api/routes/status":
+            self._json(200, route_skill.snapshot((load_app_data() or {}).get("settings")))
         elif route == "/api/ai/models":
             self._json(200, ai_usage.catalog() if ai_usage else {"models": [], "roles": [], "effortLabels": {}, "defaults": {}})
         elif route == "/api/ai/usage":
@@ -11319,6 +11362,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._ai_usage_post()
         elif route.startswith("/api/plan/"):
             self._plan_post(route)
+        elif route.startswith("/api/routes/"):
+            self._routes_post(route)
         elif route == "/api/student/check":
             try:
                 self._json(200, student_check())
@@ -12996,6 +13041,29 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {"ok": True})
         except Exception as e:
             self._json(200, {"ok": False, "error": str(e)})
+
+    def _routes_post(self, route: str):
+        length = self._content_length() or 0
+        if length > 32 * 1024:
+            self._json(413, {"error": "body too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(payload, dict):
+                raise ValueError()
+        except (ValueError, TypeError):
+            self._json(400, {"error": "Нужен JSON-объект."})
+            return
+        if route == "/api/routes/config":
+            self._json(200, route_skill.configure(payload))
+        elif route == "/api/routes/tool" and payload.get("name") in route_skill.TOOL_NAMES:
+            inp = payload.get("input") or {}
+            if not isinstance(inp, dict):
+                self._json(400, {"error": "input должен быть объектом."})
+                return
+            self._json(200, execute_assistant_tool(payload["name"], inp, load_app_data() or {}, ""))
+        else:
+            self._json(404, {"error": "not found"})
 
     def _plan_post(self, route: str):
         """Плановые задачи: управление из настроек и вызов инструментов голосовым ассистентом."""

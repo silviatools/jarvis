@@ -26,6 +26,7 @@ GROUPS = {
     "food": {"title": "Питание и готовка", "names": ["log_diet_compliance", "log_checklist_answer"], "prefixes": ["cooking_plan_"]},
     "apple": {"title": "Apple Календарь и Напоминания", "names": [], "prefixes": ["calendar_", "reminders_"]},
     "weather": {"title": "Погода", "names": ["get_weather"], "prefixes": []},
+    "routes": {"title": "Места, маршруты и пробки", "names": [], "prefixes": ["route_"]},
     "study": {"title": "Учёба", "names": ["study_schedule", "study_attach_file", "study_get_attachment", "study_brief_start", "study_chats_scan_now"], "prefixes": []},
     "bot": {"title": "Файлы, чек-листы, картинки, опросы в чат", "names": [
         "tg_send_checklist", "tg_update_checklist", "tg_get_checklists", "tg_send_file", "tg_generate_image", "tg_send_poll",
@@ -51,6 +52,7 @@ KEYWORDS = {
     "food": r"диет|ккал|калор|готовк|продукт|порци|рацион|чеклист.{0,10}(питани|день)|завтрак|обед|ужин",
     "apple": r"календар|событи|встреч|напомин.{0,12}(apple|айфон|iphone)|в напоминани|reminders|на айфон|будильник|созвон",
     "weather": r"погод|дожд|снег|температур|прогноз|зонт|жарк|холодн|ветер",
+    "routes": r"маршрут|пробк|навигатор|до дома|домой|адрес|вегас|vegas|мкад|время.{0,12}(пути|дорог)|когда.{0,30}(час|минут)|платн.{0,8}дорог",
     "study": r"учеб|универ|пар[аыу]\b|расписан|предмет|задани|лекци|семинар|курсов|экзамен|зач[её]т|препод|аудитори|rea\.ru|рэу|вложени",
     "bot": r"файл|документ|отч[её]т|таблиц|список|чек.?лист|покуп|нарисуй|картин|изображени|фото|логотип|аватар|опрос|голосован|кнопк|локаци|контакт|кубик|pdf|docx|xlsx|pptx|excel|word|csv|сформируй|составь|сгенерируй|скинь|пришли",
     "deck": r"презентац|слайд|powerpoint|pptx|питч",
@@ -73,7 +75,7 @@ MORE_TOOL = {
                     "Группы: house — канбан; food — питание/готовка; apple — календарь и напоминания Apple; weather — погода; "
                     "study — учёба, файлы заданий; bot — файлы, чек-листы, картинки, опросы в чат; deck — презентации; "
                     "tg_read/tg_write/tg_topics/tg_org/tg_danger — личный Telegram (чтение, отправка, темы, порядок, удаление); "
-                    "tg_watch — слежение за чатами; market — маркетплейсы; mail — почта. После вызова новые инструменты доступны сразу."),
+                    "tg_watch — слежение за чатами; market — маркетплейсы; mail — почта; routes — адреса, маршруты и пробки. После вызова новые инструменты доступны сразу."),
     "input_schema": {"type": "object",
                      "properties": {"groups": {"type": "array", "items": {"type": "string", "enum": [g for g in GROUPS if g not in ALWAYS]}},
                                     "reason": {"type": "string"}},

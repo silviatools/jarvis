@@ -5242,12 +5242,12 @@ function CommuteCard({ settings }) {
     try {
       // 1. Геокод через Nominatim (бесплатно, без ключа)
       const geocode = async (q) => {
-        const u = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1`;
+        const u = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1&addressdetails=1`;
         const r = await fetch(u, { headers: { 'Accept-Language': 'ru' } });
         if (!r.ok) throw new Error(`Геокод не удался (${r.status})`);
         const j = await r.json();
         if (!j.length) throw new Error(`Адрес не найден: ${q}`);
-        return { lat: parseFloat(j[0].lat), lon: parseFloat(j[0].lon) };
+        return { lat: parseFloat(j[0].lat), lon: parseFloat(j[0].lon), countryCode: j[0].address?.country_code };
       };
 
       const [from, to] = await Promise.all([geocode(homeAddress), geocode(workAddress)]);
@@ -5262,8 +5262,10 @@ function CommuteCard({ settings }) {
 
       const summary = j.routes[0].summary;
       const result = {
-        travelTimeSec: summary.travelTimeInSeconds, // с учётом пробок
+        travelTimeSec: summary.travelTimeInSeconds, // traffic=true does not establish live coverage
         noTrafficTimeSec: summary.noTrafficTravelTimeInSeconds,
+        trafficStatus: from.countryCode === 'ru' || to.countryCode === 'ru' ? 'unavailable' : 'requested',
+        routeKey: JSON.stringify([homeAddress, workAddress]),
         distanceMeters: summary.lengthInMeters,
         ts: Date.now(),
       };
@@ -5273,7 +5275,7 @@ function CommuteCard({ settings }) {
       // Попробовать показать кэш
       try {
         const cached = JSON.parse(localStorage.getItem(COMMUTE_CACHE_KEY) || 'null');
-        if (cached) {
+        if (cached && cached.routeKey === JSON.stringify([homeAddress, workAddress])) {
           setState({ loading: false, error: e.message, data: { ...cached, stale: true } });
           return;
         }
@@ -5335,14 +5337,16 @@ function CommuteCard({ settings }) {
             <div className="text-[var(--text-muted)] text-sm">
               {km} км · в пути ~{noTrafficMin} мин
             </div>
-            {trafficDelay > 1 && (
+            {state.data.trafficStatus === 'requested' && !state.data.stale && trafficDelay > 1 && (
               <div className="text-sm mt-2" style={{ color: trafficDelay > 10 ? '#b00020' : 'var(--text-muted)' }}>
-                Пробки: +{trafficDelay} мин
+                Расчётная задержка: +{trafficDelay} мин
               </div>
             )}
-            {trafficDelay <= 1 && (
-              <div className="text-sm mt-2 text-[var(--text-subtle)]">Без пробок</div>
-            )}
+            <div className="text-xs mt-2 text-[var(--text-muted)]">
+              {state.data.trafficStatus === 'unavailable'
+                ? 'TomTom не предоставляет текущие пробки для России. Это время нельзя использовать как сигнал «дорога свободна».'
+                : 'Оценка TomTom; наличие текущих пробок на всём маршруте не подтверждено.'}
+            </div>
             {state.data.stale && (
               <div className="text-xs text-[var(--text-subtle)] mt-2 italic">Данные из кэша</div>
             )}
@@ -7221,7 +7225,7 @@ function GeneralSettings({ data, setData }) {
         <div>
           <h3 className="font-display text-lg mb-1">Дорога до работы</h3>
           <p className="text-sm text-[var(--text-muted)]">
-            Время в пути с учётом пробок. Обновляется каждые 10 минут.
+            Расчёт TomTom каждые 10 минут. Для России текущие пробки в этом API не заявлены.
           </p>
         </div>
 
@@ -7255,7 +7259,7 @@ function GeneralSettings({ data, setData }) {
             autoComplete="off"
           />
           <p className="text-xs text-[var(--text-subtle)] mt-2">
-            Зарегистрируйтесь на <span className="font-mono">developer.tomtom.com</span> → создайте бесплатный проект → скопируйте API-ключ. 2500 запросов в день бесплатно.
+            Зарегистрируйтесь на <span className="font-mono">developer.tomtom.com</span> → создайте бесплатный проект → скопируйте API-ключ. Бесплатная квота зависит от аккаунта; актуальный тариф Routing API — 20 000 запросов в месяц. Для России текущие пробки в TomTom не заявлены. Проверяйте лимиты в кабинете.
           </p>
         </div>
       </div>
@@ -7806,6 +7810,124 @@ const PLAN_STATUS = {
 };
 const planDate = (s) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(0, 4)} ${s.slice(11, 16)}` : '');
 
+function RoutesBlock({ data }) {
+  const [state, setState] = React.useState(null);
+  const [keys, setKeys] = React.useState({ mapbox: '', tomtom: '' });
+  const [name, setName] = React.useState('Дом');
+  const [query, setQuery] = React.useState('');
+  const [coords, setCoords] = React.useState({ lat: '', lon: '' });
+  const [candidates, setCandidates] = React.useState([]);
+  const [error, setError] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const load = React.useCallback(async () => {
+    try {
+      const r = await fetch('/api/routes/status');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      setState(j);
+    } catch (e) { setError('Не удалось загрузить маршруты: ' + e.message); }
+  }, []);
+  React.useEffect(() => {
+    load();
+    const timer = setInterval(() => { if (!document.hidden) load(); }, 30000);
+    return () => clearInterval(timer);
+  }, [load]);
+  const post = async (path, body) => {
+    const r = await fetch('/api/routes/' + path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok || j.error || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
+    return j;
+  };
+  const act = async (fn) => {
+    setBusy(true); setError('');
+    try { await fn(); await load(); } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+  const tool = (name, input) => post('tool', { name, input });
+  const active = (state?.watches || []).filter(w => w.status === 'watching').length;
+  const statuses = { watching: 'Наблюдение', done: 'Уведомление отправлено', cancelled: 'Отменено', expired: 'Срок завершён', quota_exhausted: 'Бесплатный лимит исчерпан' };
+  return <AssistantBlock id="routes" title="Места и маршруты"
+    subtitle="Сохранённые адреса, пробки и уведомление, когда дорога станет быстрее"
+    badge={active > 0 ? <span className="text-xs">{active} активн.</span> : null}>
+    <div className="space-y-4">
+      <p className="text-sm text-[var(--text-muted)]">Сохраните «Дом» и скажите Джарвису: «Я в Vegas, сообщи, когда до дома будет меньше часа». Он уточнит точку, сравнит маршруты с пробками и проверит их каждые 5 минут. По умолчанию наблюдение длится 12 часов, сообщение придёт в личный Telegram. Точка отправления фиксирована.</p>
+      {(data.telegramSkills || {}).routes === false && <p className="text-sm text-amber-700">Навык выключен. Включите «Места, маршруты и пробки» в навыках ассистента.</p>}
+      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+      <div className="space-y-2">
+        <p className="text-sm font-medium">Бесплатное подключение</p>
+        <p className="text-xs text-[var(--text-muted)]">Маршруты: Mapbox Directions, доступ Start without a card. Не добавляйте платёжный метод: бесплатный demo-доступ блокируется при лимите, автоматически платным не становится. Его условия и срок могут меняться. Лимит Джарвиса — 5000 запросов за 32 дня, затем проверки останавливаются. Время отличается от Яндекс Навигатора.</p>
+        <a href="https://account.mapbox.com/auth/signup/" target="_blank" rel="noopener noreferrer" className="text-sm underline">Получить токен Mapbox без карты</a>
+        <label className="block text-sm">Маршруты: {state?.routing_ready ? 'ключ задан' : 'не подключены'}
+          <input type="password" autoComplete="new-password" className="input w-full mt-1" placeholder="Токен Mapbox Directions" value={keys.mapbox} onChange={e => setKeys(k => ({ ...k, mapbox: e.target.value }))} />
+        </label>
+        <label className="block text-sm">Поиск TomTom: {state?.geocoder_ready ? 'ключ задан' : 'не подключён'}
+          <input type="password" autoComplete="new-password" className="input w-full mt-1" placeholder="Необязательно: ключ TomTom для поиска" value={keys.tomtom} onChange={e => setKeys(k => ({ ...k, tomtom: e.target.value }))} />
+        </label>
+        <button disabled={busy || (!keys.mapbox && !keys.tomtom)} className="btn-secondary text-sm" onClick={() => act(async () => {
+          await post('config', Object.fromEntries(Object.entries(keys).filter(([, v]) => v.trim())));
+          setKeys({ mapbox: '', tomtom: '' });
+        })}>Сохранить ключи</button>
+        <p className="text-xs text-[var(--text-muted)]">Для поиска используется бесплатная квота TomTom; ключ из «Общее → Дорога до работы» подхватится автоматически. Лимит поиска — 2000 запросов за 32 дня. Координаты можно добавить вручную без поиска.</p>
+        {state?.usage && <p className="text-xs text-[var(--text-muted)]">За последние 32 дня: маршруты {state.usage.mapbox.used}/{state.usage.mapbox.limit}, поиск {state.usage.tomtom.used}/{state.usage.tomtom.limit}. Учёт относится к запросам этого навыка.</p>}
+      </div>
+      <div className="space-y-2">
+        <p className="text-sm font-medium">Сохранённые места</p>
+        <p className="text-xs text-[var(--text-muted)]">«Дом» и «Работа» из общих настроек уже доступны ассистенту. Один раз выберите их точные координаты для маршрутов.</p>
+        {(state?.places || []).map(p => <div key={p.name} className="flex items-center justify-between gap-2 border-b border-[var(--border)] py-2">
+          <div className="min-w-0 text-sm"><b>{p.name}</b><p className="text-xs text-[var(--text-muted)] break-words">{p.address || `${p.lat}, ${p.lon}`}</p></div>
+          {p.source === 'settings' ? <button disabled={busy} className="btn-secondary text-xs" onClick={() => { setName(p.name); setQuery(p.address); setCandidates([]); }}>Выбрать точку</button> : <button disabled={busy} className="btn-secondary text-xs" onClick={() => act(() => tool('route_delete_place', { name: p.name }))}>Удалить</button>}
+        </div>)}
+        {state?.places?.length === 0 && <p className="text-sm text-[var(--text-muted)]">Мест пока нет. Добавьте домашний адрес.</p>}
+        <label className="block text-sm">Название места
+          <input className="input w-full mt-1" value={name} onChange={e => setName(e.target.value)} placeholder="Дом" />
+        </label>
+        <label className="block text-sm">Адрес или название для поиска
+          <input className="input w-full mt-1" value={query} onChange={e => { setQuery(e.target.value); setCandidates([]); }} placeholder="Москва, улица, номер дома" />
+        </label>
+        <button disabled={busy || !query.trim()} className="btn-secondary text-sm" onClick={() => act(async () => {
+          setCandidates([]);
+          const j = await tool('route_find_place', { query });
+          setCandidates(j.candidates || []);
+          if (!j.candidates?.length) setError('Адрес не найден. Уточните запрос.');
+        })}>Найти адрес</button>
+        {candidates.map((p, i) => <div key={i} className="border border-[var(--border)] rounded-xl p-3 space-y-2 text-sm">
+          <p>{p.label} · {p.address}</p>
+          {p.precision !== 'Point Address' && <p className="text-xs text-amber-700">Проверьте точку: адрес может быть определён приблизительно.</p>}
+          <button disabled={busy || !name.trim()} className="btn-secondary text-xs" onClick={() => act(async () => {
+            await tool('route_save_place', { name, address: p.address, point: p }); setCandidates([]);
+          })}>Сохранить как «{name || 'место'}»</button>
+        </div>)}
+        <details className="text-sm"><summary className="cursor-pointer">Ввести координаты вручную</summary>
+          <div className="space-y-2 mt-2">
+            <label className="block">Широта<input type="number" step="any" className="input w-full" placeholder="55.75" value={coords.lat} onChange={e => setCoords(c => ({ ...c, lat: e.target.value }))} /></label>
+            <label className="block">Долгота<input type="number" step="any" className="input w-full" placeholder="37.61" value={coords.lon} onChange={e => setCoords(c => ({ ...c, lon: e.target.value }))} /></label>
+            <button className="btn-secondary text-xs" disabled={busy || !name.trim() || !coords.lat || !coords.lon} onClick={() => act(async () => {
+              await tool('route_save_place', { name, address: query, point: { lat: Number(coords.lat), lon: Number(coords.lon) } });
+              setCoords({ lat: '', lon: '' });
+            })}>Сохранить координаты</button>
+          </div>
+        </details>
+      </div>
+      <div className="space-y-2">
+        <p className="text-sm font-medium">Наблюдения за дорогой</p>
+        {(state?.watches || []).slice().reverse().map(w => <div key={w.id} className="border border-[var(--border)] rounded-xl p-3 space-y-1 text-sm">
+          <p className="font-medium">{w.origin.label} → {w.destination.label}</p>
+          <p>{statuses[w.status] || w.status} · меньше {w.threshold_minutes} мин{w.avoid_tolls ? ' · без платных дорог' : ''}</p>
+          {w.last_result && <><p className="text-xs text-[var(--text-muted)]">Последняя проверка: {new Date(w.last_result.checked_at * 1000).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} МСК · {'Mapbox: пробки и статистика'}</p>
+            <p>Варианты: {w.last_result.routes.map(r => `${r.minutes} мин, ${r.distance_km} км${r.has_tolls ? ' (платный)' : ''}${!r.watch_eligible ? ' (недостаточно данных о пробках)' : ''}`).join(' · ')}</p>
+            <a className="underline text-xs" href={w.last_result.url} target="_blank" rel="noopener noreferrer">Открыть в Яндекс Картах</a></>}
+          {w.last_error && <p className="text-xs text-amber-700">{w.last_error}</p>}
+          {w.status === 'watching' && <><p className="text-xs text-[var(--text-muted)]">Проверяем до {new Date(w.expires_at * 1000).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} МСК</p>
+            <button disabled={busy} className="btn-secondary text-xs" onClick={() => act(() => tool('route_cancel', { id: w.id }))}>Отменить наблюдение</button></>}
+        </div>)}
+        {state?.watches?.length === 0 && <p className="text-sm text-[var(--text-muted)]">Наблюдений пока нет. Попросите ассистента сообщить, когда дорога займёт меньше указанного времени.</p>}
+      </div>
+    </div>
+  </AssistantBlock>;
+}
+
 function PlannedTasksBlock({ data }) {
   const [rows, setRows] = React.useState(null);
   const [err, setErr] = React.useState('');
@@ -7946,6 +8068,7 @@ function AssistantSkillsCard({ data, setData, embedded }) {
     watchToolsLoadedAt = 0;
     mailToolsLoadedAt = 0;
     planToolsLoadedAt = 0;
+    routeToolsLoadedAt = 0;
   };
   const riskLabel = { read: 'чтение', create: 'создаёт файлы', write: 'действия с подтверждением', danger: 'опасно' };
   const riskCls = {
@@ -9208,6 +9331,7 @@ function VoiceAssistantSettings({ data, setData }) {
       </div>
 
       <PlannedTasksBlock data={data} />
+      <RoutesBlock data={data} />
 
       <VoiceReplyBlock data={data} setData={setData} />
 
@@ -16555,6 +16679,21 @@ async function loadPlanTools(force) {
   } catch (e) { /* без планирования ассистент работает как раньше */ }
 }
 
+let ROUTE_AGENT_TOOLS = [];
+let ROUTE_AGENT_PROMPT = '';
+let routeToolsLoadedAt = 0;
+async function loadRouteTools(force) {
+  if (!force && Date.now() - routeToolsLoadedAt < 20000) return;
+  try {
+    const r = await fetch('/api/routes/tools');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    ROUTE_AGENT_TOOLS = j.tools || [];
+    ROUTE_AGENT_PROMPT = j.prompt || '';
+    routeToolsLoadedAt = Date.now();
+  } catch (e) { ROUTE_AGENT_TOOLS = []; ROUTE_AGENT_PROMPT = ''; }
+}
+
 
 function lastVoiceUserText(convo) {
   for (let i = (convo || []).length - 1; i >= 0; i--) {
@@ -16626,7 +16765,7 @@ ${writeList}
 
 9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй.
 
-${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
+${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
@@ -16762,6 +16901,14 @@ async function executeVoiceTool(name, input, nav, data) {
     } catch (e) {
       return noop({ error: 'Сервер не ответил по планированию: ' + e.message });
     }
+  }
+  if (name.startsWith('route_')) {
+    try {
+      const res = await fetch('/api/routes/tool', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, input }),
+      });
+      return noop(await res.json());
+    } catch (e) { return noop({ error: 'Сервер не ответил по маршруту: ' + e.message }); }
   }
   if (name.startsWith('market_')) {
     try {
@@ -16960,6 +17107,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
   await loadWatchTools();
   await loadMailTools();
   await loadPlanTools();
+  await loadRouteTools();
   const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
   let pendingConfirmation = false;
   for (let step = 0; step < maxSteps; step++) {
@@ -16971,7 +17119,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS] }),
+      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS] }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -17075,8 +17223,9 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps, ef
   await loadWatchTools();
   await loadMailTools();
   await loadPlanTools();
+  await loadRouteTools();
   const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
-  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS].map(t => ({
+  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS].map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.input_schema },
   }));
