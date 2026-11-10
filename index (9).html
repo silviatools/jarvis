@@ -7871,6 +7871,9 @@ function RoutesBlock({ data }) {
         })}>Сохранить ключи</button>
         <p className="text-xs text-[var(--text-muted)]">Для поиска используется бесплатная квота TomTom; ключ из «Общее → Дорога до работы» подхватится автоматически. Лимит поиска — 2000 запросов за 32 дня. Координаты можно добавить вручную без поиска.</p>
         {state?.usage && <p className="text-xs text-[var(--text-muted)]">За последние 32 дня: маршруты {state.usage.mapbox.used}/{state.usage.mapbox.limit}, поиск {state.usage.tomtom.used}/{state.usage.tomtom.limit}. Учёт относится к запросам этого навыка.</p>}
+        {Object.entries(state?.last_checks || {}).map(([service, check]) => <p key={service} className={`text-xs ${check.ok ? 'text-[var(--text-muted)]' : 'text-amber-700'}`}>
+          {service === 'mapbox' ? 'Mapbox' : 'Поиск TomTom'}: {check.message} · {new Date(check.at * 1000).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} МСК
+        </p>)}
       </div>
       <div className="space-y-2">
         <p className="text-sm font-medium">Сохранённые места</p>
@@ -7916,7 +7919,8 @@ function RoutesBlock({ data }) {
           <p className="font-medium">{w.origin.label} → {w.destination.label}</p>
           <p>{statuses[w.status] || w.status} · меньше {w.threshold_minutes} мин{w.avoid_tolls ? ' · без платных дорог' : ''}</p>
           {w.last_result && <><p className="text-xs text-[var(--text-muted)]">Последняя проверка: {new Date(w.last_result.checked_at * 1000).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} МСК · {'Mapbox: пробки и статистика'}</p>
-            <p>Варианты: {w.last_result.routes.map(r => `${r.minutes} мин, ${r.distance_km} км${r.has_tolls ? ' (платный)' : ''}${!r.watch_eligible ? ' (недостаточно данных о пробках)' : ''}`).join(' · ')}</p>
+            <p>Варианты: {w.last_result.routes.map(r => `${r.minutes} мин, ${r.distance_km} км${r.has_tolls ? ' (платный)' : ''}${r.traffic_details_available === false ? ' (без подробностей загруженности)' : ''}`).join(' · ')}</p>
+            {w.last_result.routes.some(r => r.traffic_details_available === false) && <p className="text-xs text-amber-700">Время — оценка Mapbox; отсутствие подробностей загруженности не означает свободную дорогу.</p>}
             <a className="underline text-xs" href={w.last_result.url} target="_blank" rel="noopener noreferrer">Открыть в Яндекс Картах</a></>}
           {w.last_error && <p className="text-xs text-amber-700">{w.last_error}</p>}
           {w.status === 'watching' && <><p className="text-xs text-[var(--text-muted)]">Проверяем до {new Date(w.expires_at * 1000).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} МСК</p>

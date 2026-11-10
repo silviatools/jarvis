@@ -148,23 +148,52 @@ class RoutesTest(unittest.TestCase):
         self.run_poll()
         self.assertEqual(self.get.call_count, calls)
 
-    def test_unknown_traffic_does_not_arm_and_never_means_empty_roads(self):
+    def test_unknown_congestion_does_not_invalidate_traffic_eta(self):
         self.get.return_value = response(provider(3000, traffic="unknown"))
         r = routes.execute("route_watch", {"origin": A, "destination": B, "threshold_minutes": 60}, {}, 42)
-        self.assertIn("Недостаточно", r["error"])
-        self.assertEqual(routes.snapshot()["watches"], [])
+        self.assertTrue(r.get("ok"), r)
+        self.assertFalse(r["current"]["routes"][0]["traffic_details_available"])
+        self.run_poll()
+        self.assertIn("не подтверждение свободной дороги", self.notify.call_args.args[1])
+        self.assertEqual(routes.snapshot()["watches"][0]["status"], "done")
 
-    def test_background_ignores_faster_variant_with_unknown_traffic(self):
+    def test_background_compares_eta_including_unknown_congestion(self):
         self.watch()
         data = provider(3000, 4000)
         data["routes"][0]["legs"][0]["annotation"]["congestion"] = ["unknown"]
         self.get.return_value = response(data)
         self.run_poll()
-        self.notify.assert_not_called()
+        self.notify.assert_called_once()
+        self.assertIn("50 мин", self.notify.call_args.args[1])
+
+    def test_partial_and_missing_annotations_do_not_block_valid_eta(self):
+        for known_m in (0, 5000, 18000):
+            data = provider(4500)
+            data["routes"][0]["legs"][0]["annotation"] = ({"distance": [known_m, 23000-known_m],
+                    "congestion": ["low", "unknown"]} if known_m else {})
+            self.get.return_value = response(data)
+            result = routes.execute("route_watch", {"origin": A, "destination": B, "threshold_minutes": 60}, {}, 42)
+            self.assertTrue(result.get("ok"), result)
+
+    def test_search_empty_results_are_not_reported_as_service_failure(self):
+        self.get.return_value = response({"results": []})
+        result = routes.execute("route_find_place", {"query": "Крокус Экспо"})
+        self.assertEqual(result["candidates"], [])
+        self.assertIn("ответил", result["message"])
+        self.assertTrue(routes.snapshot()["last_checks"]["tomtom"]["ok"])
+
+    def test_search_failure_diagnostics_do_not_expose_credentials(self):
+        self.get.return_value = response({"errorText": "GEO-SECRET"}, status=403)
+        result = routes.execute("route_find_place", {"query": "Крокус Экспо"})
+        self.assertIn("403", result["error"])
+        status = routes.snapshot()["last_checks"]["tomtom"]
+        self.assertFalse(status["ok"])
+        self.assertIn("403", status["message"])
+        self.assertNotIn("SECRET", json.dumps(status))
 
     def test_invalid_route_and_disabled_traffic_cannot_trigger(self):
         self.watch()
-        for data in (provider(3000, traffic="disabled"), provider(3000, traffic="unknown"), provider(float("nan")),
+        for data in (provider(3000, traffic="disabled"), provider(float("nan")),
                      provider(-1), provider(0), {"code": "Ok", "routes": []},
                      {"code": "Ok", "routes": [{"legs": []}]}):
             self.get.return_value = response(data)

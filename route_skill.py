@@ -81,7 +81,11 @@ def prompt_section(state=None):
             "до дома меньше часа» используй route_watch(threshold_minutes=60), а не обычное напоминание. "
             "Уведомление по самому быстрому допустимому варианту, строго меньше порога. Назови интервал (5 минут), "
             "срок наблюдения и фиксированную точку отправления. Не обещай GPS-слежение, точного совпадения с экраном "
-            "Навигатора или запуска наблюдения, если инструмент вернул ошибку. Не предлагай платные API или повышение тарифа: при лимите остановись. Ключи — Настройки → Ассистент → Места и маршруты.\n\n")
+            "Навигатора или запуска наблюдения, если инструмент вернул ошибку. Отсутствие подробной раскраски congestion "
+            "не отменяет расчёт времени driving-traffic: называй его оценкой Mapbox, не подтверждением свободной дороги. "
+            "Если поиск не сработал, назови сервис и точную безопасную ошибку инструмента (например HTTP 403), "
+            "а пустой список кандидатов назови отсутствием результатов, не недоступностью поиска. "
+            "Не предлагай платные API или повышение тарифа: при лимите остановись. Ключи — Настройки → Ассистент → Места и маршруты.\n\n")
 
 
 def voice_payload(state):
@@ -201,9 +205,16 @@ def point(value, settings=None):
             "lon": _number(value.get("lon"), -180, 180, "Долгота"), "label": str(value.get("label") or "Точка")[:200]}
 
 
+def _record_check(kind, ok, message):
+    with _lock:
+        data = _read()
+        data.setdefault("last_checks", {})[kind] = {"ok": ok, "message": message, "at": time.time()}
+        _write(data)
+
+
 def _get(url, params, kind):
-    _reserve(kind)
     try:
+        _reserve(kind)
         r = requests.get(url, params=params, timeout=20, allow_redirects=False)
         if r.status_code in (402, 403, 429):
             raise QuotaError(kind + ": бесплатный доступ ограничен (HTTP " + str(r.status_code) +
@@ -213,8 +224,13 @@ def _get(url, params, kind):
         data = r.json()
         if not isinstance(data, dict) or data.get("error") or data.get("errors"):
             raise RouteError("Сервис карт не смог обработать запрос.")
+        _record_check(kind, True, "Сервис ответил успешно (HTTP 200).")
         return data
+    except RouteError as e:
+        _record_check(kind, False, str(e))
+        raise
     except (requests.RequestException, ValueError):
+        _record_check(kind, False, "Не удалось получить свежие данные карт. Повторите позже.")
         raise RouteError("Не удалось получить свежие данные карт. Повторите позже.") from None
 
 
@@ -229,7 +245,7 @@ def find_place(query, settings=None):
                 {"key": key, "language": "ru-RU", "countrySet": "RU", "limit": 5,
                  "lat": 55.7558, "lon": 37.6176, "radius": 150000}, "tomtom")
     out = []
-    for obj in data.get("results", []):
+    for obj in data.get("results") or []:
         try:
             pos = obj["position"]
             address = obj.get("address", {}).get("freeformAddress", "")
@@ -238,8 +254,9 @@ def find_place(query, settings=None):
                         "address": address, "precision": obj.get("type", "unknown")})
         except (KeyError, TypeError, RouteError):
             continue
-    return {"candidates": out, "needs_choice": len(out) > 1,
-            "message": "Выберите нужный адрес. Поиск: TomTom. При неоднозначности не выбирайте автоматически."}
+    return {"candidates": out, "needs_choice": len(out) > 1, "source": "TomTom Search",
+            "message": ("Выберите нужный адрес. При неоднозначности не выбирайте автоматически." if out else
+                        "TomTom Search ответил, но подходящих мест не нашёл. Уточните адрес или передайте координаты.")}
 
 
 def check(origin, destination, avoid_tolls=False):
@@ -269,7 +286,9 @@ def check(origin, destination, avoid_tolls=False):
             typical = _number(route.get("duration_typical"), 0, 604800, "Типичное время")
         except RouteError:
             continue
-        # Unknown congestion must not be interpreted as an empty road.
+        # Congestion annotations describe segments; they are not an ETA validity
+        # flag. The traffic-profile ETA and its typical baseline were validated
+        # above. Unknown annotations must not be described as empty roads.
         known_m, total_m = 0.0, 0.0
         for leg in legs:
             ann = leg.get("annotation") or {}
@@ -285,7 +304,7 @@ def check(origin, destination, avoid_tolls=False):
                 if level in ("low", "moderate", "heavy", "severe"):
                     known_m += meters
         coverage = min(1, known_m / distance) if distance > 0 else 0
-        eligible = coverage >= 0.8 and total_m >= distance * 0.8
+        traffic_details_available = known_m > 0
         steps = [s for l in legs for s in l.get("steps", [])]
         tolls = any("toll" in inter.get("classes", []) for s in steps for inter in s.get("intersections", []))
         if avoid_tolls and tolls:
@@ -293,7 +312,10 @@ def check(origin, destination, avoid_tolls=False):
         variants.append({"variant": i + 1, "duration_seconds": duration, "minutes": math.ceil(duration / 60),
                          "typical_minutes": math.ceil(typical / 60), "distance_km": round(distance / 1000, 1),
                          "has_tolls": tolls, "summary": "; ".join(str(l.get("summary") or "") for l in legs)[:250],
-                         "traffic_coverage": round(coverage, 3), "watch_eligible": eligible})
+                         "traffic_coverage": round(coverage, 3), "watch_eligible": True,
+                         "traffic_details_available": traffic_details_available,
+                         "traffic_warning": ("" if traffic_details_available else
+                             "Подробная загруженность участков недоступна. Время — оценка Mapbox, не подтверждение свободной дороги.")})
     if not variants or time.time() - started > 60:
         raise RouteError("Нет свежего допустимого маршрута с пробками.")
     variants.sort(key=lambda r: r["duration_seconds"])
@@ -302,6 +324,7 @@ def check(origin, destination, avoid_tolls=False):
             "traffic_type": "live_and_typical", "source": "Mapbox driving-traffic", "url": url,
             "watch_eligible": any(r["watch_eligible"] for r in variants),
             "note": "Оценка Mapbox сочетает доступные пробки и статистику; свежесть каждого участка API не сообщает. "
+                    "Отсутствие подробностей загруженности не отменяет оценку времени driving-traffic. "
                     "Неизвестные пробки не считаются свободной дорогой. Время может отличаться от Яндекс Навигатора; ссылка открывает отдельный расчёт."}
 
 
@@ -409,6 +432,8 @@ def poll(load_app, notify):
                                    f"{duration_text}, {best['distance_km']} км {traffic}. "
                                    f"Время строго меньше {old['threshold_minutes']:g} мин.\nВарианты: {times}.\n"
                                    f'<a href="{html.escape(result["url"], quote=True)}">Открыть в Яндекс Картах</a>')
+                        if best.get("traffic_warning"):
+                            message += "\n" + html.escape(best["traffic_warning"])
                 except QuotaError as e:
                     terminal = "quota_exhausted"
                     error = str(e)
