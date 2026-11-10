@@ -1222,20 +1222,21 @@ def download_file(token: str, file_id: str, size_hint: int = 0):
     raise TgApiError("Не удалось скачать вложение после трёх попыток")
 
 
-class MediaGroupBuffer:
-    """Telegram присылает альбом отдельными updates; ждём окончания пачки.
+class MessageBatchBuffer:
+    """Объединяет сообщения пользователя после короткой паузы в отправке.
 
-    Буфер общий для последовательных getUpdates, ключ включает бота и чат.
+    Буфер общий для последовательных getUpdates, ключ включает бота, чат и автора.
     callback получает сообщения в порядке Telegram message_id.
     """
 
-    def __init__(self, callback, delay=1.5):
+    def __init__(self, callback, delay=3.0):
         self.callback, self.delay = callback, delay
         self.lock = threading.Lock()
         self.pending = {}
 
     def add(self, token, chat_id, msg):
-        key = (token, chat_id, msg["media_group_id"])
+        sender = (msg.get("from") or {}).get("id") or (msg.get("sender_chat") or {}).get("id")
+        key = (token, chat_id, sender)
         with self.lock:
             entry = self.pending.get(key)
             if entry is None:
@@ -1250,6 +1251,13 @@ class MediaGroupBuffer:
             timer.daemon = True
             entry["timer"] = timer
             timer.start()
+
+    def cancel(self, token, chat_id):
+        """Сброс диалога отменяет ещё не отправленные запросы этого чата."""
+        with self.lock:
+            for key in list(self.pending):
+                if key[:2] == (token, chat_id):
+                    self.pending.pop(key)["timer"].cancel()
 
     def _flush(self, key):
         with self.lock:

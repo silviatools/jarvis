@@ -7037,11 +7037,12 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
 
 
 def _dispatch_user_message(token: str, chat_id, msg):
-    """Сообщение или целый альбом → один ход ассистента, вне long-poll."""
+    """Пачка текстов, пересылок и вложений → один ход ассистента, вне long-poll."""
     if not tg_bot:
         return handle_assistant_message(token, chat_id, (msg.get("text") or "").strip())
     messages = msg if isinstance(msg, list) else [msg]
     msg = next((m for m in messages if m.get("caption") or m.get("text")), messages[0])
+    msg = next((m for m in reversed(messages) if m.get("reply_to_message")), msg)
     if len(messages) > 1 or any(msg.get(k) for k in ("voice", "audio", "video_note", "video")):
         try:
             tg_bot.api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
@@ -7056,16 +7057,16 @@ def _dispatch_user_message(token: str, chat_id, msg):
             print(f"  attachment error: {type(e).__name__}", flush=True)
             text, item_images, error = (item.get("text") or item.get("caption") or "").strip(), [], "не удалось скачать вложение"
         if text:
-            parts.append(text)
+            parts.append(f"[Сообщение {index}]\n{text}" if len(messages) > 1 else text)
         images.extend(item_images)
         if error:
             errors.append(f"Вложение {index}: {error}" if len(messages) > 1 else error)
     text, unsupported = "\n\n".join(parts), "; ".join(errors)
     if len(messages) > 1 and not images and errors:
-        tg_bot.send_text(token, chat_id, "Не удалось прочитать вложения альбома. Отправь альбом ещё раз. " + unsupported)
+        tg_bot.send_text(token, chat_id, "Не удалось прочитать вложения. Отправь их ещё раз вместе с пояснением. " + unsupported)
         return
     if len(messages) > 1:
-        text = (text + "\n\n" if text else "") + f"[Один запрос: альбом из {len(messages)} вложений. Рассмотри все доступные изображения вместе и дай единый ответ."
+        text = (text + "\n\n" if text else "") + f"[Один запрос из {len(messages)} сообщений, отправленных подряд. Рассмотри все тексты, пересылки и доступные вложения вместе, с учётом порядка сообщений, и дай единый ответ."
         if errors:
             text += " Часть вложений не прочитана: явно укажи пропуски, не угадывай их содержимое."
         text += "]"
@@ -7836,7 +7837,7 @@ def _study_skill_exec(name: str, inp: dict, app: dict) -> dict:
 # Long-polls Telegram continuously so inline-button presses (diet answers) and new
 # subscribers are handled within ~1s, independent of the minute-aligned notifier.
 
-_bot_media_groups = tg_bot.MediaGroupBuffer(_dispatch_user_message) if tg_bot else None
+_bot_message_batches = tg_bot.MessageBatchBuffer(_dispatch_user_message) if tg_bot else None
 
 
 def updates_loop():
@@ -7914,6 +7915,8 @@ def updates_loop():
                 send_message(token, cid, WELCOME_TEXT)
             text = (msg.get("text") or msg.get("caption") or "").strip()
             if tg_bot and text.split("@")[0] in ("/new", "/reset"):
+                if _bot_message_batches:
+                    _bot_message_batches.cancel(token, cid)
                 tg_bot.reset(cid)
                 send_message(token, cid, "Контекст диалога сброшен. Следующее сообщение начнёт новый диалог.")
                 continue
@@ -7930,8 +7933,8 @@ def updates_loop():
                         continue
                 except Exception as e:
                     print(f"  diet custom reply error: {e}")
-                if msg.get("media_group_id") and _bot_media_groups:
-                    _bot_media_groups.add(token, cid, msg)
+                if _bot_message_batches:
+                    _bot_message_batches.add(token, cid, msg)
                 else:
                     threading.Thread(
                         target=_dispatch_user_message, args=(token, cid, msg), daemon=True,
