@@ -16131,11 +16131,13 @@ const APPLE_AGENT_TOOLS = [
   },
   {
     name: 'calendar_update_event',
-    description: 'Изменить событие Apple Календаря по id из calendar_list_events. Требует подтверждения пользователя.',
+    description: 'Изменить или перенести событие Apple Календаря по id из calendar_list_events. Для повторяющейся серии меняет ТОЛЬКО ОДНО вхождение: обязательно передай его recurrenceId и calendar из списка (исходная дата остаётся той же после переноса). Остальные встречи серии сохраняются. Требует подтверждения пользователя.',
     input_schema: {
       type: 'object',
       properties: {
         id: { type: 'string' },
+        recurrenceId: { type: 'string', description: 'Точное recurrenceId нужного вхождения из calendar_list_events, не новое время начала.' },
+        calendar: { type: 'string', description: 'Календарь события из calendar_list_events.' },
         title: { type: 'string' }, start: { type: 'string' }, end: { type: 'string' },
         allDay: { type: 'boolean' }, location: { type: 'string' }, notes: { type: 'string' },
         confirmed: { type: 'boolean' },

@@ -45,6 +45,7 @@ import market_pc
 import wb_watch_skill
 import tg_history
 import widget_skill
+import calendar_ics
 from foods_data import FOODS, FOOD_CATEGORIES
 from off_products_data import OFF_PRODUCTS
 
@@ -2166,15 +2167,21 @@ def apple_list_events(date_from=None, date_to=None, calendar=None, limit=200) ->
 
     events = []
     for cal in cals:
-        # expand разворачивает повторяющиеся события в отдельные вхождения —
-        # именно это нужно, чтобы ответить «что у меня в пятницу». Сервер может
-        # не уметь expand: тогда повторяем запрос без него.
-        resp = _apple_report(cal["href"], _apple_calendar_query("VEVENT", time_range=rng, expand=rng))
+        # Разворачиваем локально: iCloud может проигнорировать c:expand и
+        # вернуть DTSTART старого мастера вместо сегодняшнего вхождения.
+        resp = _apple_report(cal["href"], _apple_calendar_query("VEVENT", time_range=rng))
         if resp.status_code not in (200, 207):
-            resp = _apple_report(cal["href"], _apple_calendar_query("VEVENT", time_range=rng))
+            raise AppleError(f"Не удалось прочитать календарь «{cal['name']}» ({resp.status_code}).")
         for _href, _etag, text in _apple_collect(resp, "VEVENT"):
-            for block in _ics_blocks(text, "VEVENT"):
-                events.append(_apple_event_from(block, cal["name"]))
+            source = calendar_ics.parse(text)
+            series_uids = {str(e.get("UID")) for e in source.walk("VEVENT")
+                           if any(k in e for k in ("RRULE", "RDATE", "RECURRENCE-ID"))}
+            for occurrence in calendar_ics.occurrences(source, start_dt, end_dt):
+                block = _ics_blocks(occurrence.to_ical().decode("utf-8"), "VEVENT")[0]
+                event = _apple_event_from(block, cal["name"])
+                event["recurring"] = event["id"] in series_uids
+                event["recurrenceId"] = calendar_ics.recurrence_id(occurrence) if event["recurring"] else ""
+                events.append(event)
     events.sort(key=lambda e: (e.get("start") or "", e.get("title") or ""))
     return {
         "range": {"from": start_dt.strftime("%Y-%m-%d %H:%M"), "to": end_dt.strftime("%Y-%m-%d %H:%M")},
@@ -2183,20 +2190,23 @@ def apple_list_events(date_from=None, date_to=None, calendar=None, limit=200) ->
     }
 
 
-def _apple_find(uid: str, comp: str):
+def _apple_find(uid: str, comp: str, calendar=None):
     """(collection, href, etag, ics_text) по UID."""
     if not uid:
         raise AppleError("Не указан id записи.")
     disc = apple_discover()
     pool = disc["calendars"] if comp == "VEVENT" else disc["todoLists"]
+    if calendar:
+        pool = [_apple_pick(pool, calendar)]
     for coll in pool:
         resp = _apple_report(coll["href"], _apple_calendar_query(comp, uid=uid))
         if resp.status_code not in (200, 207):
             continue
         found = _apple_collect(resp, comp)
-        if found:
-            href, etag, text = found[0]
-            return coll, urljoin(coll["href"], href), etag, text
+        for href, etag, text in found:
+            # CalDAV text-match может вернуть UID, содержащий искомую строку.
+            if any(_ics_text(b, "UID") == uid for b in _ics_blocks(text, comp)):
+                return coll, urljoin(coll["href"], href), etag, text
     raise AppleError("Запись с таким id в iCloud не нашлась — возможно, её уже удалили.")
 
 
@@ -2302,7 +2312,16 @@ def _apple_patch_ics(text: str, comp: str, patch: dict, kind: str) -> str:
 
     def drop(name):
         nonlocal body
-        body = [l for l in body if l.split(";")[0].split(":")[0].strip().upper() != name]
+        kept, depth = [], 0
+        for line in body:
+            prop = line.split(";")[0].split(":")[0].strip().upper()
+            if prop == "BEGIN":
+                depth += 1
+            if depth or prop != name:
+                kept.append(line)
+            if prop == "END":
+                depth -= 1
+        body = kept
 
     def put(line):
         nonlocal body
@@ -2322,17 +2341,19 @@ def _apple_patch_ics(text: str, comp: str, patch: dict, kind: str) -> str:
             if not patch.get("end"):
                 # Сдвинули начало — конец тянем на ту же длительность, иначе
                 # событие «схлопнется» в ноль или уедет в прошлое.
-                dur = timedelta(minutes=60)
+                dur = timedelta(days=1) if all_day else timedelta(minutes=60)
                 old_start_p, old_start_v = _ics_prop(lines[begin + 1:end], "DTSTART")
                 old_end_p, old_end_v = _ics_prop(lines[begin + 1:end], "DTEND")
-                if old_start_v and old_end_v and not all_day:
+                if old_start_v and old_end_v:
                     try:
                         s_iso, _ = _ics_read_dt(old_start_p, old_start_v)
                         e_iso, _ = _ics_read_dt(old_end_p, old_end_v)
-                        dur = datetime.fromisoformat(e_iso) - datetime.fromisoformat(s_iso)
+                        old_start, old_end = apple_parse_dt(s_iso), apple_parse_dt(e_iso)
+                        if isinstance(old_start, datetime) == isinstance(start, datetime):
+                            dur = old_end - old_start
                     except Exception:
-                        dur = timedelta(minutes=60)
-                end_v = (start.date() if isinstance(start, datetime) else start) + timedelta(days=1) if all_day else start + dur
+                        dur = timedelta(days=1) if all_day else timedelta(minutes=60)
+                end_v = (start.date() if isinstance(start, datetime) else start) + dur if all_day else start + dur
                 put(_ics_write_dt("DTEND", end_v, all_day))
         if patch.get("end"):
             all_day = bool(patch.get("allDay")) or (len(str(patch["end"]).strip()) == 10)
@@ -2367,13 +2388,26 @@ def _apple_patch_ics(text: str, comp: str, patch: dict, kind: str) -> str:
     return "\r\n".join(_ics_fold(l) for l in out if l is not None)
 
 
-def apple_update_event(uid: str, patch: dict) -> dict:
-    coll, url, etag, text = _apple_find(uid, "VEVENT")
-    blocks = _ics_blocks(text, "VEVENT")
-    if blocks and (_ics_prop(blocks[0], "RRULE")[1] or len(blocks) > 1):
-        raise AppleError("Это повторяющееся событие — такие безопаснее править в самом Календаре.")
-    _apple_put(url, _apple_patch_ics(text, "VEVENT", patch or {}, "event"), etag)
-    return {"ok": True, "id": uid, "calendar": coll["name"]}
+def apple_update_event(uid: str, patch: dict, recurrence_id=None, calendar=None) -> dict:
+    coll, url, etag, text = _apple_find(uid, "VEVENT", calendar)
+    if calendar_ics.recurring(calendar_ics.parse(text)):
+        if not recurrence_id:
+            raise AppleError("Для правки только этого события передай recurrenceId из calendar_list_events.")
+        if not etag:
+            raise AppleError("iCloud не вернул ETag серии; повтори чтение перед изменением.")
+        try:
+            updated = calendar_ics.edit_occurrence(
+                text, uid, recurrence_id,
+                lambda event: _apple_patch_ics(event, "VEVENT", patch or {}, "event"))
+        except ValueError as e:
+            raise AppleError(str(e))
+    else:
+        if recurrence_id:
+            raise AppleError("Событие больше не повторяется — повтори calendar_list_events.")
+        updated = _apple_patch_ics(text, "VEVENT", patch or {}, "event")
+    _apple_put(url, updated, etag)
+    return {"ok": True, "id": uid, "calendar": coll["name"],
+            "recurrenceId": recurrence_id or ""}
 
 
 def apple_delete_event(uid: str) -> dict:
@@ -2698,11 +2732,13 @@ APPLE_TOOLS = [
     },
     {
         "name": "calendar_update_event",
-        "description": "Изменить событие Apple Календаря по id из calendar_list_events. Требует подтверждения пользователя.",
+        "description": "Изменить или перенести событие Apple Календаря по id из calendar_list_events. Для повторяющейся серии меняет ТОЛЬКО ОДНО вхождение: обязательно передай его recurrenceId и calendar из списка (исходная дата остаётся той же после переноса). Остальные встречи серии сохраняются. Требует подтверждения пользователя.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "id": {"type": "string"},
+                "recurrenceId": {"type": "string", "description": "Точное recurrenceId нужного вхождения из calendar_list_events, не новое время начала."},
+                "calendar": {"type": "string", "description": "Календарь события из calendar_list_events."},
                 "title": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"},
                 "allDay": {"type": "boolean"}, "location": {"type": "string"}, "notes": {"type": "string"},
                 "confirmed": {"type": "boolean"},
@@ -2797,7 +2833,7 @@ def execute_apple_tool(name: str, inp: dict) -> dict:
             return apple_create_event(inp)
         if name == "calendar_update_event":
             patch = {k: inp[k] for k in ("title", "start", "end", "allDay", "location", "notes") if k in inp}
-            return apple_update_event(inp.get("id"), patch)
+            return apple_update_event(inp.get("id"), patch, inp.get("recurrenceId"), inp.get("calendar"))
         if name == "calendar_delete_event":
             return apple_delete_event(inp.get("id"))
         if name == "reminders_list":
