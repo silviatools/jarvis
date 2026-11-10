@@ -1200,11 +1200,66 @@ def recent_file(chat_id, name_hint: str = ""):
 def download_file(token: str, file_id: str, size_hint: int = 0):
     if size_hint and size_hint > MAX_DOWNLOAD:
         return None
-    info = api(token, "getFile", {"file_id": file_id})
-    if info.get("file_size", 0) > MAX_DOWNLOAD:
-        return None
-    r = requests.get(f"https://api.telegram.org/file/bot{token}/{info['file_path']}", timeout=60)
-    return r.content if r.ok else None
+    for attempt in range(3):
+        try:
+            info = api(token, "getFile", {"file_id": file_id})
+            if info.get("file_size", 0) > MAX_DOWNLOAD:
+                return None
+            path = info.get("file_path")
+            if not path:
+                raise TgApiError("getFile: Telegram не вернул путь к файлу")
+            r = requests.get(f"https://api.telegram.org/file/bot{token}/{path}", timeout=60)
+            if r.ok:
+                return r.content if len(r.content) <= MAX_DOWNLOAD else None
+            if r.status_code not in (404, 408, 429) and r.status_code < 500:
+                raise TgApiError(f"Скачивание вложения: HTTP {r.status_code}")
+        except Exception:
+            if attempt == 2:
+                # Исключения requests могут содержать URL с токеном бота.
+                raise TgApiError("Не удалось скачать вложение после трёх попыток") from None
+        if attempt < 2:
+            time.sleep(0.5 * (attempt + 1))
+    raise TgApiError("Не удалось скачать вложение после трёх попыток")
+
+
+class MediaGroupBuffer:
+    """Telegram присылает альбом отдельными updates; ждём окончания пачки.
+
+    Буфер общий для последовательных getUpdates, ключ включает бота и чат.
+    callback получает сообщения в порядке Telegram message_id.
+    """
+
+    def __init__(self, callback, delay=1.5):
+        self.callback, self.delay = callback, delay
+        self.lock = threading.Lock()
+        self.pending = {}
+
+    def add(self, token, chat_id, msg):
+        key = (token, chat_id, msg["media_group_id"])
+        with self.lock:
+            entry = self.pending.get(key)
+            if entry is None:
+                entry = {"messages": {}, "timer": None}
+                self.pending[key] = entry
+            if msg["message_id"] in entry["messages"]:
+                return
+            entry["messages"][msg["message_id"]] = msg
+            if entry["timer"]:
+                entry["timer"].cancel()
+            timer = threading.Timer(self.delay, self._flush, args=(key,))
+            timer.daemon = True
+            entry["timer"] = timer
+            timer.start()
+
+    def _flush(self, key):
+        with self.lock:
+            entry = self.pending.get(key)
+            # Уже запущенный отменённый таймер не должен забрать новую пачку.
+            if entry is None or entry["timer"] is not threading.current_thread():
+                return
+            self.pending.pop(key)
+        messages = [entry["messages"][mid] for mid in sorted(entry["messages"])]
+        self.callback(key[0], key[1], messages)
 
 
 TRANSCRIBE_MODEL = os.environ.get("TRANSCRIBE_MODEL", "gpt-4o-transcribe")
@@ -1259,7 +1314,7 @@ def extract_attachments(token: str, msg: dict, openai_key: str = ""):
             images.append({"media_type": "image/jpeg", "b64": base64.b64encode(data).decode()})
             remember_file(chat_id, f"photo_{msg.get('message_id', '')}.jpg", data)
         else:
-            unsupported = "фото слишком большое"
+            unsupported = "фото не удалось скачать (лимит бота — 20 МБ)"
     doc = msg.get("document")
     if doc:
         name = doc.get("file_name") or "file"

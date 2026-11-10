@@ -7036,22 +7036,39 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
     say(reply + dialog_tag())
 
 
-def _dispatch_user_message(token: str, chat_id, msg: dict):
-    """Текст + вложения (фото, текстовые файлы) → ассистент. Скачивание файлов — в
-    потоке, чтобы не задерживать long-poll."""
+def _dispatch_user_message(token: str, chat_id, msg):
+    """Сообщение или целый альбом → один ход ассистента, вне long-poll."""
     if not tg_bot:
         return handle_assistant_message(token, chat_id, (msg.get("text") or "").strip())
-    try:
-        if any(msg.get(k) for k in ("voice", "audio", "video_note", "video")):
-            try:
-                tg_bot.api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
-            except Exception:
-                pass
-        text, images, unsupported = tg_bot.extract_attachments(
-            token, msg, find_openai_key((load_app_data() or {}).get("settings") or {}))
-    except Exception as e:
-        print(f"  attachment error: {e}")
-        text, images, unsupported = (msg.get("text") or msg.get("caption") or "").strip(), [], "не удалось скачать вложение"
+    messages = msg if isinstance(msg, list) else [msg]
+    msg = next((m for m in messages if m.get("caption") or m.get("text")), messages[0])
+    if len(messages) > 1 or any(msg.get(k) for k in ("voice", "audio", "video_note", "video")):
+        try:
+            tg_bot.api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
+        except Exception:
+            pass
+    parts, images, errors = [], [], []
+    key = find_openai_key((load_app_data() or {}).get("settings") or {})
+    for index, item in enumerate(messages, 1):
+        try:
+            text, item_images, error = tg_bot.extract_attachments(token, item, key)
+        except Exception as e:
+            print(f"  attachment error: {type(e).__name__}", flush=True)
+            text, item_images, error = (item.get("text") or item.get("caption") or "").strip(), [], "не удалось скачать вложение"
+        if text:
+            parts.append(text)
+        images.extend(item_images)
+        if error:
+            errors.append(f"Вложение {index}: {error}" if len(messages) > 1 else error)
+    text, unsupported = "\n\n".join(parts), "; ".join(errors)
+    if len(messages) > 1 and not images and errors:
+        tg_bot.send_text(token, chat_id, "Не удалось прочитать вложения альбома. Отправь альбом ещё раз. " + unsupported)
+        return
+    if len(messages) > 1:
+        text = (text + "\n\n" if text else "") + f"[Один запрос: альбом из {len(messages)} вложений. Рассмотри все доступные изображения вместе и дай единый ответ."
+        if errors:
+            text += " Часть вложений не прочитана: явно укажи пропуски, не угадывай их содержимое."
+        text += "]"
     if unsupported and not text and not images:
         tg_bot.send_text(token, chat_id, unsupported[0].upper() + unsupported[1:] + ".")
         return
@@ -7819,6 +7836,9 @@ def _study_skill_exec(name: str, inp: dict, app: dict) -> dict:
 # Long-polls Telegram continuously so inline-button presses (diet answers) and new
 # subscribers are handled within ~1s, independent of the minute-aligned notifier.
 
+_bot_media_groups = tg_bot.MediaGroupBuffer(_dispatch_user_message) if tg_bot else None
+
+
 def updates_loop():
     print("Updates poller thread started.")
     while True:
@@ -7910,9 +7930,12 @@ def updates_loop():
                         continue
                 except Exception as e:
                     print(f"  diet custom reply error: {e}")
-                threading.Thread(
-                    target=_dispatch_user_message, args=(token, cid, msg), daemon=True,
-                ).start()
+                if msg.get("media_group_id") and _bot_media_groups:
+                    _bot_media_groups.add(token, cid, msg)
+                else:
+                    threading.Thread(
+                        target=_dispatch_user_message, args=(token, cid, msg), daemon=True,
+                    ).start()
         if changed:
             save_subscribers(subs)
 
