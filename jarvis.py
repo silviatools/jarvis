@@ -7815,6 +7815,10 @@ def updates_loop():
                         handle_checklist_callback(token, cq)
                     elif tg_bot and data_str.startswith("tcl:"):
                         tg_bot.handle_checklist_callback(token, cq)
+                    elif tg_bot and data_str.startswith("twf:"):
+                        threading.Thread(target=widget_skill.handle_fallback,
+                                         args=(token, cq, (load_app_data() or {}).get("telegramSkills"), tg_bot),
+                                         daemon=True).start()
                     elif tg_bot and data_str.startswith("tqr:"):
                         tg_bot.handle_quick_callback(
                             token, cq,
