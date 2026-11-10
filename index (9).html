@@ -7869,17 +7869,20 @@ function RoutesBlock({ data }) {
           await post('config', Object.fromEntries(Object.entries(keys).filter(([, v]) => v.trim())));
           setKeys({ mapbox: '', tomtom: '' });
         })}>Сохранить ключи</button>
-        <p className="text-xs text-[var(--text-muted)]">Для поиска используется бесплатная квота TomTom; ключ из «Общее → Дорога до работы» подхватится автоматически. Лимит поиска — 2000 запросов за 32 дня. Координаты можно добавить вручную без поиска.</p>
+        <p className="text-xs text-[var(--text-muted)]">Для поиска используется TomTom; ключ из «Общее → Дорога до работы» подхватится автоматически. Если ключа нет или поиск не сработал, используется бесплатный Photon без ключа. Лимиты за 32 дня: TomTom — 2000, Photon — 1000 запросов. Запросы повторно используются из кэша; доступность публичного Photon не гарантируется.</p>
+        <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer" className="text-xs underline">Поиск Photon: © OpenStreetMap contributors</a>
         {state?.usage && <p className="text-xs text-[var(--text-muted)]">За последние 32 дня: маршруты {state.usage.mapbox.used}/{state.usage.mapbox.limit}, поиск {state.usage.tomtom.used}/{state.usage.tomtom.limit}. Учёт относится к запросам этого навыка.</p>}
+        {state?.usage?.photon && <p className="text-xs text-[var(--text-muted)]">Резервный поиск Photon: {state.usage.photon.used}/{state.usage.photon.limit}.</p>}
         {Object.entries(state?.last_checks || {}).map(([service, check]) => <p key={service} className={`text-xs ${check.ok ? 'text-[var(--text-muted)]' : 'text-amber-700'}`}>
-          {service === 'mapbox' ? 'Mapbox' : 'Поиск TomTom'}: {check.message} · {new Date(check.at * 1000).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} МСК
+          {service === 'mapbox' ? 'Mapbox' : service === 'photon' ? 'Поиск Photon' : 'Поиск TomTom'}: {check.message} · {new Date(check.at * 1000).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} МСК
         </p>)}
       </div>
       <div className="space-y-2">
         <p className="text-sm font-medium">Сохранённые места</p>
         <p className="text-xs text-[var(--text-muted)]">«Дом» и «Работа» из общих настроек уже доступны ассистенту. Один раз выберите их точные координаты для маршрутов.</p>
         {(state?.places || []).map(p => <div key={p.name} className="flex items-center justify-between gap-2 border-b border-[var(--border)] py-2">
-          <div className="min-w-0 text-sm"><b>{p.name}</b><p className="text-xs text-[var(--text-muted)] break-words">{p.address || `${p.lat}, ${p.lon}`}</p></div>
+          <div className="min-w-0 text-sm"><b>{p.name}</b><p className="text-xs text-[var(--text-muted)] break-words">{p.address || `${p.lat}, ${p.lon}`}</p>
+            {p.aliases?.length > 0 && <p className="text-xs text-[var(--text-muted)]">Другие названия: {p.aliases.join(', ')}</p>}</div>
           {p.source === 'settings' ? <button disabled={busy} className="btn-secondary text-xs" onClick={() => { setName(p.name); setQuery(p.address); setCandidates([]); }}>Выбрать точку</button> : <button disabled={busy} className="btn-secondary text-xs" onClick={() => act(() => tool('route_delete_place', { name: p.name }))}>Удалить</button>}
         </div>)}
         {state?.places?.length === 0 && <p className="text-sm text-[var(--text-muted)]">Мест пока нет. Добавьте домашний адрес.</p>}
@@ -7897,6 +7900,7 @@ function RoutesBlock({ data }) {
         })}>Найти адрес</button>
         {candidates.map((p, i) => <div key={i} className="border border-[var(--border)] rounded-xl p-3 space-y-2 text-sm">
           <p>{p.label} · {p.address}</p>
+          {p.source && <p className="text-xs text-[var(--text-muted)]">{p.source}</p>}
           {p.precision !== 'Point Address' && <p className="text-xs text-amber-700">Проверьте точку: адрес может быть определён приблизительно.</p>}
           <button disabled={busy || !name.trim()} className="btn-secondary text-xs" onClick={() => act(async () => {
             await tool('route_save_place', { name, address: p.address, point: p }); setCandidates([]);
