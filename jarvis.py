@@ -44,6 +44,7 @@ import tablet_stt
 import market_pc
 import wb_watch_skill
 import tg_history
+import widget_skill
 from foods_data import FOODS, FOOD_CATEGORIES
 from off_products_data import OFF_PRODUCTS
 
@@ -6073,7 +6074,8 @@ def _prompt_sections(app, with_tg: bool, groups) -> str:
 
     tg_any = ("tg_read", "tg_write", "tg_topics", "tg_org", "tg_danger")
     return (
-        (deck_skill.prompt_section(st) if deck_skill and on("deck") else "")
+        (widget_skill.prompt_section(st) if on("widgets") else "")
+        + (deck_skill.prompt_section(st) if deck_skill and on("deck") else "")
         + (tg_history.prompt_section(st) if on("bot_history") else "")
         + (study_skills.prompt_section(st) if study_skills and on("study") else "")
         + (market_skill.prompt_section(st) if market_skill and on("market") else "")
@@ -6115,6 +6117,9 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
     inp = inp or {}
     if getattr(_plan_scope, "on", False) and "confirmed" in inp:
         inp = {k: v for k, v in inp.items() if k != "confirmed"}   # согласие не подделать: без пользователя его нет
+    if name in widget_skill.TOOL_NAMES:
+        return widget_skill.execute(name, inp, (app or {}).get("telegramSkills"),
+                                    tg_bot.get_ctx() if tg_bot else None, tg_bot)
     if name in tg_history.TOOL_NAMES:
         return tg_history.execute(inp, (app or {}).get("telegramSkills"), tg_bot.get_ctx() if tg_bot else None,
                                   _bot_history_remote)
@@ -7096,6 +7101,7 @@ def _mail_notify(acc: dict, metas: list):
 
 def _assistant_tool_list(app, with_tg: bool) -> list:
     return ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
+        (widget_skill.TOOLS if widget_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + \
         _study_skill_tools(app) + _market_skill_tools(app) + _watch_skill_tools(app, with_tg) + _mail_skill_tools(app) + \
@@ -7110,6 +7116,7 @@ def assistant_skills_catalog() -> list:
         + (market_skill.SKILLS if market_skill else [])
         + wb_watch_skill.SKILLS
         + tg_history.SKILLS
+        + widget_skill.SKILLS
         + (tg_watch_skill.SKILLS if tg_watch_skill else [])
         + (mail_skill.SKILLS if mail_skill else [])
         + (plan_skill.SKILLS if plan_skill else [])
