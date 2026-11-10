@@ -3446,12 +3446,14 @@ def student_fetch_links(group: str, weeks: int = 2, back: int = 0) -> dict:
     sid = _student_profile["id"] if _student_profile["group"].lower() == group.lower() else ""
     first = _student_week_page(0, sid)
     parsed = student_parse_week(first)
-    if parsed["group"] and parsed["group"].lower() != group.lower():
+    # У другого/неактивного профиля кабинет может показать пустую группу и
+    # пустую сетку. Это тоже повод выбрать профиль, а не успешная загрузка.
+    if parsed["group"].lower() != group.lower():
         sid = _student_find_profile(group, first)
-        _student_profile.update({"group": group, "id": sid})
         parsed = student_parse_week(_student_week_page(0, sid))
-    elif parsed["group"]:
-        _student_profile.update({"group": group, "id": sid})
+        if parsed["group"].lower() != group.lower():
+            raise StudentError(f"Кабинет не показал расписание для группы «{group}» после выбора профиля.")
+    _student_profile.update({"group": group, "id": sid})
     out_days, out_lessons = list(parsed["days"]), list(parsed["lessons"])
     for wn in [*range(-max(0, back), 0), *range(1, weeks)]:
         wk = student_parse_week(_student_week_page(wn, sid))
