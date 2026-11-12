@@ -106,6 +106,13 @@ except Exception as _e:  # без telethon остальной сервер до�
         return {"error": "Личный Telegram недоступен на сервере."}
     print(f"NOTE: tg_user disabled: {_e}")
 try:
+    import max_user
+    import max_tools
+except Exception as _e:
+    max_user = None
+    max_tools = None
+    print(f"NOTE: max disabled: {_e}", flush=True)
+try:
     import file_tools
 except Exception as _e:
     file_tools = None
@@ -1186,6 +1193,14 @@ Jarvis — резервная копия проекта и данных
 """
 
 
+def _static_forbidden(path: Path) -> bool:
+    """Файлы, которые нельзя отдать по HTTP и нельзя класть в архив кода."""
+    name = path.name
+    if name in (route_skill.KEYS_NAME, route_skill.KEYS_NAME + ".tmp", "jarvis_max_user.json") or name.startswith("jarvis_max_user."):
+        return True
+    return "jarvis_max" in path.parts
+
+
 def build_backup_zip() -> bytes:
     """Zips the whole project (code) + all app data (data) into one archive."""
     buf = io.BytesIO()
@@ -1208,7 +1223,7 @@ def build_backup_zip() -> bytes:
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
         #    skips data JSONs — when DATA_DIR == DIR they belong under data/ only)
         for p in sorted(DIR.iterdir()):
-            if p.is_file() and p.name not in data_names and not p.name.startswith(tg_history.STORE_NAME + "-") and p.name not in ("jarvis_tg_user.json", "jarvis_ai_turns.jsonl", "jarvis_tablet_tokens.json", route_skill.KEYS_NAME) and p.suffix != ".tmp":
+            if p.is_file() and p.name not in data_names and not p.name.startswith(tg_history.STORE_NAME + "-") and p.name not in ("jarvis_tg_user.json", "jarvis_max_user.json", "jarvis_ai_turns.jsonl", "jarvis_tablet_tokens.json", route_skill.KEYS_NAME) and p.suffix != ".tmp" and not _static_forbidden(p):
                 add_file(p, f"code/{p.name}")
 
         # 2. Core data files
@@ -6121,6 +6136,48 @@ def _prompt_items_compact(on, domain_list: str, nav_list: str, write_list: str) 
     return out
 
 
+def _fold_name(value) -> str:
+    return str(value or "").casefold().replace("ё", "е").strip()
+
+
+def _max_in_study_scope(name: str, inp: dict, peers: list) -> bool:
+    """Сбор по задаче в MAX — только чаты учебной папки из списка."""
+    mx = [p for p in peers or [] if p.get("source") == "max"]
+    folders = {_fold_name(p.get("folder")) for p in mx if p.get("folder")}
+    folder = _fold_name((inp or {}).get("folder"))
+    peer = (inp or {}).get("peer")
+    if name == "max_list_folders":
+        return True
+    if name == "max_list_dialogs":
+        return bool(folder) and folder in folders
+    if name == "max_search_messages":
+        if peer and study_skills and study_skills.peer_allowed(peer, mx):
+            return True
+        return bool(folder) and folder in folders
+    if name in ("max_read_messages", "max_chat_info"):
+        return bool(peer) and study_skills and study_skills.peer_allowed(peer, mx)
+    return False
+
+
+def _max_allowed(with_tg: bool, state=None) -> bool:
+    """Личный MAX — владельцу. Сбор по задаче включает его и без флага with_tg, через _brief_scope.allow_max."""
+    if not (max_tools and max_user and max_user.connected() and max_tools.skill_on(state)):
+        return False
+    if with_tg or getattr(_brief_scope, "allow_max", False):
+        return True
+    ctx = tg_bot.get_ctx() if tg_bot else None
+    if ctx is None:
+        return True
+    return bool(tg_user and tg_user.is_owner_chat(getattr(ctx, "chat_id", None)))
+
+
+def _max_tools_for(app, with_tg: bool) -> list:
+    state = (app or {}).get("telegramSkills")
+    if not _max_allowed(with_tg, state):
+        return []
+    return max_tools.TOOLS
+
+
 def _prompt_sections(app, with_tg: bool, groups) -> str:
     st = (app or {}).get("telegramSkills")
 
@@ -6141,6 +6198,7 @@ def _prompt_sections(app, with_tg: bool, groups) -> str:
         + (health_skill.prompt_section(st) if health_skill and on("health") else "")
         + (route_skill.prompt_section(st) if on("routes") else "")
         + (tg_tools.prompt_section(st) if with_tg and on(*tg_any) else "")
+        + (max_tools.prompt_section(st) if max_tools and _max_allowed(with_tg, st) and on("max_read") else "")
     )
 
 
@@ -6240,8 +6298,18 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
         return study_get_attachment(app, inp)
     # Личный Telegram — только в чате владельца (см. tg_user.is_owner_chat).
     if name in TG_TOOL_NAMES and getattr(_brief_scope, "peers", None) is not None \
-            and not study_skills.peer_allowed(inp.get("peer"), _brief_scope.peers):
+            and not study_skills.peer_allowed(inp.get("peer"), [p for p in _brief_scope.peers if p.get("source") != "max"]):
         return {"error": "Сбор информации ищет только в учебных чатах из списка: укажи peer — чат из списка."}
+    if max_tools and name in max_tools.TOOL_NAMES:
+        state = (app or {}).get("telegramSkills")
+        if not max_tools.skill_on(state):
+            return {"error": "Навык MAX выключен в Настройки → Ассистент → Навыки ассистента."}
+        if not _max_allowed(with_tg, state):
+            return {"error": "Личный MAX в этом чате недоступен."}
+        peers = getattr(_brief_scope, "peers", None)
+        if peers is not None and not _max_in_study_scope(name, inp, peers):
+            return {"error": "Сбор информации ищет в MAX только папку «Учеба» и её чаты из списка."}
+        return max_tools.execute(name, inp, state)
     if name in TG_TOOL_NAMES:
         return execute_tg_tool(name, inp, (app or {}).get("telegramSkills")) if with_tg else {"error": "Личный Telegram в этом чате недоступен."}
     # Apple Календарь и Напоминания живут не в данных приложения, а в iCloud —
@@ -7213,6 +7281,7 @@ def _assistant_tool_list(app, with_tg: bool) -> list:
         (widget_skill.TOOLS if widget_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + \
+        _max_tools_for(app, with_tg) + \
         _study_skill_tools(app) + _market_skill_tools(app) + _watch_skill_tools(app, with_tg) + _mail_skill_tools(app) + \
         _plan_skill_tools(app) + (tg_history.TOOLS if tg_history.skill_on((app or {}).get("telegramSkills")) else []) + \
         (health_skill.TOOLS if health_skill and health_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
@@ -7225,6 +7294,7 @@ def assistant_skills_catalog() -> list:
         (deck_skill.SKILLS if deck_skill else [])
         + (study_skills.SKILLS if study_skills else [])
         + (tg_tools.skills_catalog() if tg_tools else [])
+        + (max_tools.SKILLS if max_tools else [])
         + (market_skill.SKILLS if market_skill else [])
         + wb_watch_skill.SKILLS
         + tg_history.SKILLS
@@ -7534,13 +7604,39 @@ def study_notes_targets(app, conf) -> tuple:
     return targets, unresolved
 
 
+def _merge_study_targets(tg_list: list, max_list: list) -> list:
+    """Учебные чаты Telegram и папка MAX рядом, без вытеснения одной стороны другой."""
+    out, seen = [], set()
+    for src, rows, cap in (("telegram", tg_list, 30), ("max", max_list, 30)):
+        for c in list(rows or [])[:cap]:
+            origin = c.get("source") or src
+            key = (origin, str(c.get("id")))
+            if key in seen or c.get("id") is None:
+                continue
+            seen.add(key)
+            item = {"id": c["id"], "title": c.get("title") or str(c["id"]), "source": origin}
+            if c.get("folder"):
+                item["folder"] = c["folder"]
+            out.append(item)
+    return out
+
+
 def _study_targets(app, conf, with_tg: bool = True) -> tuple:
-    """Все учебные чаты: из «Базы данных» + выбранные вручную + папка из настроек. → (targets, замечания)."""
+    """Учебные чаты Telegram и папка MAX «Учеба». → (targets, замечания)."""
     cfg = study_skills.chats_config(app)
-    if not with_tg:
-        return [], []
-    notes_t, notes = study_notes_targets(app, conf)
-    return study_skills.chat_targets(cfg, _folder_dialogs(cfg["folder"]) + notes_t), notes
+    notes, tg_list = [], []
+    if with_tg and tg_tools:
+        notes_t, notes = study_notes_targets(app, conf)
+        tg_list = study_skills.chat_targets(cfg, _folder_dialogs(cfg["folder"]) + notes_t)
+        for t in tg_list:
+            t["source"] = "telegram"
+    mx = []
+    if max_tools and max_user and max_tools.skill_on((app or {}).get("telegramSkills")) and max_user.connected():
+        try:
+            mx = max_tools.study_folder_targets(cfg.get("maxFolder") or "")
+        except Exception as e:
+            notes.append(f"MAX: {e}")
+    return _merge_study_targets(tg_list, mx), notes
 
 
 _brief_scope = threading.local()   # чаты, к которым можно обращаться агенту сбора информации
@@ -7713,18 +7809,26 @@ def _study_brief_worker(app, snap, conf, token, chats, key):
                                          (70, "Составляю план")], expected=150.0)
             pm.__enter__()
             progress.append(pm)
+        with_max = bool(max_tools and max_user and max_user.connected() and max_tools.skill_on(app.get("telegramSkills")))
         targets, _ = _study_targets(app, conf, with_tg)
-        _brief_scope.peers = targets if with_tg else None
+        _brief_scope.allow_max = with_max
+        _brief_scope.peers = targets if (with_tg or with_max) else None
         att = _attachments_text(snap)
         today = today_msk()
+
+        def _target_line(t):
+            origin = "MAX" if t.get("source") == "max" else "Telegram"
+            return f"• {t['id']} → {t['title']} ({origin})"
+
         user_msg = (
             f"СЕГОДНЯ: {today.isoformat()}, {WEEKDAYS_RU_NOMINATIVE[today.weekday()]}.\n\n"
             f"ЗАДАЧА (JSON):\n{json.dumps(snap, ensure_ascii=False, indent=1)}\n\n"
             + (f"ТЕКСТ ВЛОЖЕНИЙ:\n{att}\n\n" if att else "Вложений с текстом нет.\n\n")
-            + ("УЧЕБНЫЕ ЧАТЫ (id → название):\n" + "\n".join(f"• {t['id']} → {t['title']}" for t in targets) + "\n\n"
-               if targets else "Учебные чаты не найдены (их нужно указать в «Базе данных» или в Настройки → Учеба): в Telegram не ищи, "
-                               "работай по данным Джарвиса и скажи в отчёте, что чаты не указаны.\n\n")
-            + ("" if with_tg else "ЛИЧНЫЙ TELEGRAM НЕ ПОДКЛЮЧЁН: чаты просмотреть нельзя — скажи об этом в отчёте.\n\n")
+            + ("УЧЕБНЫЕ ЧАТЫ (id → название, источник):\n" + "\n".join(_target_line(t) for t in targets) + "\n\n"
+               if targets else "Учебные чаты не найдены (их нужно указать в «Базе данных» или в Настройки → Учеба; "
+                               "папка MAX «Учеба» тоже пуста): в мессенджерах не ищи, работай по данным Джарвиса и скажи в отчёте, что чаты не указаны.\n\n")
+            + ("" if with_tg else "ЛИЧНЫЙ TELEGRAM НЕ ПОДКЛЮЧЁН: учебные чаты Telegram просмотреть нельзя — скажи об этом в отчёте.\n\n")
+            + ("" if with_max else "MAX НЕ ПОДКЛЮЧЁН: папку «Учеба» просмотреть нельзя.\n\n")
             + "Собери информацию и верни итоговый отчёт по структуре.")
         loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
         answer, _ = loop_fn([{"role": "user", "content": user_msg}], api_key, model, app, site_url, with_tg,
@@ -7743,6 +7847,7 @@ def _study_brief_worker(app, snap, conf, token, chats, key):
             except Exception:
                 pass
         _brief_scope.peers = None
+        _brief_scope.allow_max = False
         _study_brief_running.discard(key)
         _record_turn(turn, cfg, "study_brief", snap.get("title") or "")
     title = f"Задача: {snap['title'][:40]}"
@@ -7811,14 +7916,13 @@ def study_chats_scan(chat_id=None, manual: bool = False) -> dict:
             err = "Не задан токен Telegram-бота."
         elif not conf:
             err = "Ассистенту не назначен ключ ИИ: Настройки → Ассистент."
-        elif not (tg_user and tg_tools):
-            err = "Личный Telegram недоступен на сервере."
         elif not owner:
             err = "Включите категорию «Учёба» для вашего личного чата с ботом: Настройки → Маршрутизация."
         targets, notes = ([], []) if err else _study_targets(app, conf)
         if not err and not targets:
-            err = ("Учебные чаты не найдены: укажите их в разделе «База данных» (запись вроде «Учебные чаты: …») "
-                   "или выберите в Настройки → Учеба → «Учебные чаты».") + (" " + "; ".join(notes) if notes else "")
+            err = ("Учебные чаты не найдены: укажите их в «Базе данных» или в Настройки → Учеба. "
+                   "Папка MAX «" + (cfg.get("maxFolder") or "Учеба") + "» тоже пуста или MAX не подключён."
+                   ) + (" " + "; ".join(notes) if notes else "")
         if err:
             study_skills.state_update(lastRunAt=int(time.time() * 1000), lastError=err, lastResult={})
             return {"ok": False, "error": err}
@@ -7831,9 +7935,18 @@ def study_chats_scan(chat_id=None, manual: bool = False) -> dict:
         chats, errors, me = [], list(notes), {}
         for t in targets:
             try:
-                d = tg_tools.scan_chat(t["id"], since)
+                if t.get("source") == "max":
+                    d = max_tools.scan_chat(t["id"], since) if max_tools else {"messages": []}
+                elif tg_tools:
+                    d = tg_tools.scan_chat(t["id"], since)
+                else:
+                    errors.append(f"{t['title']}: личный Telegram недоступен")
+                    continue
+                d["source"] = t.get("source") or "telegram"
+                if d["source"] == "max":
+                    d["chat"] = f"{d.get('chat') or t['title']} (MAX)"
                 me = me or d.get("me") or {}
-                if d["messages"]:
+                if d.get("messages"):
                     chats.append(d)
             except Exception as e:
                 errors.append(f"{t['title']}: {e}")
@@ -7852,7 +7965,8 @@ def study_chats_scan(chat_id=None, manual: bool = False) -> dict:
                 c = by_chat.get(it.get("chat")) or (chats[0] if len(chats) == 1 else None)
                 if c:
                     it["chat"] = c["chat"]
-                    it["chat_id"] = c["chat_id"]
+                    it["source"] = c.get("source") or "telegram"
+                    it["chat_id"] = ("max:" + str(c["chat_id"])) if c.get("source") == "max" else c["chat_id"]
                     msg = next((m for m in c["messages"] if str(m["id"]) == str(it.get("message_id"))), None)
                     if msg and msg.get("link"):
                         it["link"] = msg["link"]
@@ -7870,9 +7984,9 @@ def study_chats_scan(chat_id=None, manual: bool = False) -> dict:
                     ids = tg_bot.send_text(token, cid, text)
                     title = f"Учебные чаты · {now.day} {RU_MONTHS_GEN[now.month - 1]}"
                     user_text = "Проверь учебные чаты: что требует моего внимания?"
-                    asst_text = ("Вот что нашёл в учебных чатах:\n" + study_skills.digest_plain(items) +
-                                 "\n(служебно: уведомление отправлено пользователю. Если он попросит ответить в чат — используй tg_send_message "
-                                 "(peer = chat_id, reply_to = message_id) только после его «да».)")
+                    asst_text = ("Вот что нашёл в учебных чатах Telegram и в папке MAX «Учеба»:\n" + study_skills.digest_plain(items) +
+                                 "\n(служебно: уведомление отправлено пользователю. Если он попросит ответить в чат Telegram — используй tg_send_message "
+                                 "(peer = chat_id, reply_to = message_id) только после его «да». Сообщения с пометкой MAX только читай, в MAX не пиши.)")
                     tg_bot.remember_anchor(cid, ids, title, user_text, asst_text)
                     tg_bot.seed_dialog(cid, title, user_text, asst_text)
                     sent += 1
@@ -7917,7 +8031,9 @@ def study_chats_status() -> dict:
     nt = st.get("notesTargets") or {}
     return {"autoChats": [t.get("title") for t in nt.get("targets") or []], "autoNotes": nt.get("unresolved") or [],
             "lastRunAt": st.get("lastRunAt") or 0, "lastError": st.get("lastError") or "", "lastResult": st.get("lastResult") or {},
-            "running": _study_scan_lock.locked(), "telegramConnected": connected}
+            "running": _study_scan_lock.locked(), "telegramConnected": connected,
+            "maxConnected": bool(max_user and max_user.connected()),
+            "maxFolder": (study_skills.chats_config(load_app_data() or {}).get("maxFolder") if study_skills else "Учеба")}
 
 
 def study_chats_pick(query: str = "") -> dict:
@@ -10925,9 +11041,9 @@ def link_preview(raw_url: str) -> tuple:
 class JarvisHandler(SimpleHTTPRequestHandler):
 
     def send_head(self):
-        # New routing credentials must never be served as static files, even
-        # when DATA_DIR is the source directory or the URL is percent-encoded.
-        if Path(self.translate_path(self.path)).name in (route_skill.KEYS_NAME, route_skill.KEYS_NAME + ".tmp"):
+        # Секреты (ключи маршрутов, сессия MAX) не раздаются как статика,
+        # даже если DATA_DIR совпал с каталогом кода или путь закодирован.
+        if _static_forbidden(Path(self.translate_path(self.path))):
             self.send_error(404)
             return None
         return super().send_head()
@@ -11202,6 +11318,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, tg_watch_skill.voice_payload(state) if tg_watch_skill else {"tools": [], "prompt": ""})
         elif route == "/api/tg/status":
             self._json(200, tg_user.status() if tg_user else {"library": False})
+        elif route == "/api/max/status":
+            self._json(200, max_user.status() if max_user else {"library": False, "connected": False})
         elif route == "/api/tg/skills":
             self._json(200, {"skills": assistant_skills_catalog()})
         elif route == "/api/market/status":
@@ -11280,6 +11398,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             if tg_user and tg_user._load_cfg().get("session"):
                 state = (load_app_data() or {}).get("telegramSkills")
                 self._json(200, {"tools": tg_tools.enabled_tools(state), "prompt": tg_tools.prompt_section(state)})
+            else:
+                self._json(200, {"tools": [], "prompt": ""})
+        elif route == "/api/max/tools":
+            state = (load_app_data() or {}).get("telegramSkills")
+            if max_tools and max_user and max_user.connected() and max_tools.skill_on(state):
+                self._json(200, {"tools": max_tools.enabled_tools(state), "prompt": max_tools.prompt_section(state)})
             else:
                 self._json(200, {"tools": [], "prompt": ""})
         elif route == "/api/weather-cal/status":
@@ -11464,6 +11588,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._apple_post(route)
         elif route.startswith("/api/tg/"):
             self._tg_post(route)
+        elif route.startswith("/api/max/"):
+            self._max_post(route)
         elif route.startswith("/api/push/"):
             self._push_post(route)
         elif route.startswith("/api/market/"):
@@ -13233,6 +13359,44 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {"ok": False, "error": str(e)})
         except Exception as e:
             self._json(200, {"ok": False, "error": f"{e.__class__.__name__}: {e}"})
+
+    def _max_post(self, route: str):
+        """Вход в личный MAX и чтение чатов. Сессия и код в ответ не попадают."""
+        if max_user is None or max_tools is None:
+            self._json(200, {"ok": False, "error": "Личный MAX недоступен на сервере."})
+            return
+        length = self._content_length() or 0
+        if length > 32 * 1024:
+            self._json(413, {"error": "body too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}") if length else {}
+        except Exception as e:
+            self._json(400, {"error": str(e)})
+            return
+        if not isinstance(payload, dict):
+            payload = {}
+        try:
+            if route == "/api/max/auth/start":
+                self._json(200, max_user.auth_start(payload.get("phone")))
+            elif route == "/api/max/auth/code":
+                self._json(200, max_user.auth_code(payload.get("code")))
+            elif route == "/api/max/auth/password":
+                self._json(200, max_user.auth_password(payload.get("password")))
+            elif route == "/api/max/logout":
+                self._json(200, max_user.logout())
+            elif route == "/api/max/tool":
+                name = payload.get("name")
+                if name not in max_tools.TOOL_NAMES:
+                    self._json(400, {"error": "unknown tool"})
+                else:
+                    self._json(200, execute_assistant_tool(name, payload.get("input") or {}, load_app_data() or {}, "", False))
+            else:
+                self._json(404, {"error": "not found"})
+        except max_user.MaxError as e:
+            self._json(200, {"ok": False, "error": str(e)})
+        except Exception as e:
+            self._json(500, {"ok": False, "error": max_user.redact(e)})
 
     def _tg_post(self, route: str):
         """Вход в личный Telegram и вызов его инструментов браузерным ассистентом."""

@@ -4,6 +4,8 @@ __pycache__/
 *.pyc
 .env
 jarvis_tg_user.json
+jarvis_max_user.json
+jarvis_max/
 jarvis_tg_bot_state.json
 jarvis_tg_history.sqlite3
 jarvis_tg_history.sqlite3-journal
