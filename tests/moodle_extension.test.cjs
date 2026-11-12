@@ -4,25 +4,27 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const code = fs.readFileSync('windows/wb-extension/moodle.js', 'utf8');
 function fixture() {
-  const local = {enabled: true, token: 'test'}, session = {}, commands = [];
+  const local = {enabled: true, token: 'test', server: 'https://jarvis.test'}, session = {}, commands = [];
   const tab = {id: 7, url: 'https://moodle.test/course/view.php?id=42', status:'complete'};
   const page = {course:'42', width:800, height:600, links:['https://moodle.test/mod/quiz/view.php?id=1','https://moodle.test/mod/quiz/view.php?id=2']};
   let focus = true, href = '';
   const storage = values => ({get: async keys => Object.fromEntries((Array.isArray(keys)?keys:[keys]).filter(k=>k in values).map(k=>[k, structuredClone(values[k])])),
     set: async value => Object.assign(values, structuredClone(value)), remove: async key => {delete values[key];}});
+  let onMessage;
   const listener = {addListener() {}};
   const context = vm.createContext({URL, Date, Number, Uint8Array, String, crypto:require('node:crypto').webcrypto, btoa, fetch: async()=>({blob: async()=>({})}),
     setTimeout: f => queueMicrotask(f), createImageBitmap: async()=>({close(){}}),
     OffscreenCanvas: class {getContext(){return {drawImage(){}}} async convertToBlob(){return {arrayBuffer: async()=>new Uint8Array([255,216,1]).buffer}}},
     chrome:{storage:{local:storage(local),session:storage(session)},
-      tabs:{get:async()=>tab, update:async(id, options)=>{assert.equal(id,7);Object.assign(tab,options);}},
+      tabs:{query:async()=>[tab],get:async()=>tab, update:async(id, options)=>{assert.equal(id,7);Object.assign(tab,options);}},
       scripting:{executeScript:async({func})=>[{result:func.toString().includes('activeElement') ? focus : func.toString().includes('elementFromPoint') ? {href,password:false} : page}]},
       debugger:{attach:async()=>{},detach:async()=>{},onDetach:listener,sendCommand:async(target,name,args)=>{commands.push({name,args});return {data:'/9gB'}}},
-      alarms:{onAlarm:listener},runtime:{id:'ext',onMessage:listener}}});
+      alarms:{onAlarm:listener},runtime:{id:'ext',onMessage:{addListener(fn){onMessage=fn;}}}}});
   vm.runInContext(code, context);
-  vm.runInContext('moodleTick = async () => {}', context);
+  vm.runInContext('moodleTick = async () => {}; moodlePost = async () => ({ok:true})', context);
   let seq=0;
   return {local,session,tab,page,commands, context,
+    message:type=>new Promise(resolve=>onMessage({type},{id:'ext'},resolve)),
     bind:()=>vm.runInContext(`moodleBind({id:7,url:'${tab.url}'})`,context),
     act: async(action,id=String(++seq))=> {
       context.job={id,run:'run',expires:Date.now()/1000+20,action};
@@ -62,4 +64,36 @@ test('password/non-answer focus, out-of-bounds coordinates and executable action
   f.focus(false);await assert.rejects(f.act({action:'type',text:'secret'}),/текстовое поле/);
   await assert.rejects(f.act({action:'click',x:1000,y:10}),/координаты/);
   await assert.rejects(f.act({action:'eval',text:'evil()'}),/Неизвестная/);
+});
+
+test('bind errors survive popup closure and explain wrong page or missing PC connection',async()=>{
+  const f=fixture();f.tab.url='https://moodle.test/mod/quiz/view.php?id=1';
+  let reply=await f.message('moodleBind');
+  assert.equal(reply.ok,false);assert.match(f.local.moodleStatus,/страницу курса/);
+  assert.equal(f.session.moodle,undefined);
+  await new Promise(resolve=>setImmediate(resolve));
+  f.local.enabled=false;
+  reply=await f.message('moodleBind');
+  assert.equal(reply.ok,false);assert.match(f.local.moodleStatus,/Сначала подключите/);
+});
+test('server failure is visible and rolls back the debugger session',async()=>{
+  const f=fixture();vm.runInContext("moodlePost = async () => {throw new Error('HTTP 404: сервер не обновлён');}",f.context);
+  const reply=await f.message('moodleBind');
+  assert.equal(reply.ok,false);assert.match(f.local.moodleStatus,/404/);
+  assert.equal(f.session.moodle,undefined);
+});
+test('successful bind reports test count only after server confirmation',async()=>{
+  const f=fixture();const reply=await f.message('moodleBind');
+  assert.equal(reply.ok,true);assert.match(f.local.moodleStatus,/Найдено тестов: 2/);
+});
+
+test('stop while debugger is attaching cancels bind and releases the debugger',async()=>{
+  const f=fixture();let release, attached=false, detached=false;
+  f.context.chrome.debugger.attach=()=>new Promise(resolve=>{release=()=>{attached=true;resolve();};});
+  f.context.chrome.debugger.detach=async()=>{detached=true;};
+  const pending=f.message('moodleBind');
+  await new Promise(resolve=>setImmediate(resolve));
+  await f.message('moodleStop');release();
+  assert.equal((await pending).ok,false);
+  assert.ok(attached && detached);assert.equal(f.session.moodle,undefined);
 });

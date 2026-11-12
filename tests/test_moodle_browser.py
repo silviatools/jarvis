@@ -44,7 +44,8 @@ class MoodleBrowser(unittest.TestCase):
             worker = browser.service_workers[0] if browser.service_workers else browser.wait_for_event('serviceworker')
             worker.evaluate('''async () => {
               moodleTick = async () => {};
-              await chrome.storage.local.set({enabled:true, token:'synthetic'});
+              moodlePost = async () => ({ok:true});
+              await chrome.storage.local.set({enabled:true, token:'synthetic', server:'https://jarvis.test'});
               const [tab] = await chrome.tabs.query({url:'https://moodle.test/*'});
               await moodleBind(tab);
             }''')

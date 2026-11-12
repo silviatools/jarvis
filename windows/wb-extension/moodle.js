@@ -1,5 +1,7 @@
 /* Moodle is opt-in and pinned locally. Never accepts URLs or executable code from the server. */
 let moodleBusy = false;
+let moodleBinding = false;
+let moodleBindEpoch = 0;
 const moodlePause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function moodlePost(config, route, body) {
   const r = await fetch(config.server + '/api/moodle/pc/' + route, {
@@ -7,6 +9,8 @@ async function moodlePost(config, route, body) {
     headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + config.token},
     body: JSON.stringify(body), signal: AbortSignal.timeout(12000)
   });
+  if (r.status === 404) throw new Error('На сервере нет обновления Moodle (HTTP 404). Дождитесь завершения деплоя Джарвиса.');
+  if (r.status === 401) throw new Error('Сервер отклонил ключ ПК. Проверьте подключение расширения к Джарвису.');
   if (!r.ok) throw new Error('Moodle: ошибка связи HTTP ' + r.status);
   return r.json();
 }
@@ -22,21 +26,45 @@ async function moodlePage(tabId) {
   return r.result;
 }
 async function moodleBind(tab) {
+  const epoch = moodleBindEpoch;
+  const config = await chrome.storage.local.get(['server', 'token', 'enabled']);
+  if (!config.enabled || !config.server || !config.token) throw new Error('Сначала подключите расширение к Джарвису: укажите адрес сервера и ключ ПК вверху окна и нажмите «Подключить».');
+  if (!tab?.id || !tab.url) throw new Error('Не удалось прочитать текущую вкладку. Откройте Moodle и нажмите значок расширения в панели Chrome.');
   const u = new URL(tab.url);
-  if (u.protocol !== 'https:' || !u.pathname.endsWith('/course/view.php')) throw new Error('Откройте страницу нужного курса Moodle (не отдельный тест).');
+  if (u.protocol !== 'https:' || !u.pathname.endsWith('/course/view.php')) throw new Error('Откройте страницу курса Moodle со списком тестов. Если открыт отдельный тест, нажмите название курса вверху страницы, затем подключите его снова.');
+  await chrome.storage.local.set({moodleStatus: 'Читаю страницу курса…'});
   const page = await moodlePage(tab.id);
-  if (!page.course) throw new Error('Не удалось определить курс Moodle.');
+  if (!page.course) throw new Error('Не удалось определить курс Moodle. Дождитесь загрузки страницы курса и повторите подключение.');
   const links = [...new Set(page.links.map(h => {
     const u = new URL(h);
     return u.origin + u.pathname + '?id=' + u.searchParams.get('id');
   }))];
-  await chrome.debugger.attach({tabId: tab.id}, '1.3');
-  await chrome.storage.session.set({moodle: {tabId: tab.id, origin: u.origin, course: page.course,
-    courseUrl: tab.url, links, index: -1, session: crypto.randomUUID(), run: null, lastJob: null}});
-  await chrome.storage.local.set({moodleStatus: 'Курс подключён. Запросите выполнение в Джарвисе.'});
-  moodleTick();
+  if (!links.length) throw new Error('На странице не найдены тесты. Раскройте разделы курса, дождитесь их загрузки и повторите подключение.');
+  await chrome.storage.local.set({moodleStatus: 'Подключаю управление вкладкой…'});
+  try { await chrome.debugger.attach({tabId: tab.id}, '1.3'); }
+  catch (_) { throw new Error('Chrome не разрешил управление вкладкой. Закройте DevTools этой вкладки, проверьте разрешения расширения и обновите его в chrome://extensions.'); }
+  const session = crypto.randomUUID();
+  try {
+    if (epoch !== moodleBindEpoch) throw new Error('Подключение отменено.');
+    await chrome.storage.session.set({moodle: {tabId: tab.id, origin: u.origin, course: page.course,
+      courseUrl: tab.url, links, index: -1, session, run: null, lastJob: null}});
+    await chrome.storage.local.set({moodleStatus: 'Проверяю связь с Джарвисом…'});
+    const response = await moodlePost(config, 'poll', {session});
+    if (response.ok !== true) throw new Error('Сервер не подтвердил подключение Moodle.');
+    const current = await chrome.storage.local.get(['server', 'token', 'enabled']);
+    if (!current.enabled || current.server !== config.server || current.token !== config.token ||
+        (await chrome.storage.session.get('moodle')).moodle?.session !== session) throw new Error('Подключение отменено. Повторите его после проверки настроек.');
+    await chrome.storage.local.set({moodleStatus: 'Курс подключён. Найдено тестов: ' + links.length + '. Теперь запросите выполнение в Джарвисе.'});
+    moodleTick();
+  } catch (e) {
+    await moodleStop('Не удалось подключить Moodle: ' + (e.message || 'нет связи с сервером'));
+    try { await chrome.debugger.detach({tabId: tab.id}); } catch (_) {}
+    throw e;
+  }
 }
+
 async function moodleStop(message = 'Moodle остановлен на ПК. Уже отправленные попытки сохранены.') {
+  moodleBindEpoch++;
   const {moodle: s} = await chrome.storage.session.get('moodle');
   await chrome.storage.session.remove('moodle');
   if (s) { try { await chrome.debugger.detach({tabId: s.tabId}); } catch (_) {} }
@@ -171,11 +199,25 @@ chrome.debugger.onDetach.addListener(async source => {
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id || sender.tab) return;
   if (message?.type === 'moodleBind') {
-    chrome.tabs.query({active: true, currentWindow: true}).then(async ([tab]) => {
-      if ((await chrome.storage.session.get('moodle')).moodle) throw new Error('Сначала остановите текущее подключение Moodle.');
+    if (moodleBinding) { reply({ok: false, error: 'Подключение Moodle уже выполняется. Дождитесь результата.'}); return; }
+    moodleBinding = true;
+    chrome.storage.local.set({moodleStatus: 'Проверяю подключение Moodle…'}).then(async () => {
+      const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
+      if ((await chrome.storage.session.get('moodle')).moodle) throw new Error('Курс уже подключён. Для смены курса сначала нажмите «Остановить Moodle».');
       await moodleBind(tab);
-    }).then(() => reply({ok: true})).catch(e => reply({ok: false, error: e.message}));
+    }).then(() => reply({ok: true})).catch(async e => {
+      const error = e.message || 'Не удалось подключить Moodle.';
+      await chrome.storage.local.set({moodleStatus: error});
+      reply({ok: false, error});
+    }).finally(() => { moodleBinding = false; });
     return true;
   }
-  if (message?.type === 'moodleStop') { moodleStop().then(() => reply({ok: true})); return true; }
+  if (message?.type === 'moodleStop') {
+    moodleStop().then(() => reply({ok: true})).catch(async e => {
+      const error = e.message || 'Не удалось остановить Moodle.';
+      await chrome.storage.local.set({moodleStatus: error});
+      reply({ok: false, error});
+    });
+    return true;
+  }
 });

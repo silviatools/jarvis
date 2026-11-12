@@ -85,15 +85,42 @@ byId('fields').addEventListener('click', () => chrome.tabs.create({ url: chrome.
 refresh();
 setInterval(refresh, 2000);
 
+// Status is persisted by the worker, so closing the popup cannot hide failures.
+let moodleUiRevision = 0;
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.moodleStatus) {
+    moodleUiRevision++;
+    byId('moodleStatus').textContent = changes.moodleStatus.newValue || 'Курс не подключён.';
+  }
+});
+const moodleInitialRevision = moodleUiRevision;
+chrome.storage.local.get('moodleStatus').then(s => {
+  if (moodleUiRevision === moodleInitialRevision) byId('moodleStatus').textContent = s.moodleStatus || 'Курс не подключён.';
+});
 for (const type of ['moodleBind', 'moodleStop']) {
   byId(type).addEventListener('click', async () => {
+    const button = byId(type);
+    button.disabled = true;
+    moodleUiRevision++;
+    byId('moodleStatus').textContent = type === 'moodleBind' ? 'Подключаю Moodle…' : 'Останавливаю Moodle…';
+    let timer;
     try {
-      const r = await chrome.runtime.sendMessage({type});
-      byId('moodleStatus').textContent = r?.ok ? 'Готово.' : r?.error || 'Нет ответа расширения.';
-    } catch (e) { byId('moodleStatus').textContent = e.message; }
+      const r = await Promise.race([
+        chrome.runtime.sendMessage({type}),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Расширение не ответило за 20 секунд. Проверьте разрешения Chrome и перезагрузите расширение в chrome://extensions.')), 20000); })
+      ]);
+      if (!r?.ok) throw new Error(r?.error || 'Нет ответа расширения. Перезагрузите его в chrome://extensions.');
+      const s = await chrome.storage.local.get('moodleStatus');
+      byId('moodleStatus').textContent = s.moodleStatus || 'Готово.';
+    } catch (e) {
+      const message = /Receiving end|Could not establish|message port|message channel/i.test(e.message || '')
+        ? 'Фоновый обработчик недоступен. Замените все файлы расширения и нажмите «Обновить» в chrome://extensions.'
+        : e.message || 'Не удалось подключить Moodle.';
+      byId('moodleStatus').textContent = message;
+      await chrome.storage.local.set({moodleStatus: message});
+    } finally {
+      clearTimeout(timer);
+      button.disabled = false;
+    }
   });
 }
-setInterval(async () => {
-  const s = await chrome.storage.local.get('moodleStatus');
-  byId('moodleStatus').textContent = s.moodleStatus || 'Курс не подключён.';
-}, 2000);
