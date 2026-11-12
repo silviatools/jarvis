@@ -44,6 +44,7 @@ import tablet_stt
 import market_pc
 import wb_watch_skill
 import route_skill
+import web_skill
 import tg_history
 import widget_skill
 import calendar_ics
@@ -1199,7 +1200,7 @@ def build_backup_zip() -> bytes:
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
                       "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_wb_pickup.json", "jarvis_ozon_pickup.json", "jarvis_tg_history.sqlite3",
-                      "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl", "jarvis_routes.json", "jarvis_health_drafts.json",
+                      "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl", "jarvis_routes.json", "jarvis_health_drafts.json", web_skill.STORE_NAME,
                       "jarvis_newspaper_cache.json", "jarvis_newspaper_state.json", "jarvis_newspaper_latest.html",
                       "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png"}
 
@@ -1207,7 +1208,7 @@ def build_backup_zip() -> bytes:
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
         #    skips data JSONs — when DATA_DIR == DIR they belong under data/ only)
         for p in sorted(DIR.iterdir()):
-            if p.is_file() and p.name not in data_names and not p.name.startswith(tg_history.STORE_NAME + "-") and p.name not in ("jarvis_tg_user.json", "jarvis_ai_turns.jsonl", "jarvis_tablet_tokens.json", route_skill.KEYS_NAME) and p.suffix != ".tmp":
+            if p.is_file() and p.name not in data_names and not p.name.startswith(tg_history.STORE_NAME + "-") and p.name not in ("jarvis_tg_user.json", "jarvis_ai_turns.jsonl", "jarvis_tablet_tokens.json", route_skill.KEYS_NAME, web_skill.KEYS_NAME) and p.suffix != ".tmp":
                 add_file(p, f"code/{p.name}")
 
         # 2. Core data files
@@ -6138,6 +6139,7 @@ def _prompt_sections(app, with_tg: bool, groups) -> str:
         + (plan_skill.prompt_section(st) if plan_skill and on("plan") else "")
         + (health_skill.prompt_section(st) if health_skill and on("health") else "")
         + (route_skill.prompt_section(st) if on("routes") else "")
+        + (web_skill.prompt_section(st) if on("web") else "")
         + (tg_tools.prompt_section(st) if with_tg and on(*tg_any) else "")
     )
 
@@ -6186,6 +6188,8 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
             return {"error": "Для уведомления подключите личный Telegram владельца в настройках."}
         return route_skill.execute(name, inp, (app or {}).get("telegramSkills"), chat,
                                    getattr(_plan_scope, "on", False), (app or {}).get("settings"))
+    if name in web_skill.TOOL_NAMES:
+        return web_skill.execute(name, inp, (app or {}).get("telegramSkills"))
     if getattr(_plan_scope, "on", False) and "confirmed" in inp:
         inp = {k: v for k, v in inp.items() if k != "confirmed"}   # согласие не подделать: без пользователя его нет
     if name in widget_skill.TOOL_NAMES:
@@ -6393,12 +6397,15 @@ def _responses_input(messages: list) -> list:
 
 
 def _responses_call(api_key: str, model: str, messages: list, tools: list, effort: str, cache_key: str = "",
-                    max_tokens: int = 8192, timeout: int = 120) -> dict:
+                    max_tokens: int = 8192, timeout: int = 120, native_search: bool = False) -> dict:
     """Один запрос через Responses API (там инструменты работают вместе с рассуждениями).
     Возвращает то же, что цикл ждёт от Chat Completions: {content, tool_calls, truncated, usage (в форме chat), effort}."""
     body = {"model": model, "input": _responses_input(messages), "max_output_tokens": max_tokens, "store": False}
     if tools:
-        body["tools"] = [{"type": "function", **t["function"]} for t in tools]
+        body["tools"] = [{"type": "function", **t["function"]} for t in tools
+                         if not (native_search and t["function"]["name"] == "web_search")]
+        if native_search:
+            body["tools"].append(dict(web_skill.NATIVE_OPENAI_TOOL))
     if effort:
         body["reasoning"] = {"effort": effort}
     if cache_key:
@@ -6416,6 +6423,9 @@ def _responses_call(api_key: str, model: str, messages: list, tools: list, effor
                 r = requests.post(OPENAI_RESPONSES_URL, headers=headers, json=body, timeout=timeout)
     except Exception as e:
         raise _AssistantError(f"Ошибка связи с ИИ: {e}")
+    if not r.ok and r.status_code == 400 and native_search:
+        print("  assistant: встроенный web_search OpenAI отклонён, переход на web_search Джарвиса", flush=True)
+        return _responses_call(api_key, model, messages, tools, effort, cache_key, max_tokens, timeout)
     if not r.ok:
         try:
             err = r.json().get("error", {}).get("message")
@@ -6423,10 +6433,14 @@ def _responses_call(api_key: str, model: str, messages: list, tools: list, effor
             err = None
         raise _AssistantError(f"Ошибка ИИ: {err or r.status_code}")
     resp = r.json()
-    text, calls = "", []
+    text, calls, sources = "", [], []
     for it in resp.get("output") or []:
         if it.get("type") == "message":
-            text += "".join(p.get("text", "") for p in (it.get("content") or []) if p.get("type") == "output_text")
+            for p in it.get("content") or []:
+                if p.get("type") == "output_text":
+                    text += p.get("text", "")
+                    sources += [(a.get("title"), a.get("url")) for a in (p.get("annotations") or [])
+                                if a.get("type") == "url_citation"]
         elif it.get("type") == "function_call":
             calls.append({"id": it.get("call_id") or it.get("id"), "type": "function",
                           "function": {"name": it.get("name"), "arguments": it.get("arguments") or "{}"}})
@@ -6435,13 +6449,19 @@ def _responses_call(api_key: str, model: str, messages: list, tools: list, effor
              "prompt_tokens_details": {"cached_tokens": (u.get("input_tokens_details") or {}).get("cached_tokens", 0)},
              "completion_tokens_details": {"reasoning_tokens": (u.get("output_tokens_details") or {}).get("reasoning_tokens", 0)}}
     truncated = resp.get("status") == "incomplete" and (resp.get("incomplete_details") or {}).get("reason") == "max_output_tokens"
+    if sources and not calls:
+        text = web_skill.append_sources(text, sources)
     return {"content": text, "tool_calls": calls, "truncated": truncated, "usage": usage, "effort": effort}
 
 
-def _openai_step(api_key: str, model: str, effort: str, messages: list, tools: list, cache_key: str = "") -> dict:
+def _openai_step(api_key: str, model: str, effort: str, messages: list, tools: list, cache_key: str = "",
+                 native_search: bool = False) -> dict:
     """Шаг цикла ассистента у OpenAI. С рассуждениями — через Responses API (Chat Completions не принимает инструменты вместе с
-    reasoning_effort); без них — обычный Chat Completions, а при отказе по этой причине — тоже Responses."""
+    reasoning_effort); без них — обычный Chat Completions, а при отказе по этой причине — тоже Responses.
+    native_search — встроенный web_search OpenAI (есть только в Responses API)."""
     eff = ai_usage.fit_effort(model, effort) if ai_usage else ""
+    if native_search:
+        return _responses_call(api_key, model, messages, tools, eff if eff != "none" else "", cache_key, native_search=True)
     if eff and eff != "none":
         return _responses_call(api_key, model, messages, tools, eff, cache_key)
     body = {"model": model, "max_completion_tokens": 8192, "messages": messages, "tools": tools}
@@ -6497,6 +6517,7 @@ class _TurnState:
                         ok=False, confirm=False, groups=sorted(self.groups) if self.groups else [])
         self._tools = None
         self._sys = None
+        self.no_native = False
 
     # инструменты
     def tools(self) -> list:
@@ -6539,12 +6560,19 @@ class _TurnState:
             self.out["tools_more"] += 1
             self._reset()
 
+    def native_search(self) -> bool:
+        """Встроенный поиск провайдера ИИ вместо web_search Джарвиса (Настройки → Поиск в интернете)."""
+        return (not self.no_native and not self.allowed and "web_search" in self.names()
+                and web_skill.native_enabled((self.app or {}).get("telegramSkills")))
+
     def openai_tools(self) -> list:
         return [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
                 for t in self.tools()]
 
     def claude_tools(self) -> list:
         tools = list(self.tools())
+        if self.native_search():
+            tools = [dict(web_skill.NATIVE_CLAUDE_TOOL)] + [t for t in tools if t["name"] != "web_search"]
         if self.cache and tools:
             tools[-1] = dict(tools[-1], cache_control={"type": "ephemeral"})
         return tools
@@ -6650,7 +6678,10 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
     nav_links = []
     carried = ""        # текст уже выданных кусков, если ответ упёрся в лимит токенов
     continuations = 0
+    sources = []        # цитаты встроенного web_search Claude
     while ts.next_round():
+        tools = ts.claude_tools()
+        native = any(t.get("type") == web_skill.NATIVE_CLAUDE_TOOL["type"] for t in tools)
         try:
             r = requests.post(
                 ANTHROPIC_MESSAGES_URL,
@@ -6661,12 +6692,16 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
                 },
                 json={
                     "model": ts.model, "max_tokens": 8192, "system": ts.claude_system(),
-                    "messages": convo, "tools": ts.claude_tools(),
+                    "messages": convo, "tools": tools,
                 },
                 timeout=60,
             )
         except Exception as e:
             raise _AssistantError(f"Ошибка связи с ИИ: {e}")
+        if not r.ok and r.status_code == 400 and native:
+            print("  assistant: встроенный web_search Claude отклонён, переход на web_search Джарвиса", flush=True)
+            ts.no_native = True
+            continue
         if not r.ok:
             try:
                 err = r.json().get("error", {}).get("message")
@@ -6679,7 +6714,16 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
             _log_call("claude", ts.model, role, func, "", ai_usage.usage_from_claude(resp.get("usage")), ts.step)
         content = resp.get("content", [])
         tool_uses = [b for b in content if b.get("type") == "tool_use"]
-        texts = "\n".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
+        text_blocks = [b for b in content if b.get("type") == "text"]
+        cited = any(b.get("citations") for b in text_blocks)
+        texts = ("" if cited else "\n").join(b.get("text", "") for b in text_blocks).strip()
+        sources += [(c.get("title"), c.get("url")) for b in text_blocks for c in (b.get("citations") or [])
+                    if c.get("type") == "web_search_result_location"]
+        if not tool_uses and resp.get("stop_reason") == "pause_turn":
+            # Длинный серверный поиск: возвращаем ответ как есть, Claude продолжит с того же места.
+            carried += texts + ("\n" if texts else "")
+            convo.append({"role": "assistant", "content": content})
+            continue
         if not tool_uses:
             # Ответ оборвался по лимиту — просим продолжить; пользователь увидит его целиком.
             if resp.get("stop_reason") == "max_tokens" and texts and continuations < 4:
@@ -6689,7 +6733,8 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
                 convo.append({"role": "user", "content": "Продолжи с того места, где оборвался, без повторов."})
                 continue
             ts.finish(True)
-            return (carried + texts) or "Готово", nav_links
+            answer = (carried + texts) or "Готово"
+            return (web_skill.append_sources(answer, sources) if sources else answer), nav_links
 
         convo.append({"role": "assistant", "content": content})
         tool_results = []
@@ -6726,7 +6771,8 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
     carried = ""
     continuations = 0
     while ts.next_round():
-        res = _openai_step(api_key, ts.model, ts.effort, ts.openai_system() + convo, ts.openai_tools(), ("jarvis-" + func) if cache else "")
+        res = _openai_step(api_key, ts.model, ts.effort, ts.openai_system() + convo, ts.openai_tools(), ("jarvis-" + func) if cache else "",
+                           native_search=ts.native_search())
         if ai_usage:
             _log_call("openai", ts.model, role, func, res["effort"], ai_usage.usage_from_openai(res["usage"]), ts.step)
         tool_calls = res["tool_calls"]
@@ -7209,7 +7255,8 @@ def _assistant_tool_list(app, with_tg: bool) -> list:
         _plan_skill_tools(app) + (tg_history.TOOLS if tg_history.skill_on((app or {}).get("telegramSkills")) else []) + \
         (health_skill.TOOLS if health_skill and health_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (route_skill.TOOLS if route_skill.skill_on((app or {}).get("telegramSkills")) and
-         (not tg_bot or tg_bot.get_ctx() is None or (tg_user and tg_user.is_owner_chat(tg_bot.get_ctx().chat_id))) else [])
+         (not tg_bot or tg_bot.get_ctx() is None or (tg_user and tg_user.is_owner_chat(tg_bot.get_ctx().chat_id))) else []) + \
+        (web_skill.TOOLS if web_skill.skill_on((app or {}).get("telegramSkills")) else [])
 
 
 def assistant_skills_catalog() -> list:
@@ -7226,6 +7273,7 @@ def assistant_skills_catalog() -> list:
         + (plan_skill.SKILLS if plan_skill else [])
         + (health_skill.SKILLS if health_skill else [])
         + route_skill.SKILLS
+        + web_skill.SKILLS
     )
 
 
@@ -10879,7 +10927,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
     def send_head(self):
         # New routing credentials must never be served as static files, even
         # when DATA_DIR is the source directory or the URL is percent-encoded.
-        if Path(self.translate_path(self.path)).name in (route_skill.KEYS_NAME, route_skill.KEYS_NAME + ".tmp"):
+        if Path(self.translate_path(self.path)).name in (route_skill.KEYS_NAME, route_skill.KEYS_NAME + ".tmp",
+                                                         web_skill.KEYS_NAME, web_skill.KEYS_NAME + ".tmp"):
             self.send_error(404)
             return None
         return super().send_head()
@@ -11209,6 +11258,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, route_skill.voice_payload((load_app_data() or {}).get("telegramSkills")))
         elif route == "/api/routes/status":
             self._json(200, route_skill.snapshot((load_app_data() or {}).get("settings")))
+        elif route == "/api/web/tools":
+            self._json(200, web_skill.voice_payload((load_app_data() or {}).get("telegramSkills")))
+        elif route == "/api/web/status":
+            self._json(200, web_skill.snapshot())
         elif route == "/api/ai/models":
             self._json(200, ai_usage.catalog() if ai_usage else {"models": [], "roles": [], "effortLabels": {}, "defaults": {}})
         elif route == "/api/ai/usage":
@@ -11425,6 +11478,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._plan_post(route)
         elif route.startswith("/api/routes/"):
             self._routes_post(route)
+        elif route.startswith("/api/web/"):
+            self._web_post(route)
         elif route == "/api/student/check":
             try:
                 self._json(200, student_check())
@@ -13102,6 +13157,29 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {"ok": True})
         except Exception as e:
             self._json(200, {"ok": False, "error": str(e)})
+
+    def _web_post(self, route: str):
+        length = self._content_length() or 0
+        if length > 32 * 1024:
+            self._json(413, {"error": "body too large"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(payload, dict):
+                raise ValueError()
+        except (ValueError, TypeError):
+            self._json(400, {"error": "Нужен JSON-объект."})
+            return
+        if route == "/api/web/config":
+            self._json(200, web_skill.configure(payload))
+        elif route == "/api/web/tool" and payload.get("name") in web_skill.TOOL_NAMES:
+            inp = payload.get("input") or {}
+            if not isinstance(inp, dict):
+                self._json(400, {"error": "input должен быть объектом."})
+                return
+            self._json(200, execute_assistant_tool(payload["name"], inp, load_app_data() or {}, ""))
+        else:
+            self._json(404, {"error": "not found"})
 
     def _routes_post(self, route: str):
         length = self._content_length() or 0

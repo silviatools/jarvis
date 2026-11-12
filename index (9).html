@@ -7936,6 +7936,97 @@ function RoutesBlock({ data }) {
   </AssistantBlock>;
 }
 
+function WebSearchBlock({ data }) {
+  const [state, setState] = React.useState(null);
+  const [keys, setKeys] = React.useState({ tavily: '', brave: '' });
+  const [test, setTest] = React.useState(null);
+  const [error, setError] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const load = React.useCallback(async () => {
+    try {
+      const r = await fetch('/api/web/status');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      setState(await r.json());
+    } catch (e) { setError('Не удалось загрузить статус поиска: ' + e.message); }
+  }, []);
+  React.useEffect(() => { load(); }, [load]);
+  const post = async (path, body) => {
+    const r = await fetch('/api/web/' + path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok || j.error || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
+    return j;
+  };
+  const act = async (fn) => {
+    setBusy(true); setError('');
+    try { await fn(); await load(); } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+  const names = { tavily: 'Tavily', brave: 'Brave Search', wikipedia: 'Википедия (без ключа)', fetch: 'Чтение страниц' };
+  const cfg = state?.config || { provider: 'auto', native: false };
+  const off = (data.telegramSkills || {}).web_search === false;
+  return <AssistantBlock id="web" title="Поиск в интернете"
+    subtitle="Ключ поисковой системы, лимиты и проверка"
+    badge={state ? <span className="text-xs">{names[state.active_provider] || state.active_provider}</span> : null}>
+    <div className="space-y-4">
+      <p className="text-sm text-[var(--text-muted)]">Скажите Джарвису: «Найди, что нового в Python 3.14» или «Открой эту ссылку и перескажи». Он ищет, открывает страницы и отвечает со ссылками на источники. Без ключа работает только поиск по Википедии; чтение страниц по ссылке ключа не требует.</p>
+      {off && <p className="text-sm text-amber-700">Навык выключен. Включите «Поиск в интернете и чтение сайтов» в навыках ассистента.</p>}
+      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+      <div className="space-y-2">
+        <p className="text-sm font-medium">Ключи (хранятся только на сервере)</p>
+        <p className="text-xs text-[var(--text-muted)]">Рекомендуется Tavily: бесплатно 1000 запросов в месяц, без банковской карты. Brave Search API — запасной вариант; условия его бесплатного кредита проверяйте на сайте. Джарвис не переходит на платные тарифы: при лимите поиск останавливается или переключается на следующий сервис.</p>
+        <div className="flex flex-wrap gap-3 text-sm">
+          <a href="https://app.tavily.com/" target="_blank" rel="noopener noreferrer" className="underline">Получить ключ Tavily</a>
+          <a href="https://api-dashboard.search.brave.com/" target="_blank" rel="noopener noreferrer" className="underline">Получить ключ Brave</a>
+        </div>
+        {['tavily', 'brave'].map(k => <div key={k} className="space-y-1">
+          <label className="block text-sm">{names[k]}: {state?.keys?.[k] ? 'ключ задан' : 'не подключён'}
+            <input type="password" autoComplete="new-password" className="input w-full mt-1" placeholder={k === 'tavily' ? 'tvly-…' : 'Ключ Brave Search API'} value={keys[k]} onChange={e => setKeys(v => ({ ...v, [k]: e.target.value }))} />
+          </label>
+          {state?.keys?.[k] && <button disabled={busy} className="btn-secondary text-xs" onClick={() => act(() => post('config', { clear: [k] }))}>Удалить ключ {names[k]}</button>}
+        </div>)}
+        <button disabled={busy || (!keys.tavily.trim() && !keys.brave.trim())} className="btn-secondary text-sm" onClick={() => act(async () => {
+          await post('config', Object.fromEntries(Object.entries(keys).filter(([, v]) => v.trim())));
+          setKeys({ tavily: '', brave: '' });
+        })}>Сохранить ключи</button>
+      </div>
+      <div className="space-y-2">
+        <label className="block text-sm">Основной поиск
+          <select className="input w-full mt-1" disabled={busy} value={cfg.provider} onChange={e => act(() => post('config', { provider: e.target.value }))}>
+            <option value="auto">Автоматически: Tavily → Brave → Википедия</option>
+            <option value="tavily">Tavily</option>
+            <option value="brave">Brave Search</option>
+            <option value="wikipedia">Только Википедия (без ключа)</option>
+          </select>
+        </label>
+        {state?.order && <p className="text-xs text-[var(--text-muted)]">Порядок сейчас: {state.order.map(k => names[k] || k).join(' → ')}.</p>}
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" className="mt-1" disabled={busy} checked={!!cfg.native} onChange={e => act(() => post('config', { native: e.target.checked }))} />
+          <span>Встроенный поиск нейросети вместо поиска Джарвиса<span className="block text-xs text-[var(--text-muted)]">Claude web_search или OpenAI web_search (через Responses API). Оплачивается у провайдера ИИ отдельно — около $10 за 1000 поисков плюс токены найденных страниц; для Claude поиск должен быть разрешён в консоли Anthropic. Если модель его не поддерживает — автоматически используется поиск Джарвиса. Голосовой ассистент в браузере всегда использует поиск Джарвиса.</span></span>
+        </label>
+      </div>
+      <div className="space-y-2">
+        <button disabled={busy || off} className="btn-secondary text-sm" onClick={() => act(async () => {
+          setTest(null);
+          const r = await fetch('/api/web/tool', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'web_search', input: { query: 'Python programming language', count: 3 } }) });
+          setTest(await r.json());
+        })}>Проверить поиск</button>
+        {test && (test.error ? <p className="text-sm text-red-600">{test.error}</p> : <div className="text-sm space-y-1">
+          <p className="text-xs text-[var(--text-muted)]">Ответил: {names[test.provider] || test.provider}{test.cached ? ' (из кэша)' : ''}{test.fallback ? ' — резервный вариант' : ''}</p>
+          {(test.results || []).map((r, i) => <p key={i}><a className="underline" href={r.url} target="_blank" rel="noopener noreferrer">{r.title}</a> <span className="text-xs text-[var(--text-muted)]">{r.site}</span></p>)}
+          {(test.provider_warnings || []).map((w, i) => <p key={i} className="text-xs text-amber-700">{w}</p>)}
+        </div>)}
+        {state?.usage && <p className="text-xs text-[var(--text-muted)]">За последние 32 дня: {Object.entries(state.usage).filter(([k]) => k !== 'wikipedia' || state.usage[k].used > 0).map(([k, u]) => `${names[k] || k} ${u.used}/${u.limit}`).join(' · ')}. Повторные запросы берутся из кэша (до 6 часов, новости — 30 минут).</p>}
+        {Object.entries(state?.last_checks || {}).map(([k, c]) => <p key={k} className={`text-xs ${c.ok ? 'text-[var(--text-muted)]' : 'text-amber-700'}`}>
+          {names[k] || k}: {c.message} · {new Date(c.at * 1000).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} МСК
+        </p>)}
+        <p className="text-xs text-[var(--text-muted)]">Защита: не открываются localhost, частные и внутренние адреса, только порты 80/443; таймаут 20 с; HTML до 2 МБ, PDF до 5 МБ.</p>
+      </div>
+    </div>
+  </AssistantBlock>;
+}
+
 function PlannedTasksBlock({ data }) {
   const [rows, setRows] = React.useState(null);
   const [err, setErr] = React.useState('');
@@ -9341,6 +9432,7 @@ function VoiceAssistantSettings({ data, setData }) {
 
       <PlannedTasksBlock data={data} />
       <RoutesBlock data={data} />
+      <WebSearchBlock data={data} />
 
       <VoiceReplyBlock data={data} setData={setData} />
 
@@ -16688,6 +16780,21 @@ async function loadPlanTools(force) {
   } catch (e) { /* без планирования ассистент работает как раньше */ }
 }
 
+let WEB_AGENT_TOOLS = [];
+let WEB_AGENT_PROMPT = '';
+let webToolsLoadedAt = 0;
+async function loadWebTools(force) {
+  if (!force && Date.now() - webToolsLoadedAt < 20000) return;
+  try {
+    const r = await fetch('/api/web/tools');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    WEB_AGENT_TOOLS = j.tools || [];
+    WEB_AGENT_PROMPT = j.prompt || '';
+    webToolsLoadedAt = Date.now();
+  } catch (e) { WEB_AGENT_TOOLS = []; WEB_AGENT_PROMPT = ''; }
+}
+
 let ROUTE_AGENT_TOOLS = [];
 let ROUTE_AGENT_PROMPT = '';
 let routeToolsLoadedAt = 0;
@@ -16774,7 +16881,7 @@ ${writeList}
 
 9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй.
 
-${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
+${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}${WEB_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
@@ -16910,6 +17017,14 @@ async function executeVoiceTool(name, input, nav, data) {
     } catch (e) {
       return noop({ error: 'Сервер не ответил по планированию: ' + e.message });
     }
+  }
+  if (name.startsWith('web_')) {
+    try {
+      const res = await fetch('/api/web/tool', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, input }),
+      });
+      return noop(await res.json());
+    } catch (e) { return noop({ error: 'Сервер не ответил по веб-поиску: ' + e.message }); }
   }
   if (name.startsWith('route_')) {
     try {
@@ -17117,6 +17232,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
   await loadMailTools();
   await loadPlanTools();
   await loadRouteTools();
+  await loadWebTools();
   const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
   let pendingConfirmation = false;
   for (let step = 0; step < maxSteps; step++) {
@@ -17128,7 +17244,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS] }),
+      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...WEB_AGENT_TOOLS] }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -17233,8 +17349,9 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps, ef
   await loadMailTools();
   await loadPlanTools();
   await loadRouteTools();
+  await loadWebTools();
   const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
-  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS].map(t => ({
+  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...WEB_AGENT_TOOLS].map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.input_schema },
   }));

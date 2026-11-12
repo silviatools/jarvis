@@ -45,6 +45,14 @@
   свободную дорогу. `jarvis_routes.json` входит в бэкап; `jarvis_route_keys.json` (600) не входит и не раздаётся HTTP.
   API `/api/routes/{tools,status,tool,config}`, UI «Места и маршруты», тесты `test_routes.py`, подробности `ROUTES.md`.
 
+- `web_skill.py` — навык `web_search` «Поиск в интернете и чтение сайтов» (read, включён): `web_search` (Tavily по ключу,
+  резерв Brave, без ключа — только Википедия; DuckDuckGo/Mojeek из датацентра отдают капчу/403, не подключать) и `web_fetch`
+  (очищенный текст HTML/PDF частями по `offset`, `links` для перехода). SSRF: только http/https на 80/443, все адреса хоста
+  публичные, повторная проверка IP подключённого сокета (`_GuardAdapter`), редиректы вручную; 20 с, HTML 2 МБ, PDF 5 МБ.
+  Лимиты за 32 дня (Tavily/Brave 1000, Википедия и страницы 3000) резервируются до HTTP; кэш поиска 6 ч (новости 30 мин).
+  Опция «встроенный поиск нейросети» (Claude `web_search_20250305` / OpenAI Responses `web_search`) заменяет наш `web_search`,
+  при HTTP 400 — откат на наш; цитаты дописываются «Источниками». `jarvis_web_search.json` (настройки, учёт, кэш) в бэкапе;
+  `jarvis_web_keys.json` (600) не входит и не раздаётся HTTP. API `/api/web/{tools,status,config,tool}`, UI «Поиск в интернете», тесты `test_web_search.py`.
 - `jarvis.py` — HTTP-сервер, минутный цикл напоминаний (`_tick`), ассистент (инструменты, циклы Claude/OpenAI),
   «Учёба» (расписание rasp.rea.ru, вложения заданий, напоминания по заданиям), бэкапы.
 - `tg_bot.py` — возможности бота: форматирование (HTML Telegram), чеклисты, файлы, опросы, картинки, расшифровка
