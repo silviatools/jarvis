@@ -189,7 +189,7 @@ test('worker sends Ozon jobs to a separate owned tab and keeps per-shop fields/l
   const writes = [], calls = [], requests = [];
   let job = { id: 'ozon-job', shop: 'ozon', section: 'delivery', details: true };
   const noop = () => {};
-  const context = vm.createContext({ URL, Date, AbortSignal, console, setTimeout: callback => queueMicrotask(callback),
+  const context = vm.createContext({ importScripts: () => {}, URL, Date, AbortSignal, console, setTimeout: callback => queueMicrotask(callback),
     fetch: async (url, options) => { requests.push({ url, body: JSON.parse(options.body) }); const next = job; if (url.endsWith('/poll')) job = null;
       return new Response(JSON.stringify(url.endsWith('/poll') ? { ok: true, job: next } : { ok: true })); },
     chrome: { storage: { local: { get, set: async v => Object.assign(values, v), remove: async key => { delete values[key]; } },

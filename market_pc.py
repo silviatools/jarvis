@@ -293,6 +293,6 @@ def extension_zip():
     root = Path(__file__).parent / "windows" / "wb-extension"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as out:
-        for name in ("manifest.json", "background.js", "field-utils.js", "page-data.js", "capture.js", "ozon-capture.js", "popup.html", "popup.js", "fields.html", "fields.js", "README.txt"):
+        for name in ("manifest.json", "background.js", "moodle.js", "field-utils.js", "page-data.js", "capture.js", "ozon-capture.js", "popup.html", "popup.js", "fields.html", "fields.js", "README.txt"):
             out.write(root / name, name)
     return buf.getvalue()

@@ -233,7 +233,7 @@ test('confirmed RUB item prices convert from kopecks without using total_price',
 
 function readerFixture(text, found) {
   const noop = () => {};
-  const context = vm.createContext({ URL, Date, AbortSignal, setTimeout,
+  const context = vm.createContext({ importScripts: () => {}, URL, Date, AbortSignal, setTimeout,
     location: new URL('https://www.wildberries.ru/lk/myorders/delivery'),
     document: { body: { innerText: text }, querySelectorAll: () => [] },
     window: { __jarvisWbRead: { delivery: found } },
@@ -266,7 +266,7 @@ test('worker polls, reads only its WB tab, uploads result and retries failed upl
   const result = { ok: true, cabinet: true, url: 'https://www.wildberries.ru/lk/myorders/delivery',
     rows: [{ id: 'r1', name: 'Книга', status: 'В пути' }],
     fieldCatalog: [{ path: 'product.name', types: ['string'], examples: ['LOCAL-ONLY-PRODUCT'], rows: 1 }] };
-  const context = vm.createContext({ URL, Date, AbortSignal, setTimeout: callback => queueMicrotask(callback),
+  const context = vm.createContext({ importScripts: () => {}, URL, Date, AbortSignal, setTimeout: callback => queueMicrotask(callback),
     fetch: async (url, options) => {
       requests.push({ url, options });
       if (url.endsWith('/result') && failUpload) { failUpload = false; throw new Error('network unavailable'); }

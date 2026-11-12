@@ -1,0 +1,65 @@
+const {test} = require('node:test');
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const fs = require('node:fs');
+const code = fs.readFileSync('windows/wb-extension/moodle.js', 'utf8');
+function fixture() {
+  const local = {enabled: true, token: 'test'}, session = {}, commands = [];
+  const tab = {id: 7, url: 'https://moodle.test/course/view.php?id=42', status:'complete'};
+  const page = {course:'42', width:800, height:600, links:['https://moodle.test/mod/quiz/view.php?id=1','https://moodle.test/mod/quiz/view.php?id=2']};
+  let focus = true, href = '';
+  const storage = values => ({get: async keys => Object.fromEntries((Array.isArray(keys)?keys:[keys]).filter(k=>k in values).map(k=>[k, structuredClone(values[k])])),
+    set: async value => Object.assign(values, structuredClone(value)), remove: async key => {delete values[key];}});
+  const listener = {addListener() {}};
+  const context = vm.createContext({URL, Date, Number, Uint8Array, String, crypto:require('node:crypto').webcrypto, btoa, fetch: async()=>({blob: async()=>({})}),
+    setTimeout: f => queueMicrotask(f), createImageBitmap: async()=>({close(){}}),
+    OffscreenCanvas: class {getContext(){return {drawImage(){}}} async convertToBlob(){return {arrayBuffer: async()=>new Uint8Array([255,216,1]).buffer}}},
+    chrome:{storage:{local:storage(local),session:storage(session)},
+      tabs:{get:async()=>tab, update:async(id, options)=>{assert.equal(id,7);Object.assign(tab,options);}},
+      scripting:{executeScript:async({func})=>[{result:func.toString().includes('activeElement') ? focus : func.toString().includes('elementFromPoint') ? {href,password:false} : page}]},
+      debugger:{attach:async()=>{},detach:async()=>{},onDetach:listener,sendCommand:async(target,name,args)=>{commands.push({name,args});return {data:'/9gB'}}},
+      alarms:{onAlarm:listener},runtime:{id:'ext',onMessage:listener}}});
+  vm.runInContext(code, context);
+  vm.runInContext('moodleTick = async () => {}', context);
+  let seq=0;
+  return {local,session,tab,page,commands, context,
+    bind:()=>vm.runInContext(`moodleBind({id:7,url:'${tab.url}'})`,context),
+    act: async(action,id=String(++seq))=> {
+      context.job={id,run:'run',expires:Date.now()/1000+20,action};
+      return vm.runInContext("chrome.storage.session.get('moodle').then(({moodle:s})=>moodleAction(s,job))",context);
+    }, focus:value=>{focus=value;},href:value=>{href=value;}};
+}
+test('pin course, capture CSS screenshot, open first quiz, fill and advance locally',async()=>{
+  const f=fixture();await f.bind();
+  let shot=await f.act({action:'snapshot'});
+  assert.equal(shot.width,800);assert.equal(shot.quiz,null);
+  assert.ok(!JSON.stringify(shot).includes('moodle.test'));
+  shot=await f.act({action:'open'});assert.equal(shot.quiz,'test-1');
+  await f.act({action:'click',x:10,y:20});
+  await f.act({action:'type',text:'answer'});
+  assert.equal(f.commands.find(c=>c.name==='Input.insertText').args.text,'answer');
+  assert.equal((await f.act({action:'next'})).quiz,'test-2');
+  assert.equal((await f.act({action:'next'})).done,true);
+});
+test('stopped connection, wrong course and wrong quiz never click',async()=>{
+  const f=fixture();await f.bind();await f.act({action:'open'});
+  f.page.course='99';await assert.rejects(f.act({action:'click',x:10,y:10}),/другой курс/);
+  f.page.course='42';f.tab.url='https://moodle.test/mod/quiz/view.php?id=2';
+  await assert.rejects(f.act({action:'click',x:10,y:10}),/другому тесту/);
+  f.local.enabled=false;await assert.rejects(f.act({action:'click',x:10,y:10}),/остановлено/);
+  assert.ok(!f.commands.some(c=>c.name==='Input.dispatchMouseEvent'));
+});
+test('duplicate clicks and arbitrary navigation are rejected',async()=>{
+  const f=fixture();await f.bind();await f.act({action:'open'});
+  await f.act({action:'click',x:10,y:10},'same');
+  await assert.rejects(f.act({action:'click',x:10,y:10},'same'),/Повтор/);
+  const before=f.commands.length;f.href('https://other.test/');
+  await assert.rejects(f.act({action:'click',x:10,y:10}),/Переход вне/);
+  assert.equal(f.commands.length,before);
+});
+test('password/non-answer focus, out-of-bounds coordinates and executable actions fail',async()=>{
+  const f=fixture();await f.bind();await f.act({action:'open'});
+  f.focus(false);await assert.rejects(f.act({action:'type',text:'secret'}),/текстовое поле/);
+  await assert.rejects(f.act({action:'click',x:1000,y:10}),/координаты/);
+  await assert.rejects(f.act({action:'eval',text:'evil()'}),/Неизвестная/);
+});

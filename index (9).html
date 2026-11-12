@@ -8077,6 +8077,7 @@ function AssistantSkillsCard({ data, setData, embedded }) {
     mailToolsLoadedAt = 0;
     planToolsLoadedAt = 0;
     routeToolsLoadedAt = 0;
+    moodleToolsLoadedAt = 0;
   };
   const riskLabel = { read: 'чтение', create: 'создаёт файлы', write: 'действия с подтверждением', danger: 'опасно' };
   const riskCls = {
@@ -16688,6 +16689,21 @@ async function loadPlanTools(force) {
   } catch (e) { /* без планирования ассистент работает как раньше */ }
 }
 
+let MOODLE_AGENT_TOOLS = [];
+let MOODLE_AGENT_PROMPT = '';
+let moodleToolsLoadedAt = 0;
+async function loadMoodleTools(force) {
+  if (!force && Date.now() - moodleToolsLoadedAt < 20000) return;
+  try {
+    const r = await fetch('/api/moodle/tools');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    MOODLE_AGENT_TOOLS = j.tools || [];
+    MOODLE_AGENT_PROMPT = j.prompt || '';
+    moodleToolsLoadedAt = Date.now();
+  } catch (e) { MOODLE_AGENT_TOOLS = []; MOODLE_AGENT_PROMPT = ''; }
+}
+
 let ROUTE_AGENT_TOOLS = [];
 let ROUTE_AGENT_PROMPT = '';
 let routeToolsLoadedAt = 0;
@@ -16774,7 +16790,7 @@ ${writeList}
 
 9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй.
 
-${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
+${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}${MOODLE_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
@@ -16910,6 +16926,14 @@ async function executeVoiceTool(name, input, nav, data) {
     } catch (e) {
       return noop({ error: 'Сервер не ответил по планированию: ' + e.message });
     }
+  }
+  if (name.startsWith('moodle_')) {
+    try {
+      const res = await fetch('/api/moodle/tool', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, input }),
+      });
+      return noop(await res.json());
+    } catch (e) { return noop({ error: 'Сервер не ответил по Moodle: ' + e.message }); }
   }
   if (name.startsWith('route_')) {
     try {
@@ -17116,6 +17140,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
   await loadWatchTools();
   await loadMailTools();
   await loadPlanTools();
+  await loadMoodleTools();
   await loadRouteTools();
   const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
   let pendingConfirmation = false;
@@ -17128,7 +17153,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS] }),
+      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS] }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -17232,9 +17257,10 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps, ef
   await loadWatchTools();
   await loadMailTools();
   await loadPlanTools();
+  await loadMoodleTools();
   await loadRouteTools();
   const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
-  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS].map(t => ({
+  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS].map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.input_schema },
   }));

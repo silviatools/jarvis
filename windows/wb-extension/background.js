@@ -1,4 +1,5 @@
-// No incoming network listener, arbitrary URLs, clicks or remotely supplied JS.
+// Marketplace commands remain read-only; Moodle is separately opt-in.
+importScripts("moodle.js");
 const URLS = {
   orders: 'https://www.wildberries.ru/lk/myorders/archive',
   delivery: 'https://www.wildberries.ru/lk/myorders/delivery',

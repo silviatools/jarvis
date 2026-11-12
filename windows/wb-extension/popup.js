@@ -84,3 +84,16 @@ byId('clearLogs').addEventListener('click', async () => {
 byId('fields').addEventListener('click', () => chrome.tabs.create({ url: chrome.runtime.getURL('fields.html') + '?shop=' + shop() }));
 refresh();
 setInterval(refresh, 2000);
+
+for (const type of ['moodleBind', 'moodleStop']) {
+  byId(type).addEventListener('click', async () => {
+    try {
+      const r = await chrome.runtime.sendMessage({type});
+      byId('moodleStatus').textContent = r?.ok ? 'Готово.' : r?.error || 'Нет ответа расширения.';
+    } catch (e) { byId('moodleStatus').textContent = e.message; }
+  });
+}
+setInterval(async () => {
+  const s = await chrome.storage.local.get('moodleStatus');
+  byId('moodleStatus').textContent = s.moodleStatus || 'Курс не подключён.';
+}, 2000);

@@ -27,7 +27,7 @@ GROUPS = {
     "apple": {"title": "Apple Календарь и Напоминания", "names": [], "prefixes": ["calendar_", "reminders_"]},
     "weather": {"title": "Погода", "names": ["get_weather"], "prefixes": []},
     "routes": {"title": "Места, маршруты и пробки", "names": [], "prefixes": ["route_"]},
-    "study": {"title": "Учёба", "names": ["study_schedule", "study_attach_file", "study_get_attachment", "study_brief_start", "study_chats_scan_now"], "prefixes": []},
+    "study": {"title": "Учёба", "names": ["study_schedule", "study_attach_file", "study_get_attachment", "study_brief_start", "study_chats_scan_now"], "prefixes": ["moodle_"]},
     "bot": {"title": "Файлы, чек-листы, картинки, опросы в чат", "names": [
         "tg_send_checklist", "tg_update_checklist", "tg_get_checklists", "tg_send_file", "tg_generate_image", "tg_send_poll",
         "tg_send_buttons", "tg_send_location", "tg_send_contact", "tg_send_dice", "tg_react", "tg_pin_message"], "prefixes": []},
@@ -54,7 +54,7 @@ KEYWORDS = {
     "apple": r"календар|событи|встреч|напомин.{0,12}(apple|айфон|iphone)|в напоминани|reminders|на айфон|будильник|созвон",
     "weather": r"погод|дожд|снег|температур|прогноз|зонт|жарк|холодн|ветер",
     "routes": r"маршрут|пробк|навигатор|до дома|домой|адрес|вегас|vegas|крокус|crocus|мкад|\bттк\b|треть.{0,20}кольц|3.{0,6}кольц|затор|загружен|сколько.{0,15}еха|время.{0,12}(пути|дорог)|когда.{0,30}(час|минут)|платн.{0,8}дорог",
-    "study": r"учеб|универ|пар[аыу]\b|расписан|предмет|задани|лекци|семинар|курсов|экзамен|зач[её]т|препод|аудитори|rea\.ru|рэу|вложени",
+    "study": r"moodle|мудл|тест|учеб|универ|пар[аыу]\b|расписан|предмет|задани|лекци|семинар|курсов|экзамен|зач[её]т|препод|аудитори|rea\.ru|рэу|вложени",
     "bot": r"файл|документ|отч[её]т|таблиц|список|чек.?лист|покуп|нарисуй|картин|изображени|фото|логотип|аватар|опрос|голосован|кнопк|локаци|контакт|кубик|pdf|docx|xlsx|pptx|excel|word|csv|сформируй|составь|сгенерируй|скинь|пришли",
     "deck": r"презентац|слайд|powerpoint|pptx|питч",
     "tg_read": r"телеграм|telegram|\btg\b|чат|переписк|сообщени|написал|писал|канал|групп|непрочитан|диалог|контакт|участник|голосов|кружк|найди в",

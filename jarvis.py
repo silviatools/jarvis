@@ -42,6 +42,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 import tablet_stt
 import market_pc
+import moodle_skill
 import wb_watch_skill
 import route_skill
 import tg_history
@@ -1198,7 +1199,7 @@ def build_backup_zip() -> bytes:
             zf.write(path, arcname=arcname)
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
-                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_wb_pickup.json", "jarvis_ozon_pickup.json", "jarvis_tg_history.sqlite3",
+                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_moodle_reports.json", "jarvis_wb_pickup.json", "jarvis_ozon_pickup.json", "jarvis_tg_history.sqlite3",
                       "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl", "jarvis_routes.json", "jarvis_health_drafts.json",
                       "jarvis_newspaper_cache.json", "jarvis_newspaper_state.json", "jarvis_newspaper_latest.html",
                       "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png"}
@@ -6131,6 +6132,7 @@ def _prompt_sections(app, with_tg: bool, groups) -> str:
         (widget_skill.prompt_section(st) if on("widgets") else "")
         + (deck_skill.prompt_section(st) if deck_skill and on("deck") else "")
         + (tg_history.prompt_section(st) if on("bot_history") else "")
+        + (moodle_skill.prompt_section(st) if on("study") else "")
         + (study_skills.prompt_section(st) if study_skills and on("study") else "")
         + (market_skill.prompt_section(st) if market_skill and on("market") else "")
         + (tg_watch_skill.prompt_section(st) if tg_watch_skill and with_tg and on("tg_watch") else "")
@@ -6171,6 +6173,12 @@ _plan_scope = threading.local()   # .on — идёт плановая задач
 
 def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_tg: bool = False) -> dict:
     inp = inp or {}
+    if name in moodle_skill.TOOL_NAMES:
+        ctx = tg_bot.get_ctx() if tg_bot else None
+        if ctx and (not tg_user or not tg_user.is_owner_chat(ctx.chat_id)):
+            return {"ok": False, "error": "Moodle доступен только владельцу."}
+        return moodle_skill.execute(name, inp, (app or {}).get("telegramSkills"), _moodle_decide,
+                                   lambda: moodle_skill.skill_on((load_app_data() or {}).get("telegramSkills")))
     if name in route_skill.TOOL_NAMES:
         if not route_skill.skill_on((app or {}).get("telegramSkills")):
             return {"error": "Навык «Места, маршруты и пробки» выключен."}
@@ -7201,7 +7209,7 @@ def _mail_notify(acc: dict, metas: list):
 
 
 def _assistant_tool_list(app, with_tg: bool) -> list:
-    return ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
+    return (moodle_skill.TOOLS if moodle_skill.skill_on((app or {}).get("telegramSkills")) else []) + ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
         (widget_skill.TOOLS if widget_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + \
@@ -7226,6 +7234,7 @@ def assistant_skills_catalog() -> list:
         + (plan_skill.SKILLS if plan_skill else [])
         + (health_skill.SKILLS if health_skill else [])
         + route_skill.SKILLS
+        + moodle_skill.SKILLS
     )
 
 
@@ -7401,6 +7410,45 @@ def _llm_text(conf, system: str, user: str, max_tokens: int = 2500, timeout: int
     if provider == "openai":
         return (((j.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
     return "".join(b.get("text", "") for b in (j.get("content") or []) if b.get("type") == "text").strip()
+
+
+def _moodle_decide(system, context, shot):
+    conf = _ai_conf(load_app_data())
+    if not conf:
+        raise RuntimeError("Настройте ключ и модель ИИ в настройках ассистента.")
+    provider, key, model = conf[:3]
+    content = json.dumps(context, ensure_ascii=False)
+    if provider == "openai":
+        result = _openai_step(key, model, conf[4], [
+            {"role": "system", "content": system},
+            {"role": "user", "content": [{"type": "text", "text": content},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + shot["image"]}}]}
+        ], [])
+        if result.get("truncated"):
+            raise RuntimeError("Ответ модели оборвался; выполнение остановлено.")
+        text = result["content"]
+        usage = ai_usage.usage_from_openai(result.get("usage")) if ai_usage else {}
+    else:
+        response = requests.post(ANTHROPIC_MESSAGES_URL, headers={
+            "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"
+        }, json={"model": model, "max_tokens": 2000, "system": system, "messages": [
+            {"role": "user", "content": [{"type": "text", "text": content},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": shot["image"]}}]}
+        ]}, timeout=120)
+        if not response.ok:
+            raise RuntimeError("Ошибка ИИ при анализе снимка: HTTP " + str(response.status_code))
+        result = response.json()
+        if result.get("stop_reason") == "max_tokens":
+            raise RuntimeError("Ответ модели оборвался; выполнение остановлено.")
+        text = "".join(b.get("text", "") for b in result.get("content", []) if b.get("type") == "text")
+        usage = ai_usage.usage_from_claude(result.get("usage")) if ai_usage else {}
+    if ai_usage:
+        _log_call(provider, model, conf[5], "moodle", conf[4], usage)
+    # Never interpret model output as code. Only the validated action protocol is accepted.
+    text = text.strip()
+    if text.startswith("```") and text.endswith("```"):
+        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    return json.loads(text)
 
 
 def _study_owner_chats(app) -> list:
@@ -11205,6 +11253,9 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif route == "/api/plan/tools":
             state = (load_app_data() or {}).get("telegramSkills")
             self._json(200, plan_skill.voice_payload(state) if plan_skill else {"tools": [], "prompt": ""})
+        elif route == "/api/moodle/tools":
+            state = (load_app_data() or {}).get("telegramSkills")
+            self._json(200, {"tools": moodle_skill.TOOLS if moodle_skill.skill_on(state) else [], "prompt": moodle_skill.prompt_section(state)})
         elif route == "/api/routes/tools":
             self._json(200, route_skill.voice_payload((load_app_data() or {}).get("telegramSkills")))
         elif route == "/api/routes/status":
@@ -11281,7 +11332,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         route = self.path.split("?", 1)[0].rstrip("/") or "/"
-        if route in market_pc.DEVICE_ROUTES:
+        if route in market_pc.DEVICE_ROUTES | moodle_skill.DEVICE_ROUTES:
             self._market_pc_device_post(route)
             return
         if route == "/login":
@@ -11423,6 +11474,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._ai_usage_post()
         elif route.startswith("/api/plan/"):
             self._plan_post(route)
+        elif route == "/api/moodle/tool":
+            self._moodle_tool_post()
         elif route.startswith("/api/routes/"):
             self._routes_post(route)
         elif route == "/api/student/check":
@@ -12959,9 +13012,9 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, {"ok": False, "error": webpush.redact(str(e))})
 
     def _market_pc_device_post(self, route: str):
-        """Only these two endpoints accept the restricted WB device key."""
+        """Only device poll/result endpoints accept the restricted PC key."""
         length = self._content_length()
-        if length is None or length < 0 or length > 96 * 1024:
+        if length is None or length < 0 or length > (4 * 1024 * 1024 if route in moodle_skill.DEVICE_ROUTES else 96 * 1024):
             self._json(413, {"ok": False, "error": "invalid body size"})
             return
         try:
@@ -12971,7 +13024,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             return
         auth = self.headers.get("Authorization") or ""
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        status, result = market_pc.device_call(route, token, payload)
+        handler = moodle_skill if route in moodle_skill.DEVICE_ROUTES else market_pc
+        status, result = handler.device_call(route, token, payload)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
@@ -13125,6 +13179,20 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, execute_assistant_tool(payload["name"], inp, load_app_data() or {}, ""))
         else:
             self._json(404, {"error": "not found"})
+
+    def _moodle_tool_post(self):
+        length = self._content_length()
+        if length is None or not 0 <= length <= 8192:
+            self._json(413, {"ok": False})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict) or payload.get("name") not in moodle_skill.TOOL_NAMES or not isinstance(payload.get("input", {}), dict):
+                raise ValueError()
+        except (ValueError, TypeError):
+            self._json(400, {"ok": False})
+            return
+        self._json(200, execute_assistant_tool(payload["name"], payload.get("input", {}), load_app_data() or {}, ""))
 
     def _plan_post(self, route: str):
         """Плановые задачи: управление из настроек и вызов инструментов голосовым ассистентом."""
