@@ -3,6 +3,7 @@ icalendar==6.3.2
 recurring-ical-events==3.8.0
 websocket-client
 telethon
+maxapi-python>=2.4.1
 segno
 python-docx
 openpyxl

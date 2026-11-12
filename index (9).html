@@ -6544,6 +6544,15 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
           Телеграм
         </button>
         <button
+          onClick={() => setSettingsTab('max')}
+          data-testid="settings-tab-max"
+          className={`px-2.5 sm:px-5 py-2.5 rounded-lg text-[13px] sm:text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${
+            settingsTab === 'max' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
+          }`}
+        >
+          MAX
+        </button>
+        <button
           onClick={() => setSettingsTab('market')}
           className={`px-2.5 sm:px-5 py-2.5 rounded-lg text-[13px] sm:text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${
             settingsTab === 'market' ? 'bg-[var(--text)] text-white' : 'text-[var(--text-muted)]'
@@ -6568,6 +6577,7 @@ function SettingsView({ data, setData, settingsTab, setSettingsTab }) {
       {settingsTab === 'newspaper' && <NewspaperSettings data={data} setData={setData} />}
       {settingsTab === 'study' && <StudySettings data={data} setData={setData} />}
       {settingsTab === 'telegram' && <TelegramSettings data={data} setData={setData} />}
+      {settingsTab === 'max' && <MaxSettings />}
       {settingsTab === 'market' && <MarketplaceSettings />}
       {settingsTab === 'mail' && <MailSettings data={data} setData={setData} />}
     </div>
@@ -8204,6 +8214,122 @@ function AppleConnectionCard({ embedded }) {
   );
 }
 
+// Личный MAX. Сессия только на сервере (DATA_DIR/jarvis_max_user.json, права 600).
+function MaxSettings() {
+  const [st, setSt] = React.useState({ loading: true });
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState('');
+  const [phone, setPhone] = React.useState('');
+  const [code, setCode] = React.useState('');
+  const [password, setPassword] = React.useState('');
+  const [step, setStep] = React.useState('');
+
+  const load = React.useCallback(() => {
+    fetch('/api/max/status')
+      .then(r => r.json())
+      .then(s => {
+        setSt({ ...s, loading: false });
+        setStep(prev => (s.connected ? '' : (s.step || prev)));
+      })
+      .catch(e => setSt({ loading: false, error: 'Сервер не ответил: ' + e.message }));
+  }, []);
+  React.useEffect(load, [load]);
+
+  const call = async (path, body) => {
+    setBusy(true); setErr('');
+    try {
+      const res = await fetch('/api/max/' + path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
+      });
+      const j = await res.json();
+      if (j.ok === false || j.error) setErr(j.error || 'Ошибка');
+      else {
+        setStep(j.step || '');
+        setCode(''); setPassword('');
+        load();
+      }
+    } catch (e) { setErr('Сервер не ответил: ' + e.message); }
+    setBusy(false);
+  };
+
+  const card = 'bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5';
+  const input = 'w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm';
+
+  return (
+    <div className="space-y-3">
+      <div className={card}>
+        <h3 className="font-display text-lg mb-1">Личный MAX</h3>
+        <p className="text-sm text-[var(--text-muted)]">
+          Подключите свой аккаунт MAX, и ассистент сможет читать чаты и искать по переписке — только когда вы прямо
+          просите MAX. Учебная папка «Учеба» читается вместе с учебными чатами Telegram. Писать в MAX ассистент не умеет.
+        </p>
+        {st.loading && <div className="text-sm text-[var(--text-subtle)] mt-4">Проверяю…</div>}
+        {!st.loading && st.library === false && (
+          <div className="text-sm text-red-600 mt-4">На сервере не установлен maxapi-python.</div>
+        )}
+        {!st.loading && st.connected && (
+          <div className="mt-4">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="w-2 h-2 rounded-full bg-green-500" />
+              Подключено{st.me && st.me.name ? <>: <b>{st.me.name}</b></> : null}
+              {st.phone ? <span className="text-[var(--text-subtle)]">{st.phone}</span> : null}
+            </div>
+            <p className="text-[11px] text-[var(--text-subtle)] mt-2">
+              Сессия хранится на сервере (права 600), не попадает в бэкап и в синхронизацию. На Railway нужен Volume (DATA_DIR).
+              Протокол неофициальный: после обновления MAX может понадобиться войти заново.
+            </p>
+            <button onClick={() => confirm('Выйти из MAX и удалить сессию?') && call('logout', {})}
+              disabled={busy} className="btn-secondary text-sm px-4 py-2 mt-4">Отключить</button>
+          </div>
+        )}
+        {!st.loading && st.library !== false && !st.connected && (
+          <div className="mt-4 space-y-3">
+            {st.error && !step && <div className="text-xs text-[var(--text-subtle)]">{st.error}</div>}
+            {!step && (
+              <>
+                <label className="block">
+                  <div className="text-xs text-[var(--text-subtle)] mb-1">Номер телефона</div>
+                  <input className={input} value={phone} placeholder="+79991234567" onChange={e => setPhone(e.target.value)} />
+                </label>
+                <button onClick={() => call('auth/start', { phone })} disabled={busy || !phone}
+                  className="btn-primary text-sm px-4 py-2">{busy ? 'Отправляю…' : 'Получить код'}</button>
+                <p className="text-[11px] text-[var(--text-subtle)]">Код придёт SMS. Пароль двухфакторной защиты не сохраняется.</p>
+              </>
+            )}
+            {step === 'code' && (
+              <>
+                <label className="block">
+                  <div className="text-xs text-[var(--text-subtle)] mb-1">Код из SMS</div>
+                  <input className={input} value={code} inputMode="numeric" autoFocus placeholder="12345"
+                    onChange={e => setCode(e.target.value)} />
+                </label>
+                <div className="flex gap-2">
+                  <button onClick={() => call('auth/code', { code })} disabled={busy || !code}
+                    className="btn-primary text-sm px-4 py-2">{busy ? 'Проверяю…' : 'Войти'}</button>
+                  <button onClick={() => { setStep(''); setErr(''); }} className="btn-secondary text-sm px-4 py-2">Назад</button>
+                </div>
+              </>
+            )}
+            {step === 'password' && (
+              <>
+                <label className="block">
+                  <div className="text-xs text-[var(--text-subtle)] mb-1">Пароль двухфакторной защиты</div>
+                  <input className={input} type="password" value={password} autoFocus autoComplete="off"
+                    onChange={e => setPassword(e.target.value)} />
+                </label>
+                <button onClick={() => call('auth/password', { password })} disabled={busy || !password}
+                  className="btn-primary text-sm px-4 py-2">{busy ? 'Проверяю…' : 'Войти'}</button>
+              </>
+            )}
+            {err && <div className="text-sm text-red-600">{err}</div>}
+          </div>
+        )}
+        {st.connected && err && <div className="text-sm text-red-600 mt-3">{err}</div>}
+      </div>
+    </div>
+  );
+}
+
 // ============== УЧЕБА: расписание rasp.rea.ru → Apple Календарь ==============
 // Настройки — data.studySchedule (LWW по updatedAt, синхронизируются как
 // обычные данные). Саму работу делает сервер (jarvis.py, study_sync): по
@@ -8483,7 +8609,7 @@ const STUDY_WEEKDAYS = [[1, 'Пн'], [2, 'Вт'], [3, 'Ср'], [4, 'Чт'], [5, 
 
 // Навык «Контроль учебных чатов»: раз в день Джарвис читает выбранные чаты (даже замьюченные) и пишет в бот,
 // если что-то требует внимания. Настройки — data.studyChats (синхронизируются как обычные данные).
-const STUDY_CHATS_DEFAULTS = { enabled: false, time: '20:00', folder: '', chats: [], notifyEmpty: false };
+const STUDY_CHATS_DEFAULTS = { enabled: false, time: '20:00', folder: '', chats: [], notifyEmpty: false, maxFolder: 'Учеба' };
 
 function StudyChatsCard({ data, setData, card, input }) {
   const cfg = { ...STUDY_CHATS_DEFAULTS, ...(data.studyChats || {}) };
@@ -8541,7 +8667,7 @@ function StudyChatsCard({ data, setData, card, input }) {
           <p className="text-sm text-[var(--text-muted)]">
             Раз в день Джарвис читает учебные чаты — даже замьюченные — и пишет в бот, только если что-то требует вашего внимания:
             вопросы вам, упоминания, «ищут вас», новые задания, переносы и сроки. Ответьте на его сообщение — продолжите с этим контекстом.
-            Чаты он берёт из раздела «База данных» (запись про ваши учебные чаты); выбранные ниже добавляются к ним.
+            Чаты Telegram он берёт из раздела «База данных» и из выбранных ниже. Папка MAX «Учеба» (чаты, беседы и группы) читается вместе с ними.
           </p>
         </div>
         <StudySwitch on={!!cfg.enabled} onChange={v => update({ enabled: v })} label="Проверять учебные чаты" />
@@ -8549,6 +8675,15 @@ function StudyChatsCard({ data, setData, card, input }) {
 
       {status && !status.telegramConnected && !status.error && (
         <div className="text-sm text-amber-600 mt-3">Личный Telegram не подключён — Настройки → Телеграм.</div>
+      )}
+      {status && !status.maxConnected && !status.error && (
+        <div className="text-sm text-amber-600 mt-2">Личный MAX не подключён — папка «Учеба» не читается. Настройки → MAX.</div>
+      )}
+      {status && status.maxConnected && cfg.maxFolder && (
+        <div className="text-sm text-[var(--text-muted)] mt-2">Папка MAX «{cfg.maxFolder}» проверяется вместе с учебными чатами Telegram.</div>
+      )}
+      {status && !cfg.maxFolder && (
+        <div className="text-sm text-[var(--text-muted)] mt-2">Папка MAX не задана — учебные чаты читаются только из Telegram.</div>
       )}
 
       <div className="mt-4">
@@ -8606,6 +8741,12 @@ function StudyChatsCard({ data, setData, card, input }) {
         </div>
       )}
 
+      <label className="block mt-4 sm:max-w-[50%]">
+        <div className="text-xs text-[var(--text-subtle)] mb-1">Папка MAX</div>
+        <input className={input} value={cfg.maxFolder || ''} placeholder="Учеба"
+          onChange={e => update({ maxFolder: e.target.value })} />
+        <div className="text-[11px] text-[var(--text-subtle)] mt-1">По умолчанию «Учеба». Пусто — папку MAX не читать.</div>
+      </label>
       <label className="block mt-4 sm:max-w-[50%]">
         <div className="text-xs text-[var(--text-subtle)] mb-1">Во сколько проверять</div>
         <MskTimeInput value={cfg.time} onChange={v => update({ time: v })} className={input} />
@@ -16633,6 +16774,19 @@ async function loadTgTools(force) {
   } catch (e) { /* без Telegram-инструментов ассистент работает как раньше */ }
 }
 
+let MAX_AGENT_TOOLS = [];
+let MAX_AGENT_PROMPT = '';
+let maxToolsLoadedAt = 0;
+async function loadMaxTools(force) {
+  if (!force && Date.now() - maxToolsLoadedAt < 20000) return;
+  try {
+    const j = await (await fetch('/api/max/tools')).json();
+    MAX_AGENT_TOOLS = j.tools || [];
+    MAX_AGENT_PROMPT = j.prompt || '';
+    maxToolsLoadedAt = Date.now();
+  } catch (e) { /* без MAX ассистент работает как раньше */ }
+}
+
 // Кабинеты Ozon и WB: те же схемы, что у серверных циклов ассистента.
 // Пустой список — навык выключен или сервер его не отдал.
 let MARKET_AGENT_TOOLS = [];
@@ -16790,7 +16944,7 @@ ${writeList}
 
 9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй.
 
-${TG_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}${MOODLE_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
+${TG_AGENT_PROMPT}${MAX_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}${MOODLE_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
@@ -16892,6 +17046,17 @@ async function executeVoiceTool(name, input, nav, data) {
       return noop(await res.json());
     } catch (e) {
       return noop({ error: 'Сервер не ответил по пушу: ' + e.message });
+    }
+  }
+  if (name.startsWith('max_')) {
+    try {
+      const res = await fetch('/api/max/tool', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, input }),
+      });
+      return noop(await res.json());
+    } catch (e) {
+      return noop({ error: 'Сервер не ответил по MAX: ' + e.message });
     }
   }
   if (name.startsWith('tg_')) {
@@ -17136,6 +17301,7 @@ async function runVoiceAgent(messages, settings, data, nav, maxSteps = 6) {
 // историю после ответа, чтобы следующее «да» продолжило тот же разговор.
 async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
   await loadTgTools();
+  await loadMaxTools();
   await loadMarketTools();
   await loadWatchTools();
   await loadMailTools();
@@ -17153,7 +17319,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS] }),
+      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MAX_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS] }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -17253,6 +17419,7 @@ async function openaiVoiceStep(apiKey, model, effort, messages, tools) {
 
 async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps, effort = '', managed = false) {
   await loadTgTools();
+  await loadMaxTools();
   await loadMarketTools();
   await loadWatchTools();
   await loadMailTools();
@@ -17260,7 +17427,7 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps, ef
   await loadMoodleTools();
   await loadRouteTools();
   const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
-  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS].map(t => ({
+  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MAX_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS].map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.input_schema },
   }));

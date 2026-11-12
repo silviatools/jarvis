@@ -35,6 +35,8 @@ GROUPS = {
     "tg_read": {"title": "Личный Telegram: чтение и поиск", "names": [
         "tg_me", "tg_sessions", "tg_list_folders", "tg_list_dialogs", "tg_unread_digest", "tg_chat_info", "tg_list_contacts",
         "tg_find_peer", "tg_list_members", "tg_read_messages", "tg_search_messages", "tg_transcribe", "tg_get_file", "tg_get_replies"], "prefixes": []},
+    "max_read": {"title": "Личный MAX: чтение и поиск", "names": [
+        "max_list_folders", "max_list_dialogs", "max_chat_info", "max_read_messages", "max_search_messages"], "prefixes": []},
     "tg_write": {"title": "Личный Telegram: отправка и правки", "names": ["tg_send_message", "tg_edit_message", "tg_forward_messages"], "prefixes": []},
     "tg_topics": {"title": "Личный Telegram: темы групп", "names": [], "prefixes": ["tg_topic_", "tg_list_topics", "tg_job_status"]},
     "tg_org": {"title": "Личный Telegram: порядок в чатах", "names": ["tg_mark_read", "tg_archive_chat", "tg_mute_chat", "tg_pin_chat", "tg_folder_edit"], "prefixes": []},
@@ -58,6 +60,7 @@ KEYWORDS = {
     "bot": r"файл|документ|отч[её]т|таблиц|список|чек.?лист|покуп|нарисуй|картин|изображени|фото|логотип|аватар|опрос|голосован|кнопк|локаци|контакт|кубик|pdf|docx|xlsx|pptx|excel|word|csv|сформируй|составь|сгенерируй|скинь|пришли",
     "deck": r"презентац|слайд|powerpoint|pptx|питч",
     "tg_read": r"телеграм|telegram|\btg\b|чат|переписк|сообщени|написал|писал|канал|групп|непрочитан|диалог|контакт|участник|голосов|кружк|найди в",
+    "max_read": r"(?<![0-9a-zа-яё])(?:max|макс(?:а|е|у|ом)?)(?![0-9a-zа-яё])",
     "tg_write": r"напиши\s+(ему|ей|им|в\s|[@а-я]+\s+что)|отправь|ответь|перешли|перепиши|отредактируй|исправь сообщени|от моего имени",
     "tg_topics": r"тем[аыуе]\b|топик|форум|перенес|перенос|скопируй сообщени",
     "tg_org": r"архив|мьют|замьют|закреп.{0,6}чат|папк|прочитано|отметь прочитан",
@@ -69,6 +72,7 @@ KEYWORDS = {
               r"препарат|таблетк|лечени|обследовани|исследовани|протокол|выписк|заключени|направлени|болезн|эпизод|отравил|болел|симптом|явк",
 }
 _KW = {g: re.compile(p, re.I) for g, p in KEYWORDS.items()}
+_STUDY_CHATS = re.compile(r"учебн[а-яё]*\s+чат", re.I)
 # Если сработали «чтение» или «запись» — приводим связанное: отправка тянет чтение (найти адресата).
 IMPLIES = {"tg_write": ["tg_read"], "tg_topics": ["tg_read"], "tg_org": ["tg_read"], "tg_danger": ["tg_read"], "tg_watch": ["tg_read"]}
 
@@ -78,6 +82,7 @@ MORE_TOOL = {
                     "Группы: house — канбан; food — питание/готовка; apple — календарь и напоминания Apple; weather — погода; "
                     "study — учёба, файлы заданий; bot — файлы, чек-листы, картинки, опросы в чат; deck — презентации; "
                     "tg_read/tg_write/tg_topics/tg_org/tg_danger — личный Telegram (чтение, отправка, темы, порядок, удаление); "
+                    "max_read — личный MAX, только если пользователь назвал MAX/Макс; "
                     "tg_watch — слежение за чатами; market — маркетплейсы; mail — почта; routes — адреса, маршруты и пробки; health — медицинские документы из фото в «Здоровье». После вызова новые инструменты доступны сразу."),
     "input_schema": {"type": "object",
                      "properties": {"groups": {"type": "array", "items": {"type": "string", "enum": [g for g in GROUPS if g not in ALWAYS]}},
@@ -153,6 +158,9 @@ def pick(text: str, *, chat_id=None, has_files: bool = False, anchor: str = "", 
         found.add("mail")
     if "учебн" in a or "задача:" in a:
         found |= {"study", "tg_read"}
+    # Учебные чаты читают и папку MAX «Учеба». Обычный «чат» сюда не попадает — это остаётся Telegram.
+    if _STUDY_CHATS.search(t) or ("учеб" in a and "чат" in a):
+        found.add("max_read")
     for g in list(found):
         found |= set(IMPLIES.get(g, []))
     found |= set(extra or ())
