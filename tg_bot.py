@@ -527,6 +527,7 @@ class Ctx:
         self.last_message_id = None
         self.sent = []          # заметки об отправленном — уходят в историю диалога
         self.openai_key = ""    # ключ для генерации картинок (задаёт вызывающий код)
+        self.images = []        # картинки текущего сообщения пользователя [{media_type, b64}]
 
 
 _tls = threading.local()
@@ -1172,7 +1173,7 @@ MAX_TEXT_FILE_CHARS = 60000
 
 _recent_files = {}          # chat_id -> [(ts, имя, bytes)] — присланное, чтобы потом положить в задачу
 RECENT_FILES_TTL = 30 * 60
-RECENT_FILES_KEEP = 5
+RECENT_FILES_KEEP = 10
 
 
 def remember_file(chat_id, name: str, data: bytes):
@@ -1195,6 +1196,14 @@ def recent_file(chat_id, name_hint: str = ""):
         if not hint or hint in name.lower() or name.lower() in hint:
             return name, data
     return None
+
+
+def recent_photos(chat_id) -> list:
+    """Недавно присланные фото и картинки-файлы чата, по порядку: [(имя, bytes)]."""
+    now = time.time()
+    with _convo_guard:
+        lst = [f for f in _recent_files.get(chat_id, []) if now - f[0] < RECENT_FILES_TTL]
+    return [(name, data) for _, name, data in lst if Path(name).suffix.lower() in _PHOTO_EXT]
 
 
 def download_file(token: str, file_id: str, size_hint: int = 0):

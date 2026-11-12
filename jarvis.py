@@ -145,6 +145,11 @@ except Exception as _e:
     plan_skill = None
     print(f"NOTE: plan_skill disabled: {_e}", flush=True)
 try:
+    import health_skill
+except Exception as _e:
+    health_skill = None
+    print(f"NOTE: health_skill disabled: {_e}", flush=True)
+try:
     import ai_usage
 except Exception as _e:
     ai_usage = None
@@ -1194,7 +1199,7 @@ def build_backup_zip() -> bytes:
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
                       "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_wb_pickup.json", "jarvis_ozon_pickup.json", "jarvis_tg_history.sqlite3",
-                      "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl", "jarvis_routes.json",
+                      "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl", "jarvis_routes.json", "jarvis_health_drafts.json",
                       "jarvis_newspaper_cache.json", "jarvis_newspaper_state.json", "jarvis_newspaper_latest.html",
                       "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png"}
 
@@ -4853,10 +4858,12 @@ ASSISTANT_DATA_DOMAINS = {
             "cars": [c for c in app.get("cars", []) if not c.get("archived")],
             "serviceRecords": app.get("serviceRecords", [])[-150:],
         }),
-    "health": ("Здоровье: хронические состояния и события",
+    "health": ("Здоровье: эпизоды (случаи болезни) и хронические состояния, события — визиты, исследования с показателями и нормами, "
+               "анализы, памятки (диета, подготовка), назначения со статусом, курсы препаратов",
         lambda app: {
             "conditions": app.get("healthConditions", []),
-            "events": app.get("healthEvents", [])[-150:],
+            "events": [{**e, "source": {k: v for k, v in (e.get("source") or {}).items() if k not in ("text", "hashes")}}
+                       for e in app.get("healthEvents", [])[-150:]],
         }),
     "budget": ("Бюджет активного пользователя: вкладки По месяцу/ДДС/Накопления/Постоянные/Спортпит/Долги/Планы — план и факт по категориям и доходам, расходы, доходы, долги, накопления, ДДС, регулярные платежи, спортпит, заметки по месяцам, именные планы (поездки/мероприятия)",
         lambda app: {
@@ -5066,11 +5073,19 @@ WRITE_REGISTRY = {
     },
     "serviceRecords": {"label": "Запись об обслуживании автомобиля", "create_defaults": lambda: {}},
     "healthConditions": {
-        "label": "Состояние здоровья",
-        "create_defaults": lambda: {"tags": []},
+        "label": "Эпизод (случай болезни) или хроническое состояние: name, isChronic, kind episode|chronic, status active|resolved, "
+                 "diagnosedDate — начало, resolvedDate — конец, symptoms, notes",
+        "create_defaults": lambda: {"tags": [], "kind": "episode", "isChronic": False, "status": "active", "symptoms": ""},
         "cascade_orphan": [{"collection": "healthEvents", "field": "conditionId"}],
     },
-    "healthEvents": {"label": "Событие здоровья (визит/болезнь/процедура)", "create_defaults": lambda: {"tags": [], "medications": []}},
+    "healthEvents": {
+        "label": "Событие здоровья: type visit|study|labs|memo|illness|procedure|flare_up|note, date, time, title, conditionId — эпизод, "
+                 "doctor, specialty, clinic, symptoms, diagnosis, icd [коды МКБ], studyKind, conclusion, recommendations, "
+                 "metrics [{group,name,value,unit,ref,flag high|low|abnormal}], orders — назначения [{id,title,kind lab|study|consult|visit|procedure,"
+                 "code,status assigned|done|cancelled,dueDate,dueTime}], medications [{id,name,dosage,route,schedule,duration,stages[{dosage,schedule,duration}],"
+                 "status active|done}], memo {kind diet|prep, allowed[], excluded[], principles[], steps[], for}. Правка массива — передавай его целиком",
+        "create_defaults": lambda: {"tags": [], "medications": [], "metrics": [], "orders": [], "icd": []},
+    },
     "loyaltyCards": {"label": "Карта лояльности магазина", "create_defaults": lambda: {"format": "auto"}},
     "simDevices": {
         "label": "Устройство для сим-карт (name, kind phone|modem|tablet|laptop|watch|car|other, slots — число слотов)",
@@ -6121,6 +6136,7 @@ def _prompt_sections(app, with_tg: bool, groups) -> str:
         + (tg_watch_skill.prompt_section(st) if tg_watch_skill and with_tg and on("tg_watch") else "")
         + (mail_skill.prompt_section(st) if mail_skill and on("mail") else "")
         + (plan_skill.prompt_section(st) if plan_skill and on("plan") else "")
+        + (health_skill.prompt_section(st) if health_skill and on("health") else "")
         + (route_skill.prompt_section(st) if on("routes") else "")
         + (tg_tools.prompt_section(st) if with_tg and on(*tg_any) else "")
     )
@@ -6178,6 +6194,8 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
     if name in tg_history.TOOL_NAMES:
         return tg_history.execute(inp, (app or {}).get("telegramSkills"), tg_bot.get_ctx() if tg_bot else None,
                                   _bot_history_remote)
+    if health_skill and name in health_skill.TOOL_NAMES:
+        return health_skill.execute(name, inp, app, tg_bot.get_ctx() if tg_bot else None, getattr(_plan_scope, "on", False))
     if plan_skill and name in plan_skill.TOOL_NAMES:
         ctx = tg_bot.get_ctx() if tg_bot else None
         return plan_skill.execute(name, inp, (app or {}).get("telegramSkills"), getattr(ctx, "chat_id", None),
@@ -7009,28 +7027,38 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
 
     ctx = tg_bot.Ctx(token, chat_id, message_id)
     ctx.openai_key = find_openai_key(settings)   # картинки рисует OpenAI
+    ctx.images = list(images or [])
     tg_bot.set_ctx(ctx)
     with_tg = bool(tg_user) and tg_user.is_owner_chat(chat_id)
     loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
+    health_note = health_skill.pending_note(chat_id, app.get("telegramSkills")) if health_skill else ""
     groups = None
     if tool_groups and cfg.get("toolGroups"):
         dlg = tg_bot.current_dialog(chat_id) or {}
-        groups = tool_groups.pick(text, chat_id=chat_id, has_files=has_files, anchor=dlg.get("title") or "")
+        groups = tool_groups.pick(text, chat_id=chat_id, has_files=has_files, anchor=dlg.get("title") or "",
+                                  extra={"health"} if health_note else None)
     stats = {"esc": esc_reason}
+
+    def log_text():
+        # Ход про медицинские документы: текст сообщения в журнал ходов не пишем.
+        if health_note or any(str(t).startswith("health_") for t in stats.get("tools") or []):
+            return ""
+        return text
     try:
         answer, nav_links = loop_fn(turn, api_key, model, app, site_url, with_tg,
+                                    extra_system=health_note,
                                     effort=conf[4], role=conf[5], func="chat", esc=esc, groups=groups, turn=stats,
                                     compact=bool(cfg.get("compactPrompt")), cache=bool(cfg.get("promptCache")))
     except _AssistantError as e:
         stats["ok"] = False
-        _record_turn(stats, cfg, "chat", text, chat_id)
+        _record_turn(stats, cfg, "chat", log_text(), chat_id)
         say(str(e))
         return
     finally:
         tg_bot.set_ctx(None)
     if tool_groups and stats.get("groups"):
         tool_groups.remember(chat_id, set(stats["groups"]))
-    _record_turn(stats, cfg, "chat", text, chat_id)
+    _record_turn(stats, cfg, "chat", log_text(), chat_id)
 
     if answer is None:
         tag = ""
@@ -7179,6 +7207,7 @@ def _assistant_tool_list(app, with_tg: bool) -> list:
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + \
         _study_skill_tools(app) + _market_skill_tools(app) + _watch_skill_tools(app, with_tg) + _mail_skill_tools(app) + \
         _plan_skill_tools(app) + (tg_history.TOOLS if tg_history.skill_on((app or {}).get("telegramSkills")) else []) + \
+        (health_skill.TOOLS if health_skill and health_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (route_skill.TOOLS if route_skill.skill_on((app or {}).get("telegramSkills")) and
          (not tg_bot or tg_bot.get_ctx() is None or (tg_user and tg_user.is_owner_chat(tg_bot.get_ctx().chat_id))) else [])
 
@@ -7195,8 +7224,35 @@ def assistant_skills_catalog() -> list:
         + (tg_watch_skill.SKILLS if tg_watch_skill else [])
         + (mail_skill.SKILLS if mail_skill else [])
         + (plan_skill.SKILLS if plan_skill else [])
+        + (health_skill.SKILLS if health_skill else [])
         + route_skill.SKILLS
     )
+
+
+def _health_llm(app, system: str, text: str, images, max_tokens: int, func: str) -> str:
+    """Распознавание медицинских документов — модель роли healthExtract (Настройки → Ассистент → «Модели по ролям»)."""
+    conf = _ai_conf(app or {}, "healthExtract")
+    if not conf:
+        raise ValueError("ассистенту не назначен ключ ИИ (Настройки → Ассистент)")
+    try:
+        return _llm_text(conf, system, text, max_tokens=max_tokens, timeout=300, func=func, images=images)
+    except _AssistantError as e:
+        raise ValueError(str(e)[:200]) from None
+
+
+def _health_recent_photos(chat_id) -> list:
+    out = []
+    for name, data in (tg_bot.recent_photos(chat_id) if tg_bot else []):
+        mt = {".png": "image/png", ".webp": "image/webp"}.get(Path(name).suffix.lower(), "image/jpeg")
+        out.append({"media_type": mt, "b64": base64.b64encode(data).decode()})
+    return out
+
+
+if health_skill:
+    health_skill.bind(load=lambda: load_app_data(), save=lambda app: save_app_data(app), lock=APP_DATA_LOCK,
+                      llm=lambda *a: _health_llm(*a), tg=tg_bot, token=lambda: get_token(), plan=plan_skill,
+                      recent_photos=lambda chat_id: _health_recent_photos(chat_id),
+                      site=lambda: (((load_app_data() or {}).get("settings") or {}).get("publicUrl") or "").strip())
 
 
 def _study_skill_tools(app) -> list:
@@ -7311,11 +7367,14 @@ def _start_conf(app, conf, text: str, extra_chars: int = 0):
     return conf, esc, ""
 
 
-def _llm_text(conf, system: str, user: str, max_tokens: int = 2500, timeout: int = 120, func: str = "") -> str:
-    """Один запрос к модели без инструментов. Ошибки — _AssistantError."""
+def _llm_text(conf, system: str, user: str, max_tokens: int = 2500, timeout: int = 120, func: str = "",
+              images: list = None) -> str:
+    """Один запрос к модели без инструментов (images — [{media_type, b64}] для моделей с изображениями). Ошибки — _AssistantError."""
     provider, key, model = conf[0], conf[1], conf[2]
     effort = conf[4] if len(conf) > 4 else ""
     role = conf[5] if len(conf) > 5 else ""
+    if images:
+        user = _user_turn_content(provider, user, images)
     try:
         if provider == "openai":
             body = {"model": model, "max_completion_tokens": max_tokens,
@@ -7905,6 +7964,8 @@ def updates_loop():
                         threading.Thread(target=widget_skill.handle_fallback,
                                          args=(token, cq, (load_app_data() or {}).get("telegramSkills"), tg_bot),
                                          daemon=True).start()
+                    elif tg_bot and health_skill and data_str.startswith("hd:"):
+                        threading.Thread(target=health_skill.handle_callback, args=(token, cq), daemon=True).start()
                     elif tg_bot and data_str.startswith("tqr:"):
                         tg_bot.handle_quick_callback(
                             token, cq,

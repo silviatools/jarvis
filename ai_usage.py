@@ -68,8 +68,9 @@ ROLES = {
     "triage": {"label": "Контроль учебных чатов", "hint": "ежедневный разбор новых сообщений", "fallback": "background"},
     "title": {"label": "Название диалога", "hint": "короткий заголовок по первому сообщению", "fallback": "background"},
     "notesTargets": {"label": "Чаты из «Базы данных»", "hint": "поиск учебных чатов в заметках", "fallback": "background"},
+    "healthExtract": {"label": "Здоровье — распознавание фото", "hint": "медицинские документы из бота: расшифровка фото и раскладка по разделу. Нужна модель с изображениями", "fallback": "main"},
 }
-TASK_ROLES = ["studyBrief", "triage", "title", "notesTargets"]
+TASK_ROLES = ["studyBrief", "triage", "title", "notesTargets", "healthExtract"]
 
 
 def default_ai_models() -> dict:
@@ -83,6 +84,7 @@ def default_ai_models() -> dict:
         "triage": {"provider": "", "model": "", "effort": "low"},
         "title": {"provider": "", "model": "", "effort": ""},
         "notesTargets": {"provider": "", "model": "", "effort": ""},
+        "healthExtract": {"provider": "", "model": "", "effort": ""},
         "escalation": True,
         "escalationDailyLimit": 40,
         "toolGroups": False,

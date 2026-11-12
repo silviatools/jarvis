@@ -37,3 +37,5 @@ android/tablet-voice/local.properties
 android/tablet-voice/.idea/
 jarvis_routes.json
 jarvis_route_keys.json
+jarvis_health_drafts.json
+photos/

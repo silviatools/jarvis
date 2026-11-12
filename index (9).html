@@ -8921,10 +8921,11 @@ function StudySettings({ data, setData }) {
 // ── Модели, рассуждения и расход ИИ (ai_usage.py / tool_groups.py на сервере) ──────────────
 // Всё хранится в settings.aiModels (обычная синхронизация); роли работают только для наборов OpenAI.
 const AI_ROLE_ORDER = ['main', 'complex', 'background', 'voice'];
-const AI_TASK_ORDER = ['studyBrief', 'triage', 'title', 'notesTargets'];
+const AI_TASK_ORDER = ['studyBrief', 'triage', 'title', 'notesTargets', 'healthExtract'];
 const AI_FUNC_LABELS = {
   chat: 'Чат в Telegram', voice: 'Голос в приложении', plan_task: 'Плановые поручения', study_brief: 'Сбор информации',
-  study_chats: 'Контроль учебных чатов', title: 'Название диалога', notes: 'Чаты из «Базы данных»', other: 'Прочее',
+  study_chats: 'Контроль учебных чатов', title: 'Название диалога', notes: 'Чаты из «Базы данных»',
+  health_transcribe: 'Здоровье: расшифровка фото', health_structure: 'Здоровье: разбор документа', other: 'Прочее',
 };
 const aiFmtUsd = (v) => `$${(Number(v) || 0).toFixed(Number(v) >= 10 ? 2 : 3)}`;
 const aiFmtNum = (v) => (Number(v) || 0).toLocaleString('ru-RU');
@@ -15654,8 +15655,8 @@ const VOICE_DATA_DOMAINS = {
     }),
   },
   health: {
-    label: 'Здоровье: хронические состояния и события (болезни, визиты, процедуры)',
-    get: d => ({ conditions: d.healthConditions || [], events: (d.healthEvents || []).slice(-150) }),
+    label: 'Здоровье: эпизоды (случаи болезни) и хронические состояния, события — визиты, исследования с показателями и нормами, анализы, памятки (диета, подготовка), назначения со статусом, курсы препаратов',
+    get: d => ({ conditions: d.healthConditions || [], events: (d.healthEvents || []).slice(-150).map(({ source, ...e }) => e) }),
   },
   budget: {
     label: 'Бюджет активного пользователя: вкладки По месяцу/ДДС/Накопления/Постоянные/Спортпит/Долги/Планы — план и факт по категориям и доходам, расходы, доходы, долги, накопления, ДДС, регулярные платежи, спортпит, заметки по месяцам, именные планы (поездки/мероприятия)',
@@ -15853,13 +15854,13 @@ const WRITE_REGISTRY = {
   },
   serviceRecords: { label: 'Запись об обслуживании автомобиля', createDefaults: () => ({}) },
   healthConditions: {
-    label: 'Состояние здоровья',
-    createDefaults: () => ({ tags: [] }),
+    label: 'Эпизод (случай болезни) или хроническое состояние: name, isChronic, kind episode|chronic, status active|resolved, diagnosedDate — начало, resolvedDate — конец, symptoms, notes',
+    createDefaults: () => ({ tags: [], kind: 'episode', isChronic: false, status: 'active', symptoms: '' }),
     cascadeOrphan: [{ collection: 'healthEvents', field: 'conditionId' }],
   },
   healthEvents: {
-    label: 'Событие здоровья (визит/болезнь/процедура). Поля notify/notifyDate/notifyTime/notifyNote — разовое напоминание в Telegram на дату (как у долгов/задач): notify true только если задана notifyDate.',
-    createDefaults: () => ({ tags: [], medications: [], notify: false, notifyDate: '', notifyTime: '10:00', notifyNote: '' }),
+    label: 'Событие здоровья: type visit|study|labs|memo|illness|procedure|flare_up|note, date, time, title, conditionId — эпизод, doctor, specialty, clinic, symptoms, diagnosis, icd [коды МКБ], studyKind, conclusion, recommendations, metrics [{group,name,value,unit,ref,flag high|low|abnormal}], orders — назначения [{id,title,kind lab|study|consult|visit|procedure,code,status assigned|done|cancelled,dueDate,dueTime}], medications [{id,name,dosage,route,schedule,duration,stages[{dosage,schedule,duration}],status active|done}], memo {kind diet|prep, allowed[], excluded[], principles[], steps[], for}. Правка массива — передавай его целиком. Поля notify/notifyDate/notifyTime/notifyNote — разовое напоминание в Telegram на дату (как у долгов/задач): notify true только если задана notifyDate.',
+    createDefaults: () => ({ tags: [], medications: [], metrics: [], orders: [], icd: [], notify: false, notifyDate: '', notifyTime: '10:00', notifyNote: '' }),
   },
   loyaltyCards: { label: 'Карта лояльности магазина', createDefaults: () => ({ format: 'auto' }) },
   simDevices: { label: 'Устройство для сим-карт (name, kind phone|modem|tablet|laptop|watch|car|other, slots — число слотов)', createDefaults: () => ({ kind: 'phone', slots: 2, note: '' }) },
@@ -19962,15 +19963,29 @@ function ServiceRecordModal({ record, cars, allServiceNames, onSave, onClose }) 
 }
 
 // ============== HEALTH VIEW (Здоровье) ==============
+// Эпизод (случай болезни) — healthConditions с isChronic:false (kind 'episode'); хроническое состояние — isChronic:true.
+// События — healthEvents: визит, исследование, анализы (metrics с нормами), памятки (memo), назначения (orders) и курсы (medications.stages).
+// Бот заполняет их из фото документов (health_skill.py); здесь всё видно и правится руками.
 
 const HEALTH_EVENT_TYPES = [
-  { id: 'illness',   label: 'Болезнь' },
   { id: 'visit',     label: 'Приём врача' },
+  { id: 'study',     label: 'Исследование' },
+  { id: 'labs',      label: 'Анализы' },
+  { id: 'illness',   label: 'Болезнь' },
   { id: 'procedure', label: 'Процедура/операция' },
   { id: 'flare_up',  label: 'Обострение' },
+  { id: 'memo',      label: 'Памятка/диета' },
   { id: 'note',      label: 'Заметка' },
 ];
 const healthEventTypeLabel = (id) => (HEALTH_EVENT_TYPES.find(t => t.id === id) || {}).label || id;
+const HEALTH_ORDER_KINDS = [
+  { id: 'lab', label: 'Анализ' }, { id: 'study', label: 'Исследование' }, { id: 'consult', label: 'Консультация' },
+  { id: 'visit', label: 'Повторный приём' }, { id: 'procedure', label: 'Процедура' }, { id: 'other', label: 'Другое' },
+];
+const healthOrderKindLabel = (id) => (HEALTH_ORDER_KINDS.find(k => k.id === id) || {}).label || 'Другое';
+const HEALTH_ORDER_STATUS = { assigned: 'Назначено', done: 'Сделано', cancelled: 'Отменено' };
+const HEALTH_MEMO_KINDS = [{ id: 'diet', label: 'Диета' }, { id: 'prep', label: 'Подготовка к исследованию' }, { id: 'other', label: 'Памятка' }];
+const isEpisode = (c) => !c.isChronic;
 
 function formatHealthDate(dateStr) {
   if (!dateStr) return '';
@@ -19992,17 +20007,104 @@ function formatVisionSummary(vision) {
   return parts.length ? parts.join(' · ') : null;
 }
 
+// Вне нормы по референсу — то же правило, что health_skill.ref_flag на сервере.
+function healthRefFlag(value, ref) {
+  const num = (s) => { const m = String(s || '').replace(',', '.').match(/[-+]?\d+(?:\.\d+)?/); return m ? parseFloat(m[0]) : null; };
+  const v = num(value);
+  const r = String(ref || '').toLowerCase().replace(/[—–]/g, '-').replace(/,/g, '.');
+  if (v === null || !r.trim()) return '';
+  if ((r.match(/\d+(?:\.\d+)?/g) || []).length > 2 || /муж|жен|дет/.test(r)) return '';
+  let m = r.match(/до\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)/);
+  if (m) return v > parseFloat(m[2]) ? 'high' : '';
+  m = r.match(/(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)/);
+  if (m) return v < parseFloat(m[1]) ? 'low' : v > parseFloat(m[2]) ? 'high' : '';
+  m = r.match(/(?:до|<|≤|не более|менее)\s*=?\s*(\d+(?:\.\d+)?)/);
+  if (m) return v > parseFloat(m[1]) ? 'high' : '';
+  m = r.match(/(?:от|>|≥|не менее|более)\s*=?\s*(\d+(?:\.\d+)?)/);
+  if (m) return v < parseFloat(m[1]) ? 'low' : '';
+  return '';
+}
+const healthMetricFlag = (m) => (m && (m.flag || healthRefFlag(m.value, m.ref))) || '';
+
+function HealthFlag({ flag }) {
+  if (!flag) return null;
+  const map = { high: ['↑ выше нормы', 'bg-red-50 text-red-600 border-red-200'], low: ['↓ ниже нормы', 'bg-amber-50 text-amber-700 border-amber-200'],
+                abnormal: ['≠ не в норме', 'bg-red-50 text-red-600 border-red-200'] };
+  const [label, cls] = map[flag] || map.abnormal;
+  return <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full border whitespace-nowrap ${cls}`}>{label}</span>;
+}
+
+function healthDays(text) {
+  const m = String(text || '').toLowerCase().match(/(\d+(?:[.,]\d+)?)\s*(дн|день|дня|сут|недел|нед|месяц|мес)/);
+  if (!m) return null;
+  const n = parseFloat(m[1].replace(',', '.'));
+  return Math.round(n * (/^(дн|ден|сут)/.test(m[2]) ? 1 : /^нед/.test(m[2]) ? 7 : 30));
+}
+const addDaysIso = (iso, n) => {
+  const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+// Курс препарата: этап на сегодня и дата окончания (если длительности распознаются).
+function healthCourseInfo(med, eventDate) {
+  const start = med.startDate || eventDate || '';
+  const stages = (med.stages && med.stages.length) ? med.stages : [{ dosage: med.dosage, schedule: med.schedule, duration: med.duration }];
+  const today = getTodayKey();
+  let acc = 0, current = null, end = null, known = !!start;
+  stages.forEach((st, i) => {
+    const n = healthDays(st.duration);
+    if (n === null) { known = false; return; }
+    const from = start ? addDaysIso(start, acc) : '';
+    acc += n;
+    const to = start ? addDaysIso(start, acc) : '';
+    if (start && !current && today >= from && today < to) current = { ...st, index: i, from, to };
+  });
+  if (known && start) end = addDaysIso(start, acc);
+  const active = med.status !== 'done' && (!end || today < end);
+  return { start, end, current, active, stages };
+}
+
+const formatMedLine = (m) => [m.name, m.dosage, m.route].filter(Boolean).join(', ');
+const formatStage = (st) => [st.dosage, st.schedule, st.duration].filter(Boolean).join(' · ');
+
+function healthAllOrders(events) {
+  const out = [];
+  events.forEach(e => (e.orders || []).forEach(o => out.push({ order: o, event: e })));
+  return out;
+}
+
+function healthActiveCourses(events) {
+  const out = [];
+  events.forEach(e => (e.medications || []).forEach(m => {
+    const info = healthCourseInfo(m, e.date);
+    if (info.active && m.name) out.push({ med: m, event: e, info });
+  }));
+  return out;
+}
+
+const HealthSection = ({ label, children, right }) => (
+  <div>
+    <div className="flex items-center justify-between mb-1.5">
+      <div className="text-xs uppercase tracking-wide text-[var(--text-subtle)] font-medium">{label}</div>
+      {right}
+    </div>
+    {children}
+  </div>
+);
+
 function HealthView({ data, setData }) {
   const [healthTab, setHealthTab] = useState('overview');
   const [editingEvent, setEditingEvent] = useState(null);         // 'new' | event | null
   const [newEventDefaults, setNewEventDefaults] = useState(null); // prefill for a 'new' event (e.g. conditionId)
   const [editingCondition, setEditingCondition] = useState(null); // 'new' | condition | null
-  const [viewingCondition, setViewingCondition] = useState(null); // condition | null
-  const [viewingEvent, setViewingEvent] = useState(null);         // event | null
+  const [viewingConditionId, setViewingConditionId] = useState(null);
+  const [viewingEventId, setViewingEventId] = useState(null);
 
   const conditions = [...(data.healthConditions || [])].sort((a, b) => (b.diagnosedDate || '').localeCompare(a.diagnosedDate || ''));
-  const events = [...(data.healthEvents || [])].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  const events = [...(data.healthEvents || [])].sort((a, b) => ((b.date || '') + (b.time || '')).localeCompare((a.date || '') + (a.time || '')));
   const getConditionName = (id) => (data.healthConditions || []).find(c => c.id === id)?.name || '';
+  const viewingEvent = viewingEventId ? events.find(e => e.id === viewingEventId) : null;
+  const viewingCondition = viewingConditionId ? conditions.find(c => c.id === viewingConditionId) : null;
 
   const openNewEvent = (defaults = null) => {
     setNewEventDefaults(defaults);
@@ -20020,6 +20122,17 @@ function HealthView({ data, setData }) {
     setEditingEvent(null);
   };
 
+  const updateEvent = (id, fn) => setData(d => ({
+    ...d,
+    healthEvents: (d.healthEvents || []).map(e => e.id === id ? { ...fn(e), updatedAt: Date.now() } : e),
+  }));
+
+  const toggleOrder = (eventId, orderId) => updateEvent(eventId, e => ({
+    ...e,
+    orders: (e.orders || []).map(o => o.id !== orderId ? o
+      : o.status === 'done' ? { ...o, status: 'assigned', doneDate: '' } : { ...o, status: 'done', doneDate: getTodayKey() }),
+  }));
+
   const deleteEvent = (id) => {
     const event = events.find(e => e.id === id);
     (event?.photos || []).map(normalizePhoto).forEach(p => deletePhoto(p.filename));
@@ -20033,28 +20146,29 @@ function HealthView({ data, setData }) {
 
   const saveCondition = (condition) => {
     const now = Date.now();
-    condition = { ...condition, updatedAt: now, createdAt: condition.createdAt || now };
+    condition = { ...condition, kind: condition.isChronic ? 'chronic' : 'episode', updatedAt: now, createdAt: condition.createdAt || now };
     setData(d => {
       const list = d.healthConditions || [];
       const exists = list.find(c => c.id === condition.id);
       return { ...d, healthConditions: exists ? list.map(c => c.id === condition.id ? condition : c) : [...list, condition] };
     });
-    setViewingCondition(v => (v && v.id === condition.id) ? condition : v);
     setEditingCondition(null);
     return condition;
   };
 
+  const setConditionStatus = (c, status) => saveCondition({ ...c, status, resolvedDate: status === 'resolved' ? (c.resolvedDate || getTodayKey()) : '' });
+
   // Удаление состояния не трогает связанные события — они остаются в истории,
   // только теряют привязку (conditionId обнуляется), чтобы не терять записи о лечении.
   const deleteCondition = (id) => {
-    if (!confirm('Удалить состояние? Связанные записи в истории останутся, но потеряют привязку к нему.')) return;
+    if (!confirm('Удалить эпизод/состояние? Связанные записи в истории останутся, но потеряют привязку к нему.')) return;
     setData(d => ({
       ...d,
       healthConditions: (d.healthConditions || []).filter(c => c.id !== id),
       healthEvents: (d.healthEvents || []).map(e => e.conditionId === id ? { ...e, conditionId: '', updatedAt: Date.now() } : e),
       deletedIds: withDeletedId(d, 'healthConditions', id),
     }));
-    setViewingCondition(v => (v && v.id === id) ? null : v);
+    setViewingConditionId(v => v === id ? null : v);
   };
 
   if (editingEvent !== null) {
@@ -20067,7 +20181,7 @@ function HealthView({ data, setData }) {
         onCancel={() => setEditingEvent(null)}
         onCreateCondition={(name) => saveCondition({
           id: crypto.randomUUID(), name, isChronic: false, status: 'active',
-          diagnosedDate: '', resolvedDate: '', notes: '', tags: [],
+          diagnosedDate: getTodayKey(), resolvedDate: '', symptoms: '', notes: '', tags: [],
         })}
       />
     );
@@ -20083,15 +20197,19 @@ function HealthView({ data, setData }) {
     );
   }
 
+  const memos = events.filter(e => e.type === 'memo');
+  const pendingOrders = healthAllOrders(events).filter(x => x.order.status === 'assigned').length;
   const tabs = [
-    { id: 'overview',   label: 'Обзор'     },
-    { id: 'timeline',   label: 'История'   },
-    { id: 'conditions', label: 'Состояния' },
+    { id: 'overview',   label: 'Обзор'      },
+    { id: 'timeline',   label: 'История'    },
+    { id: 'orders',     label: pendingOrders ? `Назначения · ${pendingOrders}` : 'Назначения' },
+    { id: 'conditions', label: 'Эпизоды'    },
+    { id: 'memos',      label: 'Памятки'    },
   ];
 
   return (
     <div className="fade-in">
-      <div className="mb-6 flex items-end justify-between">
+      <div className="mb-6 flex items-end justify-between gap-3">
         <div>
           <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Раздел</div>
           <h1 className="font-display text-3xl md:text-4xl">Здоровье</h1>
@@ -20106,7 +20224,13 @@ function HealthView({ data, setData }) {
         )}
         {healthTab === 'conditions' && (
           <button onClick={() => setEditingCondition('new')} className="btn-primary flex items-center gap-2 text-sm">
-            <Icon name="plus" size={16} /> Состояние
+            <Icon name="plus" size={16} /> Эпизод
+          </button>
+        )}
+        {healthTab === 'memos' && (
+          <button onClick={() => openNewEvent({ type: 'memo', title: '', memo: { kind: 'diet', for: '', principles: [], allowed: [], excluded: [], steps: [] } })}
+            className="btn-primary flex items-center gap-2 text-sm">
+            <Icon name="plus" size={16} /> Памятка
           </button>
         )}
       </div>
@@ -20114,7 +20238,7 @@ function HealthView({ data, setData }) {
       <div className="overflow-x-auto scrollbar-hide -mx-4 px-4 sm:mx-0 sm:px-0 mb-6">
         <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 gap-0">
           {tabs.map(t => (
-            <button key={t.id} onClick={() => setHealthTab(t.id)}
+            <button key={t.id} onClick={() => setHealthTab(t.id)} data-testid={`health-tab-${t.id}`}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 ${healthTab===t.id?'bg-[var(--text)] text-white':'text-[var(--text-muted)]'}`}>
               {t.label}
             </button>
@@ -20122,18 +20246,23 @@ function HealthView({ data, setData }) {
         </div>
       </div>
 
-      {healthTab === 'overview'   && <HealthOverview conditions={conditions} events={events} onSelectCondition={setViewingCondition} />}
-      {healthTab === 'timeline'   && <HealthTimeline events={events} conditions={data.healthConditions || []} onView={setViewingEvent} onEdit={setEditingEvent} onDelete={deleteEvent} />}
-      {healthTab === 'conditions' && <HealthConditionsList conditions={conditions} events={events} onEdit={setEditingCondition} onDelete={deleteCondition} onView={setViewingCondition} />}
+      {healthTab === 'overview'   && <HealthOverview conditions={conditions} events={events} onSelectCondition={c => setViewingConditionId(c.id)}
+                                       onViewEvent={e => setViewingEventId(e.id)} onToggleOrder={toggleOrder} onOpenOrders={() => setHealthTab('orders')} />}
+      {healthTab === 'timeline'   && <HealthTimeline events={events} conditions={data.healthConditions || []} onView={e => setViewingEventId(e.id)} onEdit={setEditingEvent} onDelete={deleteEvent} />}
+      {healthTab === 'orders'     && <HealthOrdersView events={events} getConditionName={getConditionName} onToggle={toggleOrder} onViewEvent={e => setViewingEventId(e.id)} />}
+      {healthTab === 'conditions' && <HealthConditionsList conditions={conditions} events={events} onEdit={setEditingCondition} onDelete={deleteCondition} onView={c => setViewingConditionId(c.id)} />}
+      {healthTab === 'memos'      && <HealthMemosView memos={memos} getConditionName={getConditionName} onView={e => setViewingEventId(e.id)} />}
 
       {viewingCondition && (
         <HealthConditionDetail
           condition={viewingCondition}
           events={events.filter(e => e.conditionId === viewingCondition.id)}
-          onClose={() => setViewingCondition(null)}
-          onEdit={() => { setEditingCondition(viewingCondition); setViewingCondition(null); }}
-          onAddEvent={() => { openNewEvent({ conditionId: viewingCondition.id, type: 'flare_up' }); setViewingCondition(null); }}
-          onEditEvent={(ev) => { setEditingEvent(ev); setViewingCondition(null); }}
+          onClose={() => setViewingConditionId(null)}
+          onEdit={() => { setEditingCondition(viewingCondition); setViewingConditionId(null); }}
+          onSetStatus={(s) => setConditionStatus(viewingCondition, s)}
+          onAddEvent={() => { openNewEvent({ conditionId: viewingCondition.id, type: viewingCondition.isChronic ? 'flare_up' : 'visit' }); setViewingConditionId(null); }}
+          onViewEvent={(ev) => { setViewingEventId(ev.id); setViewingConditionId(null); }}
+          onToggleOrder={toggleOrder}
         />
       )}
 
@@ -20141,9 +20270,10 @@ function HealthView({ data, setData }) {
         <HealthEventDetail
           event={viewingEvent}
           conditionName={getConditionName(viewingEvent.conditionId)}
-          onClose={() => setViewingEvent(null)}
-          onEdit={() => { setEditingEvent(viewingEvent); setViewingEvent(null); }}
-          onDelete={() => { if (confirm('Удалить запись?')) { deleteEvent(viewingEvent.id); setViewingEvent(null); } }}
+          onClose={() => setViewingEventId(null)}
+          onEdit={() => { setEditingEvent(viewingEvent); setViewingEventId(null); }}
+          onDelete={() => { if (confirm('Удалить запись?')) { deleteEvent(viewingEvent.id); setViewingEventId(null); } }}
+          onToggleOrder={(orderId) => toggleOrder(viewingEvent.id, orderId)}
         />
       )}
     </div>
@@ -20209,35 +20339,229 @@ function HealthDocumentImportButton({ settings, onDraftReady }) {
   );
 }
 
-function HealthOverview({ conditions, events, onSelectCondition }) {
+function HealthOrderRow({ order, event, onToggle, onViewEvent, showSource }) {
+  const done = order.status === 'done';
+  return (
+    <div className="flex items-start gap-3 py-2.5 border-b border-[var(--border)] last:border-b-0" data-testid="health-order">
+      <button onClick={onToggle} aria-label={done ? 'Отметить невыполненным' : 'Отметить выполненным'}
+        className={`mt-0.5 w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors ${done ? 'bg-[var(--text)] border-[var(--text)] text-white' : 'border-[var(--border-strong)]'}`}>
+        {done && <Icon name="check" size={14} />}
+      </button>
+      <button onClick={onViewEvent} className="text-left flex-1 min-w-0">
+        <div className={`text-sm ${done ? 'line-through text-[var(--text-muted)]' : ''}`}>
+          {order.title}{order.handwritten && <span title="Рукописная приписка" className="ml-1">✍️</span>}
+        </div>
+        <div className="text-xs text-[var(--text-muted)] mt-0.5 flex flex-wrap gap-x-2">
+          <span>{healthOrderKindLabel(order.kind)}</span>
+          {[order.group, order.dueDate && `до ${formatHealthDate(order.dueDate)}${order.dueTime ? `, ${order.dueTime}` : ''}`,
+            done && order.doneDate && `сделано ${formatHealthDate(order.doneDate)}`, order.code,
+            showSource && event && `из «${event.title || healthEventTypeLabel(event.type)}»`].filter(Boolean).map((x, i) => <span key={i}>· {x}</span>)}
+        </div>
+      </button>
+    </div>
+  );
+}
+
+function HealthCourseRow({ med, event, info, onView }) {
+  return (
+    <button onClick={onView} className="w-full text-left py-2.5 border-b border-[var(--border)] last:border-b-0">
+      <div className="text-sm font-medium">💊 {formatMedLine(med)}</div>
+      <div className="text-xs text-[var(--text-muted)] mt-0.5">
+        {info.current && info.stages.length > 1 ? `Этап ${info.current.index + 1} из ${info.stages.length}: ${formatStage(info.current)}` : formatStage(info.stages[0] || {})}
+        {med.quantity ? ` · ${med.quantity}` : ''}
+      </div>
+      <div className="text-xs text-[var(--text-subtle)] mt-0.5">
+        {info.start ? `с ${formatHealthDate(info.start)}` : ''}{info.end ? ` до ${formatHealthDate(info.end)}` : ''}
+        {event ? ` · ${event.title || healthEventTypeLabel(event.type)}` : ''}
+      </div>
+    </button>
+  );
+}
+
+function HealthOverview({ conditions, events, onSelectCondition, onViewEvent, onToggleOrder, onOpenOrders }) {
+  const today = getTodayKey();
   const active = conditions.filter(c => c.status === 'active');
   const lastEventFor = (conditionId) => events.find(e => e.conditionId === conditionId) || null; // events отсортированы по убыванию даты
+  const orders = healthAllOrders(events);
+  const visits = orders.filter(x => x.order.kind === 'visit' && x.order.status === 'assigned' && x.order.dueDate && x.order.dueDate >= today)
+    .sort((a, b) => a.order.dueDate.localeCompare(b.order.dueDate));
+  const pending = orders.filter(x => x.order.kind !== 'visit' && x.order.status === 'assigned');
+  const courses = healthActiveCourses(events);
+  const flagged = events.filter(e => (e.type === 'study' || e.type === 'labs') && (e.metrics || []).some(healthMetricFlag)).slice(0, 3);
 
-  if (active.length === 0) {
-    return <EmptyState title="Нет активных состояний" text="Добавьте состояние во вкладке «Состояния» или запись во вкладке «История»" />;
+  if (!active.length && !visits.length && !pending.length && !courses.length && !flagged.length) {
+    return <EmptyState title="Пока пусто" text="Пришлите боту фото документов с подписью «внеси в здоровье» или добавьте запись во вкладке «История»" />;
   }
 
+  const card = 'bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5';
+  return (
+    <div className="space-y-4">
+      {visits.length > 0 && (
+        <div className={card} data-testid="health-upcoming">
+          <HealthSection label="Ближайшие визиты">
+            <div className="space-y-2">
+              {visits.slice(0, 4).map(({ order, event }) => (
+                <button key={order.id} onClick={() => onViewEvent(event)} className="w-full text-left flex items-center gap-3">
+                  <div className="w-12 text-center flex-shrink-0 rounded-xl bg-[var(--bg)] border border-[var(--border)] py-1">
+                    <div className="font-display text-lg leading-none">{new Date(order.dueDate + 'T00:00:00').getDate()}</div>
+                    <div className="text-[10px] uppercase text-[var(--text-muted)]">{formatHealthDate(order.dueDate).split(' ')[1]}</div>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">{order.title}{order.dueTime ? `, ${order.dueTime}` : ''}</div>
+                    <div className="text-xs text-[var(--text-muted)] truncate">{[event.clinic, event.doctor].filter(Boolean).join(' · ')}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </HealthSection>
+        </div>
+      )}
+
+      {pending.length > 0 && (
+        <div className={card}>
+          <HealthSection label={`Назначено и не сделано · ${pending.length}`}
+            right={pending.length > 6 && <button onClick={onOpenOrders} className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]">Все →</button>}>
+            {pending.slice(0, 6).map(({ order, event }) => (
+              <HealthOrderRow key={order.id} order={order} event={event} showSource
+                onToggle={() => onToggleOrder(event.id, order.id)} onViewEvent={() => onViewEvent(event)} />
+            ))}
+          </HealthSection>
+        </div>
+      )}
+
+      {courses.length > 0 && (
+        <div className={card}>
+          <HealthSection label="Курсы лечения">
+            {courses.map(({ med, event, info }) => <HealthCourseRow key={med.id || med.name} med={med} event={event} info={info} onView={() => onViewEvent(event)} />)}
+          </HealthSection>
+        </div>
+      )}
+
+      {flagged.length > 0 && (
+        <div className={card}>
+          <HealthSection label="Вне нормы">
+            <div className="space-y-3">
+              {flagged.map(e => (
+                <button key={e.id} onClick={() => onViewEvent(e)} className="w-full text-left">
+                  <div className="text-sm font-medium">{e.title} <span className="text-xs text-[var(--text-muted)] font-normal">· {formatHealthDate(e.date)}</span></div>
+                  <div className="flex flex-wrap gap-1.5 mt-1">
+                    {(e.metrics || []).filter(healthMetricFlag).map(m => (
+                      <span key={m.id || m.name} className="text-xs px-2 py-0.5 rounded-full bg-[var(--bg)] border border-[var(--border)]">
+                        {m.name}: <b>{m.value}{m.unit ? ` ${m.unit}` : ''}</b> {healthMetricFlag(m) === 'low' ? '↓' : '↑'}
+                      </span>
+                    ))}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </HealthSection>
+        </div>
+      )}
+
+      {active.length > 0 && (
+        <div className="space-y-3">
+          <div className="text-xs uppercase tracking-wide text-[var(--text-subtle)] font-medium px-1">Активные эпизоды и состояния</div>
+          {active.map(c => {
+            const last = lastEventFor(c.id);
+            return (
+              <button key={c.id} onClick={() => onSelectCondition(c)}
+                className="w-full text-left bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5 hover:border-[var(--border-strong)] transition-colors">
+                <div className="flex items-center gap-2 flex-wrap mb-1">
+                  <span className="font-display text-lg">{c.name}</span>
+                  <span className={`text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full ${c.isChronic ? 'bg-[var(--text)] text-white' : 'border border-[var(--border)] text-[var(--text-muted)]'}`}>{c.isChronic ? 'Хроническое' : 'Эпизод'}</span>
+                </div>
+                <div className="text-xs text-[var(--text-muted)]">
+                  {c.diagnosedDate ? `С ${formatHealthDate(c.diagnosedDate)}` : 'Дата начала не указана'}
+                  {` · ${events.filter(e => e.conditionId === c.id).length} зап.`}
+                </div>
+                {last && (
+                  <div className="text-sm text-[var(--text-muted)] mt-2">
+                    Последняя запись: <span className="text-[var(--text)]">{formatHealthDate(last.date)}</span>{last.title ? ` — ${last.title}` : ''}
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HealthOrdersView({ events, getConditionName, onToggle, onViewEvent }) {
+  const [filter, setFilter] = useState('assigned');
+  const all = healthAllOrders(events);
+  const shown = all.filter(x => filter === 'all' || (filter === 'done' ? x.order.status === 'done' : x.order.status === 'assigned'));
+  const groups = [];
+  shown.forEach(x => {
+    let g = groups.find(g => g.event.id === x.event.id);
+    if (!g) { g = { event: x.event, items: [] }; groups.push(g); }
+    g.items.push(x.order);
+  });
+  const courses = events.flatMap(e => (e.medications || []).filter(m => m.name).map(m => ({ med: m, event: e, info: healthCourseInfo(m, e.date) })));
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-1.5">
+        {[['assigned', 'Назначено'], ['done', 'Сделано'], ['all', 'Все']].map(([id, label]) => (
+          <button key={id} onClick={() => setFilter(id)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${filter === id ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
+            {label} · {all.filter(x => id === 'all' || x.order.status === id).length}
+          </button>
+        ))}
+      </div>
+      {groups.length === 0 ? (
+        <EmptyState title={filter === 'assigned' ? 'Всё назначенное сделано' : 'Нет назначений'} text="Назначенные анализы, исследования и визиты появляются из записей приёма" />
+      ) : groups.map(g => (
+        <div key={g.event.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
+          <button onClick={() => onViewEvent(g.event)} className="text-left w-full mb-1">
+            <div className="font-medium">{g.event.title || healthEventTypeLabel(g.event.type)}</div>
+            <div className="text-xs text-[var(--text-muted)]">{formatHealthDate(g.event.date)}{g.event.doctor ? ` · ${g.event.doctor}` : ''}{getConditionName(g.event.conditionId) ? ` · ${getConditionName(g.event.conditionId)}` : ''}</div>
+          </button>
+          {g.items.map(o => <HealthOrderRow key={o.id} order={o} event={g.event} onToggle={() => onToggle(g.event.id, o.id)} onViewEvent={() => onViewEvent(g.event)} />)}
+        </div>
+      ))}
+      {courses.length > 0 && (
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
+          <HealthSection label="Препараты и курсы">
+            {courses.map(({ med, event, info }) => (
+              <div key={(med.id || med.name) + event.id} className={info.active ? '' : 'opacity-60'}>
+                <HealthCourseRow med={med} event={event} info={info} onView={() => onViewEvent(event)} />
+              </div>
+            ))}
+          </HealthSection>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HealthMemosView({ memos, getConditionName, onView }) {
+  if (!memos.length) {
+    return <EmptyState title="Нет памяток" text="Диеты и памятки подготовки к исследованиям — пришлите фото боту или добавьте вручную" />;
+  }
   return (
     <div className="space-y-3">
-      {active.map(c => {
-        const last = lastEventFor(c.id);
+      {memos.map(e => {
+        const m = e.memo || {};
+        const kind = (HEALTH_MEMO_KINDS.find(k => k.id === m.kind) || HEALTH_MEMO_KINDS[2]).label;
         return (
-          <button key={c.id} onClick={() => onSelectCondition(c)}
-            className="w-full text-left bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 hover:border-[var(--border-strong)] transition-colors">
-            <div className="flex items-center gap-2 flex-wrap mb-1">
-              <span className="font-display text-lg">{c.name}</span>
-              {c.isChronic && (
-                <span className="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full bg-[var(--text)] text-white">Хроническое</span>
-              )}
+          <button key={e.id} onClick={() => onView(e)} data-testid="health-memo"
+            className="w-full text-left bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5 hover:border-[var(--border-strong)] transition-colors">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-display text-lg">{e.title || kind}</span>
+              <span className="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full border border-[var(--border)] text-[var(--text-muted)]">{kind}</span>
             </div>
-            <div className="text-xs text-[var(--text-muted)]">
-              {c.diagnosedDate ? `С ${formatHealthDate(c.diagnosedDate)}` : 'Дата диагноза не указана'}
+            <div className="text-xs text-[var(--text-muted)] mt-1 flex flex-wrap gap-x-2">
+              {e.date && <span>{formatHealthDate(e.date)}</span>}
+              {m.for && <span>· {m.for}</span>}
+              {getConditionName(e.conditionId) && <span>· {getConditionName(e.conditionId)}</span>}
             </div>
-            {last && (
-              <div className="text-sm text-[var(--text-muted)] mt-2">
-                Последняя запись: <span className="text-[var(--text)]">{formatHealthDate(last.date)}</span>{last.title ? ` — ${last.title}` : ''}
-              </div>
-            )}
+            <div className="text-sm text-[var(--text-muted)] mt-2">
+              {m.kind === 'diet'
+                ? [m.allowed?.length && `можно: ${m.allowed.length}`, m.excluded?.length && `исключить: ${m.excluded.length}`, m.principles?.length && `принципов: ${m.principles.length}`].filter(Boolean).join(' · ')
+                : (m.steps || []).slice(0, 2).join(' ')}
+            </div>
           </button>
         );
       })}
@@ -20259,15 +20583,18 @@ function HealthTimeline({ events, conditions, onView, onEdit, onDelete }) {
     .filter(e => {
       if (!q) return true;
       const haystack = [
-        e.title, e.symptoms, e.diagnosis, e.outcome, e.doctor, e.clinic,
+        e.title, e.symptoms, e.diagnosis, e.outcome, e.doctor, e.clinic, e.specialty, e.studyKind, e.conclusion, e.recommendations,
+        ...(e.icd || []),
         ...(e.medications || []).map(m => m.name),
+        ...(e.metrics || []).map(m => m.name),
+        ...(e.orders || []).map(o => o.title),
         ...(e.tags || []),
       ].filter(Boolean).join(' ').toLowerCase();
       return haystack.includes(q);
     });
 
   if (events.length === 0) {
-    return <EmptyState title="Нет записей" text="Нажмите «Запись» чтобы внести первую запись о болезни, визите к врачу или процедуре" />;
+    return <EmptyState title="Нет записей" text="Пришлите боту фото документов с подписью «внеси в здоровье» или нажмите «Запись»" />;
   }
 
   return (
@@ -20278,7 +20605,7 @@ function HealthTimeline({ events, conditions, onView, onEdit, onDelete }) {
             <Icon name="search" size={16} />
           </span>
           <input value={query} onChange={e => setQuery(e.target.value)}
-            placeholder="Поиск по названию, диагнозу, препарату, тегам…" className="w-full !pl-9" />
+            placeholder="Поиск: диагноз, МКБ, препарат, показатель…" className="w-full !pl-9" />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <select value={filterType} onChange={e => setFilterType(e.target.value)}>
@@ -20286,7 +20613,7 @@ function HealthTimeline({ events, conditions, onView, onEdit, onDelete }) {
             {HEALTH_EVENT_TYPES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
           </select>
           <select value={filterCondition} onChange={e => setFilterCondition(e.target.value)}>
-            <option value="all">Все состояния</option>
+            <option value="all">Все эпизоды</option>
             {conditions.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
@@ -20308,17 +20635,21 @@ function HealthTimeline({ events, conditions, onView, onEdit, onDelete }) {
 
 function HealthEventRow({ event, conditionName, onView, onEdit, onDelete }) {
   const meds = event.medications || [];
+  const metrics = event.metrics || [];
+  const orders = event.orders || [];
+  const outOfRange = metrics.filter(healthMetricFlag).length;
+  const doneOrders = orders.filter(o => o.status === 'done').length;
   return (
-    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+    <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5" data-testid="health-event-row">
       <div className="flex items-start justify-between gap-3 mb-2">
         <button onClick={onView} className="text-left min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-display text-lg truncate">{event.title || healthEventTypeLabel(event.type)}</span>
+            <span className="font-display text-lg">{event.title || healthEventTypeLabel(event.type)}</span>
             <span className="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]">{healthEventTypeLabel(event.type)}</span>
           </div>
           <div className="text-xs text-[var(--text-muted)] mt-1 flex flex-wrap gap-x-2">
-            <span>{formatHealthDate(event.date)}{event.endDate ? ` — ${formatHealthDate(event.endDate)}` : ''}</span>
-            {conditionName && <span>· {conditionName}</span>}
+            <span>{formatHealthDate(event.date)}{event.time ? `, ${event.time}` : ''}{event.endDate ? ` — ${formatHealthDate(event.endDate)}` : ''}</span>
+            {conditionName && <span>· 📁 {conditionName}</span>}
             {event.doctor && <span>· {event.doctor}</span>}
             {event.notify && event.notifyDate && <span>· 🔔 {formatHealthDate(event.notifyDate)}</span>}
           </div>
@@ -20328,105 +20659,181 @@ function HealthEventRow({ event, conditionName, onView, onEdit, onDelete }) {
           <button onClick={() => { if (confirm('Удалить запись?')) onDelete(); }} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]"><Icon name="trash" size={16} /></button>
         </div>
       </div>
-      {event.diagnosis && <div className="text-sm text-[var(--text-muted)] mb-1"><span className="text-[var(--text-subtle)]">Диагноз:</span> {event.diagnosis}</div>}
+      {event.diagnosis && <div className="text-sm text-[var(--text-muted)] mb-1"><span className="text-[var(--text-subtle)]">Диагноз:</span> {event.diagnosis}{(event.icd || []).length > 0 && !event.diagnosis.includes(event.icd[0]) ? ` (${event.icd.join(', ')})` : ''}</div>}
+      {event.conclusion && <div className="text-sm text-[var(--text-muted)] mb-1 line-clamp-2"><span className="text-[var(--text-subtle)]">Заключение:</span> {event.conclusion}</div>}
       {formatVisionSummary(event.vision) && <div className="text-sm text-[var(--text-muted)] mb-1">👁 {formatVisionSummary(event.vision)}</div>}
+      {(metrics.length > 0 || orders.length > 0 || (event.uncertain || []).length > 0) && (
+        <div className="flex flex-wrap gap-1.5 mt-2 text-xs">
+          {metrics.length > 0 && <span className={`px-2.5 py-1 rounded-full border ${outOfRange ? 'border-red-200 bg-red-50 text-red-600' : 'border-[var(--border)] bg-[var(--bg)]'}`}>📊 {metrics.length} показ.{outOfRange ? ` · ${outOfRange} вне нормы` : ''}</span>}
+          {orders.length > 0 && <span className="px-2.5 py-1 rounded-full border border-[var(--border)] bg-[var(--bg)]">📋 назначено {orders.length}{doneOrders ? ` · сделано ${doneOrders}` : ''}</span>}
+          {(event.uncertain || []).length > 0 && <span className="px-2.5 py-1 rounded-full border border-amber-200 bg-amber-50 text-amber-700">⚠️ проверить: {event.uncertain.length}</span>}
+        </div>
+      )}
       {meds.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mt-2">
           {meds.map(m => (
-            <span key={m.id} className="px-2.5 py-1 rounded-full text-xs bg-[var(--bg)] border border-[var(--border)]">
+            <span key={m.id || m.name} className="px-2.5 py-1 rounded-full text-xs bg-[var(--bg)] border border-[var(--border)]">
               💊 {m.name}{m.dosage ? `, ${m.dosage}` : ''}
             </span>
           ))}
         </div>
+      )}
+      {event.type === 'memo' && event.memo && (
+        <div className="text-sm text-[var(--text-muted)] mt-1">{(HEALTH_MEMO_KINDS.find(k => k.id === event.memo.kind) || {}).label}{event.memo.for ? ` · ${event.memo.for}` : ''}</div>
       )}
       {event.outcome && <div className="text-sm text-[var(--text-muted)] mt-2 italic">{event.outcome}</div>}
     </div>
   );
 }
 
-function HealthEventDetail({ event, conditionName, onClose, onEdit, onDelete }) {
+function HealthMetricsList({ metrics }) {
+  const groups = [];
+  metrics.forEach(m => {
+    const key = m.group || '';
+    let g = groups.find(x => x.key === key);
+    if (!g) { g = { key, items: [] }; groups.push(g); }
+    g.items.push(m);
+  });
+  return (
+    <div className="space-y-3" data-testid="health-metrics">
+      {groups.map(g => (
+        <div key={g.key} className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3 py-1">
+          {g.key && <div className="text-xs font-semibold text-[var(--text-muted)] pt-2 pb-1">{g.key}</div>}
+          {g.items.map(m => {
+            const flag = healthMetricFlag(m);
+            return (
+              <div key={m.id || m.name} className="flex items-start justify-between gap-3 py-2 border-t border-[var(--border)] first:border-t-0">
+                <div className="min-w-0">
+                  <div className="text-sm">{m.name}</div>
+                  {m.ref && <div className="text-xs text-[var(--text-subtle)]">норма: {m.ref}</div>}
+                </div>
+                <div className="text-right flex-shrink-0">
+                  <div className={`text-sm font-semibold ${flag ? 'text-red-600' : ''}`}>{m.value}{m.unit ? ` ${m.unit}` : ''}</div>
+                  <HealthFlag flag={flag} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function HealthMemoBlock({ memo }) {
+  const list = (items, mark, cls) => (
+    <ul className="space-y-1.5">
+      {items.map((x, i) => <li key={i} className="flex gap-2 text-sm"><span className={`flex-shrink-0 ${cls}`}>{mark}</span><span>{x}</span></li>)}
+    </ul>
+  );
+  const box = 'bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3';
+  return (
+    <div className="space-y-4">
+      {memo.for && <div className="text-sm text-[var(--text-muted)]">К чему: <span className="text-[var(--text)]">{memo.for}</span></div>}
+      {(memo.principles || []).length > 0 && <HealthSection label="Принципы"><div className={box}>{list(memo.principles, '•', 'text-[var(--text-subtle)]')}</div></HealthSection>}
+      {(memo.allowed || []).length > 0 && <HealthSection label="Можно"><div className={box}>{list(memo.allowed, '✓', 'text-green-600')}</div></HealthSection>}
+      {(memo.excluded || []).length > 0 && <HealthSection label="Исключить"><div className={box}>{list(memo.excluded, '✕', 'text-red-500')}</div></HealthSection>}
+      {(memo.steps || []).length > 0 && (
+        <HealthSection label="По шагам">
+          <ol className={`${box} space-y-1.5`}>
+            {memo.steps.map((s, i) => <li key={i} className="flex gap-2 text-sm"><span className="text-[var(--text-subtle)] w-5 flex-shrink-0">{i + 1}.</span><span>{s}</span></li>)}
+          </ol>
+        </HealthSection>
+      )}
+    </div>
+  );
+}
+
+function HealthEventDetail({ event, conditionName, onClose, onEdit, onDelete, onToggleOrder }) {
   const meds = event.medications || [];
   const photos = (event.photos || []).map(normalizePhoto);
   const files = event.files || [];
   const vision = formatVisionSummary(event.vision);
-
-  const Section = ({ label, children }) => (
-    <div>
-      <div className="text-xs uppercase tracking-wide text-[var(--text-subtle)] font-medium mb-1.5">{label}</div>
-      {children}
-    </div>
-  );
+  const box = 'text-sm bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3';
 
   return (
     <Modal title={event.title || healthEventTypeLabel(event.type)} onClose={onClose} wide>
-      <div className="space-y-5">
+      <div className="space-y-5" data-testid="health-event-detail">
         <div className="flex flex-wrap gap-2 text-xs">
           <span className="px-2.5 py-1 rounded-full font-medium border border-[var(--border)] text-[var(--text-muted)]">{healthEventTypeLabel(event.type)}</span>
-          {conditionName && <span className="px-2.5 py-1 rounded-full font-medium bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]">{conditionName}</span>}
+          {conditionName && <span className="px-2.5 py-1 rounded-full font-medium bg-[var(--bg)] border border-[var(--border)] text-[var(--text-muted)]">📁 {conditionName}</span>}
+          {(event.icd || []).map(c => <span key={c} className="px-2.5 py-1 rounded-full font-semibold bg-[var(--text)] text-white">МКБ {c}</span>)}
         </div>
 
-        <div className="text-sm text-[var(--text-muted)]">
-          {formatHealthDate(event.date)}{event.endDate ? ` — ${formatHealthDate(event.endDate)}` : ''}
+        <div className="text-sm text-[var(--text-muted)] space-y-0.5">
+          <div>{formatHealthDate(event.date)}{event.time ? `, ${event.time}` : ''}{event.endDate ? ` — ${formatHealthDate(event.endDate)}` : ''}</div>
+          {(event.doctor || event.specialty) && <div>Врач: <span className="text-[var(--text)]">{[event.specialty, event.doctor].filter(Boolean).join(' — ')}</span></div>}
+          {event.clinic && <div>Клиника: <span className="text-[var(--text)]">{event.clinic}</span></div>}
+          {event.studyKind && event.studyKind !== event.title && <div>Исследование: <span className="text-[var(--text)]">{event.studyKind}</span></div>}
         </div>
 
-        {(event.doctor || event.clinic) && (
-          <div className="text-sm text-[var(--text-muted)] space-y-0.5">
-            {event.doctor && <div>Врач: <span className="text-[var(--text)]">{event.doctor}</span></div>}
-            {event.clinic && <div>Клиника: <span className="text-[var(--text)]">{event.clinic}</span></div>}
-          </div>
+        {(event.uncertain || []).length > 0 && (
+          <HealthSection label="Проверьте — распознано неуверенно">
+            <div className="text-sm bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1">
+              {event.uncertain.map((u, i) => <div key={i}>⚠️ {u.reason ? <b>{u.reason}: </b> : null}{u.text}</div>)}
+            </div>
+          </HealthSection>
         )}
 
-        {event.symptoms && (
-          <Section label="Симптомы">
-            <div className="text-sm bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3">{event.symptoms}</div>
-          </Section>
-        )}
+        {event.symptoms && <HealthSection label="Жалобы / симптомы"><div className={box}>{event.symptoms}</div></HealthSection>}
+        {event.anamnesis && <HealthSection label="Анамнез"><div className={box}>{event.anamnesis}</div></HealthSection>}
+        {event.diagnosis && <HealthSection label="Диагноз"><div className={box}>{event.diagnosis}</div></HealthSection>}
+        {vision && <HealthSection label="Зрение"><div className={box}>👁 {vision}</div></HealthSection>}
+        {(event.metrics || []).length > 0 && <HealthSection label="Показатели"><HealthMetricsList metrics={event.metrics} /></HealthSection>}
+        {event.conclusion && <HealthSection label="Заключение"><div className={box}>{event.conclusion}</div></HealthSection>}
+        {event.recommendations && <HealthSection label="Рекомендации"><div className={`${box} whitespace-pre-line`}>{event.recommendations}</div></HealthSection>}
 
-        {event.diagnosis && (
-          <Section label="Диагноз">
-            <div className="text-sm bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3">{event.diagnosis}</div>
-          </Section>
-        )}
-
-        {vision && (
-          <Section label="Зрение">
-            <div className="text-sm bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3">👁 {vision}</div>
-          </Section>
+        {(event.orders || []).length > 0 && (
+          <HealthSection label={`Назначено · сделано ${(event.orders || []).filter(o => o.status === 'done').length} из ${event.orders.length}`}>
+            <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3">
+              {event.orders.map(o => <HealthOrderRow key={o.id} order={o} onToggle={() => onToggleOrder && onToggleOrder(o.id)} onViewEvent={() => {}} />)}
+            </div>
+          </HealthSection>
         )}
 
         {meds.length > 0 && (
-          <Section label="Лечение / препараты">
+          <HealthSection label="Лечение / препараты">
             <div className="space-y-2">
-              {meds.map(m => (
-                <div key={m.id} className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 text-sm">
-                  <div className="font-medium">{m.name}{m.dosage ? `, ${m.dosage}` : ''}</div>
-                  {(m.schedule || m.duration) && (
-                    <div className="text-[var(--text-muted)] text-xs mt-0.5">{[m.schedule, m.duration].filter(Boolean).join(' · ')}</div>
-                  )}
-                  {m.notes && <div className="text-[var(--text-muted)] text-xs mt-0.5 italic">{m.notes}</div>}
-                </div>
-              ))}
+              {meds.map(m => {
+                const info = healthCourseInfo(m, event.date);
+                return (
+                  <div key={m.id || m.name} className="bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 text-sm">
+                    <div className="font-medium">{formatMedLine(m)}{m.quantity ? ` · ${m.quantity}` : ''}</div>
+                    {(m.stages || []).length > 1 ? (
+                      <ol className="mt-1 space-y-0.5">
+                        {m.stages.map((st, i) => (
+                          <li key={i} className={`text-xs ${info.current && info.current.index === i ? 'text-[var(--text)] font-medium' : 'text-[var(--text-muted)]'}`}>
+                            Этап {i + 1}: {formatStage(st)}{info.current && info.current.index === i ? ' — сейчас' : ''}
+                          </li>
+                        ))}
+                      </ol>
+                    ) : (m.schedule || m.duration) && (
+                      <div className="text-[var(--text-muted)] text-xs mt-0.5">{[m.schedule, m.duration].filter(Boolean).join(' · ')}</div>
+                    )}
+                    {info.end && <div className="text-[var(--text-subtle)] text-xs mt-0.5">с {formatHealthDate(info.start)} до {formatHealthDate(info.end)}</div>}
+                    {m.notes && <div className="text-[var(--text-muted)] text-xs mt-0.5 italic">{m.notes}</div>}
+                  </div>
+                );
+              })}
             </div>
-          </Section>
+          </HealthSection>
         )}
 
-        {event.outcome && (
-          <Section label="Результат / исход">
-            <div className="text-sm bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 italic">{event.outcome}</div>
-          </Section>
-        )}
+        {event.memo && <HealthMemoBlock memo={event.memo} />}
+
+        {event.outcome && <HealthSection label="Результат / исход"><div className={`${box} italic`}>{event.outcome}</div></HealthSection>}
 
         {event.notify && event.notifyDate && (
-          <Section label="Напоминание в Telegram">
-            <div className="text-sm bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3">
+          <HealthSection label="Напоминание в Telegram">
+            <div className={box}>
               🔔 {formatHealthDate(event.notifyDate)}{event.notifyTime ? `, ${event.notifyTime}` : ''}
               {event.notifyNote && <div className="text-[var(--text-muted)] mt-0.5">{event.notifyNote}</div>}
             </div>
-          </Section>
+          </HealthSection>
         )}
 
         {photos.length > 0 && (
-          <Section label="Фото">
+          <HealthSection label="Фото документа">
             <div className="flex flex-wrap gap-2">
               {photos.map(ph => (
                 <a key={ph.filename} href={`/api/photos/${ph.filename}`} target="_blank" rel="noopener">
@@ -20434,11 +20841,11 @@ function HealthEventDetail({ event, conditionName, onClose, onEdit, onDelete }) 
                 </a>
               ))}
             </div>
-          </Section>
+          </HealthSection>
         )}
 
         {files.length > 0 && (
-          <Section label="Документы">
+          <HealthSection label="Документы">
             <div className="space-y-2">
               {files.map(f => (
                 <a key={f.filename} href={`/api/files/${f.filename}`} target="_blank" rel="noopener" download={f.originalName}
@@ -20448,7 +20855,7 @@ function HealthEventDetail({ event, conditionName, onClose, onEdit, onDelete }) 
                 </a>
               ))}
             </div>
-          </Section>
+          </HealthSection>
         )}
 
         {event.tags?.length > 0 && (
@@ -20459,10 +20866,13 @@ function HealthEventDetail({ event, conditionName, onClose, onEdit, onDelete }) 
           </div>
         )}
 
-        {event.notes && (
-          <Section label="Заметки">
-            <div className="text-sm bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3">{event.notes}</div>
-          </Section>
+        {event.notes && <HealthSection label="Заметки"><div className={`${box} whitespace-pre-line`}>{event.notes}</div></HealthSection>}
+
+        {event.source?.text && (
+          <details className="text-sm">
+            <summary className="cursor-pointer text-[var(--text-muted)]">Расшифровка документа{event.source.via === 'telegram' ? ' (из Telegram)' : ''}</summary>
+            <pre className="mt-2 whitespace-pre-wrap text-xs bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 font-sans">{event.source.text}</pre>
+          </details>
         )}
 
         <div className="flex gap-3 pt-2">
@@ -20477,89 +20887,110 @@ function HealthEventDetail({ event, conditionName, onClose, onEdit, onDelete }) 
 
 function HealthConditionsList({ conditions, events, onEdit, onDelete, onView }) {
   if (conditions.length === 0) {
-    return <EmptyState title="Нет состояний" text="Добавьте хроническое заболевание или перенесённую операцию" />;
+    return <EmptyState title="Нет эпизодов" text="Эпизод — случай болезни, который связывает визиты, исследования и лечение. Бот предложит его сам, когда пришлёте документы" />;
   }
 
   const eventCount = (id) => events.filter(e => e.conditionId === id).length;
-  const chronicActive = conditions.filter(c => c.isChronic && c.status === 'active');
-  const rest = conditions.filter(c => !(c.isChronic && c.status === 'active'));
-
-  const Row = (c) => {
-    const n = eventCount(c.id);
-    return (
-      <div key={c.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-        <div className="flex items-start justify-between gap-3">
-          <button onClick={() => onView(c)} className="text-left flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-medium">{c.name}</span>
-              {c.isChronic && <span className="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full bg-[var(--text)] text-white">Хроническое</span>}
-              {c.status === 'resolved' && <span className="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full border border-[var(--border)] text-[var(--text-muted)]">Разрешено</span>}
-            </div>
-            <div className="text-xs text-[var(--text-muted)] mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
-              {c.diagnosedDate && <span>С {formatHealthDate(c.diagnosedDate)}</span>}
-              {n > 0 && <span>{n} {n === 1 ? 'запись' : n < 5 ? 'записи' : 'записей'}</span>}
-            </div>
-          </button>
-          <div className="flex gap-1 shrink-0">
-            <button onClick={() => onEdit(c)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={16} /></button>
-            <button onClick={() => onDelete(c.id)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={16} /></button>
-          </div>
-        </div>
-      </div>
-    );
-  };
+  const activeFirst = [...conditions].sort((a, b) => (a.status === 'active' ? 0 : 1) - (b.status === 'active' ? 0 : 1));
 
   return (
     <div className="space-y-3">
-      {chronicActive.map(Row)}
-      {rest.map(Row)}
+      {activeFirst.map(c => {
+        const n = eventCount(c.id);
+        return (
+          <div key={c.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5" data-testid="health-condition">
+            <div className="flex items-start justify-between gap-3">
+              <button onClick={() => onView(c)} className="text-left flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium">{c.name}</span>
+                  <span className={`text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full ${c.isChronic ? 'bg-[var(--text)] text-white' : 'border border-[var(--border)] text-[var(--text-muted)]'}`}>{c.isChronic ? 'Хроническое' : 'Эпизод'}</span>
+                  {c.status === 'resolved' && <span className="text-[10px] uppercase tracking-wide font-semibold px-2 py-0.5 rounded-full border border-[var(--border)] text-[var(--text-muted)]">{c.isChronic ? 'Разрешено' : 'Закрыт'}</span>}
+                </div>
+                <div className="text-xs text-[var(--text-muted)] mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+                  {c.diagnosedDate && <span>С {formatHealthDate(c.diagnosedDate)}{c.resolvedDate ? ` по ${formatHealthDate(c.resolvedDate)}` : ''}</span>}
+                  {n > 0 && <span>{n} {n === 1 ? 'запись' : n < 5 ? 'записи' : 'записей'}</span>}
+                </div>
+              </button>
+              <div className="flex gap-1 shrink-0">
+                <button onClick={() => onEdit(c)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={16} /></button>
+                <button onClick={() => onDelete(c.id)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500"><Icon name="trash" size={16} /></button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function HealthConditionDetail({ condition, events, onClose, onEdit, onAddEvent, onEditEvent }) {
+function HealthConditionDetail({ condition, events, onClose, onEdit, onSetStatus, onAddEvent, onViewEvent, onToggleOrder }) {
+  const episode = isEpisode(condition);
+  const pending = healthAllOrders(events).filter(x => x.order.status === 'assigned');
+  const courses = healthActiveCourses(events);
+  const byType = HEALTH_EVENT_TYPES.map(t => ({ ...t, items: events.filter(e => e.type === t.id) })).filter(g => g.items.length);
   return (
     <Modal title={condition.name} onClose={onClose} wide>
-      <div className="space-y-5">
+      <div className="space-y-5" data-testid="health-condition-detail">
         <div className="flex flex-wrap gap-2 text-xs">
-          {condition.isChronic && <span className="px-2.5 py-1 rounded-full font-semibold uppercase tracking-wide bg-[var(--text)] text-white">Хроническое</span>}
-          <span className="px-2.5 py-1 rounded-full font-medium border border-[var(--border)] text-[var(--text-muted)]">{condition.status === 'resolved' ? 'Разрешено' : 'Активно'}</span>
+          <span className={`px-2.5 py-1 rounded-full font-semibold uppercase tracking-wide ${condition.isChronic ? 'bg-[var(--text)] text-white' : 'border border-[var(--border)] text-[var(--text-muted)]'}`}>{condition.isChronic ? 'Хроническое' : 'Эпизод'}</span>
+          <span className="px-2.5 py-1 rounded-full font-medium border border-[var(--border)] text-[var(--text-muted)]">{condition.status === 'resolved' ? (episode ? 'Закрыт' : 'Разрешено') : 'Активно'}</span>
         </div>
         <div className="text-sm text-[var(--text-muted)] space-y-0.5">
-          {condition.diagnosedDate && <div>Диагностировано: <b className="text-[var(--text)]">{formatHealthDate(condition.diagnosedDate)}</b></div>}
-          {condition.resolvedDate && <div>Разрешено: <b className="text-[var(--text)]">{formatHealthDate(condition.resolvedDate)}</b></div>}
+          {condition.diagnosedDate && <div>{episode ? 'Начало' : 'Диагностировано'}: <b className="text-[var(--text)]">{formatHealthDate(condition.diagnosedDate)}</b></div>}
+          {condition.resolvedDate && <div>{episode ? 'Конец' : 'Разрешено'}: <b className="text-[var(--text)]">{formatHealthDate(condition.resolvedDate)}</b></div>}
         </div>
+        {condition.symptoms && <HealthSection label="Симптомы"><div className="text-sm bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3">{condition.symptoms}</div></HealthSection>}
         {condition.notes && <div className="text-sm bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3">{condition.notes}</div>}
+
+        {pending.length > 0 && (
+          <HealthSection label={`Назначено, ждёт выполнения · ${pending.length}`}>
+            <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3">
+              {pending.map(({ order, event }) => <HealthOrderRow key={order.id} order={order} event={event} showSource
+                onToggle={() => onToggleOrder(event.id, order.id)} onViewEvent={() => onViewEvent(event)} />)}
+            </div>
+          </HealthSection>
+        )}
+        {courses.length > 0 && (
+          <HealthSection label="Лечение">
+            <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl px-3">
+              {courses.map(({ med, event, info }) => <HealthCourseRow key={(med.id || med.name) + event.id} med={med} event={event} info={info} onView={() => onViewEvent(event)} />)}
+            </div>
+          </HealthSection>
+        )}
 
         <div>
           <div className="flex items-center justify-between mb-2">
-            <div className="text-xs uppercase tracking-wide text-[var(--text-subtle)] font-medium">История ({events.length})</div>
-            <button onClick={onAddEvent} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1"><Icon name="plus" size={14} /> Эпизод</button>
+            <div className="text-xs uppercase tracking-wide text-[var(--text-subtle)] font-medium">Записи ({events.length})</div>
+            <button onClick={onAddEvent} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1"><Icon name="plus" size={14} /> Запись</button>
           </div>
           {events.length === 0 ? (
             <div className="text-sm text-[var(--text-subtle)]">Пока нет связанных записей</div>
           ) : (
-            <div className="space-y-2">
-              {events.map(e => (
-                <button key={e.id} onClick={() => onEditEvent(e)}
-                  className="w-full text-left bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 hover:border-[var(--border-strong)] transition-colors">
-                  <div className="text-sm font-medium">{formatHealthDate(e.date)} · {e.title || healthEventTypeLabel(e.type)}</div>
-                  {e.diagnosis && <div className="text-xs text-[var(--text-muted)] mt-0.5">{e.diagnosis}</div>}
-                  {formatVisionSummary(e.vision) && <div className="text-xs text-[var(--text-muted)] mt-0.5">👁 {formatVisionSummary(e.vision)}</div>}
-                  {(e.medications || []).length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {e.medications.map(m => (
-                        <span key={m.id} className="px-2 py-0.5 rounded-full text-[10px] bg-[var(--surface)] border border-[var(--border)]">💊 {m.name}{m.dosage ? `, ${m.dosage}` : ''}</span>
-                      ))}
-                    </div>
-                  )}
-                </button>
+            <div className="space-y-3">
+              {byType.map(g => (
+                <div key={g.id}>
+                  <div className="text-xs text-[var(--text-muted)] mb-1">{g.label}</div>
+                  <div className="space-y-2">
+                    {g.items.map(e => (
+                      <button key={e.id} onClick={() => onViewEvent(e)}
+                        className="w-full text-left bg-[var(--bg)] border border-[var(--border)] rounded-xl p-3 hover:border-[var(--border-strong)] transition-colors">
+                        <div className="text-sm font-medium">{formatHealthDate(e.date)} · {e.title || healthEventTypeLabel(e.type)}</div>
+                        {e.diagnosis && <div className="text-xs text-[var(--text-muted)] mt-0.5">{e.diagnosis}</div>}
+                        {e.conclusion && <div className="text-xs text-[var(--text-muted)] mt-0.5 line-clamp-2">{e.conclusion}</div>}
+                        {(e.metrics || []).some(healthMetricFlag) && <div className="text-xs text-red-600 mt-0.5">вне нормы: {(e.metrics || []).filter(healthMetricFlag).map(m => m.name).join(', ')}</div>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           )}
         </div>
 
-        <div className="flex gap-3 pt-2">
+        <div className="flex flex-wrap gap-3 pt-2">
+          {condition.status === 'active'
+            ? <button onClick={() => onSetStatus('resolved')} className="btn-secondary flex-1">{episode ? 'Закрыть эпизод' : 'Отметить разрешённым'}</button>
+            : <button onClick={() => onSetStatus('active')} className="btn-secondary flex-1">Открыть снова</button>}
           <button onClick={onEdit} className="btn-secondary flex-1">Редактировать</button>
           <button onClick={onClose} className="btn-primary flex-1">Закрыть</button>
         </div>
@@ -20568,31 +20999,42 @@ function HealthConditionDetail({ condition, events, onClose, onEdit, onAddEvent,
   );
 }
 
+const linesToList = (s) => String(s || '').split('\n').map(x => x.trim()).filter(Boolean);
+
 function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCreateCondition }) {
   const today = getTodayKey();
-  const [form, setForm] = useState(() => event
-    ? {
-        ...event,
-        medications: (event.medications || []).map(m => ({ ...m })),
-        photos: (event.photos || []).map(normalizePhoto),
-        files: (event.files || []).map(f => ({ ...f })),
-        tags: [...(event.tags || [])],
-        vision: { acuityRight: '', acuityLeft: '', iopRight: '', iopLeft: '', ...(event.vision || {}) },
-      }
-    : {
-        id: crypto.randomUUID(),
-        date: today, endDate: '',
-        type: 'illness',
-        conditionId: '',
-        title: '', symptoms: '', diagnosis: '', doctor: '', clinic: '',
-        medications: [], outcome: '', photos: [], files: [], tags: [], notes: '',
-        vision: { acuityRight: '', acuityLeft: '', iopRight: '', iopLeft: '' },
-        // defaults прикрывает и точечный prefill (type/conditionId из «Добавить эпизод»),
-        // и полный черновик из ИИ-распознавания документа — vision мержится отдельно,
-        // чтобы частичный объект из defaults не затёр остальные подполя undefined-ами.
-        ...defaults,
-        vision: { acuityRight: '', acuityLeft: '', iopRight: '', iopLeft: '', ...((defaults && defaults.vision) || {}) },
-      });
+  const emptyVision = { acuityRight: '', acuityLeft: '', iopRight: '', iopLeft: '' };
+  const emptyMemo = { kind: 'diet', for: '', principles: [], allowed: [], excluded: [], steps: [] };
+  const [form, setForm] = useState(() => {
+    const base = event
+      ? { ...event }
+      : {
+          id: crypto.randomUUID(),
+          date: today, endDate: '', time: '',
+          type: 'illness',
+          conditionId: '',
+          title: '', symptoms: '', diagnosis: '', doctor: '', specialty: '', clinic: '',
+          medications: [], outcome: '', photos: [], files: [], tags: [], notes: '',
+          icd: [], studyKind: '', conclusion: '', recommendations: '', metrics: [], orders: [], uncertain: [],
+          // defaults прикрывает и точечный prefill (type/conditionId из «Добавить эпизод»),
+          // и полный черновик из ИИ-распознавания документа.
+          ...defaults,
+        };
+    return {
+      ...base,
+      medications: (base.medications || []).map(m => ({ id: m.id || crypto.randomUUID(), ...m, stages: (m.stages || []).map(s => ({ ...s })) })),
+      metrics: (base.metrics || []).map(m => ({ id: m.id || crypto.randomUUID(), ...m })),
+      orders: (base.orders || []).map(o => ({ id: o.id || crypto.randomUUID(), status: 'assigned', ...o })),
+      photos: (base.photos || []).map(normalizePhoto),
+      files: (base.files || []).map(f => ({ ...f })),
+      tags: [...(base.tags || [])],
+      icdText: (base.icd || []).join(', '),
+      uncertainText: (base.uncertain || []).map(u => (u.reason ? `${u.reason}: ` : '') + u.text).join('\n'),
+      memoText: (() => { const m = { ...emptyMemo, ...(base.memo || {}) };
+        return { kind: m.kind, for: m.for, principles: m.principles.join('\n'), allowed: m.allowed.join('\n'), excluded: m.excluded.join('\n'), steps: m.steps.join('\n') }; })(),
+      vision: { ...emptyVision, ...(base.vision || {}) },
+    };
+  });
   const [pending, setPending] = useState([]); // {file, preview, category}
   const [tagInput, setTagInput] = useState('');
   const [addingCondition, setAddingCondition] = useState(false);
@@ -20602,17 +21044,29 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const setVision = (k, v) => setForm(f => ({ ...f, vision: { ...f.vision, [k]: v } }));
+  const setMemo = (k, v) => setForm(f => ({ ...f, memoText: { ...f.memoText, [k]: v } }));
+  const t = form.type;
+  const isMemo = t === 'memo';
+  const showMetrics = t === 'study' || t === 'labs' || form.metrics.length > 0;
+  const showOrders = t === 'visit' || form.orders.length > 0;
+  const showMeds = !isMemo && t !== 'study' && t !== 'labs' || form.medications.length > 0;
 
-  const addMed = () => set('medications', [...form.medications, { id: crypto.randomUUID(), name: '', dosage: '', schedule: '', duration: '', notes: '' }]);
-  const updMed = (id, k, v) => set('medications', form.medications.map(m => m.id === id ? { ...m, [k]: v } : m));
-  const delMed = (id) => set('medications', form.medications.filter(m => m.id !== id));
+  const listOps = (key, blank) => ({
+    add: () => set(key, [...form[key], { id: crypto.randomUUID(), ...blank }]),
+    upd: (id, k, v) => set(key, form[key].map(x => x.id === id ? { ...x, [k]: v } : x)),
+    del: (id) => set(key, form[key].filter(x => x.id !== id)),
+  });
+  const med = listOps('medications', { name: '', dosage: '', route: '', schedule: '', duration: '', quantity: '', notes: '', stages: [], status: 'active' });
+  const metric = listOps('metrics', { group: '', name: '', value: '', unit: '', ref: '', flag: '' });
+  const order = listOps('orders', { title: '', kind: 'lab', code: '', status: 'assigned', dueDate: '', dueTime: '', note: '' });
+  const setStages = (id, stages) => med.upd(id, 'stages', stages);
 
   const addTag = () => {
-    const t = tagInput.trim();
-    if (t && !form.tags.includes(t)) set('tags', [...form.tags, t]);
+    const tg = tagInput.trim();
+    if (tg && !form.tags.includes(tg)) set('tags', [...form.tags, tg]);
     setTagInput('');
   };
-  const removeTag = (t) => set('tags', form.tags.filter(x => x !== t));
+  const removeTag = (tg) => set('tags', form.tags.filter(x => x !== tg));
 
   const confirmNewCondition = () => {
     const name = newConditionName.trim();
@@ -20668,9 +21122,17 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
       const failed = results.length - uploaded.length;
       pending.forEach(p => URL.revokeObjectURL(p.preview));
       if (failed > 0) alert(`Не удалось загрузить ${failed} фото — запись сохранена без них.`);
+      const { icdText, uncertainText, memoText, ...rest } = form;
+      const mt = memoText;
       onSave({
-        ...form,
-        medications: form.medications.filter(m => (m.name || '').trim()),
+        ...rest,
+        icd: icdText.split(/[,;\s]+/).map(x => x.trim().toUpperCase()).filter(Boolean),
+        uncertain: linesToList(uncertainText).map(text => ({ field: '', text, reason: '' })),
+        memo: isMemo ? { kind: mt.kind, for: mt.for.trim(), principles: linesToList(mt.principles), allowed: linesToList(mt.allowed),
+                         excluded: linesToList(mt.excluded), steps: linesToList(mt.steps) } : rest.memo,
+        medications: form.medications.filter(m => (m.name || '').trim()).map(m => ({ ...m, stages: (m.stages || []).filter(s => s.dosage || s.schedule || s.duration) })),
+        metrics: form.metrics.filter(m => (m.name || '').trim()),
+        orders: form.orders.filter(o => (o.title || '').trim()),
         photos: [...form.photos, ...uploaded],
         notify: !!(form.notify && form.notifyDate),
         notifyTime: form.notifyTime || '10:00',
@@ -20695,6 +21157,14 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
     </div>
   );
 
+  const card = 'bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5';
+  const AddBtn = ({ onClick, children }) => (
+    <button onClick={onClick} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1"><Icon name="plus" size={14} /> {children}</button>
+  );
+  const DelBtn = ({ onClick }) => (
+    <button onClick={onClick} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0"><Icon name="trash" size={16} /></button>
+  );
+
   return (
     <div className="fade-in">
       <div className="mb-6 flex items-center gap-3">
@@ -20703,79 +21173,106 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
       </div>
 
       <div className="space-y-4">
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label>Дата начала</label>
-              <input type="date" value={form.date} max={today} onChange={e => set('date', e.target.value)} />
-            </div>
-            <div>
-              <label>Дата окончания (если растянулось)</label>
-              <input type="date" value={form.endDate || ''} onChange={e => set('endDate', e.target.value)} />
-            </div>
-          </div>
+        <div className={`${card} space-y-4`}>
           <div>
             <label>Тип записи</label>
             <div className="flex flex-wrap gap-1.5">
-              {HEALTH_EVENT_TYPES.map(t => (
-                <button key={t.id} onClick={() => set('type', t.id)}
-                  className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${form.type===t.id ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
-                  {t.label}
+              {HEALTH_EVENT_TYPES.map(x => (
+                <button key={x.id} onClick={() => set('type', x.id)}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${form.type===x.id ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
+                  {x.label}
                 </button>
               ))}
             </div>
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label>Дата</label>
+              <input type="date" value={form.date} max={today} onChange={e => set('date', e.target.value)} />
+            </div>
+            {(t === 'illness' || t === 'flare_up') ? (
+              <div>
+                <label>Дата окончания</label>
+                <input type="date" value={form.endDate || ''} onChange={e => set('endDate', e.target.value)} />
+              </div>
+            ) : !isMemo && (
+              <div>
+                <label>Время</label>
+                <input type="time" value={form.time || ''} onChange={e => set('time', e.target.value)} />
+              </div>
+            )}
+          </div>
         </div>
 
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div className={card}>
           <label>Название</label>
-          <input value={form.title} onChange={e => set('title', e.target.value)} placeholder="Например, ОРВИ, приём гастроэнтеролога…" />
+          <input value={form.title} onChange={e => set('title', e.target.value)} placeholder="Например, приём гастроэнтеролога, УЗИ брюшной полости…" />
         </div>
 
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-          <label>Связанное состояние (необязательно)</label>
+        <div className={card}>
+          <label>Эпизод (случай болезни) или состояние</label>
           {!addingCondition ? (
             <div className="flex gap-2">
-              <select value={form.conditionId || ''} onChange={e => set('conditionId', e.target.value)} className="flex-1">
+              <select value={form.conditionId || ''} onChange={e => set('conditionId', e.target.value)} className="flex-1 min-w-0">
                 <option value="">Без привязки</option>
-                {conditions.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {conditions.map(c => <option key={c.id} value={c.id}>{c.name}{c.status === 'resolved' ? ' (закрыт)' : ''}</option>)}
               </select>
-              <button onClick={() => setAddingCondition(true)} className="btn-secondary px-3 shrink-0 text-sm whitespace-nowrap">+ Новое</button>
+              <button onClick={() => setAddingCondition(true)} className="btn-secondary px-3 shrink-0 text-sm whitespace-nowrap">+ Новый</button>
             </div>
           ) : (
             <div className="flex gap-2">
               <input autoFocus value={newConditionName} onChange={e => setNewConditionName(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); confirmNewCondition(); } }}
-                placeholder="Название нового состояния" className="flex-1" />
+                placeholder="Название эпизода" className="flex-1 min-w-0" />
               <button onClick={confirmNewCondition} className="btn-primary px-3 shrink-0 text-sm">Создать</button>
               <button onClick={() => { setAddingCondition(false); setNewConditionName(''); }} className="btn-secondary px-3 shrink-0 text-sm">Отмена</button>
             </div>
           )}
         </div>
 
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
-          <div>
-            <label>Симптомы</label>
-            <textarea value={form.symptoms} rows={2} onChange={e => set('symptoms', e.target.value)} style={{ resize: 'vertical' }} placeholder="Что беспокоило..." />
-          </div>
-          <div>
-            <label>Диагноз</label>
-            <textarea value={form.diagnosis} rows={2} onChange={e => set('diagnosis', e.target.value)} style={{ resize: 'vertical' }} placeholder="Поставленный диагноз..." />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label>Врач</label>
-              <input value={form.doctor} onChange={e => set('doctor', e.target.value)} placeholder="ФИО врача" />
+        {!isMemo && (
+          <div className={`${card} space-y-4`}>
+            {t === 'study' && (
+              <div>
+                <label>Вид исследования</label>
+                <input value={form.studyKind || ''} onChange={e => set('studyKind', e.target.value)} placeholder="УЗИ брюшной полости, ЭГДС, МРТ…" />
+              </div>
+            )}
+            {t !== 'study' && t !== 'labs' && (
+              <>
+                <div>
+                  <label>Жалобы / симптомы</label>
+                  <textarea value={form.symptoms || ''} rows={2} onChange={e => set('symptoms', e.target.value)} style={{ resize: 'vertical' }} placeholder="Что беспокоило..." />
+                </div>
+                <div>
+                  <label>Диагноз</label>
+                  <textarea value={form.diagnosis || ''} rows={2} onChange={e => set('diagnosis', e.target.value)} style={{ resize: 'vertical' }} placeholder="Поставленный диагноз..." />
+                </div>
+                <div>
+                  <label>Код МКБ-10 (через запятую)</label>
+                  <input value={form.icdText} onChange={e => set('icdText', e.target.value)} placeholder="K30" />
+                </div>
+              </>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label>Врач</label>
+                <input value={form.doctor || ''} onChange={e => set('doctor', e.target.value)} placeholder="ФИО врача" />
+              </div>
+              <div>
+                <label>Специальность</label>
+                <input value={form.specialty || ''} onChange={e => set('specialty', e.target.value)} placeholder="гастроэнтеролог" />
+              </div>
             </div>
             <div>
               <label>Клиника</label>
-              <input value={form.clinic} onChange={e => set('clinic', e.target.value)} placeholder="Название клиники" />
+              <input value={form.clinic || ''} onChange={e => set('clinic', e.target.value)} placeholder="Название клиники" />
             </div>
           </div>
-        </div>
+        )}
 
-        {form.type === 'visit' && (
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        {t === 'visit' && (
+          <div className={`${card} space-y-4`}>
             <h3 className="font-display text-lg">Зрение</h3>
             <div>
               <label>Острота зрения (OD — правый / OS — левый)</label>
@@ -20791,43 +21288,223 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
                 <input value={form.vision.iopLeft} onChange={e => setVision('iopLeft', e.target.value)} placeholder="OS, напр. 18" />
               </div>
             </div>
-            <p className="text-xs text-[var(--text-subtle)]">Остальные показатели из заключения можно приложить документом ниже</p>
           </div>
         )}
 
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-display text-lg">Лечение / препараты</h3>
-            <button onClick={addMed} className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] flex items-center gap-1"><Icon name="plus" size={14} /> Добавить</button>
-          </div>
-          {form.medications.length === 0 ? (
-            <div className="text-sm text-[var(--text-subtle)]">Нет добавленных препаратов</div>
-          ) : (
-            <div className="space-y-3">
-              {form.medications.map(m => (
-                <div key={m.id} className="border border-[var(--border)] rounded-xl p-3 space-y-2">
-                  <div className="flex gap-2">
-                    <input value={m.name} onChange={e => updMed(m.id, 'name', e.target.value)} placeholder="Название препарата" />
-                    <button onClick={() => delMed(m.id)} className="p-2 rounded-lg hover:bg-red-50 text-[var(--text-muted)] hover:text-red-500 shrink-0"><Icon name="trash" size={16} /></button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <input value={m.dosage} onChange={e => updMed(m.id, 'dosage', e.target.value)} placeholder="Дозировка (напр. 500 мг)" />
-                    <input value={m.duration} onChange={e => updMed(m.id, 'duration', e.target.value)} placeholder="Длительность (напр. 7 дней)" />
-                  </div>
-                  <input value={m.schedule} onChange={e => updMed(m.id, 'schedule', e.target.value)} placeholder="Схема приёма (напр. 2 раза в день после еды)" />
-                  <input value={m.notes} onChange={e => updMed(m.id, 'notes', e.target.value)} placeholder="Заметка (необязательно)" />
-                </div>
-              ))}
+        {showMetrics && (
+          <div className={card} data-testid="health-form-metrics">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-display text-lg">Показатели</h3>
+              <AddBtn onClick={metric.add}>Показатель</AddBtn>
             </div>
-          )}
-        </div>
+            {form.metrics.length === 0 ? <div className="text-sm text-[var(--text-subtle)]">Размеры, анализы — значение, единица, норма</div> : (
+              <div className="space-y-3">
+                {form.metrics.map(m => {
+                  const auto = healthRefFlag(m.value, m.ref);
+                  return (
+                    <div key={m.id} className="border border-[var(--border)] rounded-xl p-3 space-y-2">
+                      <div className="flex gap-2">
+                        <input value={m.name} onChange={e => metric.upd(m.id, 'name', e.target.value)} placeholder="Показатель" className="min-w-0" />
+                        <DelBtn onClick={() => metric.del(m.id)} />
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <input value={m.value} onChange={e => metric.upd(m.id, 'value', e.target.value)} placeholder="Значение" />
+                        <input value={m.unit} onChange={e => metric.upd(m.id, 'unit', e.target.value)} placeholder="Ед." />
+                        <input value={m.ref} onChange={e => metric.upd(m.id, 'ref', e.target.value)} placeholder="Норма" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <input value={m.group} onChange={e => metric.upd(m.id, 'group', e.target.value)} placeholder="Раздел / орган" />
+                        <select value={m.flag || ''} onChange={e => metric.upd(m.id, 'flag', e.target.value)}>
+                          <option value="">{auto ? `Авто: ${auto === 'high' ? 'выше' : 'ниже'} нормы` : 'В норме / авто'}</option>
+                          <option value="high">Выше нормы</option>
+                          <option value="low">Ниже нормы</option>
+                          <option value="abnormal">Не в норме</option>
+                        </select>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-          <label>Результат / исход</label>
-          <textarea value={form.outcome} rows={2} onChange={e => set('outcome', e.target.value)} style={{ resize: 'vertical' }} placeholder="Помогло, симптомы прошли за..., не помогло..." />
-        </div>
+        {(t === 'study' || t === 'labs' || form.conclusion) && (
+          <div className={card}>
+            <label>Заключение</label>
+            <textarea value={form.conclusion || ''} rows={3} onChange={e => set('conclusion', e.target.value)} style={{ resize: 'vertical' }} placeholder="Заключение исследования" />
+          </div>
+        )}
 
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-3">
+        {!isMemo && (
+          <div className={card}>
+            <label>Рекомендации</label>
+            <textarea value={form.recommendations || ''} rows={2} onChange={e => set('recommendations', e.target.value)} style={{ resize: 'vertical' }} placeholder="Режим, диета, советы врача…" />
+          </div>
+        )}
+
+        {showOrders && (
+          <div className={card} data-testid="health-form-orders">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-display text-lg">Назначено</h3>
+              <AddBtn onClick={order.add}>Назначение</AddBtn>
+            </div>
+            {form.orders.length === 0 ? <div className="text-sm text-[var(--text-subtle)]">Анализы, исследования, консультации, повторная явка</div> : (
+              <div className="space-y-3">
+                {form.orders.map(o => (
+                  <div key={o.id} className="border border-[var(--border)] rounded-xl p-3 space-y-2">
+                    <div className="flex gap-2">
+                      <input value={o.title} onChange={e => order.upd(o.id, 'title', e.target.value)} placeholder="Что назначено" className="min-w-0" />
+                      <DelBtn onClick={() => order.del(o.id)} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <select value={o.kind || 'other'} onChange={e => order.upd(o.id, 'kind', e.target.value)}>
+                        {HEALTH_ORDER_KINDS.map(k => <option key={k.id} value={k.id}>{k.label}</option>)}
+                      </select>
+                      <select value={o.status || 'assigned'} onChange={e => order.upd(o.id, 'status', e.target.value)}>
+                        {Object.entries(HEALTH_ORDER_STATUS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input value={o.code || ''} onChange={e => order.upd(o.id, 'code', e.target.value)} placeholder="Код услуги" />
+                      <input type="date" value={o.dueDate || ''} onChange={e => order.upd(o.id, 'dueDate', e.target.value)} title="Срок / дата явки" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {showMeds && (
+          <div className={card}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-display text-lg">Лечение / препараты</h3>
+              <AddBtn onClick={med.add}>Добавить</AddBtn>
+            </div>
+            {form.medications.length === 0 ? (
+              <div className="text-sm text-[var(--text-subtle)]">Нет добавленных препаратов</div>
+            ) : (
+              <div className="space-y-3">
+                {form.medications.map(m => (
+                  <div key={m.id} className="border border-[var(--border)] rounded-xl p-3 space-y-2">
+                    <div className="flex gap-2">
+                      <input value={m.name} onChange={e => med.upd(m.id, 'name', e.target.value)} placeholder="Название препарата" className="min-w-0" />
+                      <DelBtn onClick={() => med.del(m.id)} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <input value={m.dosage || ''} onChange={e => med.upd(m.id, 'dosage', e.target.value)} placeholder="Доза (200 мг)" />
+                      <input value={m.route || ''} onChange={e => med.upd(m.id, 'route', e.target.value)} placeholder="Способ (внутрь, в/м)" />
+                    </div>
+                    <input value={m.schedule || ''} onChange={e => med.upd(m.id, 'schedule', e.target.value)} placeholder="Схема (3 раза в день за 15 мин до еды)" />
+                    <div className="grid grid-cols-2 gap-2">
+                      <input value={m.duration || ''} onChange={e => med.upd(m.id, 'duration', e.target.value)} placeholder="Длительность (4 недели)" />
+                      <input value={m.quantity || ''} onChange={e => med.upd(m.id, 'quantity', e.target.value)} placeholder="Кол-во (№10)" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="!text-[11px]">Начало курса</label>
+                        <input type="date" value={m.startDate || ''} onChange={e => med.upd(m.id, 'startDate', e.target.value)} />
+                      </div>
+                      <div>
+                        <label className="!text-[11px]">Статус</label>
+                        <select value={m.status || 'active'} onChange={e => med.upd(m.id, 'status', e.target.value)}>
+                          <option value="active">Принимаю</option>
+                          <option value="done">Курс завершён</option>
+                        </select>
+                      </div>
+                    </div>
+                    {(m.stages || []).length > 0 && (
+                      <div className="space-y-2">
+                        {m.stages.map((st, i) => (
+                          <div key={i} className="bg-[var(--bg)] rounded-lg p-2 space-y-1.5">
+                            <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
+                              <span>Этап {i + 1}</span>
+                              <button onClick={() => setStages(m.id, m.stages.filter((_, j) => j !== i))} className="hover:text-red-500">убрать</button>
+                            </div>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              <input value={st.dosage || ''} onChange={e => setStages(m.id, m.stages.map((s, j) => j === i ? { ...s, dosage: e.target.value } : s))} placeholder="Доза" />
+                              <input value={st.duration || ''} onChange={e => setStages(m.id, m.stages.map((s, j) => j === i ? { ...s, duration: e.target.value } : s))} placeholder="Сколько" />
+                            </div>
+                            <input value={st.schedule || ''} onChange={e => setStages(m.id, m.stages.map((s, j) => j === i ? { ...s, schedule: e.target.value } : s))} placeholder="Схема" />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <button onClick={() => setStages(m.id, [...(m.stages && m.stages.length ? m.stages : [{ dosage: m.dosage || '', schedule: m.schedule || '', duration: m.duration || '' }]), { dosage: '', schedule: '', duration: '' }])}
+                      className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]">+ этап схемы (смена дозы)</button>
+                    <input value={m.notes || ''} onChange={e => med.upd(m.id, 'notes', e.target.value)} placeholder="Заметка (необязательно)" />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {isMemo && (
+          <div className={`${card} space-y-4`} data-testid="health-form-memo">
+            <div>
+              <label>Вид памятки</label>
+              <div className="flex flex-wrap gap-1.5">
+                {HEALTH_MEMO_KINDS.map(k => (
+                  <button key={k.id} onClick={() => setMemo('kind', k.id)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${form.memoText.kind === k.id ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
+                    {k.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {form.memoText.kind === 'prep' ? (
+              <>
+                <div>
+                  <label>К какому исследованию</label>
+                  <input value={form.memoText.for} onChange={e => setMemo('for', e.target.value)} placeholder="УЗИ брюшной полости, ЭГДС" />
+                </div>
+                <div>
+                  <label>Шаги подготовки (по строке)</label>
+                  <textarea rows={5} value={form.memoText.steps} onChange={e => setMemo('steps', e.target.value)} style={{ resize: 'vertical' }} />
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <label>Принципы (по строке)</label>
+                  <textarea rows={3} value={form.memoText.principles} onChange={e => setMemo('principles', e.target.value)} style={{ resize: 'vertical' }} />
+                </div>
+                <div>
+                  <label>Можно (по строке)</label>
+                  <textarea rows={4} value={form.memoText.allowed} onChange={e => setMemo('allowed', e.target.value)} style={{ resize: 'vertical' }} />
+                </div>
+                <div>
+                  <label>Исключить (по строке)</label>
+                  <textarea rows={4} value={form.memoText.excluded} onChange={e => setMemo('excluded', e.target.value)} style={{ resize: 'vertical' }} />
+                </div>
+                {form.memoText.kind === 'other' && (
+                  <div>
+                    <label>Шаги (по строке)</label>
+                    <textarea rows={3} value={form.memoText.steps} onChange={e => setMemo('steps', e.target.value)} style={{ resize: 'vertical' }} />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {(t === 'illness' || t === 'flare_up' || t === 'procedure' || form.outcome) && (
+          <div className={card}>
+            <label>Результат / исход</label>
+            <textarea value={form.outcome || ''} rows={2} onChange={e => set('outcome', e.target.value)} style={{ resize: 'vertical' }} placeholder="Помогло, симптомы прошли за..., не помогло..." />
+          </div>
+        )}
+
+        {(form.uncertainText || '').trim() && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 sm:p-5">
+            <label>Проверить (распознано неуверенно, по строке; уберите, когда проверено)</label>
+            <textarea value={form.uncertainText} rows={2} onChange={e => set('uncertainText', e.target.value)} style={{ resize: 'vertical' }} />
+          </div>
+        )}
+
+        <div className={`${card} space-y-3`}>
           <label className="flex items-center gap-2 cursor-pointer !mb-0">
             <input type="checkbox" className="!w-auto" checked={!!form.notify} onChange={e => set('notify', e.target.checked)} />
             <span className="text-sm font-medium">Напоминание в Telegram</span>
@@ -20841,7 +21518,7 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
                 </div>
                 <div className="w-28">
                   <label>Время</label>
-                  <MskTimeInput value={form.notifyTime || '10:00'} onChange={t => set('notifyTime', t)} />
+                  <MskTimeInput value={form.notifyTime || '10:00'} onChange={tm => set('notifyTime', tm)} />
                 </div>
               </div>
               <div>
@@ -20853,7 +21530,7 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
           )}
         </div>
 
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div className={card}>
           <h3 className="font-display text-lg mb-3">Фото</h3>
           <div className="space-y-3">
             {form.photos.map(ph => (
@@ -20890,7 +21567,7 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
           </div>
         </div>
 
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div className={card}>
           <h3 className="font-display text-lg mb-3">Документы (анализы, выписки, направления)</h3>
           <div className="space-y-2">
             {form.files.map(f => (
@@ -20908,13 +21585,13 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
           </div>
         </div>
 
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div className={card}>
           <label>Теги</label>
           <div className="flex flex-wrap gap-1.5 mb-2">
-            {form.tags.map(t => (
-              <span key={t} className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-[var(--bg)] border border-[var(--border)]">
-                {t}
-                <button onClick={() => removeTag(t)} className="text-[var(--text-subtle)] hover:text-red-500">×</button>
+            {form.tags.map(tg => (
+              <span key={tg} className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-[var(--bg)] border border-[var(--border)]">
+                {tg}
+                <button onClick={() => removeTag(tg)} className="text-[var(--text-subtle)] hover:text-red-500">×</button>
               </span>
             ))}
           </div>
@@ -20926,9 +21603,9 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
           </div>
         </div>
 
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div className={card}>
           <label>Заметки</label>
-          <textarea value={form.notes} rows={2} placeholder="Необязательно..."
+          <textarea value={form.notes || ''} rows={2} placeholder="Необязательно..."
             onChange={e => set('notes', e.target.value)} style={{ resize: 'vertical' }} />
         </div>
 
@@ -20945,8 +21622,8 @@ function HealthEventForm({ event, defaults, conditions, onSave, onCancel, onCrea
 
 function HealthConditionForm({ condition, onSave, onCancel }) {
   const [form, setForm] = useState(() => condition
-    ? { ...condition, tags: [...(condition.tags || [])] }
-    : { id: crypto.randomUUID(), name: '', isChronic: true, status: 'active', diagnosedDate: '', resolvedDate: '', notes: '', tags: [] });
+    ? { symptoms: '', ...condition, tags: [...(condition.tags || [])] }
+    : { id: crypto.randomUUID(), name: '', isChronic: false, status: 'active', diagnosedDate: getTodayKey(), resolvedDate: '', symptoms: '', notes: '', tags: [] });
   const [tagInput, setTagInput] = useState('');
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
@@ -20956,67 +21633,61 @@ function HealthConditionForm({ condition, onSave, onCancel }) {
     setTagInput('');
   };
   const removeTag = (t) => set('tags', form.tags.filter(x => x !== t));
+  const episode = !form.isChronic;
 
   const submit = () => {
-    if (!form.name.trim()) { alert('Введите название состояния'); return; }
+    if (!form.name.trim()) { alert('Введите название'); return; }
     onSave(form);
   };
+  const pill = (on) => `px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${on ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`;
 
   return (
     <div className="fade-in">
       <div className="mb-6 flex items-center gap-3">
         <button onClick={onCancel} className="p-2 rounded-xl hover:bg-black/5 text-[var(--text-muted)]"><Icon name="x" size={20} /></button>
-        <h2 className="font-display text-2xl">{condition ? 'Редактировать состояние' : 'Новое состояние'}</h2>
+        <h2 className="font-display text-2xl">{condition ? 'Редактировать' : (episode ? 'Новый эпизод' : 'Новое состояние')}</h2>
       </div>
 
       <div className="space-y-4">
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
           <label>Название</label>
-          <input value={form.name} onChange={e => set('name', e.target.value)} placeholder="Например, СИБО, Варикоцеле…" />
+          <input value={form.name} onChange={e => set('name', e.target.value)} placeholder={episode ? 'Например, отравление в ноябре' : 'Например, гастрит'} />
         </div>
 
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5 space-y-4">
           <div>
             <label>Тип</label>
-            <div className="flex gap-1.5">
-              <button onClick={() => set('isChronic', true)}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${form.isChronic ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
-                Хроническое
-              </button>
-              <button onClick={() => set('isChronic', false)}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${!form.isChronic ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
-                Разовое (напр. операция)
-              </button>
+            <div className="flex flex-wrap gap-1.5">
+              <button onClick={() => set('isChronic', false)} className={pill(episode)}>Эпизод (болезнь, случай)</button>
+              <button onClick={() => set('isChronic', true)} className={pill(!episode)}>Хроническое</button>
             </div>
           </div>
           <div>
             <label>Статус</label>
             <div className="flex gap-1.5">
-              <button onClick={() => set('status', 'active')}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${form.status==='active' ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
-                Активно
-              </button>
-              <button onClick={() => set('status', 'resolved')}
-                className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-all ${form.status==='resolved' ? 'bg-[var(--text)] text-white border-transparent' : 'border-[var(--border)] text-[var(--text-muted)] hover:bg-black/5'}`}>
-                Разрешено
-              </button>
+              <button onClick={() => set('status', 'active')} className={pill(form.status === 'active')}>Активно</button>
+              <button onClick={() => set('status', 'resolved')} className={pill(form.status === 'resolved')}>{episode ? 'Закрыт' : 'Разрешено'}</button>
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label>Дата диагноза</label>
+              <label>{episode ? 'Начало' : 'Дата диагноза'}</label>
               <input type="date" value={form.diagnosedDate || ''} onChange={e => set('diagnosedDate', e.target.value)} />
             </div>
             {form.status === 'resolved' && (
               <div>
-                <label>Дата разрешения</label>
+                <label>{episode ? 'Конец' : 'Дата разрешения'}</label>
                 <input type="date" value={form.resolvedDate || ''} onChange={e => set('resolvedDate', e.target.value)} />
               </div>
             )}
           </div>
+          <div>
+            <label>Симптомы</label>
+            <textarea value={form.symptoms || ''} rows={2} onChange={e => set('symptoms', e.target.value)} style={{ resize: 'vertical' }} placeholder="Что беспокоило" />
+          </div>
         </div>
 
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
           <label>Теги</label>
           <div className="flex flex-wrap gap-1.5 mb-2">
             {form.tags.map(t => (
@@ -21034,9 +21705,9 @@ function HealthConditionForm({ condition, onSave, onCancel }) {
           </div>
         </div>
 
-        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
+        <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 sm:p-5">
           <label>Заметки</label>
-          <textarea value={form.notes} rows={3} onChange={e => set('notes', e.target.value)} style={{ resize: 'vertical' }} placeholder="Произвольное описание состояния..." />
+          <textarea value={form.notes || ''} rows={3} onChange={e => set('notes', e.target.value)} style={{ resize: 'vertical' }} placeholder="Произвольное описание..." />
         </div>
 
         <div className="flex gap-3 pb-8">
