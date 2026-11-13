@@ -7961,17 +7961,18 @@ def _study_chat_key(source: str, cid) -> str:
 
 
 def _study_since(state: dict, key: str, started: float) -> float:
-    """С какой отметки читать чат. Неудачный разбор держит своё окно, а не сдвигает его вперёд."""
+    """С какой отметки читать чат. Неудачный разбор держит своё окно, а не сдвигает его вперёд.
+    Общий lastScanTs не заменяет курсор чата: он сдвигался и когда чат не прочитался."""
     pending = state.get("chatPending") if isinstance(state.get("chatPending"), dict) else {}
     cursors = state.get("chatCursors") if isinstance(state.get("chatCursors"), dict) else {}
-    if pending.get(key):
+    if key in pending:
         prev = pending[key]
-    elif cursors.get(key):
+    elif key in cursors:
         prev = cursors[key]
+    elif state.get("lastScanTs"):
+        return started - 3 * 86400
     else:
-        prev = state.get("lastScanTs") or 0
-        if not prev:
-            return started - 86400
+        return started - 86400
     try:
         prev = float(prev)
     except (TypeError, ValueError):

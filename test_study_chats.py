@@ -1,5 +1,6 @@
 """Контроль учебных чатов: расписание, тишина и доставка. Telegram и MAX подменены."""
 
+import asyncio
 import json
 import os
 import tempfile
@@ -15,6 +16,7 @@ os.environ["DATA_DIR"] = _TMP.name
 
 import jarvis  # noqa: E402
 import study_skills  # noqa: E402
+import tg_tools  # noqa: E402
 
 
 def app(**extra):
@@ -295,3 +297,35 @@ class StudyChatsTest(unittest.TestCase):
         self.assertIn("в бот не писал: нечего сообщать", html)
         self.assertIn("Повтор после ошибки", html)
         self.assertIn("Проверять учебные чаты", html)
+
+    def test_telethon_chat_id_is_int_and_still_resolves(self):
+        """id диалога из Telethon — int. Раньше _resolve вызывал .strip() и чат не читался."""
+        seen = []
+
+        class Client:
+            async def get_entity(self, peer):
+                seen.append(peer)
+                return {"id": peer}
+
+        user_id, group_id = 123456789, -1001234567890
+        self.assertEqual(asyncio.run(tg_tools._resolve(Client(), user_id)), {"id": user_id})
+        self.assertEqual(asyncio.run(tg_tools._resolve(Client(), group_id)), {"id": group_id})
+        self.assertEqual(asyncio.run(tg_tools._resolve(Client(), "  -1001234567890  ")), {"id": group_id})
+        self.assertEqual(seen, [user_id, group_id, group_id])
+
+    def test_poisoned_global_cursor_does_not_hide_an_unread_chat(self):
+        seen = []
+
+        def scan_chat(peer, since):
+            seen.append((peer, since))
+            return {"chat": "Михаил", "chat_id": peer, "me": {"name": "Миша"},
+                    "messages": [{"id": 3, "from": "Анна", "text": "Миша, где файл?", "mentioned": True,
+                                  "date": "2026-11-12 18:00"}]}
+
+        study_skills.state_update(lastScanTs=time.time(), lastResult={"errors": ["Михаил: 'int' object has no attribute 'strip'"]})
+        result = self._run(app(), scan_chat, slot="2026-11-13 20:00",
+                           llm=lambda *a, **k: json.dumps({"items": []}))
+        self.assertEqual(seen[0][0], 5)
+        self.assertLess(seen[0][1], time.time() - 2 * 86400)
+        self.assertTrue(result["ok"], result)
+        self.assertIn("где файл", self.sent[0][1])
