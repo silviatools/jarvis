@@ -41,7 +41,9 @@ SKILLS = [
               "из неё наравне с Telegram — и пишет в бот, только если что-то требует вашего внимания: вопросы вам или всем, упоминания, "
               "«ищут вас», новые задания, переносы, сроки, голосования. Ссылка на сообщение прилагается, если она есть; на уведомление "
               "можно ответить — Джарвис знает контекст. Написать в чат Telegram можно после «да»; сообщения MAX в этом навыке только читаются. "
-              "Чаты Telegram берутся из «Базы данных» и из Настройки → Учеба → «Учебные чаты». Папка MAX — там же, по умолчанию «Учеба». Нужен личный Telegram; для MAX — вход в Настройки → MAX."),
+              "Чаты Telegram берутся из «Базы данных» и из Настройки → Учеба → «Учебные чаты». Папка MAX — там же, по умолчанию «Учеба». "
+              "Сам ежедневный запуск включается отдельно: Настройки → Учеба → «Проверять учебные чаты» (по умолчанию выключено, время по Москве). "
+              "Нужен личный Telegram; для MAX — вход в Настройки → MAX. Уведомление уходит в личный чат владельца, где в маршрутизации включена «Учёба»."),
      "tools": ["study_chats_scan_now"]},
 ]
 
@@ -287,17 +289,72 @@ def peer_allowed(peer, targets: list) -> bool:
     return False
 
 
+def _json_dicts(raw: str) -> list:
+    """JSON-объекты из ответа модели. Лишняя скобка после объекта не склеивается с ним."""
+    text = raw or ""
+    found, i, n = [], 0, len(text)
+    while i < n:
+        start = text.find("{", i)
+        if start < 0:
+            break
+        depth = 0
+        in_str = False
+        esc = False
+        closed = -1
+        for j in range(start, n):
+            ch = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    closed = j
+                    break
+        if closed < 0:
+            break
+        try:
+            data = json.loads(text[start:closed + 1])
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            found.append(data)
+        i = closed + 1
+    return found
+
+
+def parse_triage(raw: str):
+    """(items, ok). ok — модель вернула объект с полем items, даже если список пуст.
+    Неразборчивый ответ — это не «нечего сообщать»."""
+    for data in _json_dicts(raw):
+        rows = data.get("items")
+        if not isinstance(rows, list) or "items" not in data:
+            continue
+        out = []
+        for it in rows:
+            if not isinstance(it, dict):
+                continue
+            summary = str(it.get("summary") or it.get("text") or it.get("why") or "").strip()
+            if not summary:
+                continue
+            if not str(it.get("summary") or "").strip():
+                it = dict(it)
+                it["summary"] = summary
+            out.append(it)
+        return out, True
+    return [], False
+
+
 def parse_items(raw: str) -> list:
     """Достаёт items из ответа модели (допускает обёртку в ```json и текст вокруг)."""
-    m = re.search(r"\{.*\}", raw or "", re.S)
-    if not m:
-        return []
-    try:
-        data = json.loads(m.group(0))
-    except Exception:
-        return []
-    out = []
-    for it in data.get("items") if isinstance(data, dict) else []:
-        if isinstance(it, dict) and (it.get("summary") or "").strip():
-            out.append(it)
-    return out
+    items, ok = parse_triage(raw)
+    return items if ok else []

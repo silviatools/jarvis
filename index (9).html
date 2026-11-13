@@ -8646,15 +8646,26 @@ function StudyChatsCard({ data, setData, card, input }) {
 
   const scan = async () => {
     setBusy(true); setMsg(null);
+    const before = status && status.lastRunAt || 0;
     try {
       await new Promise(r => setTimeout(r, 1500));   // настройки сначала долетают до сервера
       const j = await (await fetch('/api/study/chats/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json();
       setMsg(j.ok ? { ok: true, text: 'Проверяю — результат придёт в Telegram через 1–2 минуты.' } : { ok: false, text: j.error || 'Ошибка' });
+      if (j.ok) {
+        const started = Date.now();
+        const pull = async () => {
+          let next = null;
+          try { next = await (await fetch('/api/study/chats/status')).json(); } catch (e) { next = null; }
+          if (next) setStatus(next);
+          const changed = next && (next.lastRunAt || 0) !== before;
+          if (next && (next.running || !changed) && Date.now() - started < 120000) setTimeout(pull, 2000);
+        };
+        setTimeout(pull, 2000);
+      }
     } catch (e) {
       setMsg({ ok: false, text: 'Сервер не ответил: ' + e.message });
     }
     setBusy(false);
-    setTimeout(loadStatus, 4000);
   };
   const fmt = (ms) => (ms ? new Date(ms).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : 'ещё ни разу');
   const res = (status && status.lastResult) || {};
@@ -8667,7 +8678,8 @@ function StudyChatsCard({ data, setData, card, input }) {
           <p className="text-sm text-[var(--text-muted)]">
             Раз в день Джарвис читает учебные чаты — даже замьюченные — и пишет в бот, только если что-то требует вашего внимания:
             вопросы вам, упоминания, «ищут вас», новые задания, переносы и сроки. Ответьте на его сообщение — продолжите с этим контекстом.
-            Чаты Telegram он берёт из раздела «База данных» и из выбранных ниже. Папка MAX «Учеба» (чаты, беседы и группы) читается вместе с ними.
+            Если выбранная минута пропущена, проверка всё равно запускается позже в тот же день. Чаты Telegram он берёт из раздела «База данных»
+            и из выбранных ниже. Папка MAX «Учеба» (чаты, беседы и группы) читается вместе с ними.
           </p>
         </div>
         <StudySwitch on={!!cfg.enabled} onChange={v => update({ enabled: v })} label="Проверять учебные чаты" />
@@ -8765,17 +8777,24 @@ function StudyChatsCard({ data, setData, card, input }) {
         <button onClick={scan} disabled={busy} className="btn-secondary text-sm px-4 py-2">
           {busy ? 'Запускаю…' : 'Проверить сейчас'}
         </button>
-        <span className="text-xs text-[var(--text-subtle)]">
+        <span className="text-xs text-[var(--text-subtle)]" data-testid="study-chats-last">
           Последняя проверка: {fmt(status && status.lastRunAt)}
           {res.messages != null && ` · чатов ${res.chats}, новых сообщений ${res.messages}, важных ${res.items}`}
+          {res.sent > 0 && ' · уведомление отправлено'}
+          {res.quiet && ' · в бот не писал: нечего сообщать'}
         </span>
       </div>
+      {status && status.nextRetryAt > Date.now() / 1000 && (
+        <div className="mt-2 text-xs text-amber-600">Повтор после ошибки: {fmt(status.nextRetryAt * 1000)}</div>
+      )}
       {msg && <div className={`mt-2 text-sm ${msg.ok ? 'text-green-600' : 'text-amber-600'}`}>{msg.text}</div>}
       {status && status.lastError && <div className="mt-2 text-sm text-amber-600">{status.lastError}</div>}
       {status && status.lastResult && (status.lastResult.errors || []).map((e, i) => <div key={i} className="text-xs text-amber-600">{e}</div>)}
       <p className="text-[11px] text-[var(--text-subtle)] mt-3">
-        Первая проверка смотрит последние сутки, дальше — всё новое с прошлой проверки. Уведомления приходят в чат с ботом, где включена категория «Учёба».
-        Включить или выключить навык целиком можно в Настройки → Ассистент → «Навыки ассистента».
+        Первая проверка смотрит последние сутки, дальше — новое с прошлой удачной проверки, но не старше трёх суток.
+        Если разбор или отправка сорвались, эти сообщения не считаются просмотренными. В бот ничего не пишется, когда важного нет
+        (переключатель выше это меняет). Уведомление приходит в личный чат владельца, где в маршрутизации включена категория «Учёба».
+        Автозапуск — переключатель «Проверять учебные чаты», время по Москве. Навык целиком — Настройки → Ассистент → «Навыки ассистента».
       </p>
     </div>
   );

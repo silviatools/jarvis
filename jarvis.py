@@ -7478,7 +7478,10 @@ def _llm_text(conf, system: str, user: str, max_tokens: int = 2500, timeout: int
         u = ai_usage.usage_from_openai(j.get("usage")) if provider == "openai" else ai_usage.usage_from_claude(j.get("usage"))
         _log_call(provider, model, role, func or role, effort if provider == "openai" else "", u, 1)
     if provider == "openai":
-        return (((j.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        content = (((j.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+        if isinstance(content, list):
+            content = "".join(str(p.get("text") or "") if isinstance(p, dict) else str(p) for p in content)
+        return str(content).strip()
     return "".join(b.get("text", "") for b in (j.get("content") or []) if b.get("type") == "text").strip()
 
 
@@ -7526,6 +7529,26 @@ def _study_owner_chats(app) -> list:
     «study», которые являются личным чатом владельца."""
     chats = recipients_for(app, load_subscribers(), "study")
     return [c for c in chats if tg_user and tg_user.is_owner_chat(c)]
+
+
+def _study_no_owner_reason(app) -> str:
+    """Почему уведомление некому отправить. В Telegram его в этом случае послать нельзя."""
+    if not tg_user:
+        return "Личный Telegram на сервере недоступен — нельзя понять, какой чат с ботом ваш."
+    try:
+        cfg = tg_user._load_cfg() or {}
+    except Exception:
+        cfg = {}
+    if not cfg.get("session"):
+        return "Личный Telegram не подключён: Настройки → Телеграм. Без него нельзя подтвердить, что чат с ботом ваш."
+    if not cfg.get("user_id"):
+        return "Не удалось определить id подключённого Telegram. Откройте Настройки → Телеграм и войдите ещё раз."
+    routed = recipients_for(app, load_subscribers(), "study")
+    if not routed:
+        return "Включите категорию «Учёба» для вашего личного чата с ботом: Настройки → Маршрутизация."
+    if any(str(c) == str(cfg.get("user_id")) for c in routed):
+        return "Личный чат владельца есть в маршрутизации, но сервер не подтвердил, что это вы."
+    return "Категория «Учёба» включена не в личном чате владельца подключённого Telegram. Уведомление уходит только туда."
 
 
 def _attachments_text(snap: dict, per_file: int = 12000, max_files: int = 4) -> str:
@@ -7897,61 +7920,330 @@ def _chat_lines(messages: list, cap_chars: int) -> str:
     return "\n".join(reversed(out))
 
 
-def study_chats_scan(chat_id=None, manual: bool = False) -> dict:
+STUDY_CHAT_ATTEMPTS = 4
+STUDY_CHAT_RETRY_SEC = 20 * 60
+
+
+def study_chats_due(app_data: dict, now_str: str, today_iso: str, now_ts: float = None) -> str:
+    """Слот «дата время» ежедневной проверки или пусто, если запускать её не нужно.
+    Пропущенная минута догоняется позже в тот же день, пока слот не выполнен."""
+    if not study_skills:
+        return ""
+    cfg = study_skills.chats_config(app_data or {})
+    if not cfg["enabled"] or str(now_str or "") < cfg["time"]:
+        return ""
+    if not study_skills.skill_on((app_data or {}).get("telegramSkills"), study_skills.CHATS_ID):
+        return ""
+    slot = f"{today_iso} {cfg['time']}"
+    st = study_skills.state_load()
+    if st.get("lastDoneSlot") == slot:
+        return ""
+    now_ts = time.time() if now_ts is None else now_ts
+    try:
+        if now_ts < float(st.get("nextRetryAt") or 0):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    attempts = st.get("slotAttempts") if isinstance(st.get("slotAttempts"), dict) else {}
+    try:
+        done_n = int(attempts.get(slot) or 0)
+    except (TypeError, ValueError):
+        done_n = 0
+    if done_n >= STUDY_CHAT_ATTEMPTS:
+        return ""
+    if _study_scan_lock.locked():
+        return ""
+    return slot
+
+
+def _study_chat_key(source: str, cid) -> str:
+    return f"{source or 'telegram'}:{cid}"
+
+
+def _study_since(state: dict, key: str, started: float) -> float:
+    """С какой отметки читать чат. Неудачный разбор держит своё окно, а не сдвигает его вперёд."""
+    pending = state.get("chatPending") if isinstance(state.get("chatPending"), dict) else {}
+    cursors = state.get("chatCursors") if isinstance(state.get("chatCursors"), dict) else {}
+    if pending.get(key):
+        prev = pending[key]
+    elif cursors.get(key):
+        prev = cursors[key]
+    else:
+        prev = state.get("lastScanTs") or 0
+        if not prev:
+            return started - 86400
+    try:
+        prev = float(prev)
+    except (TypeError, ValueError):
+        return started - 86400
+    return max(prev, started - 3 * 86400)
+
+
+def _study_title_key(name: str) -> str:
+    text = str(name or "").strip().casefold().replace("ё", "е")
+    return re.sub(r"\s*\(max\)\s*$", "", text).strip()
+
+
+def _match_study_chat(name: str, chats: list):
+    raw = str(name or "").strip().casefold().replace("ё", "е")
+    if not raw:
+        return chats[0] if len(chats) == 1 else None
+    want_max = "(max)" in raw
+    key = _study_title_key(name)
+    pool = [c for c in chats if (c.get("source") == "max") == want_max] if want_max else list(chats)
+    exact = [c for c in pool if _study_title_key(c.get("chat")) == key]
+    if len(exact) == 1:
+        return exact[0]
+    if len(chats) == 1:
+        return chats[0]
+    return None
+
+
+def _study_public_id(chat: dict):
+    cid = chat.get("chat_id")
+    return ("max:" + str(cid)) if chat.get("source") == "max" else cid
+
+
+def _study_notify_key(it: dict) -> str:
+    return f"{it.get('source') or ''}:{it.get('chat_id')}:{it.get('message_id')}"
+
+
+def _study_flag_items(chats: list) -> list:
+    """Упоминание и ответ на своё сообщение попадают в уведомление, даже если модель их выкинула."""
+    out = []
+    for c in chats:
+        for m in c.get("messages") or []:
+            if m.get("mine") or not (m.get("mentioned") or m.get("reply_to_me")):
+                continue
+            if m.get("mentioned") and m.get("reply_to_me"):
+                why = "Вас упомянули и ответили на ваше сообщение"
+            elif m.get("mentioned"):
+                why = "Вас упомянули"
+            else:
+                why = "Ответ на ваше сообщение"
+            out.append({
+                "chat": c.get("chat") or "", "message_id": m.get("id"), "who": m.get("from") or "",
+                "time": str(m.get("date") or "")[-5:], "summary": str(m.get("text") or m.get("media") or "сообщение")[:300],
+                "why": why, "urgency": "high", "source": c.get("source") or "telegram",
+                "chat_id": _study_public_id(c), "link": m.get("link") or "",
+            })
+    return out
+
+
+def _study_bind_item(it: dict, chat: dict) -> dict:
+    row = dict(it)
+    if not chat:
+        return row
+    row["chat"] = chat.get("chat") or row.get("chat")
+    row["source"] = chat.get("source") or row.get("source") or "telegram"
+    row["chat_id"] = _study_public_id(chat)
+    msg = next((m for m in chat.get("messages") or [] if str(m.get("id")) == str(row.get("message_id"))), None)
+    if msg and msg.get("link"):
+        row["link"] = msg["link"]
+    if msg and (msg.get("mentioned") or msg.get("reply_to_me")) and not msg.get("mine"):
+        row["urgency"] = "high"
+    return row
+
+
+def _study_merge_items(model_items: list, flag_items: list, chats: list) -> list:
+    merged, seen = [], {}
+    for it in list(model_items or []) + list(flag_items or []):
+        chat = _match_study_chat(it.get("chat"), chats)
+        if chat is None and it.get("chat_id") is not None:
+            chat = next((c for c in chats if str(_study_public_id(c)) == str(it.get("chat_id"))
+                         or str(c.get("chat_id")) == str(it.get("chat_id"))), None)
+        row = _study_bind_item(it, chat)
+        key = _study_notify_key(row)
+        prev = seen.get(key)
+        if prev is not None:
+            if row.get("urgency") == "high":
+                prev["urgency"] = "high"
+            if not prev.get("link") and row.get("link"):
+                prev["link"] = row["link"]
+            if not prev.get("why") and row.get("why"):
+                prev["why"] = row["why"]
+            continue
+        seen[key] = row
+        merged.append(row)
+    return merged
+
+
+def _study_fresh_items(items: list, state: dict) -> list:
+    seen = {str(x) for x in (state.get("notified") or [])}
+    return [it for it in items if _study_notify_key(it) not in seen]
+
+
+def _study_mark_notified(items: list) -> None:
+    cur = [str(x) for x in (study_skills.state_load().get("notified") or [])]
+    for it in items[:12]:
+        cur.append(_study_notify_key(it))
+    study_skills.state_update(notified=cur[-500:])
+
+
+def _study_tell_failure(token, owner, err: str) -> int:
+    if not (token and owner and tg_bot and err):
+        return 0
+    text = "📚 <b>Учебные чаты</b>: проверить не удалось.\n" + html.escape(str(err))[:700]
+    sent = 0
+    for cid in owner:
+        try:
+            tg_bot.send_text(token, cid, text)
+            sent += 1
+        except Exception as e:
+            print(f"  study chats send: {e}")
+    return sent
+
+
+def _study_scan_record(token, owner, *, done: bool, err: str, slot: str, told: bool, notify_err: bool,
+                       advance: list, pending: dict, started: float, result: dict, replace_pending: bool = False) -> dict:
+    """Записывает окно прочитанного. День закрывается только когда разбор и доставка удались.
+    Сломанный ответ модели и ошибка отправки окно не сдвигают."""
+    fresh = study_skills.state_load()
+    cursors = dict(fresh.get("chatCursors") or {}) if isinstance(fresh.get("chatCursors"), dict) else {}
+    stuck = dict(fresh.get("chatPending") or {}) if isinstance(fresh.get("chatPending"), dict) else {}
+    advance_set = set(advance or [])
+    if replace_pending:
+        stuck = {k: v for k, v in (pending or {}).items() if k not in advance_set}
+    else:
+        for key, since in (pending or {}).items():
+            if key not in advance_set:
+                stuck[key] = since
+    for key in advance_set:
+        cursors[key] = started
+        stuck.pop(key, None)
+    full = err or ""
+    if full and slot:
+        try:
+            n = int((fresh.get("slotAttempts") if isinstance(fresh.get("slotAttempts"), dict) else {}).get(slot) or 0)
+        except (TypeError, ValueError):
+            n = 0
+        full += " Повторю позже сегодня." if n < STUDY_CHAT_ATTEMPTS else " На сегодня автопроверка больше не повторится."
+    fields = {
+        "chatCursors": cursors, "chatPending": stuck, "lastRunAt": int(time.time() * 1000),
+        "lastError": full if (full and notify_err) else "", "lastResult": result,
+    }
+    if advance and not stuck:
+        fields["lastScanTs"] = started
+    if slot and done and not stuck:
+        fields["lastDoneSlot"] = slot
+        fields["nextRetryAt"] = 0
+    elif slot and not (done and not stuck):
+        fields["nextRetryAt"] = time.time() + STUDY_CHAT_RETRY_SEC
+    same = bool(slot and err and fresh.get("lastFailSlot") == slot and fresh.get("lastFailError") == err)
+    if full and notify_err and not told and not same and _study_tell_failure(token, owner, full) and slot:
+        fields["lastFailSlot"] = slot
+        fields["lastFailError"] = err
+    study_skills.state_update(**fields)
+    return {"ok": bool(done and not stuck and not full), "error": full, "sent": result.get("sent") or 0,
+            "chats": result.get("chats") or 0, "messages": result.get("messages") or 0,
+            "items": result.get("items") or 0, "errors": result.get("errors") or []}
+
+
+def _study_send_digest(token, owner, items: list, label: str, manual: bool, notify_empty: bool,
+                       targets_n: int, total: int) -> int:
+    sent = 0
+    now = now_msk()
+    for cid in owner:
+        try:
+            if items:
+                ids = tg_bot.send_text(token, cid, study_skills.digest_text(items[:12], label))
+                title = f"Учебные чаты · {now.day} {RU_MONTHS_GEN[now.month - 1]}"
+                user_text = "Проверь учебные чаты: что требует моего внимания?"
+                asst_text = ("Вот что нашёл в учебных чатах Telegram и в папке MAX «Учеба»:\n" + study_skills.digest_plain(items[:12]) +
+                             "\n(служебно: уведомление отправлено пользователю. Если он попросит ответить в чат Telegram — используй tg_send_message "
+                             "(peer = chat_id, reply_to = message_id) только после его «да». Сообщения с пометкой MAX только читай, в MAX не пиши.)")
+                try:
+                    tg_bot.remember_anchor(cid, ids, title, user_text, asst_text)
+                    tg_bot.seed_dialog(cid, title, user_text, asst_text)
+                except Exception as e:
+                    print(f"  study chats anchor: {e}")
+                sent += 1
+            elif manual or notify_empty:
+                tg_bot.send_text(token, cid, f"📚 <b>Учебные чаты</b>: за период ничего, что требовало бы вашего внимания "
+                                             f"<i>(чатов: {targets_n}, новых сообщений: {total})</i>.")
+                sent += 1
+        except Exception as e:
+            print(f"  study chats send: {e}")
+    return sent
+
+
+def study_chats_scan(chat_id=None, manual: bool = False, slot: str = "") -> dict:
     """Проверка учебных чатов: читаем новое с прошлой проверки, ИИ отбирает то, что требует внимания,
-    пишем в бот. chat_id — ответить в конкретный чат (запуск из чата). Возвращает итог для интерфейса."""
+    пишем в бот. chat_id — ответить в конкретный чат (запуск из чата). slot — ежедневный запуск:
+    пропущенная минута догоняется в тот же день. Возвращает итог для интерфейса."""
     if not study_skills:
         return {"ok": False, "error": "Навык недоступен на сервере."}
     if not _study_scan_lock.acquire(blocking=False):
         return {"ok": False, "error": "Проверка уже идёт."}
+    token, owner = "", []
     try:
         app = load_app_data()
-        if not study_skills.skill_on(app.get("telegramSkills"), study_skills.CHATS_ID):
-            return {"ok": False, "error": "Навык «Контроль учебных чатов» выключен: Настройки → Ассистент → Навыки ассистента."}
         token, conf = get_token(), _ai_conf(app)
         cfg = study_skills.chats_config(app)
         owner = [chat_id] if (chat_id and tg_user and tg_user.is_owner_chat(chat_id)) else _study_owner_chats(app)
+        if slot:
+            fresh = study_skills.state_load()
+            attempts = fresh.get("slotAttempts") if isinstance(fresh.get("slotAttempts"), dict) else {}
+            keep = (today_msk() - timedelta(days=1)).isoformat()
+            attempts = {k: v for k, v in attempts.items() if str(k)[:10] >= keep}
+            try:
+                attempts[slot] = int(attempts.get(slot) or 0) + 1
+            except (TypeError, ValueError):
+                attempts[slot] = 1
+            study_skills.state_update(slotAttempts=attempts)
         err = ""
-        if not token:
+        if not study_skills.skill_on(app.get("telegramSkills"), study_skills.CHATS_ID):
+            err = "Навык «Контроль учебных чатов» выключен: Настройки → Ассистент → Навыки ассистента."
+        elif not token:
             err = "Не задан токен Telegram-бота."
         elif not conf:
             err = "Ассистенту не назначен ключ ИИ: Настройки → Ассистент."
         elif not owner:
-            err = "Включите категорию «Учёба» для вашего личного чата с ботом: Настройки → Маршрутизация."
+            err = _study_no_owner_reason(app)
         targets, notes = ([], []) if err else _study_targets(app, conf)
         if not err and not targets:
             err = ("Учебные чаты не найдены: укажите их в «Базе данных» или в Настройки → Учеба. "
                    "Папка MAX «" + (cfg.get("maxFolder") or "Учеба") + "» тоже пуста или MAX не подключён."
                    ) + (" " + "; ".join(notes) if notes else "")
         if err:
-            study_skills.state_update(lastRunAt=int(time.time() * 1000), lastError=err, lastResult={})
-            return {"ok": False, "error": err}
+            return _study_scan_record(token, owner, done=False, err=err, slot=slot, told=False, notify_err=True,
+                                      advance=[], pending={}, started=0, result={"errors": [err]}, replace_pending=False)
 
         state = study_skills.state_load()
         started = time.time()
-        since = max(float(state.get("lastScanTs") or 0), started - 3 * 86400) or (started - 86400)
-        if not state.get("lastScanTs"):
-            since = started - 86400            # первая проверка — за сутки
-        chats, errors, me = [], list(notes), {}
+        chats, notes_left, read_errors = [], list(notes), []
+        read_ok, pending, me = [], {}, {}
         for t in targets:
+            source = t.get("source") or "telegram"
+            key = _study_chat_key(source, t.get("id"))
+            since = _study_since(state, key, started)
             try:
-                if t.get("source") == "max":
-                    d = max_tools.scan_chat(t["id"], since) if max_tools else {"messages": []}
+                if source == "max":
+                    d = max_tools.scan_chat(t["id"], since) if max_tools else None
                 elif tg_tools:
                     d = tg_tools.scan_chat(t["id"], since)
                 else:
-                    errors.append(f"{t['title']}: личный Telegram недоступен")
-                    continue
-                d["source"] = t.get("source") or "telegram"
-                if d["source"] == "max":
+                    raise RuntimeError("личный Telegram недоступен")
+                if not isinstance(d, dict):
+                    raise RuntimeError("пустой ответ")
+                d["source"] = source
+                if source == "max":
                     d["chat"] = f"{d.get('chat') or t['title']} (MAX)"
-                me = me or d.get("me") or {}
+                d["chat_id"] = d.get("chat_id", t.get("id"))
+                picked = me or d.get("me") or {}
+                if picked.get("name") or picked.get("username"):
+                    me = picked
+                read_ok.append((key, since))
                 if d.get("messages"):
                     chats.append(d)
             except Exception as e:
-                errors.append(f"{t['title']}: {e}")
-        total = sum(len(c["messages"]) for c in chats)
-        items = []
+                read_errors.append(f"{t['title']}: {e}")
+                pending[key] = since
+        total = sum(len(c.get("messages") or []) for c in chats)
+        errors = (notes_left + read_errors)[:5]
+        triage_ok, raw_items = True, []
+        now = now_msk()
+        label = f"{now.day} {RU_MONTHS_GEN[now.month - 1]}, {now.strftime('%H:%M')}"
         if total:
             cap = max(4000, 70000 // max(1, len(chats)))
             body = "\n\n".join(f"### ЧАТ «{c['chat']}»\n{_chat_lines(c['messages'], cap)}" for c in chats)
@@ -7959,64 +8251,79 @@ def study_chats_scan(chat_id=None, manual: bool = False) -> dict:
             prompt = (f"ПОЛЬЗОВАТЕЛЬ: {me.get('name') or '?'}" + (f", @{me['username']}" if me.get("username") else "") + "\n"
                       + "ЕГО АКТИВНЫЕ ЗАДАЧИ: " + ("; ".join(f"{t.get('title')} (до {t.get('due') or 'без срока'})" for t in tasks) or "нет") + "\n\n"
                       + body)
-            raw = _llm_text(_ai_conf(app, "triage") or conf, study_skills.TRIAGE_SYSTEM, prompt, max_tokens=2500, func="triage")
-            by_chat = {c["chat"]: c for c in chats}
-            for it in study_skills.parse_items(raw):
-                c = by_chat.get(it.get("chat")) or (chats[0] if len(chats) == 1 else None)
-                if c:
-                    it["chat"] = c["chat"]
-                    it["source"] = c.get("source") or "telegram"
-                    it["chat_id"] = ("max:" + str(c["chat_id"])) if c.get("source") == "max" else c["chat_id"]
-                    msg = next((m for m in c["messages"] if str(m["id"]) == str(it.get("message_id"))), None)
-                    if msg and msg.get("link"):
-                        it["link"] = msg["link"]
-                items.append(it)
-        now = now_msk()
-        label = f"{now.day} {RU_MONTHS_GEN[now.month - 1]}, {now.strftime('%H:%M')}"
-        study_skills.state_update(lastScanTs=started, lastRunAt=int(time.time() * 1000), lastError="",
-                                  lastResult={"chats": len(targets), "withNew": len(chats), "messages": total,
-                                              "items": len(items), "errors": errors[:5]})
-        sent = 0
-        for cid in owner:
+            triage_conf = _ai_conf(app, "triage") or conf
             try:
-                if items:
-                    text = study_skills.digest_text(items, label)
-                    ids = tg_bot.send_text(token, cid, text)
-                    title = f"Учебные чаты · {now.day} {RU_MONTHS_GEN[now.month - 1]}"
-                    user_text = "Проверь учебные чаты: что требует моего внимания?"
-                    asst_text = ("Вот что нашёл в учебных чатах Telegram и в папке MAX «Учеба»:\n" + study_skills.digest_plain(items) +
-                                 "\n(служебно: уведомление отправлено пользователю. Если он попросит ответить в чат Telegram — используй tg_send_message "
-                                 "(peer = chat_id, reply_to = message_id) только после его «да». Сообщения с пометкой MAX только читай, в MAX не пиши.)")
-                    tg_bot.remember_anchor(cid, ids, title, user_text, asst_text)
-                    tg_bot.seed_dialog(cid, title, user_text, asst_text)
-                    sent += 1
-                elif manual or cfg["notifyEmpty"]:
-                    tg_bot.send_text(token, cid, f"📚 <b>Учебные чаты</b>: за период ничего, что требовало бы вашего внимания "
-                                                 f"<i>(чатов: {len(targets)}, новых сообщений: {total})</i>.")
-            except Exception as e:
-                print(f"  study chats send: {e}")
-        return {"ok": True, "chats": len(targets), "messages": total, "items": len(items), "sent": sent, "errors": errors[:5]}
+                raw = _llm_text(triage_conf, study_skills.TRIAGE_SYSTEM, prompt, max_tokens=6000, func="triage")
+                raw_items, triage_ok = study_skills.parse_triage(raw)
+                if not triage_ok:
+                    raw = _llm_text(triage_conf, study_skills.TRIAGE_SYSTEM, prompt, max_tokens=8000, func="triage")
+                    raw_items, triage_ok = study_skills.parse_triage(raw)
+            except _AssistantError as e:
+                triage_ok = False
+                read_errors.append(str(e))
+                errors = (notes_left + read_errors)[:5]
+        flags = _study_flag_items(chats)
+        hold = {key: since for key, since in read_ok}
+        hold.update(pending)
+        base = {"chats": len(targets), "withNew": len(chats), "messages": total, "errors": errors}
+
+        def finish(done, err, notify_err, told, advance_keys, pend, items, sent, quiet):
+            result = {**base, "items": len(items), "sent": sent, "quiet": quiet}
+            return _study_scan_record(token, owner, done=done, err=err, slot=slot, told=told, notify_err=notify_err,
+                                      advance=advance_keys, pending=pend, started=started, result=result,
+                                      replace_pending=True)
+
+        if not triage_ok:
+            items = _study_fresh_items(flags, state)
+            sent = _study_send_digest(token, owner, items, label, False, False, len(targets), total) if items else 0
+            if items and sent:
+                _study_mark_notified(items)
+            err = ("Полный разбор учебных чатов не удался"
+                   + (", отправил только прямые упоминания и ответы вам." if items and sent else ", уведомление не отправлено.")
+                   + " Эти сообщения не пропущены.")
+            return finish(False, err, True, bool(items and sent), [], hold, items, sent, False)
+
+        items = _study_fresh_items(_study_merge_items(raw_items, flags, chats), state)
+        if read_errors and not items and not (manual or cfg["notifyEmpty"]):
+            return finish(False, "Не удалось прочитать часть учебных чатов: " + "; ".join(read_errors[:5]),
+                          True, False, [], hold, [], 0, False)
+        backlog = len(items) > 12
+        want_notice = bool(items) or ((manual or cfg["notifyEmpty"]) and not read_errors)
+        sent = _study_send_digest(token, owner, items, label, manual, cfg["notifyEmpty"] and not read_errors,
+                                  len(targets), total) if want_notice else 0
+        if want_notice and sent == 0:
+            return finish(False, "Не удалось отправить уведомление в Telegram. Сообщения не пропущены.",
+                          True, False, [], hold, items, 0, False)
+        if items and sent:
+            _study_mark_notified(items)
+        advance = [] if (backlog or read_errors) else [key for key, _since in read_ok]
+        pend = hold if (backlog or read_errors) else {}
+        if read_errors:
+            return finish(False, "Не удалось прочитать часть учебных чатов: " + "; ".join(read_errors[:5]),
+                          not sent, bool(sent), advance, pend, items, sent, False)
+        if backlog:
+            return finish(False, "", False, True, [], hold, items, sent, False)
+        quiet = sent == 0 and not items
+        return finish(True, "", False, False, advance, {}, items, sent, quiet)
     except _AssistantError as e:
-        study_skills.state_update(lastRunAt=int(time.time() * 1000), lastError=str(e))
-        return {"ok": False, "error": str(e)}
+        return _study_scan_record(token, owner, done=False, err=str(e), slot=slot, told=False, notify_err=True,
+                                  advance=[], pending={}, started=0, result={}, replace_pending=False)
     except Exception as e:
         print(f"  study chats scan: {type(e).__name__}: {e}")
-        study_skills.state_update(lastRunAt=int(time.time() * 1000), lastError=f"{type(e).__name__}: {e}")
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return _study_scan_record(token, owner, done=False, err=f"{type(e).__name__}: {e}", slot=slot, told=False,
+                                  notify_err=True, advance=[], pending={}, started=0, result={}, replace_pending=False)
     finally:
         _study_scan_lock.release()
 
 
 def study_chats_tick(app_data: dict, now_str: str, today_iso: str) -> None:
-    """Из минутного цикла: в выбранное время запускаем ежедневную проверку учебных чатов."""
-    if not study_skills:
+    """Из минутного цикла: в выбранное время или позже в тот же день, если минута была пропущена."""
+    slot = study_chats_due(app_data, now_str, today_iso)
+    if not slot:
         return
-    cfg = study_skills.chats_config(app_data)
-    if not cfg["enabled"] or cfg["time"] != now_str:
-        return
-    if _already_fired("studychats", "daily", today_iso, now_str):
-        return
-    threading.Thread(target=lambda: print(f"[study chats] {study_chats_scan()}"), daemon=True).start()
+    print(f"[{now_str} MSK] study chats: {slot}", flush=True)
+    threading.Thread(target=lambda slot=slot: print(f"[study chats] {study_chats_scan(slot=slot)}", flush=True),
+                     daemon=True).start()
 
 
 def study_chats_status() -> dict:
@@ -8033,6 +8340,7 @@ def study_chats_status() -> dict:
             "lastRunAt": st.get("lastRunAt") or 0, "lastError": st.get("lastError") or "", "lastResult": st.get("lastResult") or {},
             "running": _study_scan_lock.locked(), "telegramConnected": connected,
             "maxConnected": bool(max_user and max_user.connected()),
+            "nextRetryAt": st.get("nextRetryAt") or 0, "lastDoneSlot": st.get("lastDoneSlot") or "",
             "maxFolder": (study_skills.chats_config(load_app_data() or {}).get("maxFolder") if study_skills else "Учеба")}
 
 
