@@ -19,6 +19,10 @@ async function moodlePage(tabId) {
     cmid: document.body.className.match(/(?:^|\s)cmid-(\d+)(?:\s|$)/)?.[1],
     course: document.body.className.match(/(?:^|\s)course-(\d+)(?:\s|$)/)?.[1],
     width: innerWidth, height: innerHeight,
+    courseTitle: (document.querySelector('.page-header-headings h1, #page-header h1, h1')?.innerText || '').slice(0,300),
+    tests: [...new Map([...document.querySelectorAll('a[href]')].filter(a => {
+      try { const u = new URL(a.href); return u.origin === location.origin && u.pathname.endsWith('/mod/quiz/view.php') && /^\d+$/.test(u.searchParams.get('id') || ''); } catch (_) { return false; }
+    }).map(a => [new URL(a.href).searchParams.get('id'), {title:(a.innerText || a.getAttribute('aria-label') || 'Тест').trim().slice(0,300)}])).values()].slice(0,200),
     links: [...document.querySelectorAll('a[href]')].map(a => a.href).filter(h => {
       try { const u = new URL(h); return u.origin === location.origin && u.pathname.endsWith('/mod/quiz/view.php') && /^\d+$/.test(u.searchParams.get('id') || ''); } catch (_) { return false; }
     })
@@ -49,7 +53,7 @@ async function moodleBind(tab) {
     await chrome.storage.session.set({moodle: {tabId: tab.id, origin: u.origin, course: page.course,
       courseUrl: tab.url, links, index: -1, session, run: null, lastJob: null}});
     await chrome.storage.local.set({moodleStatus: 'Проверяю связь с Джарвисом…'});
-    const response = await moodlePost(config, 'poll', {session});
+    const response = await moodlePost(config, 'poll', {session, capabilities: ['inspect']});
     if (response.ok !== true) throw new Error('Сервер не подтвердил подключение Moodle.');
     const current = await chrome.storage.local.get(['server', 'token', 'enabled']);
     if (!current.enabled || current.server !== config.server || current.token !== config.token ||
@@ -86,7 +90,7 @@ async function moodleGuard(s) {
   }
   return page;
 }
-async function moodleShot(s) {
+async function moodleShot(s, inspect = false) {
   const page = await moodleGuard(s);
   const result = await chrome.debugger.sendCommand({tabId: s.tabId}, 'Page.captureScreenshot', {
     format: 'jpeg', quality: 75, captureBeyondViewport: false
@@ -100,11 +104,26 @@ async function moodleShot(s) {
   let binary = '';
   for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
   return {ok: true, image: btoa(binary), width: page.width, height: page.height,
-    quiz: s.index >= 0 ? 'test-' + (s.index + 1) : null, empty_course: s.links.length === 0};
+    quiz: s.index >= 0 ? 'test-' + (s.index + 1) : null, empty_course: s.links.length === 0,
+    ...(inspect ? {course: page.courseTitle || '', tests: page.tests || []} : {})};
+}
+// Runs in the page: Moodle themes often scroll a central pane, not window.
+function moodleScroll(delta) {
+  let element = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+  while (element && element !== document.body && element !== document.documentElement) {
+    const style = getComputedStyle(element);
+    if (/(auto|scroll)/.test(style.overflowY) && element.scrollHeight > element.clientHeight) {
+      element.scrollBy({top: delta, behavior: 'instant'});
+      return;
+    }
+    element = element.parentElement;
+  }
+  (document.scrollingElement || document.documentElement).scrollBy({top: delta, behavior: 'instant'});
 }
 async function moodleAction(s, job) {
   if (Date.now() / 1000 >= job.expires) throw new Error('Команда устарела.');
   await moodleGuard(s);
+  if (job.action?.action === 'inspect') return moodleShot(s, true);
   if (s.lastJob === job.id) throw new Error('Повтор команды остановлен.');
   s.lastJob = job.id;
   if (s.run && s.run !== job.run) throw new Error('Для нового запуска подключите курс заново.');
@@ -152,8 +171,10 @@ async function moodleAction(s, job) {
     await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {type: 'keyUp', key: 'a', code: 'KeyA', modifiers: 2, windowsVirtualKeyCode: 65});
     await chrome.debugger.sendCommand(target, 'Input.insertText', {text: a.text});
   } else if (a.action === 'scroll') {
-    if (!Number.isFinite(a.delta) || Math.abs(a.delta) > 1500) throw new Error('Неверная прокрутка.');
-    await chrome.scripting.executeScript({target, func: delta => window.scrollBy(0, delta), args: [a.delta]});
+    if (typeof a.delta !== 'number' || !Number.isFinite(a.delta)) throw new Error('Для прокрутки требуется конечное число.');
+    const page = await moodleGuard(s);
+    const limit = Math.max(1, Math.min(1500, Math.floor(page.height * 0.8)));
+    await chrome.scripting.executeScript({target, func: moodleScroll, args: [Math.max(-limit, Math.min(limit, a.delta))]});
   } else if (a.action !== 'wait') throw new Error('Неизвестная команда.');
   await moodlePause(1200);
   for (let attempt = 0; attempt < 20; attempt++) {
@@ -169,9 +190,10 @@ async function moodleTick() {
     const {moodle: s} = await chrome.storage.session.get('moodle');
     const config = await chrome.storage.local.get(['server', 'token', 'enabled']);
     if (!s || !config.enabled || !config.token) return;
-    const response = await moodlePost(config, 'poll', {session: s.session});
-    if (['completed', 'interrupted', 'stopped'].includes(response.status) && s.run) {
-      await moodleStop('Выполнение: ' + response.status + '. Отчёт запросите у Джарвиса.');
+    const response = await moodlePost(config, 'poll', {session: s.session, capabilities: ['inspect']});
+    if (['completed', 'interrupted', 'stopped'].includes(response.status) && s.run && response.job?.action?.action !== 'inspect') {
+      const label = {completed:'Выполнение завершено.', interrupted:'Выполнение прервано.', stopped:'Выполнение остановлено.'}[response.status];
+      await moodleStop(label + (response.message ? ' ' + response.message : ' Отчёт запросите у Джарвиса.'));
       return;
     }
     if (response.job) {

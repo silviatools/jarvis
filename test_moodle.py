@@ -18,7 +18,7 @@ class MoodleTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.env = patch.dict(os.environ, DATA_DIR=self.tmp.name)
         self.env.start()
-        m._run = m._pending = None
+        m._run = m._pending = m._inspection = None
         m._live.clear()
         self.token = market_pc.pair()['token']
         self.session = 'local-session-123456'
@@ -108,9 +108,57 @@ class MoodleTests(unittest.TestCase):
 
     def test_disabled_and_invalid_actions(self):
         self.assertFalse(m.execute('moodle_start', {'course': 'x'}, {}, None, None)['ok'])
-        for raw in ({'action': 'eval', 'text': 'evil'}, {'action': 'click', 'x': -1, 'y': 2}, {'action': 'scroll', 'delta': 99999}):
+        for raw in ({'action': 'eval', 'text': 'evil'}, {'action': 'click', 'x': -1, 'y': 2}, {'action': 'scroll', 'delta': 'not-a-number'}):
             with self.assertRaises(ValueError):
                 m.validate_action(raw, SHOT)
+
+    def test_scroll_normalizes_numeric_strings_and_bounds_large_requests(self):
+        for value, expected in [('2400', 480), (99999, 480), (-99999, -480), ('-100', -100), (None, None), (True, None), (float('nan'), None), (float('inf'), None)]:
+            with self.subTest(value=value):
+                if expected is None:
+                    with self.assertRaises(ValueError):
+                        m.validate_action({'action': 'scroll', 'delta': value}, SHOT)
+                else:
+                    self.assertEqual(m.validate_action({'action': 'scroll', 'delta': value}, SHOT)['delta'], expected)
+
+    def test_bad_model_parameter_is_corrected_before_sending_command(self):
+        self.start([{'action': 'scroll', 'delta': 'down'}, {'action': 'scroll', 'delta': '5000'}, {'action': 'record', 'grade': '8/10'}], all_tests=False)
+        self.reply(self.job(), SHOT)
+        job = self.job()
+        self.assertEqual(job['action'], {'action': 'scroll', 'delta': 480})
+        self.reply(job, SHOT)
+        self.wait_finished()
+        self.assertEqual(m._run['status'], 'completed')
+
+    def test_inspection_does_not_create_a_run_or_report(self):
+        self.poll(capabilities=['inspect'])
+        result = []
+        thread = threading.Thread(target=lambda: result.append(m.execute('moodle_inspect', {}, {'moodle': True}, None, None)))
+        thread.start()
+        # Preserve capability advertisement on every poll.
+        for _ in range(200):
+            job = self.poll(capabilities=['inspect'])[1]['job']
+            if job:
+                break
+            time.sleep(.005)
+        self.assertEqual(job['action'], {'action': 'inspect'})
+        self.assertIsNone(m._run)
+        denied = m.execute('moodle_start', {'course':'Облака'}, {'moodle': True}, None, None)
+        self.assertFalse(denied['ok'])
+        self.reply(job, {**SHOT, 'quiz': None, 'course': 'Облака', 'tests': [{'title': 'Тест 1', 'url': 'private'}]})
+        thread.join(2)
+        self.assertTrue(result[0]['read_only'])
+        self.assertEqual(result[0]['tests'], [{'title': 'Тест 1'}])
+        self.assertEqual(result[0]['_image']['b64'], SHOT['image'])
+        self.assertFalse(m._path().exists())
+        self.assertIsNone(m._inspection)
+
+    def test_old_extension_inspection_requests_update_without_command(self):
+        self.poll()
+        result = m.execute('moodle_inspect', {}, {'moodle': True}, None, None)
+        self.assertFalse(result['ok'])
+        self.assertIn('0.4.2', result['error'])
+        self.assertIsNone(m._pending)
 
     def test_restart_reports_interruption(self):
         m._path().write_text(json.dumps([{'id': 'old', 'status': 'running'}]))

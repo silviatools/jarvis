@@ -97,3 +97,26 @@ test('stop while debugger is attaching cancels bind and releases the debugger',a
   assert.equal((await pending).ok,false);
   assert.ok(attached && detached);assert.equal(f.session.moodle,undefined);
 });
+test('inspect reads the page without assigning a run, navigating, typing or clicking',async()=>{
+  const f=fixture();await f.bind();
+  f.page.courseTitle='Облака';f.page.tests=[{title:'Тест 1'}];
+  const before=structuredClone(f.session.moodle), url=f.tab.url;
+  const result=await f.act({action:'inspect'});
+  assert.equal(result.course,'Облака');assert.equal(result.tests[0].title,'Тест 1');
+  assert.deepEqual(f.session.moodle,before);assert.equal(f.tab.url,url);
+  assert.ok(f.commands.every(c=>c.name==='Page.captureScreenshot'));
+});
+test('scroll chooses the central scrollable pane and falls back to the document',()=>{
+  const f=fixture();const calls=[];
+  const root={scrollBy:options=>calls.push(['root',options.top])};
+  const pane={scrollHeight:1800,clientHeight:600,parentElement:root,scrollBy:options=>calls.push(['pane',options.top])};
+  const child={parentElement:pane};
+  f.context.document={body:{},documentElement:root,scrollingElement:root,elementFromPoint:()=>child};
+  f.context.innerWidth=800;f.context.innerHeight=600;
+  f.context.getComputedStyle=e=>({overflowY:e===pane?'auto':'visible'});
+  vm.runInContext('moodleScroll(480)',f.context);
+  assert.deepEqual(calls,[['pane',480]]);
+  pane.scrollHeight=600;
+  vm.runInContext('moodleScroll(-480)',f.context);
+  assert.deepEqual(calls,[['pane',480],['root',-480]]);
+});
