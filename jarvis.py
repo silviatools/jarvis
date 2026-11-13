@@ -1955,6 +1955,8 @@ def _apple_pick(collections: list, name: str = None) -> dict:
             if needle in c["name"].strip().lower():
                 return c
         raise AppleError(f"Календарь «{name}» не найден. Есть: " + ", ".join(c["name"] for c in collections))
+    # Порядок CalDAV не означает календарь по умолчанию. Создание события
+    # сюда без имени не приходит: иначе всё падало в первую коллекцию аккаунта.
     return collections[0]
 
 
@@ -2308,13 +2310,250 @@ def _apple_put(url: str, ics: str, etag: str = None) -> None:
         raise AppleError(f"iCloud не принял запись ({r.status_code}).")
 
 
-def apple_create_event(fields: dict) -> dict:
-    disc = apple_discover()
-    cal = _apple_pick(disc["calendars"], fields.get("calendar"))
+def _cal_norm(value) -> str:
+    if value is None or isinstance(value, (dict, list)):
+        return ""
+    text = str(value).casefold().replace("ё", "е")
+    text = re.sub(r"[^\w\s]+", " ", text, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _cal_words(value) -> list:
+    return [w for w in _cal_norm(value).split(" ") if w]
+
+
+_CAL_ENDINGS = (
+    "иями", "ями", "ами", "ием", "ого", "ему", "ому", "ыми", "ими",
+    "иях", "ах", "ях", "ии", "ию", "ия", "ие", "ые", "ой", "ей", "ый", "ий",
+    "ая", "яя", "ое", "ее", "ую", "юю", "ов", "ев", "ам", "ям", "ом", "ем",
+    "а", "я", "у", "ю", "ы", "и", "е", "о",
+)
+
+
+def _cal_stem(word: str) -> str:
+    for end in _CAL_ENDINGS:
+        if word.endswith(end) and len(word) - len(end) >= 4:
+            return word[:-len(end)]
+    return word
+
+
+def _cal_word_hit(needle: str, word: str) -> bool:
+    if word == needle:
+        return True
+    if len(needle) < 4 or len(word) < 4:
+        return False
+    return _cal_stem(needle) == _cal_stem(word)
+
+
+def _cal_name_in_text(name: str, text: str) -> bool:
+    wanted, words = _cal_words(name), _cal_words(text)
+    if not wanted or not words or any(len(w) < 3 for w in wanted):
+        return False
+    span = len(wanted)
+    for i in range(len(words) - span + 1):
+        if all(_cal_word_hit(wanted[j], words[i + j]) for j in range(span)):
+            return True
+    return False
+
+
+def _apple_match_hint(calendars: list, hint: str):
+    exact = [c for c in calendars if _cal_norm(c["name"]) == hint]
+    if len(exact) == 1:
+        return "one", exact[0]
+    if len(exact) > 1:
+        return "many", exact
+    if len(hint) < 3:
+        return "none", []
+    partial = [c for c in calendars if hint in _cal_norm(c["name"])]
+    if len(partial) == 1:
+        return "one", partial[0]
+    if len(partial) > 1:
+        return "many", partial
+    return "none", []
+
+
+def _apple_request_text(fields: dict) -> str:
+    parts = []
+    for key in ("request", "title", "notes", "location"):
+        value = fields.get(key)
+        if value is None or isinstance(value, (dict, list)):
+            continue
+        text = str(value).strip()
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def _apple_event_bits(fields: dict) -> tuple:
+    title = "" if fields.get("title") is None or isinstance(fields.get("title"), (dict, list)) else str(fields.get("title")).strip()
+    title = title or "событие"
+    start = "" if fields.get("start") is None or isinstance(fields.get("start"), (dict, list)) else str(fields.get("start")).strip()
+    end = "" if fields.get("end") is None or isinstance(fields.get("end"), (dict, list)) else str(fields.get("end")).strip()
+    when = f"{start}–{end}" if start and end else start
+    return title, when
+
+
+def _apple_resolve_calendar(calendars: list, hint, text: str, confirmed: bool = False) -> dict:
+    """Один календарь, вопрос или список на выбор модели. Первую коллекцию не подставляет."""
+    hint_n = _cal_norm(hint)
+    mentioned = [c for c in calendars if _cal_name_in_text(c["name"], text)]
+    if hint_n:
+        status, found = _apple_match_hint(calendars, hint_n)
+        if status == "many":
+            return {"kind": "ask", "candidates": found, "reason": "ambiguous"}
+        if status == "none":
+            shown = hint if isinstance(hint, str) else str(hint or "")
+            return {"kind": "ask", "candidates": calendars, "reason": "missing", "hint": shown.strip()}
+        others = [c for c in mentioned if _cal_norm(c["name"]) != _cal_norm(found["name"])]
+        if others and not confirmed:
+            return {"kind": "ask", "candidates": [found] + others, "reason": "ambiguous"}
+        return {"kind": "use", "calendar": found}
+    if len(calendars) == 1:
+        return {"kind": "use", "calendar": calendars[0]}
+    if len(mentioned) == 1:
+        return {"kind": "use", "calendar": mentioned[0]}
+    if len(mentioned) > 1:
+        return {"kind": "ask", "candidates": mentioned, "reason": "ambiguous"}
+    return {"kind": "choice"}
+
+
+def _apple_confirm_text(calendar_name: str, fields: dict) -> str:
+    title, when = _apple_event_bits(fields)
+    when_bit = f" ({when})" if when else ""
+    return f"Добавить «{title}»{when_bit} в календарь «{calendar_name}»?"
+
+
+def _apple_ask_text(candidates: list, fields: dict, reason: str, hint: str = "") -> str:
+    title, when = _apple_event_bits(fields)
+    when_bit = f" ({when})" if when else ""
+    names = ", ".join(f"«{c['name']}»" for c in candidates)
+    if reason == "missing":
+        return f"Календаря «{hint}» нет. Для «{title}»{when_bit} есть: {names}. В какой добавить?"
+    return f"Для «{title}»{when_bit} одинаково подходят календари {names}. В какой добавить?"
+
+
+def _apple_choice_message(calendars: list) -> str:
+    names = ", ".join(f"«{c['name']}»" for c in calendars)
+    return (
+        "Событие не создано: календарь не выбран. "
+        f"Реальный список календарей iCloud: {names}. "
+        "Выбери один, который лучше всего соответствует просьбе, и повтори вызов с calendar — точное имя из этого списка. "
+        "Первый календарь в списке не календарь по умолчанию. "
+        "Если подходящего нет или несколько одинаково близки — не выбирай, спроси пользователя и назови варианты."
+    )
+
+
+def _apple_button_label(name: str) -> str:
+    label = f"Да, в «{name}»"
+    if len(label) <= 60:
+        return label
+    return ("Да, «" + name)[:59] + "»"
+
+
+def _apple_yes_reply(title: str, name: str) -> str:
+    return f"Да, добавь «{title}» в календарь «{name}»"[:500]
+
+
+def _apple_choice_buttons(candidates: list, title: str) -> list:
+    rows, row = [], []
+    for cal in candidates:
+        if len(rows) >= 7:
+            break
+        name = cal["name"]
+        label = name if len(name) <= 60 else name[:59] + "…"
+        row.append({"text": label, "reply": _apple_yes_reply(title, name)})
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row and len(rows) < 7:
+        rows.append(row)
+    if len(rows) < 8:
+        rows.append([{"text": "Не добавлять", "reply": "Нет, не добавляй событие в календарь"}])
+    return rows
+
+
+def _apple_confirm_buttons(title: str, name: str) -> list:
+    return [[
+        {"text": _apple_button_label(name), "reply": _apple_yes_reply(title, name)},
+        {"text": "Нет", "reply": "Нет, не добавляй событие в календарь"},
+    ]]
+
+
+def _apple_send_buttons(text: str, buttons: list) -> bool:
+    bot = tg_bot
+    if not bot or not buttons:
+        return False
+    ctx = bot.get_ctx()
+    if ctx is None:
+        return False
+    try:
+        res = bot.buttons_send(ctx, text, buttons)
+    except Exception:
+        return False
+    return isinstance(res, dict) and bool(res.get("ok"))
+
+
+def _apple_with_buttons(payload: dict, buttons: list) -> dict:
+    if _apple_send_buttons(payload["message"], buttons):
+        payload["buttons"] = True
+    return payload
+
+
+def _apple_exact_calendar(calendars: list, name) -> dict | None:
+    needle = _cal_norm(name)
+    if not needle:
+        return None
+    exact = [c for c in calendars if _cal_norm(c["name"]) == needle]
+    return exact[0] if len(exact) == 1 else None
+
+
+def apple_create_event(fields: dict, cal: dict = None) -> dict:
+    if cal is None:
+        cal = _apple_exact_calendar(apple_discover().get("calendars") or [], fields.get("calendar"))
+    if not cal:
+        raise AppleError("Календарь для события не выбран.")
     uid = str(uuid.uuid4()).upper()
     _apple_put(urljoin(cal["href"], uid + ".ics"), _apple_wrap("VEVENT", _apple_event_lines(fields, uid)))
     return {"ok": True, "id": uid, "calendar": cal["name"],
             "title": fields.get("title"), "start": fields.get("start")}
+
+
+def _apple_create_flow(fields: dict) -> dict:
+    fields = fields or {}
+    title = fields.get("title")
+    if title is None or isinstance(title, (dict, list)) or not str(title).strip():
+        raise AppleError("У события должно быть название.")
+    start = fields.get("start")
+    if start is None or isinstance(start, (dict, list)) or not str(start).strip():
+        raise AppleError("У события должна быть дата начала.")
+    calendars = list(apple_discover().get("calendars") or [])
+    if not calendars:
+        raise AppleError("В аккаунте не нашлось ни одного календаря.")
+    decision = _apple_resolve_calendar(
+        calendars, fields.get("calendar"), _apple_request_text(fields), bool(fields.get("confirmed")))
+    names = [c["name"] for c in calendars]
+    if decision["kind"] == "choice":
+        return {"needs_choice": True, "calendars": names, "message": _apple_choice_message(calendars)}
+    if decision["kind"] == "ask":
+        plain_title, _when = _apple_event_bits(fields)
+        text = _apple_ask_text(decision["candidates"], fields, decision.get("reason") or "", decision.get("hint") or "")
+        return _apple_with_buttons({
+            "needs_clarification": True,
+            "calendars": names,
+            "candidates": [c["name"] for c in decision["candidates"]],
+            "message": text,
+        }, _apple_choice_buttons(decision["candidates"], plain_title))
+    cal = decision["calendar"]
+    if not fields.get("confirmed"):
+        text = _apple_confirm_text(cal["name"], fields)
+        plain_title, _when = _apple_event_bits(fields)
+        return _apple_with_buttons({
+            "needs_confirmation": True,
+            "calendar": cal["name"],
+            "calendars": names,
+            "message": text,
+        }, _apple_confirm_buttons(plain_title, cal["name"]))
+    return apple_create_event(fields, cal)
 
 
 _APPLE_EVENT_FIELDS = {"title": "SUMMARY", "notes": "DESCRIPTION", "location": "LOCATION"}
@@ -2728,11 +2967,20 @@ APPLE_TOOLS = [
         },
     },
     {
+        "name": "calendar_list",
+        "description": "Прочитать реальные названия календарей iCloud. Вызывай перед созданием события. Это полный список аккаунта, не захардкоженный: каких имён нет в ответе, тех календарей нет. Подтверждения не требует.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "calendar_create_event",
-        "description": ("Создать событие в Apple Календаре. ТОЛЬКО после явного согласия пользователя. "
-                        "Если просят событие и напомнить о нём — передай alarmMinutesBefore "
-                        "(минуты до начала; 0 = в момент старта). Это оповещение о событии, "
-                        "не Apple Напоминание. Apple Напоминание («в Напоминания», «на айфон») — это reminders_create, не этот инструмент."),
+        "description": ("Создать событие в Apple Календаре. Сначала calendar_list: реальные календари iCloud, не выдумывай имена и не бери первый. "
+                        "Сам выбери календарь, который лучше всего соответствует просьбе, и передай его точное имя в calendar; исходную просьбу — в request. "
+                        "Если подходящего нет или несколько одинаково близки — не выбирай, инструмент вернёт needs_clarification, спроси пользователя. "
+                        "Без confirmed событие не создаётся: в message будет вопрос с названием календаря — покажи его пользователю. "
+                        "В Telegram, если buttons:true, вопрос уже ушёл кнопками, не дублируй. "
+                        "Только после «да» (или кнопки «Да, в …») повтори вызов с тем же calendar и confirmed:true. "
+                        "Если просят событие и напомнить о нём — alarmMinutesBefore (минуты до начала; 0 = в момент старта). "
+                        "Это оповещение о событии, не Apple Напоминание. Apple Напоминание («в Напоминания», «на айфон») — reminders_create, не этот инструмент."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2742,12 +2990,13 @@ APPLE_TOOLS = [
                 "allDay": {"type": "boolean"},
                 "location": {"type": "string"},
                 "notes": {"type": "string"},
-                "calendar": {"type": "string"},
+                "calendar": {"type": "string", "description": "Точное имя календаря из calendar_list. Пустое — ничего не создаётся, вернётся реальный список."},
+                "request": {"type": "string", "description": "Исходная просьба пользователя дословно: по ней сверяется, какой календарь подходит."},
                 "alarmMinutesBefore": {
                     "type": "integer",
                     "description": "Оповещение за N минут до начала события. 0 — в момент старта. Не передавай, если оповещение не нужно.",
                 },
-                "confirmed": {"type": "boolean", "description": "true только после явного согласия пользователя."},
+                "confirmed": {"type": "boolean", "description": "true только после явного согласия пользователя на этот календарь."},
             },
             "required": ["title", "start"],
         },
@@ -2844,15 +3093,17 @@ def execute_apple_tool(name: str, inp: dict) -> dict:
     """Общая для обоих ассистентов реализация. Возвращает словарь-ответ
     инструмента; needs_confirmation — когда пользователь ещё не подтвердил."""
     inp = inp or {}
-    verb = APPLE_WRITE_VERBS.get(name)
-    if verb and not inp.get("confirmed"):
-        return {"needs_confirmation": True,
-                "message": f"Нужно подтверждение пользователя, чтобы {verb}."}
     try:
+        if name == "calendar_list":
+            return {"calendars": [c["name"] for c in (apple_discover().get("calendars") or [])]}
+        if name == "calendar_create_event":
+            return _apple_create_flow(inp)
+        verb = APPLE_WRITE_VERBS.get(name)
+        if verb and not inp.get("confirmed"):
+            return {"needs_confirmation": True,
+                    "message": f"Нужно подтверждение пользователя, чтобы {verb}."}
         if name == "calendar_list_events":
             return apple_list_events(inp.get("from"), inp.get("to"), inp.get("calendar"))
-        if name == "calendar_create_event":
-            return apple_create_event(inp)
         if name == "calendar_update_event":
             patch = {k: inp[k] for k in ("title", "start", "end", "allDay", "location", "notes") if k in inp}
             return apple_update_event(inp.get("id"), patch, inp.get("recurrenceId"), inp.get("calendar"))
@@ -6060,12 +6311,17 @@ def _prompt_pieces(app: dict = None, with_tg: bool = False) -> dict:
         "6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — "
         "свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и "
         "готового веса), cooking_plan_delete_ingredient.\n\n"
-        "7. Apple Календарь и Напоминания (iCloud, не данные приложения): calendar_list_events, "
+        "7. Apple Календарь и Напоминания (iCloud, не данные приложения): calendar_list, calendar_list_events, "
         "calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, "
-        "reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без "
-        "спроса. ЛЮБАЯ ЗАПИСЬ — добавление, изменение, удаление — только после явного согласия пользователя: "
-        "сначала коротко скажи, что именно собираешься записать (название, дату и время), и спроси подтверждение, "
-        "потом повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple "
+        "reminders_update, reminders_delete. ЧИТАТЬ (calendar_list, calendar_list_events, reminders_list) можно свободно, без "
+        "спроса. СОБЫТИЕ: перед добавлением вызови calendar_list — это реальный список календарей iCloud, имена не выдумывай. "
+        "Сам выбери календарь, который лучше всего соответствует просьбе, и вызови calendar_create_event с calendar (точное имя) "
+        "и request (просьба дословно). Первый календарь в списке не календарь по умолчанию. Если подходящего нет или несколько "
+        "одинаково близки — не выбирай, спроси пользователя. Без согласия событие не создаётся: в подтверждении обязательно "
+        "название календаря из message. В Telegram, если buttons:true, вопрос уже отправлен кнопками — не дублируй. "
+        "После «да» или кнопки «Да, в …» повтори вызов с тем же calendar и confirmed:true. "
+        "ЛЮБАЯ другая запись — изменение, удаление, напоминания — только после явного согласия: коротко скажи, что запишешь, "
+        "спроси подтверждение, потом вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple "
         "Календарь — разные места. «В календарь» / «создай событие» → calendar_create_event; если ещё и "
         "напомнить о событии — alarmMinutesBefore. Просто «напомни …» → плановая задача (см. п.12, plan_create), "
         "а если пользователь прямо просит Apple Напоминание («в Напоминания», «на айфон») → только reminders_create "
@@ -6094,7 +6350,11 @@ def _prompt_pieces(app: dict = None, with_tg: bool = False) -> dict:
         "— вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми "
         "словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ ответ (не вызывай "
         "инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением "
-        "(«да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.\n\n"
+        "(«да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true. "
+        "Для события календаря в тексте подтверждения обязательно название календаря из message; "
+        "если buttons:true — вопрос с кнопками уже в чате, не дублируй. "
+        "needs_choice значит календарь не выбран: выбери лучший из calendars и повтори вызов, пользователю пока не пиши. "
+        "needs_clarification — задай вопрос из message и остановись, событие не создано.\n\n"
         "Правила:\n"
         "- Сначала вызови нужные инструменты, потом дай один короткий финальный ответ.\n"
         "- Не отвечай по памяти на вопросы о данных пользователя — всегда сначала get_data по нужному разделу.\n"
@@ -6117,12 +6377,15 @@ def _prompt_items_compact(on, domain_list: str, nav_list: str, write_list: str) 
         out += ("4. Канбан «Задачи» (house_tasks) — только kanban_*; отметки по дням log_diet_compliance / log_checklist_answer "
                 "(один раз на дату — повтор заменяет прежнюю); продукты плана готовки (meals → cookingPlans[].ingredients) — cooking_plan_*.\n\n")
     if on("apple"):
-        out += ("5. Apple Календарь и Напоминания (iCloud, не данные приложения): читать (calendar_list_events, reminders_list) можно "
-                "свободно; ЛЮБАЯ запись — только после явного согласия: коротко скажи, что запишешь (название, дата, время), спроси «да», "
-                "потом повтори вызов с confirmed:true. Время московское. Планировщик приложения (planner) и Apple Календарь — разные места. "
-                "«В календарь» / «создай событие» → calendar_create_event (alarmMinutesBefore — если нужно напомнить); прямая просьба "
-                "Apple Напоминание («в Напоминания», «на айфон») → только reminders_create, не подменяй событием. queued:true — скажи, что "
-                "попадёт после синхронизации Быстрой команды, НЕ «создал»; error — честно скажи, почему не удалось.\n\n")
+        out += ("5. Apple Календарь и Напоминания (iCloud, не данные приложения): читать (calendar_list, calendar_list_events, reminders_list) можно "
+                "свободно. Событие: сначала calendar_list (реальный список, не первый и не выдуманный), сам выбери календарь по просьбе; "
+                "нет подходящего или несколько одинаково близки — спроси. В подтверждении явно напиши название календаря из message; "
+                "в Telegram кнопки, если buttons:true — не дублируй. После «да» — calendar_create_event с тем же calendar и confirmed:true. "
+                "needs_choice — выбери сам и повтори вызов; needs_clarification — спроси и остановись. "
+                "Остальные записи — только после согласия и confirmed:true. Время московское. "
+                "alarmMinutesBefore — если нужно напомнить о событии. Прямая просьба Apple Напоминание («в Напоминания», «на айфон») → "
+                "только reminders_create, не подменяй событием. queued:true — скажи, что попадёт после синхронизации Быстрой команды, "
+                "НЕ «создал»; error — честно скажи, почему не удалось.\n\n")
     if on("weather"):
         out += ("6. get_weather — живой запрос (не данные приложения), а не navigate/get_data. Город можно не указывать (берётся из настроек). "
                 "Без date — сейчас и 3 дня вперёд; для дня/диапазона передай date или date_from/date_to (YYYY-MM-DD), считай от СЕГОДНЯ, "
@@ -13385,6 +13648,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         try:
             if route == "/api/apple/status":
                 self._json(200, apple_status())
+            elif route == "/api/apple/calendars":
+                self._json(200, execute_apple_tool("calendar_list", {}))
             elif route == "/api/apple/events":
                 self._json(200, apple_list_events(query.get("from"), query.get("to"), query.get("calendar")))
             elif route == "/api/apple/reminders":

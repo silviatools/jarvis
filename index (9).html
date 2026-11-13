@@ -16406,8 +16406,13 @@ const APPLE_AGENT_TOOLS = [
     },
   },
   {
+    name: 'calendar_list',
+    description: 'Прочитать реальные названия календарей iCloud. Вызывай перед созданием события. Это полный список аккаунта, не захардкоженный: каких имён нет в ответе, тех календарей нет. Подтверждения не требует.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'calendar_create_event',
-    description: 'Создать событие в Apple Календаре. ТОЛЬКО после явного согласия. Если просят событие и напомнить о нём — alarmMinutesBefore (0 = в момент старта). Это оповещение о событии, не Apple Напоминание. «Напомни купить X» — reminders_create.',
+    description: 'Создать событие в Apple Календаре. Сначала calendar_list: реальные календари iCloud, не выдумывай имена и не бери первый. Сам выбери календарь, который лучше всего соответствует просьбе, и передай его точное имя в calendar; исходную просьбу — в request. Если подходящего нет или несколько одинаково близки — не выбирай, инструмент вернёт needs_clarification, спроси пользователя. Без confirmed событие не создаётся: в message будет вопрос с названием календаря — покажи его пользователю. В Telegram, если buttons:true, вопрос уже ушёл кнопками, не дублируй. Только после «да» (или кнопки «Да, в …») повтори вызов с тем же calendar и confirmed:true. Если просят событие и напомнить о нём — alarmMinutesBefore (минуты до начала; 0 = в момент старта). Это оповещение о событии, не Apple Напоминание. Apple Напоминание («в Напоминания», «на айфон») — reminders_create, не этот инструмент.',
     input_schema: {
       type: 'object',
       properties: {
@@ -16417,9 +16422,10 @@ const APPLE_AGENT_TOOLS = [
         allDay: { type: 'boolean' },
         location: { type: 'string' },
         notes: { type: 'string' },
-        calendar: { type: 'string' },
-        alarmMinutesBefore: { type: 'integer', description: 'Оповещение за N минут до начала. 0 — в момент старта. Не передавай, если не нужно.' },
-        confirmed: { type: 'boolean', description: 'true только после явного согласия пользователя.' },
+        calendar: { type: 'string', description: 'Точное имя календаря из calendar_list. Пустое — ничего не создаётся, вернётся реальный список.' },
+        request: { type: 'string', description: 'Исходная просьба пользователя дословно: по ней сверяется, какой календарь подходит.' },
+        alarmMinutesBefore: { type: 'integer', description: 'Оповещение за N минут до начала события. 0 — в момент старта. Не передавай, если оповещение не нужно.' },
+        confirmed: { type: 'boolean', description: 'true только после явного согласия пользователя на этот календарь.' },
       },
       required: ['title', 'start'],
     },
@@ -16514,6 +16520,10 @@ const APPLE_WRITE_TOOLS = {
 async function executeAppleTool(name, input) {
   input = input || {};
   try {
+    if (name === 'calendar_list') {
+      const res = await fetch('/api/apple/calendars');
+      return await res.json();
+    }
     if (name === 'calendar_list_events') {
       const q = new URLSearchParams();
       if (input.from) q.set('from', input.from);
@@ -16958,13 +16968,13 @@ ${writeList}
 
 6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — свои инструменты: cooking_plan_add_ingredient, cooking_plan_update_ingredient (план/факт сырого и готового веса), cooking_plan_delete_ingredient.
 
-7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list_events, reminders_list) можно свободно, без спроса. ЛЮБАЯ ЗАПИСЬ — добавить, изменить, удалить — только после явного согласия пользователя: сначала коротко скажи, что именно запишешь (название, дату и время), и спроси подтверждение, а после согласия повтори вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места. «В календарь» / «создай событие» → calendar_create_event; если ещё и напомнить о событии — alarmMinutesBefore. Просто «напомни …» → плановая задача (plan_create, см. ниже), а если пользователь прямо просит Apple Напоминание («в Напоминания», «на айфон») → только reminders_create (настоящее Apple Напоминание), никогда не подменяй его событием календаря. Если queued:true — скажи, что попадёт в Напоминания после синхронизации Быстрой команды, НЕ говори «создал». Если error — честно скажи, что не удалось, и почему.
+7. Apple Календарь и Напоминания (iCloud, это НЕ данные приложения): calendar_list, calendar_list_events, calendar_create_event, calendar_update_event, calendar_delete_event, reminders_list, reminders_create, reminders_update, reminders_delete. ЧИТАТЬ (calendar_list, calendar_list_events, reminders_list) можно свободно, без спроса. СОБЫТИЕ: перед добавлением вызови calendar_list — это реальный список календарей iCloud, имена не выдумывай. Сам выбери календарь, который лучше всего соответствует просьбе, и вызови calendar_create_event с calendar (точное имя) и request (просьба дословно). Первый календарь в списке не календарь по умолчанию. Если подходящего нет или несколько одинаково близки — не выбирай, спроси пользователя. Без согласия событие не создаётся: в подтверждении обязательно название календаря из message. В Telegram, если buttons:true, вопрос уже отправлен кнопками — не дублируй. После «да» или кнопки «Да, в …» повтори вызов с тем же calendar и confirmed:true. ЛЮБАЯ другая запись — изменение, удаление, напоминания — только после явного согласия: коротко скажи, что запишешь, спроси подтверждение, потом вызов с confirmed:true. Время везде московское. Планировщик приложения (planner) и Apple Календарь — разные места. «В календарь» / «создай событие» → calendar_create_event; если ещё и напомнить о событии — alarmMinutesBefore. Просто «напомни …» → плановая задача (plan_create, см. ниже), а если пользователь прямо просит Apple Напоминание («в Напоминания», «на айфон») → только reminders_create (настоящее Apple Напоминание), никогда не подменяй его событием календаря. Если queued:true — скажи, что попадёт в Напоминания после синхронизации Быстрой команды, НЕ говори «создал». Если error — честно скажи, что не удалось, и почему.
 
 8. get_weather(city?, date?, date_from?, date_to?) — погода для города. Раздел «Погода» тоже НЕ данные приложения (внешний сервис), а живой запрос — используй этот инструмент, а не navigate/get_data. Город можно не указывать — тогда берётся сохранённый в настройках (Погода → город). Без date — текущая погода и 3 дня вперёд. Для конкретного дня или диапазона («в субботу», «на следующей неделе») передай date или date_from/date_to в формате YYYY-MM-DD — вычисли даты сам от СЕГОДНЯ (прогноз доступен на 16 дней вперёд).
 
 9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй.
 
-${TG_AGENT_PROMPT}${MAX_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}${MOODLE_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true.
+${TG_AGENT_PROMPT}${MAX_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}${MOODLE_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true. Для события календаря в тексте подтверждения обязательно название календаря из message; если buttons:true — вопрос с кнопками уже в чате, не дублируй. needs_choice значит календарь не выбран: выбери лучший из calendars и повтори вызов, пользователю пока не пиши. needs_clarification — задай вопрос из message и остановись, событие не создано.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
@@ -17361,7 +17371,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
         data = result.data;
         output = result.output;
       } catch (e) { output = { error: e.message }; }
-      if (output && output.needs_confirmation) pendingConfirmation = true;
+      if (output && (output.needs_confirmation || output.needs_clarification || output.needs_choice)) pendingConfirmation = true;
       const img = output?._image;
       if (img) delete output._image;
       results.push({ type: 'tool_result', tool_use_id: tu.id, content: img ? [
@@ -17478,7 +17488,7 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps, ef
         data = result.data;
         output = result.output;
       } catch (e) { output = { error: e.message }; }
-      if (output && output.needs_confirmation) pendingConfirmation = true;
+      if (output && (output.needs_confirmation || output.needs_clarification || output.needs_choice)) pendingConfirmation = true;
       const img = output?._image;
       if (img) { toolImages.push(img); delete output._image; }
       oaiMessages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(output) });
