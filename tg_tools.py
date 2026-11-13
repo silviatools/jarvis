@@ -211,10 +211,19 @@ def _msg_dict(m, me_id) -> dict:
     return out
 
 
+def _peer_text(peer) -> str:
+    """id диалога Telethon приходит числом, @username и название — строкой."""
+    if isinstance(peer, bool) or peer is None:
+        return ""
+    if isinstance(peer, int):
+        return str(peer)
+    return str(peer).strip()
+
+
 async def _resolve(client, peer):
     """@username, +телефон, числовой id, ссылка t.me или часть названия диалога."""
     import re
-    peer = (peer or "").strip()
+    peer = _peer_text(peer)
     if not peer:
         raise TgError("Не указан собеседник.")
     if peer.lower() in ("me", "self", "saved", "избранное"):
@@ -1285,7 +1294,7 @@ def search_messages(query="", peer="", folder="", limit=20, date_from="", date_t
                 res.append(d)
             return res
 
-        if (peer or "").strip():
+        if _peer_text(peer):
             ent = await _resolve(c, peer)
             return _cap({"chat": utils.get_display_name(ent), "query": query,
                          "messages": await run(ent, False)})
@@ -1633,7 +1642,7 @@ def folder_edit(action, folder="", peer="", title="") -> dict:
             if not (title or "").strip():
                 raise TgError("Нужно название папки.")
             new_id = max([f["id"] for f in st["folders"]] + [1]) + 1
-            inc = [await c.get_input_entity(await _resolve(c, peer))] if (peer or "").strip() else []
+            inc = [await c.get_input_entity(await _resolve(c, peer))] if _peer_text(peer) else []
             flt = types.DialogFilter(id=new_id, title=types.TextWithEntities(text=title.strip(), entities=[]),
                                      pinned_peers=[], include_peers=inc, exclude_peers=[])
             await c(functions.messages.UpdateDialogFilterRequest(id=new_id, filter=flt))
