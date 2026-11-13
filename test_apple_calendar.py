@@ -178,9 +178,11 @@ class CalendarTest(unittest.TestCase):
         js = page.split("const APPLE_AGENT_TOOLS = ", 1)[1].split("\n];", 1)[0] + "\n]"
         result = subprocess.run(["node", "-e", "console.log(JSON.stringify(" + js + "))"],
                                 check=True, capture_output=True, text=True)
-        browser = next(t for t in json.loads(result.stdout) if t["name"] == "calendar_update_event")
-        server = next(t for t in jarvis.APPLE_TOOLS if t["name"] == "calendar_update_event")
-        self.assertEqual(browser, server)
+        tools = json.loads(result.stdout)
+        for name in ("calendar_list", "calendar_create_event", "calendar_update_event"):
+            browser = next(t for t in tools if t["name"] == name)
+            server = next(t for t in jarvis.APPLE_TOOLS if t["name"] == name)
+            self.assertEqual(browser, server)
 
     def test_failed_read_is_not_an_empty_calendar(self):
         with patch.object(jarvis, "_apple_report", return_value=SimpleNamespace(status_code=503)):
@@ -201,6 +203,156 @@ class CalendarTest(unittest.TestCase):
         self.text = self.text.replace("UID:series", "UID:series-longer")
         with self.assertRaises(jarvis.AppleError):
             jarvis._apple_find("series", "VEVENT")
+
+
+class CalendarChoiceTest(unittest.TestCase):
+    def setUp(self):
+        self.puts = []
+        self.cals = [
+            {"name": "Питание", "href": "https://calendar.test/food/"},
+            {"name": "Работа", "href": "https://calendar.test/work/"},
+            {"name": "Рабочие", "href": "https://calendar.test/jobs/"},
+            {"name": "Здоровье", "href": "https://calendar.test/health/"},
+            {"name": "Ёлки", "href": "https://calendar.test/trees/"},
+        ]
+        for target, value in (
+            ("apple_discover", lambda force=False: {"calendars": list(self.cals), "todoLists": []}),
+            ("_apple_dav", self.dav),
+        ):
+            mock = patch.object(jarvis, target, value)
+            mock.start()
+            self.addCleanup(mock.stop)
+
+    def dav(self, method, url, body=None, **kwargs):
+        self.assertEqual(method, "PUT")
+        self.puts.append((url, body))
+        return SimpleNamespace(status_code=201)
+
+    def create(self, **fields):
+        return jarvis.execute_apple_tool("calendar_create_event", fields)
+
+    def test_list_is_the_discovered_account_not_a_constant(self):
+        listed = jarvis.execute_apple_tool("calendar_list", {})
+        self.assertEqual(listed["calendars"], [c["name"] for c in self.cals])
+        self.cals.append({"name": "Спорт", "href": "https://calendar.test/sport/"})
+        self.assertEqual(jarvis.execute_apple_tool("calendar_list", {})["calendars"][-1], "Спорт")
+        self.assertEqual(self.puts, [])
+
+    def test_missing_calendar_does_not_write_to_the_first(self):
+        result = self.create(title="Стоматолог", start="2026-11-14 15:00", confirmed=True)
+        self.assertTrue(result["needs_choice"])
+        self.assertNotIn("needs_confirmation", result)
+        self.assertEqual(result["calendars"], [c["name"] for c in self.cals])
+        self.assertIn("не календарь по умолчанию", result["message"])
+        self.assertIn("«Питание»", result["message"])
+        self.assertEqual(self.puts, [])
+
+    def test_request_names_work_and_confirmation_says_so(self):
+        result = self.create(title="Созвон", start="2026-11-12 10:00", request="созвон по работе")
+        self.assertEqual(result["calendar"], "Работа")
+        self.assertTrue(result["needs_confirmation"])
+        self.assertEqual(result["message"], "Добавить «Созвон» (2026-11-12 10:00) в календарь «Работа»?")
+        self.assertNotIn("«Питание»", result["message"])
+        self.assertEqual(self.puts, [])
+        saved = self.create(title="Созвон", start="2026-11-12 10:00", request="созвон по работе", confirmed=True)
+        self.assertTrue(saved["ok"])
+        self.assertEqual(saved["calendar"], "Работа")
+        self.assertEqual(len(self.puts), 1)
+        self.assertTrue(self.puts[0][0].startswith("https://calendar.test/work/"))
+        self.assertIn("SUMMARY:Созвон", self.puts[0][1])
+
+    def test_model_picks_health_after_seeing_the_list(self):
+        pending = self.create(title="Стоматолог", start="2026-11-14 15:00", calendar="Здоровье")
+        self.assertIn("«Здоровье»", pending["message"])
+        self.assertEqual(self.puts, [])
+        saved = self.create(title="Стоматолог", start="2026-11-14 15:00", calendar="Здоровье", confirmed=True)
+        self.assertEqual(saved["calendar"], "Здоровье")
+        self.assertTrue(self.puts[0][0].startswith("https://calendar.test/health/"))
+
+    def test_equal_names_and_unknown_name_ask_instead_of_writing(self):
+        tie = self.create(title="План", start="2026-11-12", request="и питание, и работу")
+        self.assertTrue(tie["needs_clarification"])
+        self.assertEqual(tie["candidates"], ["Питание", "Работа"])
+        self.assertIn("одинаково подходят", tie["message"])
+        partial = self.create(title="План", start="2026-11-12", calendar="рабо")
+        self.assertEqual(partial["candidates"], ["Работа", "Рабочие"])
+        missing = self.create(title="План", start="2026-11-12", calendar="Фитнес", confirmed=True)
+        self.assertIn("«Фитнес»", missing["message"])
+        self.assertEqual(missing["calendars"][0], "Питание")
+        self.assertEqual(self.puts, [])
+
+    def test_explicit_calendar_wins_only_after_confirmation(self):
+        conflict = self.create(title="Обед", start="2026-11-12 13:00", calendar="Питание", request="добавь в работу")
+        self.assertTrue(conflict["needs_clarification"])
+        self.assertEqual(conflict["candidates"], ["Питание", "Работа"])
+        self.assertEqual(self.puts, [])
+        saved = self.create(title="Обед", start="2026-11-12 13:00", calendar="Питание",
+                            request="добавь в работу", confirmed=True)
+        self.assertEqual(saved["calendar"], "Питание")
+        self.assertTrue(self.puts[0][0].startswith("https://calendar.test/food/"))
+
+    def test_inflection_and_yo_use_the_real_name(self):
+        work = self.create(title="Планёрка", start="2026-11-12 09:00", request="планёрка на работе")
+        self.assertEqual(work["calendar"], "Работа")
+        trees = self.create(title="Базар", start="2026-11-20", request="купить елки")
+        self.assertEqual(trees["calendar"], "Ёлки")
+        self.assertIn("«Ёлки»", trees["message"])
+        self.assertEqual(self.puts, [])
+
+    def test_only_calendar_is_named_in_the_confirmation(self):
+        self.cals[:] = [{"name": "Питание", "href": "https://calendar.test/food/"}]
+        result = self.create(title="Обед", start="2026-11-12 13:00")
+        self.assertEqual(result["message"], "Добавить «Обед» (2026-11-12 13:00) в календарь «Питание»?")
+        self.assertEqual(self.puts, [])
+        saved = self.create(title="Обед", start="2026-11-12 13:00", confirmed=True)
+        self.assertTrue(self.puts[0][0].startswith("https://calendar.test/food/"))
+        self.assertEqual(saved["calendar"], "Питание")
+
+    def test_confirmation_buttons_name_the_calendar(self):
+        sent = {}
+
+        def buttons_send(ctx, text, buttons):
+            sent["text"] = text
+            sent["buttons"] = buttons
+            return {"ok": True}
+
+        with patch.object(jarvis.tg_bot, "get_ctx", return_value=SimpleNamespace(token="t", chat_id=1)), \
+             patch.object(jarvis.tg_bot, "buttons_send", buttons_send):
+            result = self.create(title="Планёрка", start="2026-11-12 10:00", calendar="Работа")
+            choice = self.create(title="Стоматолог", start="2026-11-14 15:00")
+        self.assertTrue(result["buttons"])
+        self.assertIn("«Работа»", sent["text"])
+        self.assertIn("«Работа»", sent["buttons"][0][0]["text"])
+        self.assertIn("календарь «Работа»", sent["buttons"][0][0]["reply"])
+        self.assertTrue(choice["needs_choice"])
+        self.assertNotIn("buttons", choice)
+        self.assertEqual(self.puts, [])
+
+    def test_clarification_buttons_offer_the_close_calendars(self):
+        sent = {}
+
+        def buttons_send(ctx, text, buttons):
+            sent["buttons"] = buttons
+            return {"ok": True}
+
+        with patch.object(jarvis.tg_bot, "get_ctx", return_value=SimpleNamespace(token="t", chat_id=1)), \
+             patch.object(jarvis.tg_bot, "buttons_send", buttons_send):
+            result = self.create(title="План", start="2026-11-12", calendar="рабо")
+        self.assertTrue(result["buttons"])
+        labels = [b["text"] for row in sent["buttons"] for b in row]
+        self.assertEqual(labels[:2], ["Работа", "Рабочие"])
+        self.assertEqual(self.puts, [])
+
+    def test_prompts_tell_the_model_to_choose_from_the_real_list(self):
+        full = jarvis.build_assistant_system_prompt({"telegramSkills": {}}, False)
+        compact = jarvis.build_assistant_system_prompt({"telegramSkills": {}}, False, compact=True)
+        page = (jarvis.DIR / "index (9).html").read_text(encoding="utf-8")
+        for blob in (full, compact, page):
+            self.assertIn("calendar_list", blob)
+            self.assertIn("одинаково близки", blob)
+            self.assertIn("название календаря", blob)
+        self.assertIn("не календарь по умолчанию", full)
+        self.assertIn("не первый", compact)
 
 
 if __name__ == "__main__":
