@@ -48,6 +48,7 @@ import route_skill
 import tg_history
 import widget_skill
 import calendar_ics
+import card_ledger
 from foods_data import FOODS, FOOD_CATEGORIES
 from off_products_data import OFF_PRODUCTS
 
@@ -268,7 +269,7 @@ SPA_ROUTES = {
     "/mybody", "/budget", "/supplements", "/meals", "/weather",
     "/house", "/cars", "/holidays", "/settings", "/planner", "/health",
     "/misc", "/wishlist", "/cards", "/notes", "/gym", "/music", "/knowledge", "/quiz",
-    "/study",
+    "/study", "/card-ledger",
 }
 
 # Deep-link routes that get their OWN <link rel="manifest"> (and Apple home-
@@ -289,8 +290,8 @@ SHORTCUT_MANIFESTS = {
 }
 
 # ── Парольный доступ на весь сайт ───────────────────────────────────────────
-# Один общий код на семью. Не гейтим гостевые ссылки (/e/<token>, /trip/<token>
-# и их API) — по ним заходят друзья, которые кода не знают и знать не должны.
+# Один общий код на семью. Не гейтим гостевые ссылки (/e/<token>, /trip/<token>,
+# /card/<token> и их API) — по ним заходят друзья, которые кода не знают.
 # Cookie живёт 10 лет — «запомнить устройство», код спрашивается один раз.
 AUTH_PASSWORD      = "2004"
 AUTH_COOKIE_NAME   = "jarvis_auth"
@@ -332,11 +333,13 @@ def route_is_public(route: str) -> bool:
     и гостевые ссылки на события/поездки (их получают люди вне семьи)."""
     if route == "/login" or route in AUTH_PUBLIC_FILES:
         return True
-    if token_from_route(route, "/e/") or token_from_route(route, "/trip/"):
+    if token_from_route(route, "/e/") or token_from_route(route, "/trip/") or token_from_route(route, "/card/"):
         return True
     if token_from_route(route, "/game/") or token_from_route(route, "/game-edit/"):
         return True
     if _route_token_prefix_public(route, "/api/event/") or _route_token_prefix_public(route, "/api/camping-trip/"):
+        return True
+    if _route_token_prefix_public(route, "/api/card/"):
         return True
     if _route_token_prefix_public(route, "/api/game/") or _route_token_prefix_public(route, "/api/game-edit/"):
         return True
@@ -358,6 +361,9 @@ def route_is_public(route: str) -> bool:
 # только в /api/event/<token>. Ни SPA, ни /api/data ей не нужны: по ссылке
 # видно одно событие (и только имена участников), а больше ничего с сайта.
 EVENT_PAGE_FILE   = DIR / "event.html"
+# Учёт денег на карте друга: /card/<token> — отдельная страница card.html,
+# ходит только в /api/card/<token>. Модель доступа та же, что у события.
+CARD_PAGE_FILE    = DIR / "card.html"
 # ── Кемпинг: гостевая ссылка на чек-лист поездки ────────────────────────────
 # Друг открывает /trip/<token> — тоже отдельную статичную страницу, читающую
 # только /api/camping-trip/<token>: список вещей и сумок одной поездки,
@@ -1166,6 +1172,7 @@ Jarvis — резервная копия проекта и данных
               jarvis_notify_config.json  — старый конфиг уведомлений
               jarvis_market.json         — прокси и сессии кабинетов Ozon/WB
               jarvis_tg_history.sqlite3  — история переписки с ассистентом
+              jarvis_card_ledger.json    — учёт денег на карте друга
               photos/                    — загруженные фото («Моё тело»)
               files/                     — загруженные файлы («Режим»)
 
@@ -1217,7 +1224,7 @@ def build_backup_zip() -> bytes:
                       "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_moodle_reports.json", "jarvis_wb_pickup.json", "jarvis_ozon_pickup.json", "jarvis_tg_history.sqlite3",
                       "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl", "jarvis_routes.json", "jarvis_health_drafts.json",
                       "jarvis_newspaper_cache.json", "jarvis_newspaper_state.json", "jarvis_newspaper_latest.html",
-                      "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png"}
+                      "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png", "jarvis_card_ledger.json"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
@@ -11726,6 +11733,15 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif token_from_route(route, "/e/"):
             # Гостевая страница события — отдельный файл, не SPA.
             self._serve_event_page()
+        elif token_from_route(route, "/card/"):
+            # Учёт карты друга — отдельный файл, без входа на сайт.
+            self._serve_card_page()
+        elif token_from_route(route, "/api/card/", "/quote"):
+            self._card_quote(token_from_route(route, "/api/card/", "/quote"))
+        elif token_from_route(route, "/api/card/"):
+            token = token_from_route(route, "/api/card/")
+            code, payload = card_ledger.public_view(token)
+            self._json(code, payload)
         elif token_from_route(route, "/api/event/"):
             token = token_from_route(route, "/api/event/")
             with APP_DATA_LOCK:
@@ -12007,6 +12023,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif route == "/api/study/lessons":
             q = self._apple_query()
             self._json(200, study_lessons(q.get("from"), q.get("to")))
+        elif route == "/api/card-ledger":
+            self._json(200, card_ledger.owner_view())
         elif self.path == "/api/data":
             if APP_DATA_FILE.exists():
                 try:
@@ -12040,7 +12058,17 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         if not route_is_public(route) and not self._is_authed():
             self._json(401, {"error": "unauthorized"})
             return
-        if token_from_route(route, "/api/event/", "/rsvp"):
+        if route == "/api/card-ledger":
+            self._card_ledger_owner_post()
+        elif token_from_route(route, "/api/card/", "/entry-update"):
+            self._card_entry(token_from_route(route, "/api/card/", "/entry-update"), "update")
+        elif token_from_route(route, "/api/card/", "/entry-void"):
+            self._card_entry(token_from_route(route, "/api/card/", "/entry-void"), "void")
+        elif token_from_route(route, "/api/card/", "/entry-restore"):
+            self._card_entry(token_from_route(route, "/api/card/", "/entry-restore"), "restore")
+        elif token_from_route(route, "/api/card/", "/entry"):
+            self._card_entry(token_from_route(route, "/api/card/", "/entry"), "create")
+        elif token_from_route(route, "/api/event/", "/rsvp"):
             self._event_rsvp(token_from_route(route, "/api/event/", "/rsvp"))
         elif token_from_route(route, "/api/event/", "/comment"):
             self._event_comment(token_from_route(route, "/api/event/", "/comment"))
@@ -12766,6 +12794,46 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             return None
 
         code, body = planner_guest_write(token, friend_id, apply)
+        self._json(code, body)
+
+    def _serve_card_page(self):
+        try:
+            content = CARD_PAGE_FILE.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("X-Robots-Tag", "noindex, nofollow")
+            self.send_header("Cache-Control", "no-store")
+            self._cors()
+            self.end_headers()
+            self.wfile.write(content)
+        except FileNotFoundError:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"card.html not found")
+
+    def _card_quote(self, token: str):
+        query = parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+        def one(key):
+            return (query.get(key) or [""])[0]
+        amount = one("amount")
+        code, body = card_ledger.quote(token, one("currency") or "RUB", one("date") or None, amount if amount != "" else None)
+        self._json(code, body)
+
+    def _card_entry(self, token: str, action: str):
+        payload = self._guest_json_body()
+        if payload is None:
+            return
+        fn = {"create": card_ledger.add_entry, "update": card_ledger.update_entry,
+              "void": card_ledger.void_entry, "restore": card_ledger.restore_entry}[action]
+        code, body = fn(token, payload)
+        self._json(code, body)
+
+    def _card_ledger_owner_post(self):
+        payload = self._guest_json_body()
+        if payload is None:
+            return
+        code, body = card_ledger.update_settings(payload)
         self._json(code, body)
 
     def _serve_event_page(self):

@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="theme-color" content="#0f766e" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<title>Карта</title>
+<link rel="icon" href="/favicon.ico" type="image/x-icon" />
+<style>
+  :root {
+    --bg: #f4f7f6;
+    --surface: #ffffff;
+    --border: #e4eae8;
+    --text: #10211e;
+    --muted: #5d6d69;
+    --subtle: #8a9995;
+    --accent: #0f766e;
+    --accent-soft: #e7f5f2;
+    --danger: #b91c1c;
+    --danger-soft: #fef2f2;
+    --ok: #047857;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 16px 16px 48px; overflow-wrap: break-word; }
+  h1 { font-size: 22px; line-height: 1.25; margin: 0 0 4px; font-weight: 650; letter-spacing: -0.02em; }
+  .lead { color: var(--muted); font-size: 14px; margin: 0 0 14px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 18px; padding: 16px; margin-bottom: 12px;
+  }
+  .balance-card { background: #10211e; color: #f4fffc; border: none; }
+  .balance-card .lbl { color: #b7ccc6; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .balance {
+    font-size: 40px; font-weight: 680; letter-spacing: -0.03em; line-height: 1.1;
+    margin: 6px 0 4px; font-variant-numeric: tabular-nums;
+  }
+  .balance.neg { color: #fecaca; }
+  .subrow { display: flex; gap: 16px; color: #d5e6e1; font-size: 13px; margin-top: 8px; }
+  .subrow b { font-weight: 600; color: #fff; font-variant-numeric: tabular-nums; }
+  .hint { color: #9fb5af; font-size: 12px; line-height: 1.45; margin-top: 10px; }
+  .kzt { color: #d5e6e1; font-size: 13px; margin-top: 6px; }
+  .seg { display: flex; background: var(--bg); border-radius: 12px; padding: 3px; gap: 3px; margin-bottom: 12px; }
+  .seg button {
+    flex: 1; border: none; background: transparent; border-radius: 10px;
+    padding: 10px 8px; font: inherit; font-size: 14px; font-weight: 550; color: var(--muted); cursor: pointer;
+  }
+  .seg button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(16,33,30,.08); }
+  .seg button.on.buy { color: var(--danger); }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  input, select, textarea {
+    font: inherit; font-size: 16px; width: 100%; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 11px 12px; outline: none;
+  }
+  textarea { resize: vertical; min-height: 64px; }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+  .grid2 { display: grid; grid-template-columns: 1.4fr .9fr; gap: 8px; }
+  @media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .chip {
+    border: 1px solid var(--border); background: var(--bg); border-radius: 999px;
+    padding: 6px 10px; font: inherit; font-size: 13px; cursor: pointer; color: var(--text);
+  }
+  .chip.on { background: var(--accent-soft); border-color: #99d5cb; color: var(--accent); }
+  .preview {
+    margin-top: 12px; background: var(--accent-soft); border-radius: 12px;
+    padding: 10px 12px; font-size: 14px; line-height: 1.4;
+  }
+  .preview .rub { font-weight: 680; font-variant-numeric: tabular-nums; }
+  .preview .rate { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .preview.bad { background: var(--danger-soft); color: var(--danger); }
+  button.primary {
+    margin-top: 12px; width: 100%; border: none; border-radius: 12px;
+    background: var(--accent); color: white; font: inherit; font-size: 16px; font-weight: 600;
+    padding: 13px 16px; cursor: pointer;
+  }
+  button.primary.buy { background: #9f1239; }
+  button.primary:disabled { opacity: .45; cursor: default; }
+  button.ghost {
+    border: none; background: none; color: var(--muted); font: inherit; font-size: 13px;
+    padding: 4px 0; cursor: pointer; text-decoration: underline;
+  }
+  .filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .filters button {
+    border: 1px solid var(--border); background: var(--surface); border-radius: 999px;
+    padding: 6px 10px; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer;
+  }
+  .filters button.on { background: var(--text); color: white; border-color: var(--text); }
+  .row {
+    border-top: 1px solid var(--border); padding: 12px 0;
+  }
+  .row:first-of-type { border-top: none; padding-top: 0; }
+  .row.void { opacity: .55; }
+  .top { display: flex; gap: 10px; align-items: baseline; }
+  .kind {
+    font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+    padding: 3px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--ok);
+  }
+  .kind.buy { background: var(--danger-soft); color: var(--danger); }
+  .kind.off { background: var(--bg); color: var(--subtle); }
+  .sum { margin-left: auto; text-align: right; font-variant-numeric: tabular-nums; }
+  .sum .main { font-weight: 680; font-size: 16px; }
+  .sum .orig { color: var(--muted); font-size: 13px; }
+  .meta { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .comment { margin-top: 4px; font-size: 14px; }
+  .acts { display: flex; gap: 14px; margin-top: 6px; }
+  .empty { color: var(--subtle); font-size: 14px; padding: 8px 0; }
+  .banner {
+    background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;
+    border-radius: 12px; padding: 8px 10px; font-size: 13px; margin-bottom: 10px;
+  }
+  .errbox { color: var(--danger); font-size: 14px; }
+  .center { text-align: center; padding: 48px 12px; color: var(--muted); }
+  .toast {
+    position: fixed; left: 50%; top: 16px; transform: translateX(-50%) translateY(-12px);
+    background: #10211e; color: white; border-radius: 999px; padding: 8px 14px;
+    font-size: 13px; opacity: 0; pointer-events: none; transition: .2s ease; z-index: 5;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <div class="center" id="boot">Загрузка…</div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+(function () {
+  'use strict';
+  // Страница одной карты. Ходит только в /api/card/<token> — без входа и без остальных данных сайта.
+  var TOKEN = (location.pathname.split('/').filter(Boolean)[1] || '');
+  var NAME_KEY = 'jarvis_card_name_' + TOKEN;
+  var CUR_KEY = 'jarvis_card_cur_' + TOKEN;
+  var SYMBOL = { RUB: '₽', USD: '$', EUR: '€', KZT: '₸', AMD: '֏' };
+  var PINNED = [
+    { code: 'RUB', name: 'Российский рубль' },
+    { code: 'USD', name: 'Доллар США' },
+    { code: 'EUR', name: 'Евро' },
+    { code: 'KZT', name: 'Казахстанский тенге' },
+    { code: 'AMD', name: 'Армянский драм' }
+  ];
+
+  var state = {
+    data: null, error: null, filter: 'all', editing: null,
+    kind: 'topup', quote: null, quoteErr: '', quoting: false,
+    currencies: PINNED.slice(), saving: false
+  };
+  var quoteTimer = null;
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function cents(s) {
+    var n = String(s == null ? '0' : s).trim();
+    var neg = n.charAt(0) === '-';
+    if (neg) n = n.slice(1);
+    var p = n.split('.');
+    var whole = parseInt(p[0] || '0', 10) || 0;
+    var frac = (p[1] || '00').padEnd(2, '0').slice(0, 2);
+    var c = whole * 100 + (parseInt(frac, 10) || 0);
+    return neg ? -c : c;
+  }
+  function group(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0'); }
+  function money2(s) {
+    var c = cents(s);
+    var neg = c < 0;
+    var v = Math.abs(c);
+    return (neg ? '−' : '') + group(Math.floor(v / 100)) + ',' + String(v % 100).padStart(2, '0');
+  }
+  function decComma(s) {
+    var n = String(s == null ? '' : s);
+    var neg = n.charAt(0) === '-';
+    if (neg) n = n.slice(1);
+    var p = n.split('.');
+    var frac = (p[1] || '').replace(/0+$/, '');
+    if (frac.length < 2) frac = (p[1] || '00').slice(0, 2).padEnd(2, '0');
+    return (neg ? '−' : '') + group(p[0] || '0') + ',' + frac;
+  }
+  function sym(code) { return SYMBOL[code] || code; }
+  function fmtDate(iso) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+    return m ? (m[3] + '.' + m[2] + '.' + m[1]) : '';
+  }
+  function rateLine(src) {
+    if (!src || src.source === 'rub' || src.currency === 'RUB' && !src.rateValue) return 'рубли, без конвертации';
+    if ((src.rateSource || src.source) === 'rub' || src.currency === 'RUB') return 'рубли, без конвертации';
+    var nominal = parseInt(src.nominal || '1', 10) || 1;
+    var when = fmtDate(src.cbrDate || src.rateDate);
+    var unit = sym(src.currency);
+    var head = 'курс ЦБ на ' + when + ': ' + decComma(src.rateValue || src.value) + ' ₽ за ' + group(nominal) + ' ' + unit;
+    return head + '. В записи он зафиксирован и больше не меняется';
+  }
+  function storedName() {
+    try { return localStorage.getItem(NAME_KEY) || ''; } catch (e) { return ''; }
+  }
+  function rememberName(name) {
+    try { localStorage.setItem(NAME_KEY, name); } catch (e) {}
+  }
+  function storedCur() {
+    try { return localStorage.getItem(CUR_KEY) || 'RUB'; } catch (e) { return 'RUB'; }
+  }
+  function rememberCur(code) {
+    try { localStorage.setItem(CUR_KEY, code); } catch (e) {}
+  }
+
+  var toastTimer = null;
+  function toast(msg) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.classList.remove('show'); }, 1800);
+  }
+
+  function api(path, body) {
+    var opts = { cache: 'no-store' };
+    if (body) {
+      opts.method = 'POST';
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = JSON.stringify(body);
+    }
+    return fetch('/api/card/' + encodeURIComponent(TOKEN) + path, opts).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) {
+          var err = new Error((j && j.error) || ('HTTP ' + r.status));
+          err.body = j;
+          throw err;
+        }
+        return j;
+      });
+    });
+  }
+
+  function typing() {
+    var el = document.activeElement;
+    if (!el) return false;
+    var tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+  }
+
+  function load(silent) {
+    return api('').then(function (json) {
+      state.data = json;
+      state.error = null;
+      renderAll(silent);
+    }).catch(function (e) {
+      if (!silent || !state.data) {
+        state.error = String(e.message || e);
+        renderAll(false);
+      }
+    });
+  }
+
+  function running() {
+    var entries = (state.data && state.data.entries) || [];
+    var list = entries.filter(function (e) { return e.status !== 'void'; }).slice().sort(function (a, b) {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      return (a.createdAt || 0) - (b.createdAt || 0);
+    });
+    var bal = 0;
+    var map = {};
+    list.forEach(function (e) {
+      var c = cents(e.amountRub);
+      bal += e.kind === 'purchase' ? -c : c;
+      map[e.id] = bal;
+    });
+    return map;
+  }
+
+  function formValues() {
+    return {
+      kind: state.kind,
+      amount: (document.getElementById('amount') || {}).value || '',
+      currency: (document.getElementById('currency') || {}).value || 'RUB',
+      date: (document.getElementById('date') || {}).value || '',
+      comment: (document.getElementById('comment') || {}).value || '',
+      authorName: (document.getElementById('author') || {}).value || ''
+    };
+  }
+
+  function scheduleQuote() {
+    clearTimeout(quoteTimer);
+    quoteTimer = setTimeout(runQuote, 220);
+  }
+
+  function runQuote() {
+    if (!state.data) return;
+    var v = formValues();
+    var amount = String(v.amount).trim().replace(/\s/g, '').replace(',', '.');
+    var q = '/quote?currency=' + encodeURIComponent(v.currency) + '&date=' + encodeURIComponent(v.date || (state.data.serverToday || ''));
+    if (/^\d+(\.\d+)?$/.test(amount) && Number(amount) > 0) q += '&amount=' + encodeURIComponent(amount);
+    state.quoting = true;
+    api(q).then(function (j) {
+      state.quote = j;
+      state.quoteErr = '';
+      if (j.currencies && j.currencies.length) state.currencies = j.currencies;
+      state.quoting = false;
+      paintQuote();
+      paintCurrency(false);
+    }).catch(function (e) {
+      state.quote = (e.body && e.body.currencies) ? e.body : state.quote;
+      if (e.body && e.body.currencies) state.currencies = e.body.currencies;
+      state.quoteErr = String(e.message || e);
+      state.quoting = false;
+      paintQuote();
+      paintCurrency(false);
+    });
+  }
+
+  function paintQuote() {
+    var box = document.getElementById('preview');
+    if (!box) return;
+    var v = formValues();
+    if (state.quoteErr) {
+      box.className = 'preview bad';
+      box.innerHTML = esc(state.quoteErr);
+      return;
+    }
+    var q = state.quote;
+    if (!q) {
+      box.className = 'preview';
+      box.textContent = state.quoting ? 'Считаю курс…' : '';
+      return;
+    }
+    box.className = 'preview';
+    var line;
+    if (q.amountRub) {
+      line = '<span class="rub">' + esc(money2(q.amount) + ' ' + sym(q.currency)) + ' = ' + esc(money2(q.amountRub)) + ' ₽</span>';
+    } else if (v.currency === 'RUB') {
+      line = '<span class="rub">Сумма сразу в рублях</span>';
+    } else {
+      line = '<span class="rub">Курс для ' + esc(sym(q.currency)) + '</span>';
+    }
+    box.innerHTML = line + '<div class="rate">' + esc(rateLine({
+      currency: q.currency, rateSource: q.source, source: q.source,
+      nominal: q.nominal, rateValue: q.value, cbrDate: q.cbrDate, rateDate: q.rateDate
+    })) + '</div>';
+  }
+
+  function paintCurrency(reset) {
+    var sel = document.getElementById('currency');
+    if (!sel) return;
+    var current = reset ? storedCur() : sel.value;
+    var html = state.currencies.map(function (c) {
+      return '<option value="' + esc(c.code) + '">' + esc(c.code + ' — ' + c.name) + '</option>';
+    }).join('');
+    if (sel.dataset.sig !== html) {
+      sel.innerHTML = html;
+      sel.dataset.sig = html;
+    }
+    var has = state.currencies.some(function (c) { return c.code === current; });
+    sel.value = has ? current : 'RUB';
+  }
+
+  function paintKzt() {
+    var node = document.getElementById('kzt-hint');
+    if (!node || !state.data) return;
+    var bal = state.data.balance.balanceRub;
+    if (!bal || cents(bal) === 0) { node.textContent = ''; return; }
+    var today = state.data.serverToday;
+    api('/quote?currency=KZT&date=' + encodeURIComponent(today) + '&amount=1').then(function (q) {
+      if (!q || !q.value || q.currency !== 'KZT') { node.textContent = ''; return; }
+      var nominal = parseInt(q.nominal || '1', 10) || 1;
+      var value = Number(q.value);
+      if (!value) { node.textContent = ''; return; }
+      var rub = cents(bal) / 100;
+      var kzt = rub * nominal / value;
+      var rounded = (Math.round(kzt * 100) / 100).toFixed(2);
+      node.textContent = 'Ориентир по курсу ЦБ на сегодня: ≈ ' + money2(rounded) + ' ₸. На остаток не влияет.';
+    }).catch(function () { node.textContent = ''; });
+  }
+
+  function renderAll(silent) {
+    var app = document.getElementById('app');
+    if (state.error && !state.data) {
+      app.innerHTML = '<div class="card"><h1>Ссылка не открывается</h1><p class="errbox">' + esc(state.error) + '</p><p class="lead">Попросите новую ссылку у того, кто её отправил.</p></div>';
+      return;
+    }
+    if (!state.data) return;
+    if (silent && document.getElementById('amount')) {
+      paintBalance();
+      paintList();
+      return;
+    }
+    var led = state.data.ledger;
+    var today = state.data.serverToday || '';
+    app.innerHTML =
+      '<h1 id="title">' + esc(led.title || 'Карта') + '</h1>' +
+      '<p class="lead">Пополнения и покупки с этой карты. Остаток — ваши деньги на ней, не весь баланс банка.</p>' +
+      '<section class="card balance-card">' +
+        '<div class="lbl">Остаток ваших денег</div>' +
+        '<div class="balance" id="balance"></div>' +
+        '<div class="subrow"><span>Пополнено <b id="topup-total"></b></span><span>Покупки <b id="purchase-total"></b></span></div>' +
+        '<div class="kzt" id="kzt-hint"></div>' +
+        '<div class="hint">Считается так: сумма пополнений минус сумма покупок. Каждая операция переведена в рубли по курсу ЦБ на свою дату и больше не пересчитывается.</div>' +
+      '</section>' +
+      '<section class="card">' +
+        '<div id="edit-banner"></div>' +
+        '<div class="seg" role="tablist">' +
+          '<button type="button" id="kind-topup">Пополнение</button>' +
+          '<button type="button" id="kind-purchase">Покупка</button>' +
+        '</div>' +
+        '<div class="grid2">' +
+          '<div><label for="amount">Сумма</label><input id="amount" inputmode="decimal" autocomplete="off" placeholder="0,00"></div>' +
+          '<div><label for="currency">Валюта</label><select id="currency"></select></div>' +
+        '</div>' +
+        '<label for="date">Дата операции</label><input id="date" type="date" value="' + esc(today) + '" max="' + esc(today) + '">' +
+        '<label for="comment">Комментарий</label><textarea id="comment" maxlength="500" placeholder="За что или откуда"></textarea>' +
+        '<label for="author">Кто вносит</label><input id="author" maxlength="60" autocomplete="name" placeholder="Имя">' +
+        '<div class="chips" id="who"></div>' +
+        '<div class="preview" id="preview"></div>' +
+        '<button type="button" class="primary" id="submit">Записать пополнение</button>' +
+      '</section>' +
+      '<section class="card">' +
+        '<div class="filters" id="filters">' +
+          '<button type="button" data-f="all">Все</button>' +
+          '<button type="button" data-f="topup">Пополнения</button>' +
+          '<button type="button" data-f="purchase">Покупки</button>' +
+          '<button type="button" data-f="void">Отменённые</button>' +
+        '</div>' +
+        '<div id="history"></div>' +
+      '</section>';
+    document.getElementById('author').value = storedName();
+    paintCurrency(true);
+    paintWho();
+    paintKind();
+    paintBalance();
+    paintList();
+    paintKzt();
+    bind();
+    runQuote();
+  }
+
+  function paintWho() {
+    var box = document.getElementById('who');
+    var input = document.getElementById('author');
+    if (!box || !state.data) return;
+    var names = [state.data.ledger.ownerName, state.data.ledger.friendName].filter(Boolean);
+    var seen = {};
+    box.innerHTML = names.filter(function (n) { if (seen[n]) return false; seen[n] = 1; return true; }).map(function (n) {
+      var on = input && input.value.trim() === n ? ' on' : '';
+      return '<button type="button" class="chip' + on + '" data-name="' + esc(n) + '">' + esc(n) + '</button>';
+    }).join('');
+    box.querySelectorAll('[data-name]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        input.value = b.getAttribute('data-name');
+        rememberName(input.value);
+        paintWho();
+      });
+    });
+  }
+
+  function paintKind() {
+    var top = document.getElementById('kind-topup');
+    var buy = document.getElementById('kind-purchase');
+    var submit = document.getElementById('submit');
+    if (!top) return;
+    top.className = state.kind === 'topup' ? 'on' : '';
+    buy.className = state.kind === 'purchase' ? 'on buy' : '';
+    submit.className = 'primary' + (state.kind === 'purchase' ? ' buy' : '');
+    submit.textContent = state.editing
+      ? 'Сохранить правку'
+      : (state.kind === 'purchase' ? 'Записать покупку' : 'Записать пополнение');
+    var banner = document.getElementById('edit-banner');
+    banner.innerHTML = state.editing
+      ? '<div class="banner">Правка записи. Курс останется от даты операции, если дату и валюту не менять. <button type="button" class="ghost" id="cancel-edit">Отменить правку</button></div>'
+      : '';
+    var cancel = document.getElementById('cancel-edit');
+    if (cancel) cancel.addEventListener('click', function () { state.editing = null; clearForm(); paintKind(); });
+  }
+
+  function paintBalance() {
+    var b = state.data.balance;
+    var node = document.getElementById('balance');
+    if (!node) return;
+    node.textContent = money2(b.balanceRub) + ' ₽';
+    node.className = 'balance' + (cents(b.balanceRub) < 0 ? ' neg' : '');
+    document.getElementById('topup-total').textContent = money2(b.topupRub) + ' ₽';
+    document.getElementById('purchase-total').textContent = money2(b.purchaseRub) + ' ₽';
+  }
+
+  function paintList() {
+    var host = document.getElementById('history');
+    var filters = document.getElementById('filters');
+    if (!host) return;
+    filters.querySelectorAll('button').forEach(function (b) {
+      b.className = b.getAttribute('data-f') === state.filter ? 'on' : '';
+    });
+    var after = running();
+    var rows = (state.data.entries || []).filter(function (e) {
+      if (state.filter === 'void') return e.status === 'void';
+      if (state.filter === 'topup') return e.kind === 'topup' && e.status !== 'void';
+      if (state.filter === 'purchase') return e.kind === 'purchase' && e.status !== 'void';
+      return true;
+    });
+    if (!rows.length) {
+      host.innerHTML = '<div class="empty">Пока пусто. Пополнение увеличивает остаток, покупка уменьшает.</div>';
+      return;
+    }
+    host.innerHTML = rows.map(function (e) {
+      var voided = e.status === 'void';
+      var buy = e.kind === 'purchase';
+      var who = 'Внёс ' + e.authorName;
+      if (e.editedBy) who += ' · правил ' + e.editedBy;
+      if (voided) who += ' · отменил ' + (e.voidedBy || '');
+      return '<article class="row' + (voided ? ' void' : '') + '" data-id="' + esc(e.id) + '">' +
+        '<div class="top"><span class="kind' + (voided ? ' off' : (buy ? ' buy' : '')) + '">' +
+          (voided ? 'Отменено' : (buy ? 'Покупка' : 'Пополнение')) + '</span>' +
+        '<div class="sum"><div class="main">' + (buy && !voided ? '−' : '') + esc(money2(e.amountRub)) + ' ₽</div>' +
+        '<div class="orig">' + esc(money2(e.amount) + ' ' + sym(e.currency)) + '</div></div></div>' +
+        '<div class="meta">' + esc(fmtDate(e.date)) + ' · ' + esc(who) + '</div>' +
+        (e.comment ? '<div class="comment">' + esc(e.comment) + '</div>' : '') +
+        '<div class="meta">' + esc(rateLine(e)) + '</div>' +
+        '<div class="acts" data-after="' + esc(after[e.id] == null ? '' : String(after[e.id])) + '"></div>' +
+      '</article>';
+    }).join('');
+    host.querySelectorAll('article').forEach(function (art) {
+      var id = art.getAttribute('data-id');
+      var entry = (state.data.entries || []).filter(function (e) { return e.id === id; })[0];
+      var acts = art.querySelector('.acts');
+      var afterC = acts.getAttribute('data-after');
+      if (entry.status !== 'void' && afterC !== '') {
+        var rub = (Number(afterC) / 100).toFixed(2);
+        var meta = document.createElement('div');
+        meta.className = 'meta';
+        meta.textContent = 'Остаток после операции ' + money2(rub) + ' ₽';
+        acts.parentNode.insertBefore(meta, acts);
+      }
+      if (entry.status === 'void') {
+        var back = document.createElement('button');
+        back.type = 'button';
+        back.className = 'ghost';
+        back.textContent = 'Вернуть в остаток';
+        back.addEventListener('click', function () { act('/entry-restore', entry); });
+        acts.appendChild(back);
+      } else {
+        var edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'ghost';
+        edit.textContent = 'Править';
+        edit.addEventListener('click', function () { startEdit(entry); });
+        var kill = document.createElement('button');
+        kill.type = 'button';
+        kill.className = 'ghost';
+        kill.textContent = 'Отменить запись';
+        kill.addEventListener('click', function () {
+          if (!confirm('Отменить запись? Она останется в истории, но выйдет из остатка.')) return;
+          act('/entry-void', entry);
+        });
+        acts.appendChild(edit);
+        acts.appendChild(kill);
+      }
+    });
+  }
+
+  function clearForm() {
+    var amount = document.getElementById('amount');
+    var comment = document.getElementById('comment');
+    if (amount) amount.value = '';
+    if (comment) comment.value = '';
+    paintKind();
+    scheduleQuote();
+  }
+
+  function startEdit(entry) {
+    state.editing = entry.id;
+    state.kind = entry.kind === 'purchase' ? 'purchase' : 'topup';
+    document.getElementById('amount').value = String(entry.amount).replace('.', ',');
+    document.getElementById('date').value = entry.date;
+    document.getElementById('comment').value = entry.comment || '';
+    var sel = document.getElementById('currency');
+    if ([].some.call(sel.options, function (o) { return o.value === entry.currency; })) sel.value = entry.currency;
+    paintKind();
+    scheduleQuote();
+    document.getElementById('amount').focus();
+  }
+
+  function act(path, entry) {
+    var name = (document.getElementById('author').value || '').trim();
+    if (!name) { toast('Напишите, кто вносит'); document.getElementById('author').focus(); return; }
+    rememberName(name);
+    api(path, { id: entry.id, authorName: name }).then(function (json) {
+      state.data = json;
+      paintBalance();
+      paintList();
+      paintKzt();
+      toast(path.indexOf('void') >= 0 ? 'Запись отменена' : 'Запись возвращена');
+    }).catch(function (e) { toast(e.message); });
+  }
+
+  function bind() {
+    document.getElementById('kind-topup').addEventListener('click', function () {
+      state.kind = 'topup'; paintKind();
+    });
+    document.getElementById('kind-purchase').addEventListener('click', function () {
+      state.kind = 'purchase'; paintKind();
+    });
+    ['amount', 'currency', 'date'].forEach(function (id) {
+      document.getElementById(id).addEventListener('input', function () {
+        if (id === 'currency') rememberCur(document.getElementById('currency').value);
+        scheduleQuote();
+      });
+      document.getElementById(id).addEventListener('change', scheduleQuote);
+    });
+    document.getElementById('author').addEventListener('input', function () {
+      rememberName(document.getElementById('author').value.trim());
+      paintWho();
+    });
+    document.getElementById('filters').addEventListener('click', function (ev) {
+      var b = ev.target.closest('button');
+      if (!b) return;
+      state.filter = b.getAttribute('data-f');
+      paintList();
+    });
+    document.getElementById('submit').addEventListener('click', submit);
+    document.getElementById('amount').addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') submit();
+    });
+  }
+
+  function submit() {
+    if (state.saving) return;
+    var v = formValues();
+    if (!v.authorName.trim()) { toast('Напишите, кто вносит'); document.getElementById('author').focus(); return; }
+    rememberName(v.authorName.trim());
+    rememberCur(v.currency);
+    var body = {
+      kind: v.kind,
+      amount: v.amount,
+      currency: v.currency,
+      date: v.date,
+      comment: v.comment,
+      authorName: v.authorName.trim()
+    };
+    var path = '/entry';
+    if (state.editing) { body.id = state.editing; path = '/entry-update'; }
+    state.saving = true;
+    document.getElementById('submit').disabled = true;
+    api(path, body).then(function (json) {
+      state.data = json;
+      state.editing = null;
+      state.saving = false;
+      clearForm();
+      paintBalance();
+      paintList();
+      paintKzt();
+      document.getElementById('submit').disabled = false;
+      toast('Записано');
+    }).catch(function (e) {
+      state.saving = false;
+      document.getElementById('submit').disabled = false;
+      toast(e.message);
+    });
+  }
+
+  load(false);
+  setInterval(function () {
+    if (!typing() && !state.saving && !state.editing) load(true);
+  }, 12000);
+})();
+</script>
+</body>
+</html>
