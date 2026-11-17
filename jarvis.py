@@ -3160,18 +3160,34 @@ STUDY_DEFAULTS = {
     "enabled": False,
     "group": "",
     "calendar": "Учеба",
-    "days": [1, 3, 5],   # ISO: 1 = пн … 7 = вс
-    "time": "08:00",     # МСК
-    "weeks": 2,          # текущая + следующая
+    "days": [1, 2, 3, 4, 5, 6, 7],  # ISO: 1 = пн … 7 = вс
+    "time": "08:00",       # МСК, первый запуск
+    "time2": "16:00",      # МСК, второй запуск; пустое — только этот дефолт
+    "weeks": 2,            # текущая + следующая
     "notify": True,
-    "remind": False,     # напоминание из Календаря перед парой
-    "remindBefore": [5], # за сколько минут (можно несколько)
+    "remind": False,       # напоминание из Календаря перед парой
+    "remindBefore": [5],   # за сколько минут (можно несколько)
 }
 _STUDY_LOCK = threading.Lock()
+_STUDY_STATE_LOCK = threading.Lock()
+# Слот, который этот процесс уже запустил, но ещё не записал в doneSlots.
+_study_inflight = set()
+_study_inflight_lock = threading.Lock()
 
 
 class StudyError(Exception):
     pass
+
+
+def _study_hhmm(value, fallback: str) -> str:
+    """«ЧЧ:ММ» или fallback. Сохранённое корректное время не подменяется дефолтом."""
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(value or "").strip())
+    if not m:
+        return fallback
+    hour, minute = int(m.group(1)), int(m.group(2))
+    if 0 <= hour <= 23 and 0 <= minute <= 59:
+        return f"{hour:02d}:{minute:02d}"
+    return fallback
 
 
 def study_settings(app: dict = None) -> dict:
@@ -3194,23 +3210,77 @@ def study_settings(app: dict = None) -> dict:
     s["remindBefore"] = sorted(mins)[:3] or list(STUDY_DEFAULTS["remindBefore"])
     s["group"] = str(s.get("group") or "").strip()
     s["calendar"] = str(s.get("calendar") or "").strip() or STUDY_DEFAULTS["calendar"]
+    # Первое время — как сохранено. Второе пустое только у старых записей:
+    # 16:00 подставляется при чтении и не затирает time.
+    saved_time = raw.get("time") if "time" in raw else None
+    s["time"] = _study_hhmm(saved_time, STUDY_DEFAULTS["time"]) if str(saved_time or "").strip() else STUDY_DEFAULTS["time"]
+    saved_time2 = raw.get("time2") if "time2" in raw else None
+    s["time2"] = _study_hhmm(saved_time2, STUDY_DEFAULTS["time2"]) if str(saved_time2 or "").strip() else STUDY_DEFAULTS["time2"]
     return s
 
 
-def study_load_state() -> dict:
+def study_slot_times(settings: dict) -> list:
+    """Уникальные ЧЧ:ММ по возрастанию. Одинаковые поля — один запуск."""
+    found = []
+    for value in (settings.get("time"), settings.get("time2")):
+        if value and value not in found:
+            found.append(value)
+    return sorted(found)
+
+
+def _study_read_state() -> dict:
     try:
         if STUDY_STATE_FILE.exists():
-            return json.loads(STUDY_STATE_FILE.read_text(encoding="utf-8"))
+            data = json.loads(STUDY_STATE_FILE.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
     except Exception:
         pass
     return {}
 
 
-def study_save_state(state: dict) -> None:
+def _study_write_state(state: dict) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     tmp = STUDY_STATE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
     tmp.replace(STUDY_STATE_FILE)
+
+
+def _study_prune_slots(slots) -> list:
+    keep_from = (today_msk() - timedelta(days=1)).isoformat()
+    out = []
+    for item in slots or []:
+        if isinstance(item, str) and len(item) >= 16 and item[:10] >= keep_from and item not in out:
+            out.append(item)
+    return out
+
+
+def study_load_state() -> dict:
+    with _STUDY_STATE_LOCK:
+        return _study_read_state()
+
+
+def study_save_state(state: dict) -> None:
+    """Пишет состояние целиком. doneSlots с диска не теряются, если копия устарела."""
+    with _STUDY_STATE_LOCK:
+        fresh = _study_read_state()
+        merged = list(fresh.get("doneSlots") or [])
+        for item in state.get("doneSlots") or []:
+            if item not in merged:
+                merged.append(item)
+        if merged or "doneSlots" in state or "doneSlots" in fresh:
+            state["doneSlots"] = _study_prune_slots(merged)
+        _study_write_state(state)
+
+
+def study_claim_slot(slot: str) -> None:
+    """Слот «дата время» выполнен: повторно в этот день его не запускаем."""
+    with _STUDY_STATE_LOCK:
+        state = _study_read_state()
+        slots = list(state.get("doneSlots") or [])
+        if slot not in slots:
+            slots.append(slot)
+        state["doneSlots"] = _study_prune_slots(slots)
+        _study_write_state(state)
 
 
 # ── rasp.rea.ru: загрузка и разбор ─────────────────────────────────────────
@@ -4213,16 +4283,64 @@ def study_status() -> dict:
     }
 
 
-def study_tick(app_data: dict, now_str: str, today_iso: str) -> None:
-    """Из минутного цикла: в выбранные дни и время запускаем синхронизацию."""
+def study_due_slot(app_data: dict, now_str: str, today_iso: str) -> str:
+    """Слот «дата время» или пусто. Пропущенная минута догоняется позже в тот же день.
+    Пока синхронизация идёт, второй слот ждёт следующий тик."""
     s = study_settings(app_data)
-    if not s["enabled"] or not s["group"] or s.get("time") != now_str:
+    if not s["enabled"] or not s["group"]:
+        return ""
+    try:
+        weekday = date.fromisoformat(str(today_iso)).isoweekday()
+    except Exception:
+        return ""
+    if weekday not in s["days"]:
+        return ""
+    if _STUDY_LOCK.locked():
+        return ""
+    with _study_inflight_lock:
+        busy = set(_study_inflight)
+    done = set(_study_prune_slots(study_load_state().get("doneSlots")))
+    now_str = str(now_str or "")
+    for slot_time in study_slot_times(s):
+        if now_str < slot_time:
+            continue
+        slot = f"{today_iso} {slot_time}"
+        if slot in done or slot in busy:
+            continue
+        return slot
+    return ""
+
+
+def study_tick(app_data: dict, now_str: str, today_iso: str) -> None:
+    """Из минутного цикла: два слота в выбранные дни. Точная минута не обязательна."""
+    slot = study_due_slot(app_data, now_str, today_iso)
+    if not slot:
         return
-    if today_msk().isoweekday() not in s["days"]:
-        return
-    if _already_fired("study", s["group"], today_iso, now_str):
-        return
-    threading.Thread(target=lambda: print(f"[study] {study_sync(reason='schedule')}"), daemon=True).start()
+    with _study_inflight_lock:
+        if _study_inflight:
+            return
+        _study_inflight.add(slot)
+
+    def run(slot=slot):
+        result = None
+        try:
+            result = study_sync(reason="schedule")
+            print(f"[study] {result}", flush=True)
+        except Exception as e:
+            print(f"[study] {e}", flush=True)
+            result = {"ok": False, "error": str(e)}
+        finally:
+            err = str((result or {}).get("error") or "") if isinstance(result, dict) else ""
+            if "уже идёт" not in err:
+                try:
+                    study_claim_slot(slot)
+                except Exception as e:
+                    print(f"[study] slot: {e}", flush=True)
+            with _study_inflight_lock:
+                _study_inflight.discard(slot)
+
+    print(f"[{now_str} MSK] study schedule: {slot}", flush=True)
+    threading.Thread(target=run, daemon=True).start()
 
 
 STUDY_TOOLS = [

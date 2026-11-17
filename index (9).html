@@ -8364,8 +8364,10 @@ function MaxSettings() {
 // ============== УЧЕБА: расписание rasp.rea.ru → Apple Календарь ==============
 // Настройки — data.studySchedule (LWW по updatedAt, синхронизируются как
 // обычные данные). Саму работу делает сервер (jarvis.py, study_sync): по
-// выбранным дням в выбранное время он грузит расписание группы, сверяет его
-// с календарём iCloud и шлёт в Telegram (категория «Учеба») что поменялось.
+// выбранным дням два раза (по умолчанию 08:00 и 16:00 МСК) он грузит расписание
+// группы, сверяет его с календарём iCloud и шлёт в Telegram (категория «Учеба»)
+// что поменялось. Пустое второе время — 16:00, сохранённое первое не затирается.
+// Пропущенная минута догоняется позже в тот же день.
 // Личный Telegram (аккаунт, не бот). Сессия живёт только на сервере
 // (DATA_DIR/jarvis_tg_user.json) — в данные приложения и в браузер не попадает.
 function TelegramSettings({ data, setData }) {
@@ -8598,7 +8600,23 @@ function TelegramSettings({ data, setData }) {
   );
 }
 
-const STUDY_DEFAULTS = { enabled: false, group: '', calendar: 'Учеба', days: [1, 3, 5], time: '08:00', weeks: 2, notify: true, remind: false, remindBefore: [5] };
+const STUDY_DEFAULTS = { enabled: false, group: '', calendar: 'Учеба', days: [1, 2, 3, 4, 5, 6, 7], time: '08:00', time2: '16:00', weeks: 2, notify: true, remind: false, remindBefore: [5] };
+
+function studyScheduleCfg(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const cfg = { ...STUDY_DEFAULTS, ...src };
+  const hhmm = (v) => {
+    const m = String(v || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return '';
+    const h = Number(m[1]);
+    const min = Number(m[2]);
+    if (h > 23 || min > 59) return '';
+    return String(h).padStart(2, '0') + ':' + m[2];
+  };
+  cfg.time = hhmm(src.time) || STUDY_DEFAULTS.time;
+  cfg.time2 = hhmm(src.time2) || STUDY_DEFAULTS.time2;
+  return cfg;
+}
 const STUDY_REMIND_OPTIONS = [[0, 'В начале'], [5, '5 мин'], [10, '10 мин'], [15, '15 мин'], [30, '30 мин'], [60, '1 час']];
 const studyRemindText = (m) => (m === 0 ? 'в момент начала' : m % 60 === 0 ? `за ${m / 60} ч` : `за ${m} мин`);
 
@@ -8833,7 +8851,7 @@ function StudyChatsCard({ data, setData, card, input }) {
 }
 
 function StudySettings({ data, setData }) {
-  const cfg = { ...STUDY_DEFAULTS, ...(data.studySchedule || {}) };
+  const cfg = studyScheduleCfg(data.studySchedule);
   const [status, setStatus] = React.useState({ loading: true });
   const [busy, setBusy] = React.useState('');
   const [result, setResult] = React.useState(null);
@@ -8907,7 +8925,7 @@ function StudySettings({ data, setData }) {
           <div className="flex-1 min-w-0">
             <h3 className="font-display text-lg mb-1">Расписание → Apple Календарь</h3>
             <p className="text-sm text-[var(--text-muted)]">
-              Джарвис забирает пары с rasp.rea.ru и сам ведёт календарь: добавляет новые, обновляет изменённые, удаляет отменённые. Трогает только свои события и только с сегодняшнего дня.
+              Джарвис забирает пары с rasp.rea.ru и сам ведёт календарь: добавляет новые, обновляет изменённые, удаляет отменённые. Трогает только свои события и только с сегодняшнего дня. В выбранные дни — два раза, по умолчанию в 08:00 и 16:00 МСК. Если минутный цикл пропустил точную минуту, запуск догоняется в тот же день.
             </p>
           </div>
           <StudySwitch on={!!cfg.enabled} onChange={v => update({ enabled: v })} label="Автосинхронизация" />
@@ -8954,12 +8972,16 @@ function StudySettings({ data, setData }) {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3 mt-4">
-          <label className="block">
-            <div className="text-xs text-[var(--text-subtle)] mb-1">Во сколько</div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-4" data-testid="study-schedule-times">
+          <label className="block" data-testid="study-time-first">
+            <div className="text-xs text-[var(--text-subtle)] mb-1">Первый раз</div>
             <MskTimeInput value={cfg.time} onChange={v => update({ time: v })} className={input} />
           </label>
-          <label className="block">
+          <label className="block" data-testid="study-time-second">
+            <div className="text-xs text-[var(--text-subtle)] mb-1">Второй раз</div>
+            <MskTimeInput value={cfg.time2} onChange={v => update({ time2: v })} className={input} />
+          </label>
+          <label className="block col-span-2 sm:col-span-1">
             <div className="text-xs text-[var(--text-subtle)] mb-1">Сколько недель</div>
             <select className={input} value={cfg.weeks} onChange={e => update({ weeks: Number(e.target.value) })}>
               <option value={1}>Только текущая</option>
@@ -8969,6 +8991,7 @@ function StudySettings({ data, setData }) {
             </select>
           </label>
         </div>
+        <p className="text-[11px] text-[var(--text-subtle)] mt-1.5">Оба времени по Москве. Пустое второе — 16:00, уже сохранённое первое не меняется.</p>
 
         <div className="mt-5">
           <div className="text-xs text-[var(--text-subtle)] mb-1.5">Уведомления</div>
