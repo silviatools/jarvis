@@ -12,6 +12,7 @@ jarvis_tg_history.sqlite3-journal
 jarvis_study_present_state.json
 jarvis_decks.json
 jarvis_study_chats_state.json
+jarvis_study_journals.json
 jarvis_anchors.json
 jarvis_market.json
 jarvis_market_pc.json

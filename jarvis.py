@@ -124,6 +124,11 @@ except Exception as _e:
     study_skills = None
     print(f"NOTE: study_skills disabled: {_e}")
 try:
+    import study_journal
+except Exception as _e:
+    study_journal = None
+    print(f"NOTE: study_journal disabled: {_e}")
+try:
     import deck_skill
 except Exception as _e:
     deck_skill = None
@@ -1224,7 +1229,7 @@ def build_backup_zip() -> bytes:
                       "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_moodle_reports.json", "jarvis_wb_pickup.json", "jarvis_ozon_pickup.json", "jarvis_tg_history.sqlite3",
                       "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl", "jarvis_routes.json", "jarvis_health_drafts.json",
                       "jarvis_newspaper_cache.json", "jarvis_newspaper_state.json", "jarvis_newspaper_latest.html",
-                      "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png", "jarvis_card_ledger.json"}
+                      "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png", "jarvis_card_ledger.json", "jarvis_study_journals.json"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
@@ -5176,11 +5181,12 @@ ASSISTANT_DATA_DOMAINS = {
             "programs": app.get("gymPrograms", []), "days": app.get("gymDays", []),
             "exercises": app.get("gymExercises", []), "sessions": app.get("gymSessions", [])[-40:],
         }),
-    "study": ("Учёба: предметы (столбцы канбана, с заметкой note о предмете/преподавателе) и задания в них (status: todo|doing|done, due YYYY-MM-DD, kind: hw|test|exam|project|lab|read|present|other, important, subtasks, note — описание задачи, comments — комментарии пользователя, attachments — вложения)",
+    "study": ("Учёба: предметы (столбцы канбана, с заметкой note о предмете/преподавателе) и задания в них (status: todo|doing|done, due YYYY-MM-DD, kind: hw|test|exam|project|lab|read|present|other, important, subtasks, note — описание задачи, comments — комментарии пользователя, attachments — вложения). journal — журнал предмета: факты, текущие баллы (points, pointsMax, need, passed) и зачёты (date, place, format, deadline, note); править его инструментами study_journal_*",
         lambda app: {
             "subjects": app.get("studySubjects", []),
             "tasks": [t for t in app.get("studyTasks", [])
                       if t.get("status") != "done" or (t.get("doneAt") or 0) > time.time() * 1000 - 30 * 86400000],
+            "journal": study_journal.for_assistant(app) if study_journal else [],
         }),
     "wishlist": ("Хотелки",
         lambda app: {"categories": app.get("wishlistCategories", []), "items": app.get("wishlistItems", [])}),
@@ -6461,6 +6467,7 @@ def _prompt_sections(app, with_tg: bool, groups) -> str:
         + (tg_history.prompt_section(st) if on("bot_history") else "")
         + (moodle_skill.prompt_section(st) if on("study") else "")
         + (study_skills.prompt_section(st) if study_skills and on("study") else "")
+        + (study_journal.prompt_section(st) if study_journal and on("study") else "")
         + (market_skill.prompt_section(st) if market_skill and on("market") else "")
         + (tg_watch_skill.prompt_section(st) if tg_watch_skill and with_tg and on("tg_watch") else "")
         + (mail_skill.prompt_section(st) if mail_skill and on("mail") else "")
@@ -6557,6 +6564,8 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
             return r
         return deck_skill.execute(name, inp, tg_bot.get_ctx() if tg_bot else None, tg_bot,
                                   (app or {}).get("telegramSkills"), _study_attach)
+    if study_journal and name in study_journal.TOOL_NAMES:
+        return study_journal.execute(name, inp, app)
     if study_skills and name in study_skills.TOOL_NAMES:
         return _study_skill_exec(name, inp, app)
     if name == "study_attach_file":
@@ -7552,7 +7561,7 @@ def _assistant_tool_list(app, with_tg: bool) -> list:
         (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + \
         _max_tools_for(app, with_tg) + \
-        _study_skill_tools(app) + _market_skill_tools(app) + _watch_skill_tools(app, with_tg) + _mail_skill_tools(app) + \
+        _study_skill_tools(app) + (_study_journal_tools(app) if study_journal else []) + _market_skill_tools(app) + _watch_skill_tools(app, with_tg) + _mail_skill_tools(app) + \
         _plan_skill_tools(app) + (tg_history.TOOLS if tg_history.skill_on((app or {}).get("telegramSkills")) else []) + \
         (health_skill.TOOLS if health_skill and health_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (route_skill.TOOLS if route_skill.skill_on((app or {}).get("telegramSkills")) and
@@ -7563,6 +7572,7 @@ def assistant_skills_catalog() -> list:
     return (
         (deck_skill.SKILLS if deck_skill else [])
         + (study_skills.SKILLS if study_skills else [])
+        + (study_journal.SKILLS if study_journal else [])
         + (tg_tools.skills_catalog() if tg_tools else [])
         + (max_tools.SKILLS if max_tools else [])
         + (market_skill.SKILLS if market_skill else [])
@@ -7615,6 +7625,12 @@ def _study_skill_tools(app) -> list:
         if study_skills.skill_on(st, sid):
             out.append(t)
     return out
+
+
+def _study_journal_tools(app) -> list:
+    if not study_journal or not study_journal.skill_on((app or {}).get("telegramSkills")):
+        return []
+    return study_journal.TOOLS
 
 
 class _AiConf(tuple):
@@ -8410,19 +8426,54 @@ def _study_scan_record(token, owner, *, done: bool, err: str, slot: str, told: b
             "items": result.get("items") or 0, "errors": result.get("errors") or []}
 
 
+def _study_journal_pack(app, items: list) -> dict:
+    """Находки проверки чатов параллельно пишутся в журналы предметов.
+    Уже известное не остаётся «новой» новостью."""
+    base = {"novel": list(items or []), "reminders": [], "announce_ids": [], "remind_ids": []}
+    if not items or not study_journal or not study_journal.skill_on((app or {}).get("telegramSkills")):
+        return base
+    try:
+        return study_journal.prepare_scan(app, items)
+    except Exception as e:
+        print(f"  study journal: {type(e).__name__}: {e}")
+        return base
+
+
+def _study_journal_mark(pack: dict) -> None:
+    if not study_journal:
+        return
+    try:
+        study_journal.mark_sent(pack.get("announce_ids"), pack.get("remind_ids"))
+    except Exception as e:
+        print(f"  study journal mark: {type(e).__name__}: {e}")
+
+
 def _study_send_digest(token, owner, items: list, label: str, manual: bool, notify_empty: bool,
-                       targets_n: int, total: int) -> int:
+                       targets_n: int, total: int, reminders: list = None) -> int:
     sent = 0
     now = now_msk()
+    reminders = list(reminders or [])
+    remind_html = study_journal.reminder_html(reminders) if (study_journal and reminders) else ""
     for cid in owner:
         try:
-            if items:
-                ids = tg_bot.send_text(token, cid, study_skills.digest_text(items[:12], label))
-                title = f"Учебные чаты · {now.day} {RU_MONTHS_GEN[now.month - 1]}"
-                user_text = "Проверь учебные чаты: что требует моего внимания?"
-                asst_text = ("Вот что нашёл в учебных чатах Telegram и в папке MAX «Учеба»:\n" + study_skills.digest_plain(items[:12]) +
-                             "\n(служебно: уведомление отправлено пользователю. Если он попросит ответить в чат Telegram — используй tg_send_message "
-                             "(peer = chat_id, reply_to = message_id) только после его «да». Сообщения с пометкой MAX только читай, в MAX не пиши.)")
+            if items or remind_html:
+                if items:
+                    text = study_skills.digest_text(items[:12], label)
+                    if remind_html:
+                        text += "\n\n" + remind_html
+                    title = f"Учебные чаты · {now.day} {RU_MONTHS_GEN[now.month - 1]}"
+                    user_text = "Проверь учебные чаты: что требует моего внимания?"
+                    plain = study_skills.digest_plain(items[:12])
+                else:
+                    text = remind_html
+                    title = f"Учебные чаты · уже в журнале · {now.day} {RU_MONTHS_GEN[now.month - 1]}"
+                    user_text = "Это уже было в журнале предмета — я обратил внимание?"
+                    plain = "\n".join(f"{r.get('subject')}: {r.get('line')}" for r in reminders[:8])
+                ids = tg_bot.send_text(token, cid, text)
+                note = ("\n(служебно: новое записано в журнал предмета. Блок «Уже есть в журнале» — не новость, "
+                        "а короткое напоминание; спроси, обратил ли пользователь внимание. "
+                        "Ответ в чат Telegram — tg_send_message только после «да». MAX только читать.)")
+                asst_text = "Вот что нашёл в учебных чатах Telegram и в папке MAX «Учеба»:\n" + plain + note
                 try:
                     tg_bot.remember_anchor(cid, ids, title, user_text, asst_text)
                     tg_bot.seed_dialog(cid, title, user_text, asst_text)
@@ -8546,36 +8597,42 @@ def study_chats_scan(chat_id=None, manual: bool = False, slot: str = "") -> dict
 
         if not triage_ok:
             items = _study_fresh_items(flags, state)
-            sent = _study_send_digest(token, owner, items, label, False, False, len(targets), total) if items else 0
-            if items and sent:
-                _study_mark_notified(items)
+            pack = _study_journal_pack(app, items)
+            novel, reminders = pack["novel"], pack["reminders"]
+            sent = _study_send_digest(token, owner, novel, label, False, False, len(targets), total, reminders) if (novel or reminders) else 0
+            if (novel or reminders) and sent:
+                _study_mark_notified(novel + [r.get("item") for r in reminders if r.get("item")])
+                _study_journal_mark(pack)
             err = ("Полный разбор учебных чатов не удался"
-                   + (", отправил только прямые упоминания и ответы вам." if items and sent else ", уведомление не отправлено.")
+                   + (", отправил только прямые упоминания и ответы вам." if (novel or reminders) and sent else ", уведомление не отправлено.")
                    + " Эти сообщения не пропущены.")
-            return finish(False, err, True, bool(items and sent), [], hold, items, sent, False)
+            return finish(False, err, True, bool((novel or reminders) and sent), [], hold, novel, sent, False)
 
         items = _study_fresh_items(_study_merge_items(raw_items, flags, chats), state)
         if read_errors and not items and not (manual or cfg["notifyEmpty"]):
             return finish(False, "Не удалось прочитать часть учебных чатов: " + "; ".join(read_errors[:5]),
                           True, False, [], hold, [], 0, False)
-        backlog = len(items) > 12
-        want_notice = bool(items) or ((manual or cfg["notifyEmpty"]) and not read_errors)
-        sent = _study_send_digest(token, owner, items, label, manual, cfg["notifyEmpty"] and not read_errors,
-                                  len(targets), total) if want_notice else 0
+        pack = _study_journal_pack(app, items)
+        novel, reminders = pack["novel"], pack["reminders"]
+        backlog = len(novel) + len(reminders) > 12
+        want_notice = bool(novel or reminders) or ((manual or cfg["notifyEmpty"]) and not read_errors)
+        sent = _study_send_digest(token, owner, novel, label, manual, cfg["notifyEmpty"] and not read_errors,
+                                  len(targets), total, reminders) if want_notice else 0
         if want_notice and sent == 0:
             return finish(False, "Не удалось отправить уведомление в Telegram. Сообщения не пропущены.",
-                          True, False, [], hold, items, 0, False)
-        if items and sent:
-            _study_mark_notified(items)
+                          True, False, [], hold, novel, 0, False)
+        if (novel or reminders) and sent:
+            _study_mark_notified(novel + [r.get("item") for r in reminders if r.get("item")])
+            _study_journal_mark(pack)
         advance = [] if (backlog or read_errors) else [key for key, _since in read_ok]
         pend = hold if (backlog or read_errors) else {}
         if read_errors:
             return finish(False, "Не удалось прочитать часть учебных чатов: " + "; ".join(read_errors[:5]),
-                          not sent, bool(sent), advance, pend, items, sent, False)
+                          not sent, bool(sent), advance, pend, novel, sent, False)
         if backlog:
-            return finish(False, "", False, True, [], hold, items, sent, False)
-        quiet = sent == 0 and not items
-        return finish(True, "", False, False, advance, {}, items, sent, quiet)
+            return finish(False, "", False, True, [], hold, novel, sent, False)
+        quiet = sent == 0 and not novel and not reminders
+        return finish(True, "", False, False, advance, {}, novel, sent, quiet)
     except _AssistantError as e:
         return _study_scan_record(token, owner, done=False, err=str(e), slot=slot, told=False, notify_err=True,
                                   advance=[], pending={}, started=0, result={}, replace_pending=False)
@@ -11998,6 +12055,11 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, weather_cal_status())
         elif route == "/api/study/status":
             self._json(200, study_status())
+        elif route == "/api/study/journals":
+            self._json(200, {"entries": study_journal.list_entries()} if study_journal else {"entries": [], "error": "Журнал на сервере недоступен."})
+        elif route == "/api/study/journal/tools":
+            state = (load_app_data() or {}).get("telegramSkills")
+            self._json(200, study_journal.voice_payload(state) if study_journal else {"tools": [], "prompt": ""})
         elif route == "/api/study/chats/pick":
             self._json(200, study_chats_pick(self._apple_query().get("q", "")))
         elif route == "/api/study/chats/status":
@@ -12239,6 +12301,27 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 payload = {}
             result = newspaper_print_report(payload if isinstance(payload, dict) else {})
             self._json(200 if result.get("ok") else 400, result)
+        elif route == "/api/study/journals":
+            length = self._content_length() or 0
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}") if length and length <= 64 * 1024 else {}
+            except Exception:
+                payload = {}
+            if not study_journal:
+                self._json(200, {"error": "Журнал на сервере недоступен."})
+            else:
+                self._json(200, study_journal.user_apply(load_app_data() or {}, payload if isinstance(payload, dict) else {}))
+        elif route == "/api/study/journal/tool":
+            length = self._content_length() or 0
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}") if length and length <= 64 * 1024 else {}
+            except Exception:
+                payload = {}
+            name = (payload or {}).get("name") if isinstance(payload, dict) else ""
+            if not study_journal or name not in study_journal.TOOL_NAMES:
+                self._json(400, {"error": "unknown tool"})
+            else:
+                self._json(200, execute_assistant_tool(name, (payload or {}).get("input") or {}, load_app_data() or {}, "", False))
         elif route in ("/api/study/brief", "/api/study/chats/scan"):
             length = self._content_length() or 0
             try:

@@ -1150,6 +1150,36 @@
   }
   .st-note-btn.has { opacity: 1; filter: none; }
   .st-note-btn:active { transform: scale(.85) rotate(-12deg); }
+  .st-jbtn { position: relative; }
+  .st-jcount {
+    position: absolute; top: -4px; right: -4px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 99px;
+    background: var(--c, #6366f1); color: #fff; font-size: 10px; font-weight: 700; line-height: 15px;
+  }
+  .st-jpeek {
+    display: block; width: calc(100% - 20px); margin: 0 10px 8px; padding: 8px 10px; text-align: left;
+    border-radius: 10px; border: 1px solid color-mix(in srgb, var(--c) 28%, var(--border));
+    background: color-mix(in srgb, var(--c) 8%, var(--surface)); color: var(--text); font-size: 12px; line-height: 1.35;
+  }
+  .st-jpeek b { font-weight: 650; }
+  .st-jpeek div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .st-jsec { margin-bottom: 16px; }
+  .st-jsec h3 { font-size: 13px; font-weight: 700; margin-bottom: 8px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+  .st-jrow { display: flex; gap: 8px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .st-jrow p { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.4; }
+  .st-jmeta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .st-jops { display: flex; gap: 6px; flex-shrink: 0; }
+  .st-jops button, .st-jadd button { min-height: 36px; }
+  .st-jgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .st-jgrid label, .st-jadd label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
+  .st-jgrid input, .st-jgrid select, .st-jgrid textarea, .st-jadd input, .st-jadd textarea, .st-jadd select {
+    width: 100%; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; background: var(--surface); color: var(--text); font-size: 14px;
+  }
+  .st-jadd { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .st-jtask { margin: 4px 0 12px; padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--c) 8%, var(--surface)); border: 1px solid color-mix(in srgb, var(--c) 25%, var(--border)); }
+  .st-jtask button { font-size: 12px; color: var(--c); font-weight: 650; margin-top: 4px; }
+  @media (max-width: 640px) {
+    .st-jgrid { grid-template-columns: 1fr; }
+  }
 
   .st-sticky {
     position: relative; margin: 0 10px 8px; padding: 8px 30px 8px 10px; border-radius: 10px; cursor: pointer;
@@ -15889,7 +15919,7 @@ const VOICE_DATA_DOMAINS = {
     },
   },
   study: {
-    label: 'Учёба: предметы (столбцы канбана, с заметкой note о предмете/преподавателе) и задания в них (status: todo|doing|done, due YYYY-MM-DD, kind: hw|test|exam|project|lab|read|other, important, subtasks)',
+    label: 'Учёба: предметы и задания. Журнал предмета (факты, баллы, зачёты) этим снимком не приходит — его читай и правь инструментами study_journal_list / study_journal_write / study_journal_delete',
     get: d => ({ subjects: d.studySubjects || [], tasks: (d.studyTasks || []).filter(t => t.status !== 'done' || (t.doneAt || 0) > Date.now() - 30 * 86400000) }),
   },
   wishlist: {
@@ -16874,6 +16904,21 @@ async function loadPlanTools(force) {
   } catch (e) { /* без планирования ассистент работает как раньше */ }
 }
 
+let STUDY_JOURNAL_TOOLS = [];
+let STUDY_JOURNAL_PROMPT = '';
+let studyJournalToolsLoadedAt = 0;
+async function loadStudyJournalTools(force) {
+  if (!force && Date.now() - studyJournalToolsLoadedAt < 20000) return;
+  try {
+    const r = await fetch('/api/study/journal/tools');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    STUDY_JOURNAL_TOOLS = j.tools || [];
+    STUDY_JOURNAL_PROMPT = j.prompt || '';
+    studyJournalToolsLoadedAt = Date.now();
+  } catch (e) { STUDY_JOURNAL_TOOLS = []; STUDY_JOURNAL_PROMPT = ''; }
+}
+
 let MOODLE_AGENT_TOOLS = [];
 let MOODLE_AGENT_PROMPT = '';
 let moodleToolsLoadedAt = 0;
@@ -16975,7 +17020,7 @@ ${writeList}
 
 9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй.
 
-${TG_AGENT_PROMPT}${MAX_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}${MOODLE_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true. Для события календаря в тексте подтверждения обязательно название календаря из message; если buttons:true — вопрос с кнопками уже в чате, не дублируй. needs_choice значит календарь не выбран: выбери лучший из calendars и повтори вызов, пользователю пока не пиши. needs_clarification — задай вопрос из message и остановись, событие не создано.
+${TG_AGENT_PROMPT}${MAX_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}${MOODLE_AGENT_PROMPT}${STUDY_JOURNAL_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true. Для события календаря в тексте подтверждения обязательно название календаря из message; если buttons:true — вопрос с кнопками уже в чате, не дублируй. needs_choice значит календарь не выбран: выбери лучший из calendars и повтори вызов, пользователю пока не пиши. needs_clarification — задай вопрос из message и остановись, событие не создано.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
@@ -17148,6 +17193,17 @@ async function executeVoiceTool(name, input, nav, data) {
       return noop(await res.json());
     } catch (e) {
       return noop({ error: 'Сервер не ответил по кабинету: ' + e.message });
+    }
+  }
+  if (name.startsWith('study_journal_')) {
+    try {
+      const res = await fetch('/api/study/journal/tool', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, input }),
+      });
+      return noop(await res.json());
+    } catch (e) {
+      return noop({ error: 'Сервер не ответил по журналу учёбы: ' + e.message });
     }
   }
   if (name === 'study_schedule') {
@@ -17339,6 +17395,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
   await loadPlanTools();
   await loadMoodleTools();
   await loadRouteTools();
+  await loadStudyJournalTools();
   const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
   let pendingConfirmation = false;
   for (let step = 0; step < maxSteps; step++) {
@@ -17350,7 +17407,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MAX_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS] }),
+      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MAX_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS, ...STUDY_JOURNAL_TOOLS] }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -17462,8 +17519,9 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps, ef
   await loadPlanTools();
   await loadMoodleTools();
   await loadRouteTools();
+  await loadStudyJournalTools();
   const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
-  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MAX_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS].map(t => ({
+  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MAX_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS, ...STUDY_JOURNAL_TOOLS].map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.input_schema },
   }));
@@ -43128,6 +43186,171 @@ const studyStreak = (tasks) => {
   return n;
 };
 
+function studyJournalGradeLine(e) {
+  if (!e) return '';
+  const n = (v) => (v == null || v === '' || Number.isNaN(Number(v)) ? '' : (Number(v) === Math.trunc(Number(v)) ? String(Math.trunc(Number(v))) : String(v)));
+  const bits = [];
+  if (e.points != null && e.points !== '') bits.push(n(e.points) + (e.pointsMax != null && e.pointsMax !== '' ? ' из ' + n(e.pointsMax) : ' баллов'));
+  if (e.need) bits.push('для зачёта ' + e.need);
+  if (e.passed === true) bits.push('сдал');
+  else if (e.passed === false) bits.push('не сдал');
+  return bits.join(', ');
+}
+function studyJournalExamLine(e) {
+  if (!e) return '';
+  return [e.text || 'Зачёт', e.date ? (e.date + (e.time ? ' ' + e.time : '')) : '', e.place, e.format, e.deadline ? ('до ' + e.deadline) : '', e.note].filter(Boolean).join(', ');
+}
+const STUDY_JOURNAL_SRC = { assistant: 'ассистент', scan: 'чаты', user: 'вы' };
+
+function StudyJournalModal({ subject, entries, onClose, onChange }) {
+  const facts = entries.filter(e => e.kind === 'fact');
+  const grade = entries.find(e => e.kind === 'grade') || null;
+  const exams = entries.filter(e => e.kind === 'exam').slice().sort((a, b) => String(a.date || '9999').localeCompare(String(b.date || '9999')));
+  const [factText, setFactText] = useState('');
+  const [edit, setEdit] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [g, setG] = useState({ points: '', pointsMax: '', need: '', passed: '' });
+  const blankExam = { text: 'Зачёт', date: '', time: '', place: '', format: '', deadline: '', note: '' };
+  const [exam, setExam] = useState(blankExam);
+  const gradeKey = grade ? `${grade.id}:${grade.updatedAt}` : '';
+  useEffect(() => {
+    const cur = grade;
+    setG({
+      points: cur && cur.points != null ? cur.points : '',
+      pointsMax: cur && cur.pointsMax != null ? cur.pointsMax : '',
+      need: (cur && cur.need) || '',
+      passed: cur && cur.passed === true ? 'yes' : cur && cur.passed === false ? 'no' : '',
+    });
+  }, [gradeKey]);
+  const call = async (body) => {
+    setErr('');
+    setBusy(true);
+    try {
+      const res = await fetch('/api/study/journals', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const j = await res.json();
+      if (j.error) { setErr(j.error); return null; }
+      await onChange();
+      return j;
+    } catch (e) {
+      setErr('Сервер не ответил');
+      return null;
+    } finally { setBusy(false); }
+  };
+  const num = (v) => (v === '' || v == null ? null : Number(v));
+  const saveGrade = () => call({
+    action: grade ? 'update' : 'add', ...(grade ? { id: grade.id } : { subjectId: subject.id }),
+    kind: 'grade', points: num(g.points), points_max: num(g.pointsMax), need: g.need,
+    passed: g.passed === 'yes' ? true : g.passed === 'no' ? false : null,
+  });
+  const saveExam = (row, isNew) => call({
+    action: isNew ? 'add' : 'update',
+    ...(isNew ? { subjectId: subject.id } : { id: row.id }),
+    kind: 'exam', text: row.text || 'Зачёт', date: row.date, time: row.time, place: row.place,
+    format: row.format, deadline: row.deadline, note: row.note,
+  });
+  return (
+    <Modal title={`Журнал · ${subject.name}`} onClose={onClose} wide>
+      {err && <div className="text-sm text-amber-600 mb-3">{err}</div>}
+      <div className="st-jsec">
+        <h3>Баллы</h3>
+        <div className="st-jgrid">
+          <label>Сейчас<input inputMode="decimal" value={g.points} onChange={e => setG({ ...g, points: e.target.value })} /></label>
+          <label>Из<input inputMode="decimal" value={g.pointsMax} onChange={e => setG({ ...g, pointsMax: e.target.value })} /></label>
+          <label>Для зачёта<input value={g.need} placeholder="60 баллов" onChange={e => setG({ ...g, need: e.target.value })} /></label>
+          <label>Сдал
+            <select value={g.passed} onChange={e => setG({ ...g, passed: e.target.value })}>
+              <option value="">не отмечено</option>
+              <option value="yes">сдал</option>
+              <option value="no">не сдал</option>
+            </select>
+          </label>
+        </div>
+        <div className="flex gap-2 mt-2">
+          <button className="btn-primary text-sm" disabled={busy} onClick={saveGrade}>Сохранить баллы</button>
+          {grade && <button className="btn-secondary text-sm" disabled={busy} onClick={() => call({ action: 'delete', id: grade.id })}>Удалить</button>}
+        </div>
+      </div>
+      <div className="st-jsec">
+        <h3>Зачёты</h3>
+        {exams.map(ex => (
+          <div key={ex.id} className="st-jrow">
+            <div className="min-w-0 flex-1">
+              {edit && edit.id === ex.id ? (
+                <div className="st-jgrid">
+                  <label>Название<input value={edit.text || ''} onChange={e => setEdit({ ...edit, text: e.target.value })} /></label>
+                  <label>Дата<input type="date" value={edit.date || ''} onChange={e => setEdit({ ...edit, date: e.target.value })} /></label>
+                  <label>Время<input type="time" value={edit.time || ''} onChange={e => setEdit({ ...edit, time: e.target.value })} /></label>
+                  <label>Место<input value={edit.place || ''} onChange={e => setEdit({ ...edit, place: e.target.value })} /></label>
+                  <label>Форма<input value={edit.format || ''} onChange={e => setEdit({ ...edit, format: e.target.value })} /></label>
+                  <label>Дедлайн<input type="date" value={edit.deadline || ''} onChange={e => setEdit({ ...edit, deadline: e.target.value })} /></label>
+                  <label style={{ gridColumn: '1 / -1' }}>Заметка<textarea rows={2} value={edit.note || ''} onChange={e => setEdit({ ...edit, note: e.target.value })} /></label>
+                </div>
+              ) : (
+                <>
+                  <p>{studyJournalExamLine(ex)}</p>
+                  <div className="st-jmeta">{STUDY_JOURNAL_SRC[ex.source] || ex.source}{ex.acked ? '' : ' · не отмечено'}</div>
+                </>
+              )}
+            </div>
+            <div className="st-jops">
+              {edit && edit.id === ex.id ? (
+                <button className="btn-primary text-sm" disabled={busy} onClick={async () => { if (await saveExam(edit, false)) setEdit(null); }}>Ок</button>
+              ) : (
+                <button className="btn-secondary text-sm" onClick={() => setEdit({ ...ex })}>Править</button>
+              )}
+              <button className="btn-secondary text-sm" disabled={busy} onClick={() => call({ action: 'delete', id: ex.id })}>Удалить</button>
+            </div>
+          </div>
+        ))}
+        <div className="st-jadd">
+          <div className="st-jgrid">
+            <label>Название<input value={exam.text} onChange={e => setExam({ ...exam, text: e.target.value })} /></label>
+            <label>Дата<input type="date" value={exam.date} onChange={e => setExam({ ...exam, date: e.target.value })} /></label>
+            <label>Время<input type="time" value={exam.time} onChange={e => setExam({ ...exam, time: e.target.value })} /></label>
+            <label>Место<input value={exam.place} placeholder="ауд. 214" onChange={e => setExam({ ...exam, place: e.target.value })} /></label>
+            <label>Форма<input value={exam.format} placeholder="письменно" onChange={e => setExam({ ...exam, format: e.target.value })} /></label>
+            <label>Дедлайн<input type="date" value={exam.deadline} onChange={e => setExam({ ...exam, deadline: e.target.value })} /></label>
+            <label style={{ gridColumn: '1 / -1' }}>Заметка<textarea rows={2} value={exam.note} onChange={e => setExam({ ...exam, note: e.target.value })} /></label>
+          </div>
+          <button className="btn-secondary text-sm self-start" disabled={busy} onClick={async () => { if (await saveExam(exam, true)) setExam(blankExam); }}>Добавить зачёт</button>
+        </div>
+      </div>
+      <div className="st-jsec">
+        <h3>Память</h3>
+        {facts.map(f => (
+          <div key={f.id} className="st-jrow">
+            <div className="min-w-0 flex-1">
+              {edit && edit.id === f.id ? (
+                <textarea rows={3} value={edit.text || ''} onChange={e => setEdit({ ...edit, text: e.target.value })} />
+              ) : <p>{f.text}</p>}
+              <div className="st-jmeta">{STUDY_JOURNAL_SRC[f.source] || f.source}{f.acked ? '' : ' · не отмечено'}</div>
+            </div>
+            <div className="st-jops">
+              {edit && edit.id === f.id ? (
+                <button className="btn-primary text-sm" disabled={busy} onClick={async () => { if (await call({ action: 'update', id: f.id, kind: 'fact', text: edit.text })) setEdit(null); }}>Ок</button>
+              ) : (
+                <button className="btn-secondary text-sm" onClick={() => setEdit({ ...f })}>Править</button>
+              )}
+              {!f.acked && <button className="btn-secondary text-sm" disabled={busy} onClick={() => call({ action: 'ack', id: f.id })}>Видел</button>}
+              <button className="btn-secondary text-sm" disabled={busy} onClick={() => call({ action: 'delete', id: f.id })}>Удалить</button>
+            </div>
+          </div>
+        ))}
+        {!facts.length && <div className="text-sm text-[var(--text-muted)]">Пока пусто. Ассистент дописывает сам, можно добавить и руками.</div>}
+        <div className="st-jadd">
+          <textarea rows={2} value={factText} placeholder="Что помнить по предмету" onChange={e => setFactText(e.target.value)} />
+          <button className="btn-secondary text-sm self-start" disabled={busy || !factText.trim()} onClick={async () => {
+            if (await call({ action: 'add', subjectId: subject.id, kind: 'fact', text: factText.trim() })) setFactText('');
+          }}>Добавить</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function StudyView({ data, setData, onBack }) {
   const subjects = useMemo(() => studySortSubjects(data.studySubjects || []), [data.studySubjects]);
   const tasks = data.studyTasks || [];
@@ -43139,7 +43362,11 @@ function StudyView({ data, setData, onBack }) {
   const [editing, setEditing] = useState(null);
   const [manage, setManage] = useState(false);
   const [activeCol, setActiveCol] = useState(0);
+  const [journals, setJournals] = useState([]);
+  const [journalFor, setJournalFor] = useState(null);
   const boardRef = useRef(null);
+  const reloadJournals = () => fetch('/api/study/journals').then(r => (r.ok ? r.json() : { entries: [] })).then(j => setJournals(j.entries || [])).catch(() => {});
+  useEffect(() => { reloadJournals(); }, []);
 
   useEffect(() => { try { localStorage.setItem('studyView', view); } catch {} }, [view]);
 
@@ -43416,14 +43643,18 @@ function StudyView({ data, setData, onBack }) {
         {subjects.map((s, i) => {
           const n = active.filter(t => t.subjectId === s.id && matches(t)).length;
           return (
-            <button
-              key={s.id}
-              className={`st-subjpill ${view === 'board' && i === activeCol ? 'on' : ''}`}
-              style={{ '--c': s.color }}
-              onClick={() => jumpTo(i)}
-            >
-              <span>{s.emoji || '📘'}</span>{s.name}{n > 0 && <i>{n}</i>}
-            </button>
+            <span key={s.id} style={{ display: 'contents' }}>
+              <button
+                className={`st-subjpill ${view === 'board' && i === activeCol ? 'on' : ''}`}
+                style={{ '--c': s.color }}
+                onClick={() => jumpTo(i)}
+              >
+                <span>{s.emoji || '📘'}</span>{s.name}{n > 0 && <i>{n}</i>}
+              </button>
+              {journals.some(e => e.subjectId === s.id) && (
+                <button className="st-subjpill" style={{ '--c': s.color }} title={`Журнал: ${s.name}`} onClick={() => setJournalFor(s)}>📖</button>
+              )}
+            </span>
           );
         })}
       </div>
@@ -43445,6 +43676,8 @@ function StudyView({ data, setData, onBack }) {
                 ...d,
                 studySubjects: (d.studySubjects || []).map(x => (x.id === s.id ? { ...x, note } : x)),
               }))}
+              journalEntries={journals.filter(e => e.subjectId === s.id)}
+              onJournal={() => setJournalFor(s)}
             />
           ))}
           <button className="st-col-add" onClick={() => setManage(true)}>
@@ -43469,6 +43702,19 @@ function StudyView({ data, setData, onBack }) {
           onSave={saveTask}
           onDelete={deleteTask}
           onClose={() => setEditing(null)}
+          journal={journals.filter(e => e.subjectId === editing.subjectId)}
+          onOpenJournal={() => {
+            const sub = subjects.find(s => s.id === editing.subjectId);
+            if (sub) setJournalFor(sub);
+          }}
+        />
+      )}
+      {journalFor && (
+        <StudyJournalModal
+          subject={journalFor}
+          entries={journals.filter(e => e.subjectId === journalFor.id)}
+          onClose={() => setJournalFor(null)}
+          onChange={reloadJournals}
         />
       )}
       {manage && <StudySubjectsModal data={data} setData={setData} rea={rea} onClose={() => setManage(false)} />}
@@ -43549,7 +43795,7 @@ function StudySubjectNote({ note, onSave, startEditing }) {
   );
 }
 
-function StudyColumn({ subject, tasks, matches, filtered, onAdd, onOpen, onStatus, onToggleSub, onNote }) {
+function StudyColumn({ subject, tasks, matches, filtered, onAdd, onOpen, onStatus, onToggleSub, onNote, journalEntries, onJournal }) {
   const [noteNew, setNoteNew] = useState(0);
   const [adding, setAdding] = useState(false);
   const [text, setText] = useState('');
@@ -43559,6 +43805,10 @@ function StudyColumn({ subject, tasks, matches, filtered, onAdd, onOpen, onStatu
   const shown = activeTasks.filter(matches);
   const done = tasks.filter(t => t.status === 'done').sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
   const over = activeTasks.filter(t => (studyDaysLeft(t.due) ?? 1) < 0).length;
+  const journal = journalEntries || [];
+  const jGrade = journal.find(e => e.kind === 'grade');
+  const jExam = journal.filter(e => e.kind === 'exam').sort((a, b) => String(a.date || '9999').localeCompare(String(b.date || '9999')))[0];
+  const jFact = journal.find(e => e.kind === 'fact');
 
   useEffect(() => { if (adding && inputRef.current) inputRef.current.focus(); }, [adding]);
 
@@ -43585,9 +43835,19 @@ function StudyColumn({ subject, tasks, matches, filtered, onAdd, onOpen, onStatu
           title={subject.note ? 'Заметка по предмету' : 'Добавить заметку'}
           onClick={() => setNoteNew(n => n + 1)}
         >📌</button>
+        <button className={`st-note-btn st-jbtn ${journal.length ? 'has' : ''}`} title="Журнал предмета" onClick={onJournal}>
+          📖{journal.length > 0 && <span className="st-jcount">{journal.length}</span>}
+        </button>
         <StudyRing value={done.length} total={done.length + activeTasks.length} color={subject.color} />
       </div>
       <StudySubjectNote key={noteNew} startEditing={noteNew > 0} note={subject.note} onSave={onNote} />
+      {(jGrade || jExam || jFact) && (
+        <button className="st-jpeek" onClick={onJournal}>
+          {jGrade && <div><b>Баллы.</b> {studyJournalGradeLine(jGrade)}</div>}
+          {jExam && <div><b>Зачёт.</b> {studyJournalExamLine(jExam)}</div>}
+          {jFact && <div><b>Память.</b> {jFact.text}</div>}
+        </button>
+      )}
 
       <div className="st-col-body">
         {shown.map(t => (
@@ -44102,7 +44362,7 @@ function StudyAttachViewer({ att, onClose }) {
   );
 }
 
-function StudyTaskModal({ initial, subjects, isNew, rea, onMapSubject, parent, child, onSave, onDelete, onClose }) {
+function StudyTaskModal({ initial, subjects, isNew, rea, onMapSubject, parent, child, onSave, onDelete, onClose, journal, onOpenJournal }) {
   const [t, setT] = useState(() => ({ subtasks: [], attachments: [], comments: [], ...initial }));
   const [subText, setSubText] = useState('');
   const [cmText, setCmText] = useState('');
@@ -44257,6 +44517,16 @@ function StudyTaskModal({ initial, subjects, isNew, rea, onMapSubject, parent, c
             </button>
           ))}
         </div>
+
+        {(journal || []).length > 0 && (
+          <div className="st-jtask">
+            <div className="text-xs font-semibold mb-1">Журнал предмета</div>
+            {(journal.find(e => e.kind === 'grade')) && <div className="text-sm">Баллы: {studyJournalGradeLine(journal.find(e => e.kind === 'grade'))}</div>}
+            {journal.filter(e => e.kind === 'exam').slice(0, 2).map(ex => <div key={ex.id} className="text-sm">Зачёт: {studyJournalExamLine(ex)}</div>)}
+            {journal.filter(e => e.kind === 'fact').slice(0, 3).map(f => <div key={f.id} className="text-sm">{f.text}</div>)}
+            {onOpenJournal && <button type="button" onClick={onOpenJournal}>Открыть журнал</button>}
+          </div>
+        )}
 
         {isPresent && parent && <div className="st-linkrow info">↩ Подготовка: <b>{parent.title || 'без названия'}</b></div>}
         {!isPresent && (child ? (
