@@ -22,6 +22,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 try:
     import requests
@@ -70,9 +71,30 @@ def api(token: str, method: str, payload: dict = None, files: dict = None, timeo
             r = requests.post(url, json=payload or {}, timeout=timeout)
         j = r.json()
     except Exception as e:
-        raise TgApiError(f"{method}: {e}")
+        # В тексте исключения requests бывает URL с токеном — наружу его не отдаём.
+        err = TgApiError(f"{method}: ошибка связи")
+        err.transient = True
+        raise err from None
     if not j.get("ok"):
-        raise TgApiError(j.get("description") or f"{method}: HTTP {r.status_code}")
+        description = j.get("description") or f"{method}: HTTP {r.status_code}"
+        err = TgApiError(description)
+        low = description.casefold()
+        status = getattr(r, "status_code", 0) or 0
+        err.too_big = "file is too big" in low
+        err.transient = (
+            not err.too_big and "invalid file" not in low and "unauthorized" not in low
+            and ("temporarily unavailable" in low or "retry after" in low or "timeout" in low
+                 or "timed out" in low or "updating" in low
+                 or status in (408, 409, 425, 429) or status >= 500)
+        )
+        params = j.get("parameters") if isinstance(j.get("parameters"), dict) else {}
+        retry = params.get("retry_after")
+        if not isinstance(retry, (int, float)):
+            found = re.search(r"retry after\s+(\d+(?:\.\d+)?)", low)
+            retry = float(found.group(1)) if found else None
+        if isinstance(retry, (int, float)) and not isinstance(retry, bool) and retry > 0:
+            err.retry_after = float(retry)
+        raise err
     result = j.get("result")
     try:
         tg_history.record_api_result(method, result)
@@ -1206,29 +1228,229 @@ def recent_photos(chat_id) -> list:
     return [(name, data) for _, name, data in lst if Path(name).suffix.lower() in _PHOTO_EXT]
 
 
-def download_file(token: str, file_id: str, size_hint: int = 0):
-    if size_hint and size_hint > MAX_DOWNLOAD:
+DOWNLOAD_ATTEMPTS = 5
+_GETFILE_TIMEOUT = 15
+_IMAGE_MAGIC = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF87a", b"GIF89a")
+
+
+def _as_size(value) -> int:
+    if isinstance(value, bool) or value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return 0
+
+
+def _retry_after_of(exc) -> float:
+    try:
+        seconds = float(getattr(exc, "retry_after", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if seconds <= 0:
+        return 0.0
+    return min(seconds, 12.0)
+
+
+def _download_pause(attempt: int, exc) -> float:
+    return max(_retry_after_of(exc), min(8.0, 0.5 * (2 ** attempt)))
+
+
+def _safe_download_error(exc: Exception) -> TgApiError:
+    """Повторная ошибка без URL, токена и тела файла."""
+    err = TgApiError("Не удалось скачать вложение")
+    err.transient = bool(getattr(exc, "transient", False)) or not isinstance(exc, TgApiError)
+    err.too_big = bool(getattr(exc, "too_big", False))
+    retry = _retry_after_of(exc)
+    if retry:
+        err.retry_after = retry
+    return err
+
+
+def _header(response, name: str):
+    headers = getattr(response, "headers", None)
+    getter = getattr(headers, "get", None)
+    if not callable(getter):
         return None
-    for attempt in range(3):
+    try:
+        value = getter(name)
+    except Exception:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(int(value))
+    return None
+
+
+def _close_response(response):
+    close = getattr(response, "close", None)
+    if callable(close):
         try:
-            info = api(token, "getFile", {"file_id": file_id})
-            if info.get("file_size", 0) > MAX_DOWNLOAD:
-                return None
-            path = info.get("file_path")
-            if not path:
-                raise TgApiError("getFile: Telegram не вернул путь к файлу")
-            r = requests.get(f"https://api.telegram.org/file/bot{token}/{path}", timeout=60)
-            if r.ok:
-                return r.content if len(r.content) <= MAX_DOWNLOAD else None
-            if r.status_code not in (404, 408, 429) and r.status_code < 500:
-                raise TgApiError(f"Скачивание вложения: HTTP {r.status_code}")
+            close()
         except Exception:
-            if attempt == 2:
-                # Исключения requests могут содержать URL с токеном бота.
-                raise TgApiError("Не удалось скачать вложение после трёх попыток") from None
-        if attempt < 2:
-            time.sleep(0.5 * (attempt + 1))
-    raise TgApiError("Не удалось скачать вложение после трёх попыток")
+            pass
+
+
+def _file_path_url(token: str, path) -> str:
+    raw = path.strip() if isinstance(path, str) else ""
+    parts = raw.split("/") if raw else []
+    if not raw:
+        err = TgApiError("getFile: Telegram не вернул путь к файлу")
+        err.transient = True
+        raise err
+    if raw.startswith(("/", "\\")) or "\\" in raw or any(part in ("", ".", "..") for part in parts):
+        raise TgApiError("getFile: Telegram не вернул путь к файлу")
+    # Токен остаётся в URL запроса и не попадает в текст ошибки.
+    return "https://api.telegram.org/file/bot" + token + "/" + quote(raw, safe="/")
+
+
+def looks_like_image(data: bytes) -> bool:
+    if data.startswith(_IMAGE_MAGIC):
+        return True
+    return len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP"
+
+
+def _file_not_ready(data: bytes) -> bool:
+    """Ответ file/bot, пока файл ещё докачивается: пусто, «updating» или JSON-ошибка Bot API.
+
+    Тело настоящего вложения сюда не относится и в журнал не пишется.
+    """
+    if not data:
+        return True
+    head = data[:4096].lstrip()
+    if len(data) <= 64 and head.lower().startswith(b"updating"):
+        return True
+    if not head.startswith(b"{") or len(data) > 4096:
+        return False
+    try:
+        obj = json.loads(data.decode("utf-8"))
+    except Exception:
+        return False
+    return isinstance(obj, dict) and obj.get("ok") is False and "description" in obj
+
+
+def download_file(token: str, file_id: str, size_hint: int = 0, attempts: int = DOWNLOAD_ATTEMPTS, expect_image: bool = False):
+    """Скачать файл бота. None — он больше 20 МБ. Иначе bytes.
+
+    getFile и ссылка file/bot иногда отвечают раньше, чем файл появился на раздаче
+    (нет file_path, 404/403, «temporarily unavailable», тело «updating»). Это повтор,
+    а не постоянный отказ. Содержимое файла не логируется.
+    """
+    if _as_size(size_hint) > MAX_DOWNLOAD:
+        return None
+    attempts = max(1, int(attempts))
+    for attempt in range(attempts):
+        response = None
+        try:
+            info = api(token, "getFile", {"file_id": file_id}, timeout=_GETFILE_TIMEOUT)
+            if not isinstance(info, dict):
+                err = TgApiError("getFile: пустой ответ")
+                err.transient = True
+                raise err
+            if _as_size(info.get("file_size")) > MAX_DOWNLOAD:
+                return None
+            url = _file_path_url(token, info.get("file_path"))
+            response = requests.get(url, timeout=(10, 60))
+            if not getattr(response, "ok", False):
+                status = getattr(response, "status_code", 0) or 0
+                err = TgApiError(f"Скачивание вложения: HTTP {status}")
+                err.transient = status in (403, 404, 408, 409, 425, 429) or status >= 500 or status == 0
+                retry = _header(response, "Retry-After")
+                if retry and retry.isdigit():
+                    err.retry_after = float(retry)
+                raise err
+            declared = _header(response, "Content-Length")
+            if declared and declared.isdigit() and int(declared) > MAX_DOWNLOAD:
+                return None
+            data = getattr(response, "content", b"")
+            if not isinstance(data, (bytes, bytearray)):
+                err = TgApiError("getFile: файл ещё не готов")
+                err.transient = True
+                raise err
+            data = bytes(data)
+            if len(data) > MAX_DOWNLOAD:
+                return None
+            if _file_not_ready(data) or (expect_image and not looks_like_image(data)):
+                err = TgApiError("getFile: файл ещё не готов")
+                err.transient = True
+                raise err
+            return data
+        except Exception as exc:
+            safe = _safe_download_error(exc)
+            if safe.too_big:
+                return None
+            if not safe.transient:
+                raise TgApiError("Не удалось скачать вложение") from None
+            if attempt == attempts - 1:
+                err = TgApiError("Не удалось скачать вложение")
+                err.transient = True
+                if getattr(safe, "retry_after", None):
+                    err.retry_after = safe.retry_after
+                raise err from None
+            time.sleep(_download_pause(attempt, safe))
+        finally:
+            if response is not None:
+                _close_response(response)
+    raise TgApiError("Не удалось скачать вложение")
+
+
+def _photo_candidates(sizes) -> list:
+    ranked = []
+    for photo in sizes or []:
+        if not isinstance(photo, dict) or not photo.get("file_id"):
+            continue
+        width, height = _as_size(photo.get("width")), _as_size(photo.get("height"))
+        ranked.append(((_as_size(photo.get("file_size")), width * height), photo))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    seen, out = set(), []
+    for _, photo in ranked:
+        file_id = photo["file_id"]
+        if file_id in seen:
+            continue
+        seen.add(file_id)
+        out.append(photo)
+    return out
+
+
+def download_photo(token: str, sizes) -> bytes | None:
+    """Самый крупный размер фото; если он ещё не готов или больше 20 МБ — следующий.
+
+    None — все размеры больше лимита. Временный сбой самого скачивания — TgApiError.
+    """
+    candidates = _photo_candidates(sizes)
+    usable = [p for p in candidates if _as_size(p.get("file_size")) <= MAX_DOWNLOAD]
+    if candidates and not usable:
+        return None
+    if not usable:
+        raise TgApiError("Не удалось скачать вложение")
+    pending = list(usable)
+    last_retry = None
+    permanent = False
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        still = []
+        for photo in pending:
+            try:
+                data = download_file(token, photo["file_id"], _as_size(photo.get("file_size")),
+                                     attempts=1, expect_image=True)
+            except TgApiError as exc:
+                if getattr(exc, "transient", False):
+                    still.append(photo)
+                    last_retry = exc
+                else:
+                    permanent = True
+                continue
+            if data:
+                return data
+        pending = still
+        if not pending:
+            break
+        if attempt < DOWNLOAD_ATTEMPTS - 1:
+            time.sleep(_download_pause(attempt, last_retry))
+    if pending or permanent:
+        raise TgApiError("Не удалось скачать вложение")
+    return None
 
 
 class MessageBatchBuffer:
@@ -1325,8 +1547,7 @@ def extract_attachments(token: str, msg: dict, openai_key: str = ""):
     images, unsupported = [], None
     chat_id = (msg.get("chat") or {}).get("id")
     if msg.get("photo"):
-        best = max(msg["photo"], key=lambda p: p.get("file_size") or p.get("width", 0) * p.get("height", 0))
-        data = download_file(token, best["file_id"], best.get("file_size", 0))
+        data = download_photo(token, msg["photo"])
         if data:
             images.append({"media_type": "image/jpeg", "b64": base64.b64encode(data).decode()})
             remember_file(chat_id, f"photo_{msg.get('message_id', '')}.jpg", data)
