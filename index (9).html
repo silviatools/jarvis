@@ -12481,8 +12481,25 @@ const DEFAULT_KANBAN_COLUMNS = [
   { id: 'col-3', title: 'Готово',       tasks: [] },
 ];
 
+// Файл стираем, только если на это имя больше никто не ссылается
+// (учебное задание, другая задача, файл режима). exceptIds — задачи,
+// которые как раз удаляем: их собственные вложения не считаются.
+function releaseTaskFiles(data, atts, exceptIds) {
+  const skip = new Set(exceptIds || []);
+  const used = new Set();
+  const walk = (node, skipped) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(x => walk(x, skipped)); return; }
+    const skipNode = !!(node.id && skip.has(node.id));
+    if (!skipped && !skipNode && node.filename) used.add(node.filename);
+    Object.values(node).forEach(v => walk(v, skipped || skipNode));
+  };
+  walk(data, false);
+  studyDeleteAttachments((atts || []).filter(a => a && a.filename && !used.has(a.filename)));
+}
+
 function newTask(overrides = {}) {
-  return { id: crypto.randomUUID(), title: '', startDate: '', dueDate: '', priority: 'none', description: '', subtasks: [], comments: [], createdAt: new Date().toISOString(), ...overrides };
+  return { id: crypto.randomUUID(), title: '', startDate: '', dueDate: '', priority: 'none', description: '', subtasks: [], comments: [], attachments: [], createdAt: new Date().toISOString(), ...overrides };
 }
 function newComment(text) {
   return { id: crypto.randomUUID(), text, createdAt: new Date().toISOString() };
@@ -12553,16 +12570,22 @@ function formatCommentTime(iso) {
   } catch { return ''; }
 }
 
-function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
-  const [f, setF] = useState({ ...task });
+function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose, releaseFiles }) {
+  const [f, setF] = useState({ attachments: [], ...task });
   const [newCom, setNewCom] = useState('');
   const [editingCommentId, setEditingCommentId] = useState(null);
   const [editingCommentText, setEditingCommentText] = useState('');
   const [moveTo, setMoveTo] = useState(colId);
   const [titleError, setTitleError] = useState(false);
   const [confirmState, setConfirmState] = useState(null); // 'discard' | 'delete' | null
+  const [uploading, setUploading] = useState(0);
+  const [viewing, setViewing] = useState(null);
+  const mediaRef = useRef(null);
+  const fileRef = useRef(null);
+  // Загруженное в этом окне: закрытие без «Сохранить» стирает файлы с сервера.
+  const freshRef = useRef(new Set());
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
-  const initialRef = useRef(JSON.stringify({ ...task }));
+  const initialRef = useRef(JSON.stringify({ attachments: [], ...task }));
 
   const addComment = () => {
     if (!newCom.trim()) return;
@@ -12579,9 +12602,51 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
     cancelEditComment();
   };
 
+  const atts = f.attachments || [];
+  const onFiles = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    setUploading(n => n + files.length);
+    const errors = [];
+    await Promise.all(files.map(async (file) => {
+      try {
+        const att = await studyUploadAttachment(file);
+        freshRef.current.add(att.filename);
+        setF(x => ({ ...x, attachments: [...(x.attachments || []), att] }));
+      } catch (e) {
+        errors.push(e.message === 'upload failed' ? `«${file.name}» не загрузился` : e.message);
+      } finally {
+        setUploading(n => n - 1);
+      }
+    }));
+    if (errors.length) alert(errors.join('\n'));
+  };
+  const removeAtt = (att) => {
+    set('attachments', atts.filter(a => a.id !== att.id));
+    if (freshRef.current.has(att.filename)) {
+      freshRef.current.delete(att.filename);
+      releaseFiles([att], [task.id]);
+    }
+  };
+  const dropFresh = () => releaseFiles(atts.filter(a => freshRef.current.has(a.filename)), [task.id]);
+  const dropAllKnown = () => {
+    const seen = new Set();
+    const all = [];
+    for (const att of [...(task.attachments || []), ...atts]) {
+      if (!att || seen.has(att.filename)) continue;
+      seen.add(att.filename);
+      all.push(att);
+    }
+    releaseFiles(all, [task.id]);
+  };
+
   const submit = () => {
     if (!f.title.trim()) { setTitleError(true); return; }
-    onSave({ ...f, notify: !!(f.notify && f.notifyDate), notifyTime: f.notifyTime || '12:00' }, moveTo);
+    if (uploading) return;
+    const keep = new Set(atts.map(a => a.id));
+    releaseFiles((task.attachments || []).filter(a => a && !keep.has(a.id)), [task.id]);
+    freshRef.current.clear();
+    onSave({ ...f, attachments: atts, notify: !!(f.notify && f.notifyDate), notifyTime: f.notifyTime || '12:00' }, moveTo);
   };
 
   const isNew = !task.createdAt || task.title === '';
@@ -12596,7 +12661,7 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
   };
 
   return (
-    <Modal onClose={requestClose} title={isNew ? 'Новая задача' : 'Задача'} wide>
+    <Modal onClose={viewing ? () => setViewing(null) : requestClose} title={isNew ? 'Новая задача' : 'Задача'} wide>
       <div className="grid grid-cols-1 md:grid-cols-[1fr_260px] gap-6">
         <div className="space-y-5 min-w-0">
           <div>
@@ -12653,6 +12718,35 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
           <div><label>Описание</label><textarea value={f.description || ''} onChange={e => set('description', e.target.value)} rows={3} placeholder="Детали, ссылки, заметки..." style={{ resize: 'vertical' }} /></div>
 
           <SubtasksEditor subtasks={f.subtasks || []} onChange={v => set('subtasks', v)} />
+
+          <div style={{ '--c': 'var(--text)' }}>
+            <label>Вложения {atts.length > 0 && `· ${atts.length}`}</label>
+            <div
+              className="st-atts"
+              onDragOver={e => e.preventDefault()}
+              onDrop={e => { e.preventDefault(); onFiles(e.dataTransfer.files); }}
+            >
+              {atts.map(a => (
+                <StudyAttachThumb
+                  key={a.id}
+                  att={a}
+                  onOpen={(x) => (studyPreviewKind(x) ? setViewing(x) : window.open(studyAttUrl(x), '_blank', 'noopener'))}
+                  onRemove={removeAtt}
+                />
+              ))}
+              {Array.from({ length: uploading }).map((_, i) => (
+                <div key={`up-${i}`} className="st-att st-att-loading"><span className="st-spin" /></div>
+              ))}
+              <button type="button" className="st-att-add" onClick={() => mediaRef.current && mediaRef.current.click()}>
+                <Icon name="camera" size={18} />Фото/видео
+              </button>
+              <button type="button" className="st-att-add" onClick={() => fileRef.current && fileRef.current.click()}>
+                <Icon name="clipboard" size={18} />Файл
+              </button>
+              <input ref={mediaRef} type="file" accept="image/*,video/*" multiple hidden onChange={e => { onFiles(e.target.files); e.target.value = ''; }} />
+              <input ref={fileRef} type="file" multiple hidden onChange={e => { onFiles(e.target.files); e.target.value = ''; }} />
+            </div>
+          </div>
         </div>
 
         <div className="space-y-5 min-w-0">
@@ -12715,7 +12809,7 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
       <div className="flex gap-2 pt-5 mt-5 border-t border-[var(--border)]">
         {!isNew && <button onClick={() => setConfirmState('delete')} className="btn-secondary px-3 text-red-500"><Icon name="trash" size={16}/></button>}
         <button onClick={requestClose} className="btn-secondary flex-1">Отмена</button>
-        <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+        <button onClick={submit} className="btn-primary flex-1" disabled={uploading > 0}>{uploading > 0 ? 'Загружаю…' : 'Сохранить'}</button>
       </div>
 
       {confirmState === 'discard' && (
@@ -12725,7 +12819,7 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
           confirmLabel="Не сохранять"
           danger
           onCancel={() => setConfirmState(null)}
-          onConfirm={onClose}
+          onConfirm={() => { dropFresh(); onClose(); }}
         />
       )}
       {confirmState === 'delete' && (
@@ -12735,9 +12829,10 @@ function KanbanTaskModal({ task, columns, colId, onSave, onDelete, onClose }) {
           confirmLabel="Удалить"
           danger
           onCancel={() => setConfirmState(null)}
-          onConfirm={() => onDelete(f.id)}
+          onConfirm={() => { dropAllKnown(); onDelete(f.id); }}
         />
       )}
+      {viewing && <StudyAttachViewer att={viewing} onClose={() => setViewing(null)} />}
     </Modal>
   );
 }
@@ -12797,7 +12892,8 @@ function KanbanView({ data, setData }) {
   const matchesQuery = (t) => {
     const q = query.trim().toLowerCase();
     if (!q) return true;
-    return t.title.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q);
+    return t.title.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q)
+      || (t.attachments || []).some(a => (a.name || '').toLowerCase().includes(q));
   };
   const visibleTasks = (tasks) => tasks.filter(t => matchesQuery(t) && (!hideDone || !t.closed));
 
@@ -12830,7 +12926,11 @@ function KanbanView({ data, setData }) {
     setColumns(columns.map(c => c.id === id ? { ...c, title } : c));
     setEditingCol(null);
   };
+  const releaseFiles = (atts, exceptIds) => releaseTaskFiles(data, atts, exceptIds);
   const deleteColumn = (id) => {
+    const col = columns.find(c => c.id === id);
+    const ids = (col?.tasks || []).map(t => t.id);
+    releaseFiles((col?.tasks || []).flatMap(t => t.attachments || []), ids);
     setData(d => ({
       ...d,
       kanban: { ...d.kanban, columns: (d.kanban?.columns || DEFAULT_KANBAN_COLUMNS).filter(c => c.id !== id) },
@@ -13101,6 +13201,9 @@ function KanbanView({ data, setData }) {
                               <Icon name="messageCircle" size={10}/> {task.comments.length}
                             </span>
                           )}
+                          {(task.attachments || []).length > 0 && (
+                            <span className="text-[10px] text-[var(--text-subtle)]">📎 {task.attachments.length}</span>
+                          )}
                         </div>
                       </div>
                     );
@@ -13122,6 +13225,7 @@ function KanbanView({ data, setData }) {
           onSave={saveTask}
           onDelete={(id) => deleteTask(id, editingTask.colId)}
           onClose={() => setEditingTask(null)}
+          releaseFiles={releaseFiles}
         />
       )}
       {editingCol && (
@@ -16006,7 +16110,7 @@ const VOICE_NAV_LABELS = {
 const VOICE_DATA_DOMAINS = {
   house_boss:     { label: 'Задачи «Босс» по расписанию', get: d => (d.bossTasks || []).filter(t => !t.archived) },
   house_cleaning: { label: 'Регулярные дела по дому',      get: d => (d.chores || []).filter(c => !c.archived) },
-  house_tasks:    { label: 'Канбан-доска задач',           get: d => d.kanban?.columns || [] },
+  house_tasks:    { label: 'Канбан-доска задач. У задачи attachments — вложения {id, name, filename, kind, size}; кладутся в карточке на сайте, через kanban_update_task не правятся', get: d => d.kanban?.columns || [] },
   cars: {
     label: 'Автомобили: название, номер, марка, модель, год, цвет, VIN, СТС и история обслуживания. permits — резидентские разрешения (номер, срок, файлы, напоминания); подгружаются с сервера',
     get: d => ({
@@ -16437,6 +16541,9 @@ function kanbanCreateTask(data, columnId, fields) {
 }
 
 function kanbanUpdateTask(data, taskId, patch) {
+  if (patch && Object.prototype.hasOwnProperty.call(patch, 'attachments')) {
+    return { data, error: 'вложения задачи не правятся через kanban_update_task — только в карточке на сайте' };
+  }
   return patchKanbanTask(data, taskId, t => ({ ...t, ...patch }));
 }
 
@@ -16833,7 +16940,7 @@ const VOICE_AGENT_TOOLS = [
   },
   {
     name: 'kanban_update_task',
-    description: 'Изменить поля задачи канбана (title/priority/description/dueDate/closed и т.п.) — для комментариев и подзадач есть отдельные инструменты.',
+    description: 'Изменить поля задачи канбана (title/priority/description/dueDate/closed и т.п.) — для комментариев и подзадач есть отдельные инструменты. Поле attachments этот вызов не меняет: файлы прикрепляются в карточке задачи на сайте.',
     input_schema: {
       type: 'object',
       properties: { taskId: { type: 'string' }, patch: { type: 'object' } },
@@ -17176,7 +17283,7 @@ ${navList}
 3. create_record(collection, fields) / update_record(collection, id, patch) / delete_record(collection, id) — добавить/изменить/удалить запись. Коллекции:
 ${writeList}
 
-4. Канбан-доска «Задачи» (house_tasks) устроена отдельно от прочих разделов — свои инструменты: kanban_create_task, kanban_update_task, kanban_delete_task, kanban_move_task, kanban_add_comment, kanban_delete_comment, kanban_add_subtask, kanban_toggle_subtask.
+4. Канбан-доска «Задачи» (house_tasks) устроена отдельно от прочих разделов — свои инструменты: kanban_create_task, kanban_update_task, kanban_delete_task, kanban_move_task, kanban_add_comment, kanban_delete_comment, kanban_add_subtask, kanban_toggle_subtask. Вложения задачи (фото, видео, документы) пользователь крепит в карточке на сайте; kanban_update_task их не меняет. В get_data(house_tasks) они видны как attachments.
 
 5. log_diet_compliance(date, option, kcal) / log_checklist_answer(date, fieldId, option) — отметки по дням (один раз на дату — вызов заменяет предыдущую отметку на эту дату, если она была).
 
