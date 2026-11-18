@@ -403,7 +403,7 @@ ALLOWED_FILE_EXT = {
     "mp4", "mov", "m4v", "webm",
 }
 VIDEO_FILE_EXT = {"mp4", "mov", "m4v", "webm"}
-# Потолок одного файла в /api/files (вложения в «Учёбе», файлы программ):
+# Потолок одного файла в /api/files (вложения «Учёбы» и «Задач», файлы программ):
 # тело пишется на диск потоком, так что память он не ограничивает.
 MAX_UPLOAD_FILE = 500 * 1024 * 1024
 # Бэкап собирается в памяти и уходит в Telegram — крупные файлы в него не
@@ -5249,7 +5249,7 @@ ASSISTANT_DATA_DOMAINS = {
         lambda app: [t for t in app.get("bossTasks", []) if not t.get("archived")]),
     "house_cleaning": ("Регулярные дела по дому",
         lambda app: [c for c in app.get("chores", []) if not c.get("archived")]),
-    "house_tasks": ("Канбан-доска задач",
+    "house_tasks": ("Канбан-доска задач. У задачи attachments — вложения {id, name, filename, kind, size}; класть через kanban_attach_file, читать и присылать через kanban_get_attachment. Через kanban_update_task вложения не правятся",
         lambda app: (app.get("kanban") or {}).get("columns", [])),
     "cars": ("Автомобили: название, номер, марка, модель, год, цвет, VIN, СТС; история обслуживания; "
              "permits — резидентские разрешения (номер, срок, файлы, напоминания об окончании)",
@@ -5692,7 +5692,7 @@ def kanban_create_task(app: dict, column_id: str, fields: dict) -> dict:
     task = {
         "id": str(uuid.uuid4()), "title": fields.get("title", ""), "startDate": "",
         "dueDate": fields.get("dueDate", ""), "priority": fields.get("priority") or "none",
-        "description": fields.get("description", ""), "subtasks": [], "comments": [],
+        "description": fields.get("description", ""), "subtasks": [], "comments": [], "attachments": [],
         "createdAt": datetime.utcnow().isoformat(),
     }
     target.setdefault("tasks", []).insert(0, task)
@@ -5705,7 +5705,12 @@ def kanban_update_task(app: dict, task_id: str, patch: dict) -> dict:
     task, col = _find_kanban_task(app, task_id)
     if not task:
         return {"error": "task_not_found"}
-    task.update(patch or {})
+    patch = dict(patch or {})
+    # Файлы живут на диске. Подмена массива через общий патч стирает их
+    # или подсовывает чужое имя — только kanban_attach_file и карточка на сайте.
+    if "attachments" in patch:
+        return {"error": "вложения задачи не правятся через kanban_update_task — kanban_attach_file или карточка на сайте"}
+    task.update(patch)
     _stamp_kanban_column(col)
     return {"ok": True}
 
@@ -5714,8 +5719,10 @@ def kanban_delete_task(app: dict, task_id: str) -> dict:
     task, col = _find_kanban_task(app, task_id)
     if not task:
         return {"error": "task_not_found"}
+    atts = list(task.get("attachments") or [])
     col["tasks"] = [t for t in col.get("tasks", []) if t.get("id") != task_id]
     _stamp_kanban_column(col)
+    _forget_task_files(app, atts)
     return {"ok": True}
 
 
@@ -5948,7 +5955,7 @@ ASSISTANT_TOOLS = [
     },
     {
         "name": "kanban_update_task",
-        "description": "Изменить поля задачи канбана (title/priority/description/dueDate/closed и т.п.) — для комментариев и подзадач есть отдельные инструменты.",
+        "description": "Изменить поля задачи канбана (title/priority/description/dueDate/closed и т.п.) — для комментариев, подзадач и вложений есть отдельные инструменты. Поле attachments этот вызов не меняет.",
         "input_schema": {
             "type": "object",
             "properties": {"taskId": {"type": "string"}, "patch": {"type": "object"}},
@@ -6008,6 +6015,36 @@ ASSISTANT_TOOLS = [
             "properties": {"taskId": {"type": "string"}, "subtaskId": {"type": "string"}, "done": {"type": "boolean"}},
             "required": ["taskId", "subtaskId"],
         },
+    },
+    {
+        "name": "kanban_attach_file",
+        "description": "Создать файл и ПОЛОЖИТЬ ЕГО В ЗАДАЧУ раздела «Дела → Задачи» (вложение, видно на сайте в карточке задачи). "
+                       "Задача — по task_id (из get_data house_tasks) либо по task_title. Если задачи нет — create_if_missing:true создаст её "
+                       "(column_id — колонка, иначе первая). Формат — по расширению filename: docx, pdf, pptx из content в markdown "
+                       "(заголовки #, списки, таблицы |a|b|, **жирный**; в pptx новый слайд — на «# »/«## » или «---»); xlsx — sheets "
+                       "[{name, rows}] или content-таблица; txt/md/csv/json/html — content как есть. Файл, который пользователь только что "
+                       "прислал в чат, — use_received_file (часть имени или «last»). send_to_chat:true — заодно прислать копию в чат. "
+                       "Вложения не правятся через kanban_update_task.",
+        "input_schema": {"type": "object", "properties": {
+            "task_id": {"type": "string"}, "task_title": {"type": "string"},
+            "column_id": {"type": "string", "description": "id колонки из get_data(house_tasks), если задачу надо создать"},
+            "create_if_missing": {"type": "boolean"},
+            "filename": {"type": "string", "description": "имя с расширением, например «Список.docx»"},
+            "content": {"type": "string"},
+            "sheets": {"type": "array", "items": {"type": "object", "properties": {
+                "name": {"type": "string"}, "rows": {"type": "array", "items": {"type": "array", "items": {}}}}}},
+            "content_base64": {"type": "string"}, "use_received_file": {"type": "string"},
+            "send_to_chat": {"type": "boolean"}}, "required": []},
+    },
+    {
+        "name": "kanban_get_attachment",
+        "description": "Вложение задачи «Дела → Задачи»: action read — прочитать содержимое (docx, xlsx, pptx, pdf, txt и др.), "
+                       "action send — прислать файл пользователю в чат. Задача — task_id или task_title; "
+                       "вложение — attachment (id или часть имени; если оно единственное — можно не указывать).",
+        "input_schema": {"type": "object", "properties": {
+            "task_id": {"type": "string"}, "task_title": {"type": "string"},
+            "attachment": {"type": "string"}, "action": {"type": "string", "enum": ["read", "send"]}},
+            "required": ["action"]},
     },
     {
         "name": "log_diet_compliance",
@@ -6181,6 +6218,108 @@ def _resolve_study_task(app: dict, inp: dict, create: bool = False):
                   "subject": subj.get("name"), "tasks": _study_tasks_brief(app, subj.get("id"))}
 
 
+def _bytes_from_attach_input(inp: dict):
+    """(name, data) либо {error}. FileToolError пробрасывается наверх."""
+    hint = inp.get("use_received_file")
+    if hint:
+        hint = "" if str(hint).strip().lower() in ("last", "latest", "true", "1", "последний") else str(hint)
+        ctx = tg_bot.get_ctx() if tg_bot else None
+        got = tg_bot.recent_file(ctx.chat_id, hint) if ctx and tg_bot else None
+        if not got:
+            return {"error": "присланного файла не нашёл (хранятся последние 5 за 30 минут) — попроси прислать заново"}
+        return got
+    if inp.get("content_base64"):
+        name = re.sub(r"[\\/\x00]", "_", (inp.get("filename") or "").strip())
+        if not name:
+            return {"error": "нужен filename"}
+        try:
+            data = base64.b64decode(inp["content_base64"])
+        except Exception:
+            return {"error": "content_base64 не декодируется"}
+        return name, data
+    data, name = file_tools.build(inp.get("filename"), inp.get("content"), inp.get("sheets"))
+    return name, data
+
+
+def _save_attachment_bytes(name: str, data: bytes, place: str) -> dict:
+    """Кладёт байты в DATA_DIR/files. Запись вложения — та же, что у заданий «Учёбы»."""
+    ext = file_tools.ext_of(name)
+    if ext not in ALLOWED_FILE_EXT:
+        return {"error": f"формат .{ext or '?'} в {place} не поддерживается", "allowed": sorted(ALLOWED_FILE_EXT)}
+    if not data or len(data) > MAX_UPLOAD_FILE:
+        return {"error": "файл пустой или больше 500 МБ"}
+    files_dir = DATA_DIR / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
+    stored = f"{uuid.uuid4()}.{ext}"
+    path = files_dir / stored
+    path.write_bytes(data)
+    att = {"id": str(uuid.uuid4()), "store": "files", "filename": stored, "name": name,
+           "kind": "image" if ext in ("jpg", "jpeg", "png", "webp", "gif") else ("video" if ext in VIDEO_FILE_EXT else "file"),
+           "size": len(data), "at": int(time.time() * 1000)}
+    return {"ok": True, "att": att, "path": path}
+
+
+def _attachment_path(att: dict):
+    fname = (att or {}).get("filename") or ""
+    if not fname or "/" in fname or "\\" in fname or ".." in fname:
+        return None
+    return DATA_DIR / ("photos" if att.get("store") == "photos" else "files") / fname
+
+
+def _pick_attachment(atts: list, raw: str) -> list:
+    sel = (raw or "").strip().lower()
+    if sel:
+        return [a for a in atts if a.get("id") == raw or sel in (a.get("name") or "").lower()]
+    return list(atts) if len(atts) == 1 else []
+
+
+def _attachment_brief(atts: list) -> list:
+    return [{"id": a.get("id"), "name": a.get("name"), "size": a.get("size")} for a in atts]
+
+
+def _read_or_send_attachment(att: dict, action: str) -> dict:
+    path = _attachment_path(att)
+    if path is None:
+        return {"error": "некорректное вложение"}
+    if not path.exists():
+        return {"error": "файл вложения не найден на сервере (мог быть удалён)"}
+    name = att.get("name") or path.name
+    ext = file_tools.ext_of(name)
+    if action == "send":
+        ctx = tg_bot.get_ctx() if tg_bot else None
+        if not ctx:
+            return {"error": "отправка доступна только в Telegram-чате"}
+        is_img = ext in ("jpg", "jpeg", "png", "webp") and path.stat().st_size < 9 * 1024 * 1024
+        res = tg_bot.file_send(ctx, filename=name, content_base64=base64.b64encode(path.read_bytes()).decode(),
+                               kind="photo" if is_img else "document")
+        return res if res.get("error") else {"ok": True, "sent": name}
+    if att.get("kind") in ("image", "video") or ext in ("jpg", "jpeg", "png", "webp", "gif", "heic", "mp4", "mov", "mp3", "m4a", "wav"):
+        return {"error": f"«{name}» — изображение/аудио/видео, содержимое я не читаю; могу прислать файл (action send)"}
+    if path.stat().st_size > 50 * 1024 * 1024:
+        return {"error": "файл больше 50 МБ — читать не буду"}
+    try:
+        r = file_tools.read_file(path.read_bytes(), name)
+    except file_tools.FileToolError as e:
+        return {"error": str(e)}
+    return {"ok": True, "name": name, "text": r["text"], "truncated": r["truncated"]}
+
+
+def _forget_task_files(app: dict, atts: list) -> None:
+    """Стирает файлы снятой задачи, если имя больше нигде не встречается в данных.
+    Задачу к этому моменту уже убрали: общее вложение «Учёбы» или файл режима остаётся."""
+    try:
+        blob = json.dumps(app, ensure_ascii=False)
+    except Exception:
+        return
+    for att in atts or []:
+        fn = (att or {}).get("filename") or ""
+        if not fn or fn in blob:
+            continue
+        path = _attachment_path(att)
+        if path is not None:
+            path.unlink(missing_ok=True)
+
+
 def study_attach_file(app: dict, inp: dict) -> dict:
     if not file_tools:
         return {"error": "модуль файлов недоступен на сервере"}
@@ -6189,40 +6328,19 @@ def study_attach_file(app: dict, inp: dict) -> dict:
     if err:
         return err
     try:
-        hint = inp.get("use_received_file")
-        if hint:
-            hint = "" if str(hint).strip().lower() in ("last", "latest", "true", "1", "последний") else str(hint)
-            got = tg_bot.recent_file(ctx.chat_id, hint) if ctx and tg_bot else None
-            if not got:
-                return {"error": "присланного файла не нашёл (хранятся последние 5 за 30 минут) — попроси прислать заново"}
-            name, data = got
-        elif inp.get("content_base64"):
-            name = re.sub(r"[\\/\x00]", "_", (inp.get("filename") or "").strip())
-            if not name:
-                return {"error": "нужен filename"}
-            try:
-                data = base64.b64decode(inp["content_base64"])
-            except Exception:
-                return {"error": "content_base64 не декодируется"}
-        else:
-            data, name = file_tools.build(inp.get("filename"), inp.get("content"), inp.get("sheets"))
+        got = _bytes_from_attach_input(inp)
     except file_tools.FileToolError as e:
         return {"error": f"не удалось собрать файл: {e}"}
-    ext = file_tools.ext_of(name)
-    if ext not in ALLOWED_FILE_EXT:
-        return {"error": f"формат .{ext or '?'} в «Учёбе» не поддерживается", "allowed": sorted(ALLOWED_FILE_EXT)}
-    if not data or len(data) > MAX_UPLOAD_FILE:
-        return {"error": "файл пустой или больше 500 МБ"}
-    files_dir = DATA_DIR / "files"
-    files_dir.mkdir(parents=True, exist_ok=True)
-    stored = f"{uuid.uuid4()}.{ext}"
-    (files_dir / stored).write_bytes(data)
-    att = {"id": str(uuid.uuid4()), "store": "files", "filename": stored, "name": name,
-           "kind": "image" if ext in ("jpg", "jpeg", "png", "webp", "gif") else ("video" if ext in VIDEO_FILE_EXT else "file"),
-           "size": len(data), "at": int(time.time() * 1000)}
+    if isinstance(got, dict):
+        return got
+    name, data = got
+    saved = _save_attachment_bytes(name, data, "«Учёбе»")
+    if not saved.get("ok"):
+        return saved
+    att = saved["att"]
     res = update_record_generic(app, "studyTasks", task["id"], {"attachments": list(task.get("attachments") or []) + [att]})
     if not res.get("ok"):
-        (files_dir / stored).unlink(missing_ok=True)
+        saved["path"].unlink(missing_ok=True)
         return res
     subj = next((x for x in app.get("studySubjects") or [] if x.get("id") == task.get("subjectId")), {})
     out = {"ok": True, "task": task.get("title"), "subject": subj.get("name"), "file": name, "size": len(data)}
@@ -6242,38 +6360,97 @@ def study_get_attachment(app: dict, inp: dict) -> dict:
     atts = task.get("attachments") or []
     if not atts:
         return {"error": "у задания нет вложений", "task": task.get("title")}
-    sel = (inp.get("attachment") or "").strip().lower()
-    cand = [a for a in atts if sel and (a.get("id") == inp.get("attachment") or sel in (a.get("name") or "").lower())] \
-        if sel else (atts if len(atts) == 1 else [])
+    cand = _pick_attachment(atts, inp.get("attachment") or "")
     if len(cand) != 1:
-        return {"error": "укажи attachment — какое вложение нужно",
-                "attachments": [{"id": a.get("id"), "name": a.get("name"), "size": a.get("size")} for a in atts]}
-    att = cand[0]
-    fname = att.get("filename") or ""
-    if not fname or "/" in fname or ".." in fname:
-        return {"error": "некорректное вложение"}
-    path = DATA_DIR / ("photos" if att.get("store") == "photos" else "files") / fname
-    if not path.exists():
-        return {"error": "файл вложения не найден на сервере (мог быть удалён)"}
-    name = att.get("name") or fname
-    ext = file_tools.ext_of(name)
-    if inp.get("action") == "send":
-        ctx = tg_bot.get_ctx() if tg_bot else None
-        if not ctx:
-            return {"error": "отправка доступна только в Telegram-чате"}
-        is_img = ext in ("jpg", "jpeg", "png", "webp") and path.stat().st_size < 9 * 1024 * 1024
-        res = tg_bot.file_send(ctx, filename=name, content_base64=base64.b64encode(path.read_bytes()).decode(),
-                               kind="photo" if is_img else "document")
-        return res if res.get("error") else {"ok": True, "sent": name}
-    if att.get("kind") in ("image", "video") or ext in ("jpg", "jpeg", "png", "webp", "gif", "heic", "mp4", "mov", "mp3", "m4a", "wav"):
-        return {"error": f"«{name}» — изображение/аудио/видео, содержимое я не читаю; могу прислать файл (action send)"}
-    if path.stat().st_size > 50 * 1024 * 1024:
-        return {"error": "файл больше 50 МБ — читать не буду"}
+        return {"error": "укажи attachment — какое вложение нужно", "attachments": _attachment_brief(atts)}
+    return _read_or_send_attachment(cand[0], inp.get("action"))
+
+
+def _kanban_tasks_brief(app: dict) -> list:
+    out = []
+    for col in _kanban_columns(app):
+        for task in col.get("tasks") or []:
+            out.append({"id": task.get("id"), "title": task.get("title"), "column": col.get("title")})
+            if len(out) >= 30:
+                return out
+    return out
+
+
+def _resolve_kanban_task(app: dict, inp: dict, create: bool = False):
+    """Находит задачу канбана по id или названию. → (task, column, None) | (None, None, {error})."""
+    tid = (inp.get("task_id") or inp.get("taskId") or "").strip()
+    if tid:
+        task, col = _find_kanban_task(app, tid)
+        return (task, col, None) if task else (None, None, {"error": "task_id не найден — возьми id из get_data(house_tasks)"})
+    title = (inp.get("task_title") or "").strip()
+    columns = _kanban_columns(app)
+    if title:
+        cand = [(task, col) for col in columns for task in (col.get("tasks") or []) if _fuzzy(title, task.get("title"))]
+        exact = [(task, col) for task, col in cand if (task.get("title") or "").strip().lower() == title.lower()]
+        cand = exact or cand
+        if len(cand) > 1:
+            opens = [(task, col) for task, col in cand if not task.get("closed")]
+            cand = opens if len(opens) == 1 else cand
+        if len(cand) == 1:
+            return cand[0][0], cand[0][1], None
+        if len(cand) > 1:
+            return None, None, {"error": "подходит несколько задач — уточни у пользователя", "tasks": _kanban_tasks_brief(app)}
+        if create:
+            column_id = (inp.get("column_id") or inp.get("columnId") or "").strip()
+            target = next((c for c in columns if c.get("id") == column_id), None) if column_id else (columns[0] if columns else None)
+            if not target:
+                return None, None, {"error": "колонка не найдена", "columns": [{"id": c.get("id"), "title": c.get("title")} for c in columns]}
+            made = kanban_create_task(app, target["id"], {"title": title})
+            if not made.get("ok"):
+                return None, None, made
+            task, col = _find_kanban_task(app, made["id"])
+            return task, col, None
+    return None, None, {"error": "задача не найдена или не указано какая — уточни у пользователя "
+                                 "(либо create_if_missing:true вместе с task_title)",
+                        "tasks": _kanban_tasks_brief(app)}
+
+
+def kanban_attach_file(app: dict, inp: dict) -> dict:
+    if not file_tools:
+        return {"error": "модуль файлов недоступен на сервере"}
+    task, col, err = _resolve_kanban_task(app, inp, bool(inp.get("create_if_missing")))
+    if err:
+        return err
     try:
-        r = file_tools.read_file(path.read_bytes(), name)
+        got = _bytes_from_attach_input(inp)
     except file_tools.FileToolError as e:
-        return {"error": str(e)}
-    return {"ok": True, "name": name, "text": r["text"], "truncated": r["truncated"]}
+        return {"error": f"не удалось собрать файл: {e}"}
+    if isinstance(got, dict):
+        return got
+    name, data = got
+    saved = _save_attachment_bytes(name, data, "«Задачах»")
+    if not saved.get("ok"):
+        return saved
+    att = saved["att"]
+    task["attachments"] = list(task.get("attachments") or []) + [att]
+    _stamp_kanban_column(col)
+    ctx = tg_bot.get_ctx() if tg_bot else None
+    out = {"ok": True, "task": task.get("title"), "column": col.get("title"), "file": name, "size": len(data), "id": att["id"]}
+    if inp.get("send_to_chat") and ctx and tg_bot:
+        sent = tg_bot.file_send(ctx, filename=name, content_base64=base64.b64encode(data).decode(),
+                                caption=f"{task.get('title') or ''} · {col.get('title') or ''}".strip(" ·"))
+        out["sent_to_chat"] = bool(sent.get("ok"))
+    return out
+
+
+def kanban_get_attachment(app: dict, inp: dict) -> dict:
+    if not file_tools:
+        return {"error": "модуль файлов недоступен на сервере"}
+    task, _col, err = _resolve_kanban_task(app, inp, False)
+    if err:
+        return err
+    atts = task.get("attachments") or []
+    if not atts:
+        return {"error": "у задачи нет вложений", "task": task.get("title")}
+    cand = _pick_attachment(atts, inp.get("attachment") or "")
+    if len(cand) != 1:
+        return {"error": "укажи attachment — какое вложение нужно", "attachments": _attachment_brief(atts)}
+    return _read_or_send_attachment(cand[0], inp.get("action"))
 
 
 def _weather_code_label(code) -> str:
@@ -6444,7 +6621,11 @@ def _prompt_pieces(app: dict = None, with_tg: bool = False) -> dict:
         f"3. create_record(collection, fields) / update_record(collection, id, patch) / delete_record(collection, id) — добавить/изменить/удалить запись. Коллекции:\n{write_list}\n\n"
         "4. Канбан-доска «Задачи» (house_tasks) устроена отдельно от прочих разделов — свои инструменты: "
         "kanban_create_task, kanban_update_task, kanban_delete_task, kanban_move_task, kanban_add_comment, "
-        "kanban_delete_comment, kanban_add_subtask, kanban_toggle_subtask.\n\n"
+        "kanban_delete_comment, kanban_add_subtask, kanban_toggle_subtask. "
+        "Файлы задачи: kanban_attach_file(task_id или task_title, filename, content/sheets) — создать и положить вложением; "
+        "kanban_get_attachment(action read|send) — прочитать или прислать. Через kanban_update_task вложения не меняются. "
+        "«Сформируй файл и положи в задачу …» → get_data(house_tasks), найди задачу (нет — спроси; новую — create_if_missing), "
+        "один вызов kanban_attach_file. Присланный файл — use_received_file.\n\n"
         "5. log_diet_compliance(date, option, kcal) / log_checklist_answer(date, fieldId, option) — отметки по дням "
         "(один раз на дату — вызов заменяет предыдущую отметку на эту дату, если она была).\n\n"
         "6. Продукты внутри плана готовки (раздел meals → cookingPlans[].ingredients) тоже устроены отдельно — "
@@ -6514,7 +6695,9 @@ def _prompt_items_compact(on, domain_list: str, nav_list: str, write_list: str) 
            f"3. create_record / update_record / delete_record(collection, …). Коллекции:\n{write_list}\n\n")
     if on("house", "food"):
         out += ("4. Канбан «Задачи» (house_tasks) — только kanban_*; отметки по дням log_diet_compliance / log_checklist_answer "
-                "(один раз на дату — повтор заменяет прежнюю); продукты плана готовки (meals → cookingPlans[].ingredients) — cooking_plan_*.\n\n")
+                "(один раз на дату — повтор заменяет прежнюю); продукты плана готовки (meals → cookingPlans[].ingredients) — cooking_plan_*. "
+                "Файл в задачу канбана: get_data(house_tasks) → kanban_attach_file (create_if_missing, если задачи нет); "
+                "kanban_get_attachment — прочитать или прислать вложение. kanban_update_task вложения не трогает.\n\n")
     if on("apple"):
         out += ("5. Apple Календарь и Напоминания (iCloud, не данные приложения): читать (calendar_list, calendar_list_events, reminders_list) можно "
                 "свободно. Событие: сначала calendar_list (реальный список, не первый и не выдуманный), сам выбери календарь по просьбе; "
@@ -6701,6 +6884,13 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
         return result
     if name == "study_get_attachment":
         return study_get_attachment(app, inp)
+    if name == "kanban_attach_file":
+        result = kanban_attach_file(app, inp)
+        if result.get("ok"):
+            save_app_data(app)
+        return result
+    if name == "kanban_get_attachment":
+        return kanban_get_attachment(app, inp)
     # Личный Telegram — только в чате владельца (см. tg_user.is_owner_chat).
     if name in TG_TOOL_NAMES and getattr(_brief_scope, "peers", None) is not None \
             and not study_skills.peer_allowed(inp.get("peer"), [p for p in _brief_scope.peers if p.get("source") != "max"]):
