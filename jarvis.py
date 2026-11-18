@@ -49,6 +49,7 @@ import tg_history
 import widget_skill
 import calendar_ics
 import card_ledger
+import cars_parking
 from foods_data import FOODS, FOOD_CATEGORIES
 from off_products_data import OFF_PRODUCTS
 
@@ -488,7 +489,7 @@ def subscriber_name(subs: dict, chat_id) -> str:
 # entry in data.settings.notifyRouting receives NOTHING (default-deny). Anyone
 # who messages the bot is auto-subscribed with zero categories; an owner has
 # to explicitly opt them into each category from Settings → Маршрутизация.
-NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "tasks", "backup", "english", "health", "study"}
+NOTIFICATION_CATEGORIES = {"chores", "boss", "holidays", "debts", "diet", "checklist", "tasks", "backup", "english", "health", "study", "parking"}
 
 
 def recipients_for(app_data: dict, subs: dict, category: str) -> list:
@@ -1229,7 +1230,7 @@ def build_backup_zip() -> bytes:
                       "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_moodle_reports.json", "jarvis_wb_pickup.json", "jarvis_ozon_pickup.json", "jarvis_tg_history.sqlite3",
                       "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl", "jarvis_routes.json", "jarvis_health_drafts.json",
                       "jarvis_newspaper_cache.json", "jarvis_newspaper_state.json", "jarvis_newspaper_latest.html",
-                      "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png", "jarvis_card_ledger.json", "jarvis_study_journals.json"}
+                      "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png", "jarvis_card_ledger.json", "jarvis_study_journals.json", "jarvis_cars.json"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
@@ -1254,7 +1255,7 @@ def build_backup_zip() -> bytes:
                     add_file(fp, f"data/{fname}")
 
         # 3. User-uploaded content (body photos, mode training-program files)
-        for sub in ("photos", "files"):
+        for sub in ("photos", "files", "jarvis_cars"):
             d = DATA_DIR / sub
             if d.exists():
                 for f in sorted(d.rglob("*")):
@@ -5250,10 +5251,12 @@ ASSISTANT_DATA_DOMAINS = {
         lambda app: [c for c in app.get("chores", []) if not c.get("archived")]),
     "house_tasks": ("Канбан-доска задач",
         lambda app: (app.get("kanban") or {}).get("columns", [])),
-    "cars": ("Автомобили и история обслуживания (когда, что, за сколько)",
+    "cars": ("Автомобили: название, номер, марка, модель, год, цвет, VIN, СТС; история обслуживания; "
+             "permits — резидентские разрешения (номер, срок, файлы, напоминания об окончании)",
         lambda app: {
             "cars": [c for c in app.get("cars", []) if not c.get("archived")],
             "serviceRecords": app.get("serviceRecords", [])[-150:],
+            "permits": cars_parking.for_assistant(),
         }),
     "health": ("Здоровье: эпизоды (случаи болезни) и хронические состояния, события — визиты, исследования с показателями и нормами, "
                "анализы, памятки (диета, подготовка), назначения со статусом, курсы препаратов",
@@ -5465,8 +5468,8 @@ WRITE_REGISTRY = {
         "create_defaults": lambda: {"period": "morning", "days": [1, 2, 3, 4, 5], "archived": False},
     },
     "cars": {
-        "label": "Автомобиль",
-        "create_defaults": lambda: {"archived": False},
+        "label": "Автомобиль (name, plate — гос. номер, make — марка, model — модель, year, color, vin, sts — номер СТС, notes, archived)",
+        "create_defaults": lambda: {"archived": False, "make": "", "model": "", "color": "", "vin": "", "sts": ""},
         "cascade_delete": [{"collection": "serviceRecords", "field": "carId"}],
     },
     "serviceRecords": {"label": "Запись об обслуживании автомобиля", "create_defaults": lambda: {}},
@@ -5637,6 +5640,11 @@ def _delete_record_cascade(app: dict, collection: str, record_id: str):
     arr[:] = [r for r in arr if r.get("id") != record_id]
     if reg.get("tombstone", True):
         app.setdefault("deletedIds", {}).setdefault(collection, {})[str(record_id)] = int(time.time() * 1000)
+    if collection == "cars":
+        try:
+            cars_parking.purge_car(str(record_id))
+        except Exception as e:
+            print(f"parking purge: {e}")
 
 
 def delete_record_generic(app: dict, collection: str, record_id: str) -> dict:
@@ -8158,6 +8166,33 @@ def _plan_worker(task: dict):
             print(f"  plan report failed: {e}", flush=True)
 
 
+def _parking_tick(app, subs, token, now):
+    """Резидентские разрешения: текст в Telegram владельцу, один раз на слот."""
+    due, missed = cars_parking.partition(now)
+    for item in missed:
+        cars_parking.mark_done(item["permitId"], item["reminderId"], item["slot"])
+    if not due or not token:
+        return
+    uid = None
+    if tg_user:
+        try:
+            uid = (tg_user._load_cfg() or {}).get("user_id")
+        except Exception:
+            uid = None
+    targets = cars_parking.recipients(
+        uid, (subs or {}).get("chat_ids") or [],
+        recipients_for(app or {}, subs or {}, "parking"))
+    if not targets:
+        print(f"[{now.strftime('%H:%M')} MSK] parking: некому отправить ({len(due)})")
+        return
+    cars = {c.get("id"): c for c in ((app or {}).get("cars") or []) if isinstance(c, dict)}
+    for item in due:
+        text = cars_parking.render(item["permit"], item["reminder"], cars.get(item["permit"].get("carId")))
+        for cid in targets:
+            send_message(token, cid, text)
+        cars_parking.mark_done(item["permitId"], item["reminderId"], item["slot"])
+
+
 def _plan_tick():
     if not plan_skill or not plan_skill.skill_on((load_app_data() or {}).get("telegramSkills")):
         return
@@ -9626,6 +9661,14 @@ def _tick():
                     print(f"[{now_str} MSK] → scheduled backup {'started' if started else 'skipped (already running)'} ({len(recipients)} recipient(s))")
     except Exception as e:
         print(f"[{now_str} MSK] backup reminder error: {e}")
+
+    try:
+        hour, minute = (int(x) for x in now_str.split(":"))
+        tick_now = datetime.combine(today_date, datetime.min.time()).replace(
+            hour=hour, minute=minute, tzinfo=MSK)
+        _parking_tick(app_data_raw, subs, token, tick_now)
+    except Exception as e:
+        print(f"[{now_str} MSK] parking reminder error: {e}")
 
 
 # ── Alice (Yandex Dialogs) voice skill ──────────────────────────────────────
@@ -11844,6 +11887,9 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                     app["settings"] = settings
                     save_app_data(app)
             self._json(200, {"ok": True})
+        elif route.startswith("/api/cars/parking/file/"):
+            code, payload = cars_parking.remove_file(route[len("/api/cars/parking/file/"):])
+            self._json(code, payload)
         elif self.path.startswith("/api/photos/"):
             filename = self.path[len("/api/photos/"):]
             if "/" in filename or ".." in filename or not filename:
@@ -12203,6 +12249,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif route == "/api/study/lessons":
             q = self._apple_query()
             self._json(200, study_lessons(q.get("from"), q.get("to")))
+        elif route == "/api/cars/parking":
+            self._json(200, cars_parking.view())
+        elif route.startswith("/api/cars/parking/file/"):
+            self._cars_file_get(route[len("/api/cars/parking/file/"):])
         elif route == "/api/card-ledger":
             self._json(200, card_ledger.owner_view())
         elif self.path == "/api/data":
@@ -12238,7 +12288,15 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         if not route_is_public(route) and not self._is_authed():
             self._json(401, {"error": "unauthorized"})
             return
-        if route == "/api/card-ledger":
+        if route == "/api/cars/parking":
+            self._cars_permit_post()
+        elif route == "/api/cars/parking/delete":
+            self._cars_permit_delete()
+        elif route == "/api/cars/parking/purge":
+            self._cars_purge_post()
+        elif route == "/api/cars/parking/file":
+            self._cars_file_post()
+        elif route == "/api/card-ledger":
             self._card_ledger_owner_post()
         elif token_from_route(route, "/api/card/", "/entry-update"):
             self._card_entry(token_from_route(route, "/api/card/", "/entry-update"), "update")
@@ -14324,6 +14382,69 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(400, {"error": "unknown action"})
             return
         self._json(200, execute_apple_tool(name, payload))
+
+    def _cars_json_body(self, limit=256 * 1024):
+        length = self._content_length()
+        if length is None:
+            return None, "Content-Length required"
+        if length > limit:
+            return None, "body too large"
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except Exception as e:
+            return None, str(e)
+        if not isinstance(payload, dict):
+            return None, "Ожидался объект"
+        return payload, None
+
+    def _cars_permit_post(self):
+        payload, err = self._cars_json_body()
+        if err:
+            self._json(400, {"ok": False, "error": err})
+            return
+        code, body = cars_parking.save_permit(payload)
+        self._json(code, body)
+
+    def _cars_permit_delete(self):
+        payload, err = self._cars_json_body()
+        if err:
+            self._json(400, {"ok": False, "error": err})
+            return
+        code, body = cars_parking.delete_permit(str(payload.get("id") or ""))
+        self._json(code, body)
+
+    def _cars_purge_post(self):
+        payload, err = self._cars_json_body()
+        if err:
+            self._json(400, {"ok": False, "error": err})
+            return
+        self._json(200, cars_parking.purge_car(str(payload.get("carId") or "")))
+
+    def _cars_file_post(self):
+        query = self._apple_query()
+        body, err = self._read_upload(cars_parking.MAX_FILE_BYTES)
+        if err:
+            self._json(413 if err == "file too large" else 400, {"ok": False, "error": err})
+            return
+        code, payload = cars_parking.save_file(query.get("permit") or "", query.get("name") or "", query.get("ext") or "", body or b"")
+        self._json(code, payload)
+
+    def _cars_file_get(self, file_id: str):
+        found = cars_parking.open_file(file_id)
+        if not found:
+            self._json(404, {"ok": False, "error": "Файл не найден"})
+            return
+        path, mime, name = found
+        data = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f"inline; filename*=UTF-8''{quote(name)}")
+        self.send_header("Cache-Control", "private, no-store")
+        self._cors()
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
 
     def _json(self, code: int, data: dict):
         body = json.dumps(data).encode()

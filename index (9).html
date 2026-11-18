@@ -1867,6 +1867,149 @@
     .sim-card, .sim-card::after, .sim-hero, .sim-seg-thumb { transition: none; }
     .sim-pill.today::before, .sim-pill.soon::before { animation: none; }
   }
+
+  /* Гараж: бокс, номерной знак, дорога журнала, бланк разрешения */
+  .gar-kicker { font-size: 11px; letter-spacing: .22em; text-transform: uppercase; color: var(--text-subtle); font-weight: 600; }
+  .gar-title { font-family: 'Fraunces', serif; font-weight: 500; font-size: clamp(34px, 6vw, 52px); line-height: .92; letter-spacing: -0.03em; margin: 2px 0 0; }
+  .gar-head { margin-bottom: 4px; }
+  .gar-roadmark { height: 8px; margin-top: 12px; background: repeating-linear-gradient(90deg, #e2b340 0 18px, transparent 18px 32px); border-radius: 2px; opacity: .9; }
+  .gar-cluster { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0 16px; }
+  .gar-dial { background: #161616; color: #f6f3ea; border-radius: 16px; padding: 12px 12px 10px; min-width: 0; }
+  .gar-dial b { display: block; font-family: 'Fraunces', serif; font-weight: 500; font-size: clamp(18px, 4.2vw, 28px); line-height: 1.05; letter-spacing: -0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gar-dial span { display: block; margin-top: 4px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: rgba(255,255,255,.55); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gar-gear { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; background: #161616; padding: 4px; border-radius: 14px; margin-bottom: 16px; }
+  .gar-gear button { background: transparent; border: 0; color: rgba(255,255,255,.62); border-radius: 11px; padding: 10px 4px; font-size: 13px; font-weight: 650; cursor: pointer; }
+  .gar-gear button.on { background: #f4f1e8; color: #161616; }
+  .gar-add { display: block; width: 100%; background: #161616; color: #f4f1e8; border-radius: 14px; padding: 13px 16px; font-weight: 600; margin-bottom: 12px; }
+  .gar-add.slim { width: auto; margin: 0; padding: 8px 14px; border-radius: 12px; font-size: 13px; }
+  .gar-add:active { transform: scale(.99); }
+  .gar-bays { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .gar-bay {
+    position: relative; color: #f4f1ea; border-radius: 22px; padding: 16px 16px 22px; overflow: hidden;
+    background:
+      radial-gradient(120% 80% at 100% 0%, rgba(255,255,255,.08), transparent 46%),
+      linear-gradient(180deg, #2a2d33 0%, #17181b 100%);
+    box-shadow: 0 18px 40px -28px rgba(0,0,0,.8);
+  }
+  .gar-bay::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 8px; background: repeating-linear-gradient(90deg, #e2b340 0 12px, #17181b 12px 22px); }
+  .gar-bay.archived { filter: grayscale(.55); opacity: .78; }
+  .gar-stall { font-family: 'Oswald', sans-serif; font-size: 12px; letter-spacing: .18em; color: rgba(255,255,255,.4); margin-bottom: 6px; }
+  .gar-bay-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .gar-id { display: flex; gap: 10px; min-width: 0; }
+  .gar-swatch { width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0; margin-top: 4px; box-shadow: 0 0 0 2px rgba(255,255,255,.2); }
+  .gar-swatch.lg { width: 28px; height: 28px; margin-top: 0; box-shadow: 0 0 0 3px #fff, 0 0 0 4px #161616; }
+  .gar-make { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: rgba(255,255,255,.55); }
+  .gar-model { font-family: 'Fraunces', serif; font-size: 26px; font-weight: 500; line-height: 1.05; letter-spacing: -0.02em; margin-top: 2px; }
+  .gar-sub, .gar-meta, .gar-notes, .gar-vin { color: rgba(255,255,255,.72); font-size: 13px; }
+  .gar-meta { margin-top: 2px; }
+  .gar-bay-mid { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 12px; }
+  .gar-vin { display: flex; flex-direction: column; gap: 2px; font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 11px; letter-spacing: .04em; }
+  .gar-notes { margin-top: 8px; font-style: italic; }
+  .gar-plate { display: inline-flex; align-items: stretch; background: #f7f4ea; color: #141414; border: 3px solid #141414; border-radius: 8px; overflow: hidden; flex-shrink: 0; box-shadow: inset 0 1px 0 rgba(255,255,255,.7); }
+  .gar-plate-main { font-family: 'Liberation Sans', Arial, sans-serif; font-weight: 700; font-size: 26px; letter-spacing: .06em; padding: 6px 10px 4px; line-height: 1; display: flex; align-items: center; }
+  .gar-plate.empty .gar-plate-main { font-size: 13px; letter-spacing: .12em; font-weight: 500; }
+  .gar-plate-side { width: 38px; border-left: 3px solid #141414; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1; }
+  .gar-plate-side b { font-family: 'Liberation Sans', Arial, sans-serif; font-size: 15px; font-weight: 700; }
+  .gar-plate-side i { width: 14px; height: 8px; margin: 2px 0 1px; background: linear-gradient(#fff 33%, #1d4e89 33% 66%, #c62828 66%); border: 1px solid rgba(0,0,0,.25); }
+  .gar-plate-side small { font-size: 8px; letter-spacing: .14em; font-weight: 700; }
+  .gar-plate.mini .gar-plate-main { font-size: 16px; padding: 3px 6px; }
+  .gar-plate.mini .gar-plate-side { width: 28px; }
+  .gar-odo { display: inline-flex; align-items: center; gap: 2px; }
+  .gar-odo span { width: 16px; height: 22px; border-radius: 3px; background: #0e0e0e; color: #f3e7b3; font-family: 'Oswald', sans-serif; font-size: 16px; display: grid; place-items: center; box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
+  .gar-odo em { font-style: normal; margin-left: 4px; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: rgba(255,255,255,.5); }
+  .gar-receipt .gar-odo span { background: #241c12; }
+  .gar-receipt .gar-odo em { color: #8a7352; }
+  .gar-bay-slips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .gar-mini-slip { text-align: left; border-radius: 10px; padding: 6px 8px; background: rgba(255,255,255,.08); color: #f4f1ea; border: 1px dashed rgba(255,255,255,.2); max-width: 100%; }
+  .gar-mini-slip b { display: block; font-size: 12px; font-weight: 650; }
+  .gar-mini-slip span { display: block; font-size: 11px; color: rgba(255,255,255,.65); }
+  .gar-mini-slip.soon { border-color: #e2b340; }
+  .gar-mini-slip.expired, .gar-mini-slip.revoked { border-color: #e07a6a; }
+  .gar-mini-slip.add { border-style: solid; color: #e2b340; }
+  .gar-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .gar-actions button, .gar-slip-actions button { height: 34px; padding: 0 10px; border-radius: 10px; font-size: 12.5px; font-weight: 600; color: rgba(255,255,255,.8); background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); }
+  .gar-actions button.danger:hover, .gar-slip-actions button.danger { color: #ffb4a8; }
+  .gar-arch { margin-top: 16px; }
+  .gar-arch > button { color: var(--text-muted); font-size: 13px; margin-bottom: 10px; }
+  .gar-empty { border: 1.5px dashed var(--border-strong); border-radius: 20px; padding: 28px 16px; text-align: center; color: var(--text-muted); font-size: 14px; }
+  .gar-empty-title { font-family: 'Fraunces', serif; font-size: 26px; color: var(--text); margin-bottom: 4px; }
+  .gar-empty-car { position: relative; width: 92px; height: 36px; margin: 0 auto 12px; border: 3px solid #161616; border-radius: 8px; background: #f7f4ea; }
+  .gar-empty-car::before, .gar-empty-car::after { content: ''; position: absolute; bottom: -8px; width: 14px; height: 14px; border-radius: 50%; background: #161616; }
+  .gar-empty-car::before { left: 10px; } .gar-empty-car::after { right: 10px; }
+  .gar-empty.paper { background: #f6f1e4; border-style: solid; border-color: #e4d7be; }
+  .gar-chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; margin-bottom: 8px; }
+  .gar-chips button { flex-shrink: 0; height: 34px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); font-size: 13px; font-weight: 600; color: var(--text-muted); font-family: 'Oswald', sans-serif; letter-spacing: .04em; }
+  .gar-chips button.on { background: #161616; color: #f4f1e8; border-color: #161616; }
+  .gar-log-cap { font-size: 13px; color: var(--text-muted); }
+  .gar-road { position: relative; margin: 6px 0 0 10px; padding-left: 22px; }
+  .gar-road::before { content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 3px; background: repeating-linear-gradient(#161616 0 10px, transparent 10px 18px); }
+  .gar-stop { position: relative; margin-bottom: 16px; }
+  .gar-stop::before { content: ''; position: absolute; left: -26px; top: 14px; width: 11px; height: 11px; border-radius: 50%; background: #e2b340; box-shadow: 0 0 0 2px #161616; }
+  .gar-marker { font-family: 'Oswald', sans-serif; letter-spacing: .06em; font-size: 13px; margin-bottom: 4px; }
+  .gar-receipt { position: relative; background: #fffdf8; border: 1px solid #e6dcc6; border-radius: 6px 6px 0 0; padding: 12px 12px 18px; }
+  .gar-receipt::after { content: ''; position: absolute; left: 0; right: 0; bottom: -7px; height: 14px; background: radial-gradient(circle at 8px 8px, transparent 7px, #fffdf8 7.5px); background-size: 16px 14px; background-repeat: repeat-x; }
+  .gar-receipt-top { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  .gar-receipt-car { font-size: 12px; color: #8a7352; margin-bottom: 4px; }
+  .gar-receipt-actions { display: flex; gap: 4px; }
+  .gar-receipt-actions button { width: 32px; height: 32px; border-radius: 8px; color: #6b5a42; }
+  .gar-receipt-actions button:hover { background: #f3ead8; }
+  .gar-line { display: flex; align-items: baseline; gap: 8px; font-size: 14px; padding: 3px 0; }
+  .gar-line i { flex: 1; border-bottom: 1px dotted #d9cdb6; transform: translateY(-3px); }
+  .gar-line b { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .gar-line.total { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: #6b5a42; }
+  .gar-receipt-note { margin-top: 8px; font-size: 13px; font-style: italic; color: #6b5a42; }
+  .gar-slips { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+  .gar-slip { position: relative; background: #f6f1e4; color: #241c12; border-radius: 16px; padding: 14px 14px 12px 18px; overflow: hidden; box-shadow: 0 14px 30px -22px rgba(80,50,10,.55); }
+  .gar-slip::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 7px; background: #2f6b4f; }
+  .gar-slip.soon::before { background: #e07a2f; }
+  .gar-slip.expired::before, .gar-slip.revoked::before { background: #b42318; }
+  .gar-slip-kicker { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #8a7352; }
+  .gar-slip-num { font-family: 'Liberation Sans', Arial, sans-serif; font-weight: 700; font-size: 30px; letter-spacing: .04em; line-height: 1; margin-top: 2px; }
+  .gar-slip-dates { font-size: 13px; margin-top: 4px; }
+  .gar-bar { height: 6px; border-radius: 99px; background: rgba(36,28,18,.12); margin: 8px 0 4px; overflow: hidden; }
+  .gar-bar span { display: block; height: 100%; background: #241c12; border-radius: 99px; }
+  .gar-slip-phase { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .gar-kv { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; font-size: 12.5px; color: #5c4a32; }
+  .gar-slip-note { margin-top: 6px; font-size: 13px; font-style: italic; }
+  .gar-stamps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .gar-stamps span { border: 1.5px dashed #8a6a3b; color: #6b4a22; border-radius: 999px; padding: 3px 8px; font-size: 11px; max-width: 100%; }
+  .gar-stamps span.sent { opacity: .55; text-decoration: line-through; }
+  .gar-scans { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; align-items: center; }
+  .gar-scans img { width: 72px; height: 54px; object-fit: cover; border: 3px solid #fff; border-radius: 3px; box-shadow: 0 6px 12px -8px rgba(0,0,0,.6); }
+  .gar-pdf { font-size: 12px; font-weight: 650; text-decoration: underline; }
+  .gar-slip-actions { display: flex; gap: 6px; margin-top: 10px; }
+  .gar-slip-actions button { color: #3a2c1c; background: rgba(255,255,255,.45); border-color: rgba(36,28,18,.12); }
+  .gar-form-hero { display: flex; align-items: center; gap: 12px; }
+  .gar-hint { font-size: 12.5px; color: var(--text-muted); margin: 0 0 8px; line-height: 1.4; }
+  .gar-rem { border: 1px solid var(--border); border-radius: 14px; padding: 10px; background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
+  .gar-link { margin-top: 8px; font-size: 13px; font-weight: 650; color: var(--text-muted); }
+  .gar-error { background: #fef2f2; color: #b42318; border-radius: 12px; padding: 8px 10px; font-size: 13px; margin-bottom: 8px; }
+  .gar-check { display: flex !important; align-items: center; gap: 8px; text-transform: none !important; letter-spacing: 0 !important; font-size: 14px !important; color: var(--text) !important; }
+  .gar-check input { width: auto; }
+  .gar-rem button, .gar-file button { width: 36px; height: 36px; border: 0; border-radius: 10px; color: var(--text-muted); background: transparent; flex-shrink: 0; cursor: pointer; }
+  .gar button { cursor: pointer; }
+  .gar-file-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+  .gar-file { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; }
+  .gar-file.fresh { border-style: dashed; }
+  .gar-upload { position: relative; display: inline-flex; align-items: center; min-height: 40px; padding: 0 12px; border-radius: 12px; border: 1px dashed var(--border-strong); font-size: 13px; font-weight: 650; cursor: pointer; }
+  .gar-upload input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
+  @media (max-width: 767px) {
+    .gar { padding-bottom: 112px; }
+    .gar-cluster { margin: 10px 0 10px; }
+    .gar-gear { margin-bottom: 10px; }
+    .gar-bay { padding: 12px 12px 16px; }
+  }
+  @media (max-width: 640px) {
+    .gar-bay-top { flex-direction: column; }
+    .gar-plate-main { font-size: 22px; }
+    .gar-model { font-size: 22px; }
+    .gar-cluster { gap: 6px; }
+    .gar-dial { padding: 10px 8px 8px; border-radius: 14px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .gar-add:active { transform: none; }
+  }
+
 </style>
 </head>
 <body>
@@ -1987,6 +2130,7 @@ const NOTIFICATION_CATEGORIES = [
   { id: 'english',   label: 'English' },
   { id: 'health',    label: 'Здоровье' },
   { id: 'study',     label: 'Учеба' },
+  { id: 'parking',   label: 'Парковка' },
 ];
 
 // ── MSK time helpers ─────────────────────────────────────────────────────
@@ -15864,10 +16008,11 @@ const VOICE_DATA_DOMAINS = {
   house_cleaning: { label: 'Регулярные дела по дому',      get: d => (d.chores || []).filter(c => !c.archived) },
   house_tasks:    { label: 'Канбан-доска задач',           get: d => d.kanban?.columns || [] },
   cars: {
-    label: 'Автомобили и история обслуживания (когда, что, за сколько)',
+    label: 'Автомобили: название, номер, марка, модель, год, цвет, VIN, СТС и история обслуживания. permits — резидентские разрешения (номер, срок, файлы, напоминания); подгружаются с сервера',
     get: d => ({
       cars: (d.cars || []).filter(c => !c.archived),
       serviceRecords: (d.serviceRecords || []).slice(-150),
+      permits: [],
     }),
   },
   health: {
@@ -16064,8 +16209,8 @@ const WRITE_REGISTRY = {
     createDefaults: () => ({ period: 'morning', days: [1, 2, 3, 4, 5], archived: false }),
   },
   cars: {
-    label: 'Автомобиль',
-    createDefaults: () => ({ archived: false }),
+    label: 'Автомобиль (name, plate — гос. номер, make — марка, model — модель, year, color, vin, sts — номер СТС, notes, archived)',
+    createDefaults: () => ({ archived: false, make: '', model: '', color: '', vin: '', sts: '' }),
     cascadeDelete: [{ collection: 'serviceRecords', field: 'carId' }],
   },
   serviceRecords: { label: 'Запись об обслуживании автомобиля', createDefaults: () => ({}) },
@@ -17254,7 +17399,17 @@ async function executeVoiceTool(name, input, nav, data) {
   if (name === 'get_data') {
     const domain = VOICE_DATA_DOMAINS[input.domain];
     if (!domain) return noop({ error: 'unknown_domain' });
-    return noop(domain.get(data));
+    const snapshot = domain.get(data);
+    if (input.domain === 'cars') {
+      try {
+        const r = await fetch('/api/cars/parking');
+        if (r.ok) {
+          const j = await r.json();
+          snapshot.permits = j.permits || [];
+        }
+      } catch (e) {}
+    }
+    return noop(snapshot);
   }
   if (name === 'navigate') {
     const target = VOICE_NAV_TARGETS[input.target];
@@ -19790,51 +19945,220 @@ function BodyFieldsSettings({ data, setData }) {
 }
 
 // ============== CARS VIEW ==============
+// Гараж: бокс с номером, журнал как дорога с чеками, разрешение как бланк.
 
-function CarsView({ data, setData }) {
-  const [carsTab, setCarsTab] = useState('service');
+const GAR_PHASE = { active: 'действует', soon: 'скоро конец', expired: 'истекло', revoked: 'аннулировано' };
+const GAR_MONTHS = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
 
+function garPaint(color) {
+  const s = String(color || '').toLowerCase();
+  const table = [['бел','#f2f2f2'],['чёрн','#1a1a1a'],['черн','#1a1a1a'],['сереб','#c5c9d1'],['сер','#8d929a'],
+    ['красн','#b42318'],['син','#1d4e89'],['голуб','#7eb6d9'],['зелён','#2f6b4f'],['зелен','#2f6b4f'],
+    ['жёлт','#e2b340'],['желт','#e2b340'],['оранж','#e07a2f'],['коричн','#6b4428'],['беж','#d7c3a5'],['фиолет','#5b3d7a']];
+  for (let i = 0; i < table.length; i++) if (s.includes(table[i][0])) return table[i][1];
+  return '#3a3f46';
+}
+
+function garSplitPlate(plate) {
+  const raw = String(plate || '').trim();
+  const compact = raw.replace(/\s+/g, '').toUpperCase();
+  const m = compact.match(/^([АВЕКМНОРСТУХABEKMHOPCTYX]\d{3}[АВЕКМНОРСТУХABEKMHOPCTYX]{2})(\d{2,3})$/);
+  if (m) return { main: m[1], region: m[2], empty: false };
+  return { main: raw || 'БЕЗ НОМЕРА', region: '', empty: !raw };
+}
+
+function garFmtDate(s) {
+  if (!s) return '';
+  const d = new Date(s + 'T00:00:00');
+  if (Number.isNaN(d.getTime())) return s;
+  return `${d.getDate()} ${GAR_MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+function garMoney(n) {
+  const v = Number(n) || 0;
+  if (!v) return '';
+  return new Intl.NumberFormat('ru-RU').format(v) + ' ₽';
+}
+
+function garStops(n) {
+  const a = n % 10, b = n % 100;
+  if (a === 1 && b !== 11) return 'остановка';
+  if (a >= 2 && a <= 4 && (b < 12 || b > 14)) return 'остановки';
+  return 'остановок';
+}
+
+function garItems(r) {
+  return r.items || (r.service ? [{ id: 'legacy', service: r.service, price: r.price || 0 }] : []);
+}
+
+function garRecordSum(r) {
+  return garItems(r).reduce((s, i) => s + (Number(i.price) || 0), 0);
+}
+
+function garLastKm(records, carId) {
+  const rows = (records || []).filter(r => r.carId === carId && Number(r.mileage) > 0)
+    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+  return rows.length ? Number(rows[0].mileage) : 0;
+}
+
+function garFill(p) {
+  const a = Date.parse(p.starts), b = Date.parse(p.ends);
+  if (!a || !b || b <= a) return 0;
+  return Math.max(0, Math.min(100, ((Date.now() - a) / (b - a)) * 100));
+}
+
+async function garApi(path, options) {
+  const res = await fetch(path, options);
+  let data = {};
+  try { data = await res.json(); } catch (e) { data = {}; }
+  if (!res.ok || data.ok === false) throw new Error(data.error || 'Не получилось');
+  return data;
+}
+
+function GarPlate({ plate, mini }) {
+  const p = garSplitPlate(plate);
   return (
-    <div className="fade-in">
-      <div className="mb-6">
-        <div className="text-[var(--text-subtle)] text-xs uppercase tracking-widest mb-2">Гараж</div>
-        <h1 className="font-display text-3xl md:text-4xl">Автомобили</h1>
+    <div className={`gar-plate${mini ? ' mini' : ''}${p.empty ? ' empty' : ''}`} aria-label={p.empty ? 'номер не задан' : p.main + (p.region ? ' ' + p.region : '')}>
+      <div className="gar-plate-main">{p.main}</div>
+      <div className="gar-plate-side">
+        {p.region ? <b>{p.region}</b> : <b>·</b>}
+        <i />
+        <small>RUS</small>
       </div>
-
-      <div className="inline-flex bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 mb-8">
-        {[{id:'service',label:'Обслуживание'},{id:'settings',label:'Автомобили'}].map(t => (
-          <button key={t.id} onClick={() => setCarsTab(t.id)}
-            className={`px-5 py-2.5 rounded-lg text-sm font-medium transition-all ${carsTab===t.id?'bg-[var(--text)] text-white':'text-[var(--text-muted)]'}`}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {carsTab === 'service'  && <ServiceHistoryView data={data} setData={setData} />}
-      {carsTab === 'settings' && <CarsSettings data={data} setData={setData} />}
     </div>
   );
 }
 
-function CarsSettings({ data, setData }) {
+function GarOdo({ km }) {
+  if (!km) return null;
+  const digits = String(Math.round(km)).padStart(6, '0').slice(-6).split('');
+  return (
+    <div className="gar-odo" title={new Intl.NumberFormat('ru-RU').format(km) + ' км'}>
+      {digits.map((d, i) => <span key={i}>{d}</span>)}
+      <em>км</em>
+    </div>
+  );
+}
+
+function CarsView({ data, setData }) {
+  const [gear, setGear] = useState('bay');
+  const [permits, setPermits] = useState([]);
+  const [permitsError, setPermitsError] = useState('');
+  const [tick, setTick] = useState(0);
   const [editing, setEditing] = useState(null);
-  const [showArchive, setShowArchive] = useState(false);
+  const [permitEdit, setPermitEdit] = useState(null);
+  const reload = () => setTick(t => t + 1);
 
-  const active   = (data.cars || []).filter(c => !c.archived);
-  const archived = (data.cars || []).filter(c =>  c.archived);
+  useEffect(() => {
+    let stop = false;
+    (async () => {
+      try {
+        const body = await garApi('/api/cars/parking');
+        if (!stop) { setPermits(body.permits || []); setPermitsError(''); }
+      } catch (e) {
+        if (!stop) setPermitsError(e.message || 'Нет связи');
+      }
+    })();
+    return () => { stop = true; };
+  }, [tick]);
 
-  const save = (car) => {
-    car = { ...car, updatedAt: Date.now() };
-    setData(d => {
-      const list = d.cars || [];
-      const exists = list.find(c => c.id === car.id);
-      return { ...d, cars: exists ? list.map(c => c.id === car.id ? car : c) : [...list, car] };
-    });
-    setEditing(null);
+  const active = (data.cars || []).filter(c => !c.archived);
+  const spent = (data.serviceRecords || []).reduce((s, r) => s + garRecordSum(r), 0);
+  const upcoming = permits
+    .filter(p => p.phase === 'active' || p.phase === 'soon')
+    .slice()
+    .sort((a, b) => String(a.ends).localeCompare(String(b.ends)));
+  const next = upcoming[0];
+  const nextCar = next ? (data.cars || []).find(c => c.id === next.carId) : null;
+
+  const openPermit = (carId, permit) => {
+    if (permit) setPermitEdit(permit);
+    else if (!active.length && !(data.cars || []).length) {
+      alert('Сначала поставьте автомобиль в бокс');
+    } else {
+      const cars = (data.cars || []).filter(c => !c.archived);
+      setPermitEdit({
+        carId: carId || (cars[0] && cars[0].id) || '',
+        number: '', starts: getTodayKey(), ends: '',
+        zone: '', address: '', spot: '', holder: '', notes: '', revoked: false, files: [],
+        reminders: [{ id: crypto.randomUUID(), mode: 'days', daysBefore: 30, date: '', time: '10:00', text: '' }],
+      });
+    }
   };
 
+  return (
+    <div className="gar fade-in">
+      <div className="gar-head">
+        <div>
+          <div className="gar-kicker">Свой гараж</div>
+          <h1 className="gar-title">Автомобили</h1>
+        </div>
+        <div className="gar-roadmark" aria-hidden="true" />
+      </div>
+
+      <div className="gar-cluster">
+        <div className="gar-dial">
+          <b>{active.length}</b>
+          <span>в боксах</span>
+        </div>
+        <div className="gar-dial">
+          <b>{next ? garFmtDate(next.ends).replace(/ \d{4}$/, '') : '—'}</b>
+          <span>{next ? ('разрешение' + (nextCar ? ' · ' + (nextCar.name || nextCar.plate || '') : '')) : 'нет сроков'}</span>
+        </div>
+        <div className="gar-dial">
+          <b>{spent ? new Intl.NumberFormat('ru-RU').format(spent) : '0'}</b>
+          <span>на сервис, ₽</span>
+        </div>
+      </div>
+
+      <div className="gar-gear" role="tablist">
+        {[['bay','Боксы','cars-tab-settings'],['log','Журнал','cars-tab-service'],['slip','Разрешения','cars-tab-permits']].map(([id, label, testid]) => (
+          <button key={id} type="button" role="tab" aria-selected={gear === id} data-testid={testid}
+            className={gear === id ? 'on' : ''} onClick={() => setGear(id)}>{label}</button>
+        ))}
+      </div>
+
+      {permitsError && gear === 'slip' && (
+        <div className="gar-error">{permitsError}</div>
+      )}
+
+      {gear === 'bay' && (
+        <GarageBays data={data} setData={setData} permits={permits}
+          onEdit={setEditing} onPermit={openPermit} onReload={reload} />
+      )}
+      {gear === 'log' && <GarageLog data={data} setData={setData} />}
+      {gear === 'slip' && (
+        <GarageSlips data={data} permits={permits} onEdit={openPermit} onReload={reload} />
+      )}
+
+      {editing && <CarModal car={editing} onClose={() => setEditing(null)} onSave={(car) => {
+        setData(d => {
+          const list = d.cars || [];
+          const exists = list.find(c => c.id === car.id);
+          return { ...d, cars: exists ? list.map(c => c.id === car.id ? car : c) : [...list, car] };
+        });
+        setEditing(null);
+      }} />}
+      {permitEdit && (
+        <PermitModal permit={permitEdit} cars={(data.cars || []).filter(c => !c.archived)}
+          onClose={() => setPermitEdit(null)} onSaved={() => { setPermitEdit(null); reload(); }} />
+      )}
+    </div>
+  );
+}
+
+function GarageBays({ data, setData, permits, onEdit, onPermit, onReload }) {
+  const [showArchive, setShowArchive] = useState(false);
+  const active = (data.cars || []).filter(c => !c.archived);
+  const archived = (data.cars || []).filter(c => c.archived);
+
+  const blank = () => onEdit({
+    blank: true, id: crypto.randomUUID(), name: '', year: '', plate: '', make: '', model: '',
+    color: '', vin: '', sts: '', notes: '', archived: false,
+  });
+
   const remove = (id) => {
-    if (!confirm('Удалить автомобиль? Вся история обслуживания этого автомобиля будет удалена.')) return;
+    if (!confirm('Убрать автомобиль из гаража? Журнал обслуживания и резидентские разрешения этой машины удалятся.')) return;
     setData(d => {
       let deleted = withDeletedId(d, 'cars', id);
       (d.serviceRecords || []).filter(r => r.carId === id).forEach(r => {
@@ -19847,6 +20171,10 @@ function CarsSettings({ data, setData }) {
         deletedIds: deleted,
       };
     });
+    garApi('/api/cars/parking/purge', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ carId: id }),
+    }).then(onReload).catch(() => {});
   };
 
   const toggleArchive = (id) => {
@@ -19858,142 +20186,190 @@ function CarsSettings({ data, setData }) {
 
   return (
     <div>
-      <button
-        onClick={() => setEditing({ id: crypto.randomUUID(), name: '', year: '', plate: '', notes: '', archived: false })}
-        className="btn-primary w-full flex items-center justify-center gap-2 mb-6"
-      >
-        <Icon name="plus" size={18} />
-        Добавить автомобиль
-      </button>
-
-      <div className="space-y-3 mb-8">
-        {active.length === 0 && (
-          <div className="text-center py-8 text-[var(--text-subtle)] text-sm">Нет автомобилей</div>
-        )}
-        {active.map(car => (
-          <CarSettingsRow key={car.id} car={car}
-            onEdit={() => setEditing(car)}
-            onArchive={() => toggleArchive(car.id)}
-            onDelete={() => remove(car.id)}
-          />
+      <button type="button" className="gar-add" data-testid="car-add" onClick={blank}>Поставить автомобиль</button>
+      {active.length === 0 && (
+        <div className="gar-empty">
+          <div className="gar-empty-car" aria-hidden="true" />
+          <div className="gar-empty-title">Боксы пустые</div>
+          <div>Название, номер, марка и модель — на табличке этого бокса.</div>
+        </div>
+      )}
+      <div className="gar-bays">
+        {active.map((car, i) => (
+          <GarBay key={car.id} car={car} index={i} permits={permits.filter(p => p.carId === car.id)}
+            km={garLastKm(data.serviceRecords, car.id)}
+            onEdit={() => onEdit(car)} onArchive={() => toggleArchive(car.id)} onDelete={() => remove(car.id)}
+            onPermit={() => onPermit(car.id)} onOpenPermit={(p) => onPermit(car.id, p)} />
         ))}
       </div>
-
       {archived.length > 0 && (
-        <div>
-          <button onClick={() => setShowArchive(!showArchive)}
-            className="flex items-center gap-2 text-[var(--text-muted)] hover:text-[var(--text)] mb-4 text-sm">
-            <Icon name="archive" size={16} />
-            Архив ({archived.length})
-            <span className={`transition-transform ${showArchive ? 'rotate-180' : ''}`}>
-              <Icon name="chevronDown" size={16} />
-            </span>
-          </button>
+        <div className="gar-arch">
+          <button type="button" onClick={() => setShowArchive(v => !v)}>Архив · {archived.length}</button>
           {showArchive && (
-            <div className="space-y-3 fade-in">
-              {archived.map(car => (
-                <CarSettingsRow key={car.id} car={car} archived
-                  onEdit={() => setEditing(car)}
-                  onArchive={() => toggleArchive(car.id)}
-                  onDelete={() => remove(car.id)}
-                />
+            <div className="gar-bays">
+              {archived.map((car, i) => (
+                <GarBay key={car.id} car={car} index={i} archived permits={permits.filter(p => p.carId === car.id)}
+                  km={garLastKm(data.serviceRecords, car.id)}
+                  onEdit={() => onEdit(car)} onArchive={() => toggleArchive(car.id)} onDelete={() => remove(car.id)}
+                  onPermit={() => onPermit(car.id)} onOpenPermit={(p) => onPermit(car.id, p)} />
               ))}
             </div>
           )}
         </div>
       )}
-
-      {editing && <CarModal car={editing} onSave={save} onClose={() => setEditing(null)} />}
     </div>
   );
 }
 
-function CarSettingsRow({ car, archived, onEdit, onArchive, onDelete }) {
+function GarBay({ car, index, permits, km, archived, onEdit, onArchive, onDelete, onPermit, onOpenPermit }) {
+  const make = car.make || '';
+  const model = car.model || '';
+  const title = car.name || [make, model].filter(Boolean).join(' ') || 'Автомобиль';
+  const sub = [make, model].filter(Boolean).join(' ');
+  const showSub = sub && sub.toLowerCase() !== String(title).toLowerCase();
   return (
-    <div className={`bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5 ${archived ? 'opacity-60' : ''}`}>
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-baseline gap-3 mb-1">
-            <h3 className="font-display text-lg truncate">{car.name}</h3>
-            {car.year && <span className="text-sm text-[var(--text-muted)]">{car.year}</span>}
+    <article className={`gar-bay${archived ? ' archived' : ''}`} data-testid="car-row">
+      <div className="gar-stall">{String(index + 1).padStart(2, '0')}</div>
+      <div className="gar-bay-top">
+        <div className="gar-id">
+          <span className="gar-swatch" style={{ background: garPaint(car.color) }} title={car.color || ''} />
+          <div className="min-w-0">
+            <div className="gar-make">{make || 'Свой автомобиль'}</div>
+            <h3 className="gar-model">{title}</h3>
+            {showSub && <div className="gar-sub">{sub}</div>}
+            <div className="gar-meta">
+              {[car.year, car.color].filter(Boolean).join(' · ')}
+            </div>
           </div>
-          {car.plate && <div className="text-xs text-[var(--text-subtle)] uppercase tracking-widest font-mono">{car.plate}</div>}
-          {car.notes && <div className="text-sm text-[var(--text-muted)] italic mt-1">{car.notes}</div>}
         </div>
-        <div className="flex gap-1 flex-shrink-0">
-          <button onClick={onEdit} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="edit" size={18} /></button>
-          <button onClick={onArchive} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name={archived ? 'restore' : 'archive'} size={18} /></button>
-          <button onClick={onDelete} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]"><Icon name="trash" size={18} /></button>
-        </div>
+        <GarPlate plate={car.plate} />
       </div>
-    </div>
+      <div className="gar-bay-mid">
+        <GarOdo km={km} />
+        {(car.vin || car.sts) && (
+          <div className="gar-vin">
+            {car.vin && <span>VIN {car.vin}</span>}
+            {car.sts && <span>СТС {car.sts}</span>}
+          </div>
+        )}
+      </div>
+      {car.notes && <div className="gar-notes">{car.notes}</div>}
+      <div className="gar-bay-slips">
+        {permits.map(p => (
+          <button type="button" key={p.id} className={`gar-mini-slip ${p.phase || ''}`} onClick={() => onOpenPermit(p)}>
+            <b>№ {p.number}</b>
+            <span>{GAR_PHASE[p.phase] || ''} · до {garFmtDate(p.ends)}</span>
+          </button>
+        ))}
+        <button type="button" className="gar-mini-slip add" data-testid="car-permit" onClick={onPermit}>+ разрешение</button>
+      </div>
+      <div className="gar-actions">
+        <button type="button" onClick={onEdit} data-testid="car-edit">Править</button>
+        <button type="button" onClick={onArchive}>{archived ? 'Вернуть' : 'В архив'}</button>
+        <button type="button" className="danger" onClick={onDelete} data-testid="car-delete">Удалить</button>
+      </div>
+    </article>
   );
 }
 
 function CarModal({ car, onSave, onClose }) {
-  const [form, setForm] = useState(car);
+  const [form, setForm] = useState({
+    make: '', model: '', color: '', vin: '', sts: '', year: '', plate: '', notes: '', ...car,
+  });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
-
   const submit = () => {
-    if (!form.name.trim()) return alert('Введите название автомобиля');
-    onSave(form);
+    if (!String(form.name || '').trim()) return alert('Введите название автомобиля');
+    const { blank, ...rest } = form;
+    onSave({
+      ...rest,
+      name: form.name.trim(),
+      make: String(form.make || '').trim(),
+      model: String(form.model || '').trim(),
+      plate: String(form.plate || '').trim(),
+      color: String(form.color || '').trim(),
+      vin: String(form.vin || '').trim(),
+      sts: String(form.sts || '').trim(),
+      notes: form.notes || '',
+      year: form.year || '',
+      updatedAt: Date.now(),
+    });
   };
-
   return (
-    <Modal onClose={onClose} title={car.name ? 'Редактировать автомобиль' : 'Новый автомобиль'}>
-      <div className="space-y-4">
+    <Modal onClose={onClose} title={car.blank ? 'Новый автомобиль' : 'Автомобиль'}>
+      <div className="gar-form space-y-4">
+        <div className="gar-form-hero">
+          <span className="gar-swatch lg" style={{ background: garPaint(form.color) }} />
+          <GarPlate plate={form.plate} />
+        </div>
         <div>
           <label>Название</label>
-          <input value={form.name} onChange={e => set('name', e.target.value)} placeholder="Например, Toyota Camry 2021" />
+          <input data-testid="car-name" value={form.name || ''} onChange={e => set('name', e.target.value)} placeholder="Камри" />
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label>Год</label>
-            <input type="number" value={form.year} onChange={e => set('year', e.target.value)} placeholder="2021" min="1900" max="2099" />
+            <label>Марка</label>
+            <input data-testid="car-make" value={form.make || ''} onChange={e => set('make', e.target.value)} placeholder="Toyota" />
           </div>
+          <div>
+            <label>Модель</label>
+            <input data-testid="car-model" value={form.model || ''} onChange={e => set('model', e.target.value)} placeholder="Camry" />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <label>Гос. номер</label>
-            <input value={form.plate} onChange={e => set('plate', e.target.value)} placeholder="А123ВС77" />
+            <input data-testid="car-plate" value={form.plate || ''} onChange={e => set('plate', e.target.value)} placeholder="А123ВС77" />
           </div>
+          <div>
+            <label>Год</label>
+            <input type="number" value={form.year || ''} onChange={e => set('year', e.target.value)} placeholder="2021" min="1900" max="2099" />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label>Цвет</label>
+            <input data-testid="car-color" value={form.color || ''} onChange={e => set('color', e.target.value)} placeholder="белый" />
+          </div>
+          <div>
+            <label>СТС</label>
+            <input value={form.sts || ''} onChange={e => set('sts', e.target.value)} placeholder="77 УН 123456" />
+          </div>
+        </div>
+        <div>
+          <label>VIN</label>
+          <input className="font-mono" value={form.vin || ''} onChange={e => set('vin', e.target.value)} placeholder="XW7..." />
         </div>
         <div>
           <label>Заметки</label>
-          <textarea value={form.notes} onChange={e => set('notes', e.target.value)} rows={2} placeholder="Цвет, особенности..." />
+          <textarea value={form.notes || ''} onChange={e => set('notes', e.target.value)} rows={2} placeholder="Где стоит, страховка, особенности" />
         </div>
         <div className="flex gap-3 pt-2">
-          <button onClick={onClose} className="btn-secondary flex-1">Отмена</button>
-          <button onClick={submit} className="btn-primary flex-1">Сохранить</button>
+          <button type="button" onClick={onClose} className="btn-secondary flex-1">Отмена</button>
+          <button type="button" onClick={submit} className="btn-primary flex-1" data-testid="car-save">Сохранить</button>
         </div>
       </div>
     </Modal>
   );
 }
 
-function ServiceHistoryView({ data, setData }) {
+function GarageLog({ data, setData }) {
   const [filterCar, setFilterCar] = useState('all');
   const [filterService, setFilterService] = useState('');
   const [editRecord, setEditRecord] = useState(null);
-
   const cars = (data.cars || []).filter(c => !c.archived);
   const allRecords = data.serviceRecords || [];
-
-  // Нормализация: старые записи имели service+price на верхнем уровне
-  const getItems = (r) =>
-    r.items || (r.service ? [{ id: 'legacy', service: r.service, price: r.price || 0 }] : []);
-
   const visibleServiceNames = [...new Set(
     allRecords
       .filter(r => filterCar === 'all' || r.carId === filterCar)
-      .flatMap(r => getItems(r).map(i => i.service))
+      .flatMap(r => garItems(r).map(i => i.service))
       .filter(Boolean)
   )].sort();
-
   const filtered = allRecords
     .filter(r => filterCar === 'all' || r.carId === filterCar)
-    .filter(r => !filterService || getItems(r).some(i => i.service === filterService))
-    .sort((a, b) => b.date.localeCompare(a.date));
-
+    .filter(r => !filterService || garItems(r).some(i => i.service === filterService))
+    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   const getCarName = (carId) => (data.cars || []).find(c => c.id === carId)?.name || '—';
+  const totalCost = filtered.reduce((s, r) => s + garRecordSum(r), 0);
 
   const saveRecord = (record) => {
     record = { ...record, updatedAt: Date.now() };
@@ -20004,23 +20380,10 @@ function ServiceHistoryView({ data, setData }) {
     });
     setEditRecord(null);
   };
-
   const deleteRecord = (id) => {
     if (!confirm('Удалить запись?')) return;
     setData(d => ({ ...d, serviceRecords: (d.serviceRecords || []).filter(r => r.id !== id), deletedIds: withDeletedId(d, 'serviceRecords', id) }));
   };
-
-  const fmtDate = (s) => {
-    if (!s) return '';
-    const d = new Date(s + 'T00:00:00');
-    const mo = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
-    return `${d.getDate()} ${mo[d.getMonth()]} ${d.getFullYear()}`;
-  };
-
-  const fmtMoney = (n) => n ? new Intl.NumberFormat('ru-RU').format(n) + ' ₽' : null;
-  const fmtKm    = (n) => n ? new Intl.NumberFormat('ru-RU').format(n) + ' км' : null;
-  const totalCost = filtered.reduce((s, r) => s + getItems(r).reduce((a, i) => a + (Number(i.price) || 0), 0), 0);
-
   const newRecord = () => ({
     id: crypto.randomUUID(),
     carId: filterCar !== 'all' ? filterCar : cars[0].id,
@@ -20030,108 +20393,68 @@ function ServiceHistoryView({ data, setData }) {
   });
 
   if (cars.length === 0) {
-    return <EmptyState title="Нет автомобилей" text="Добавьте автомобиль во вкладке «Автомобили»" />;
+    return <div className="gar-empty"><div className="gar-empty-title">Журнал ждёт машину</div><div>Сначала поставьте автомобиль в бокс.</div></div>;
   }
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="font-display text-2xl">История</h2>
-        <button onClick={() => setEditRecord(newRecord())} className="btn-primary flex items-center gap-2 text-sm">
-          <Icon name="plus" size={16} />
-          Добавить
-        </button>
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div className="gar-log-cap">{filtered.length ? `${filtered.length} ${garStops(filtered.length)}` : 'Пустая дорога'}{totalCost > 0 ? ` · ${garMoney(totalCost)}` : ''}</div>
+        <button type="button" className="gar-add slim" data-testid="service-add" onClick={() => setEditRecord(newRecord())}>Запись</button>
       </div>
-
-      {/* Фильтры */}
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-4 mb-4 space-y-3">
-        <div>
-          <label>Автомобиль</label>
-          <select value={filterCar} onChange={e => { setFilterCar(e.target.value); setFilterService(''); }}>
-            <option value="all">Все автомобили</option>
-            {cars.map(c => <option key={c.id} value={c.id}>{c.name}{c.year ? ` (${c.year})` : ''}</option>)}
+      <div className="gar-chips" data-testid="service-cars">
+        <button type="button" className={filterCar === 'all' ? 'on' : ''} onClick={() => { setFilterCar('all'); setFilterService(''); }}>Все</button>
+        {cars.map(c => (
+          <button type="button" key={c.id} className={filterCar === c.id ? 'on' : ''}
+            onClick={() => { setFilterCar(c.id); setFilterService(''); }}>{c.plate || c.name}</button>
+        ))}
+      </div>
+      {visibleServiceNames.length > 0 && (
+        <div className="mb-4">
+          <select value={filterService} onChange={e => setFilterService(e.target.value)} aria-label="Вид работ">
+            <option value="">Все работы</option>
+            {visibleServiceNames.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
-        {visibleServiceNames.length > 0 && (
-          <div>
-            <label>Вид работ</label>
-            <select value={filterService} onChange={e => setFilterService(e.target.value)}>
-              <option value="">Все работы</option>
-              {visibleServiceNames.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-        )}
-      </div>
-
-      {/* Итог */}
-      {filtered.length > 0 && (
-        <div className="flex items-center gap-4 text-sm text-[var(--text-muted)] mb-4 px-1">
-          <span>
-            {filtered.length}{' '}
-            {filtered.length === 1 ? 'запись' : filtered.length < 5 ? 'записи' : 'записей'}
-          </span>
-          {totalCost > 0 && (
-            <span>Итого: <strong className="text-[var(--text)]">{fmtMoney(totalCost)}</strong></span>
-          )}
-        </div>
       )}
-
       {filtered.length === 0 ? (
-        <EmptyState title="Нет записей" text="Нажмите «Добавить» чтобы внести первое обслуживание" />
+        <div className="gar-empty"><div className="gar-empty-title">Пока без остановок</div><div>Первая запись ляжет чеком на дорогу.</div></div>
       ) : (
-        <div className="space-y-3">
+        <div className="gar-road">
           {filtered.map(record => {
-            const items = getItems(record);
-            const recTotal = items.reduce((s, i) => s + (Number(i.price) || 0), 0);
+            const items = garItems(record);
+            const sum = garRecordSum(record);
             return (
-              <div key={record.id} className="bg-[var(--surface)] border border-[var(--border)] rounded-2xl p-5">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    {/* Шапка: дата, авто, пробег */}
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-sm mb-3">
-                      <span className="font-medium text-[var(--text)]">{fmtDate(record.date)}</span>
-                      {filterCar === 'all' && (
-                        <span className="text-[var(--text-subtle)]">{getCarName(record.carId)}</span>
-                      )}
-                      {record.mileage > 0 && (
-                        <span className="text-[var(--text-muted)]">{fmtKm(record.mileage)}</span>
-                      )}
+              <article key={record.id} className="gar-stop" data-testid="service-row">
+                <div className="gar-marker">{garFmtDate(record.date)}</div>
+                <div className="gar-receipt">
+                  <div className="gar-receipt-top">
+                    <div className="min-w-0">
+                      {filterCar === 'all' && <div className="gar-receipt-car">{getCarName(record.carId)}</div>}
+                      {Number(record.mileage) > 0 && <GarOdo km={Number(record.mileage)} />}
                     </div>
-                    {/* Таблица работ */}
-                    <div className="border border-[var(--border)] rounded-xl overflow-hidden text-sm">
-                      {items.map((item, idx) => (
-                        <div key={item.id || idx}
-                          className={`flex items-center gap-3 px-3 py-2 ${idx > 0 ? 'border-t border-[var(--border)]' : ''}`}>
-                          <span className="flex-1">{item.service}</span>
-                          {Number(item.price) > 0 && (
-                            <span className="text-[var(--text-muted)] flex-shrink-0 tabular-nums">{fmtMoney(item.price)}</span>
-                          )}
-                        </div>
-                      ))}
-                      {items.length > 1 && recTotal > 0 && (
-                        <div className="flex items-center gap-3 px-3 py-2 border-t border-[var(--border-strong)] bg-[var(--bg)]">
-                          <span className="flex-1 text-xs uppercase tracking-wide text-[var(--text-subtle)]">Итого</span>
-                          <span className="font-semibold flex-shrink-0 tabular-nums">{fmtMoney(recTotal)}</span>
-                        </div>
-                      )}
+                    <div className="gar-receipt-actions">
+                      <button type="button" onClick={() => setEditRecord(record)} aria-label="Править"><Icon name="edit" size={16} /></button>
+                      <button type="button" onClick={() => deleteRecord(record.id)} aria-label="Удалить"><Icon name="trash" size={16} /></button>
                     </div>
-                    {record.notes && <div className="text-sm text-[var(--text-muted)] mt-2 italic">{record.notes}</div>}
                   </div>
-                  <div className="flex gap-1 flex-shrink-0">
-                    <button onClick={() => setEditRecord(record)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
-                      <Icon name="edit" size={16} />
-                    </button>
-                    <button onClick={() => deleteRecord(record.id)} className="p-2 rounded-lg hover:bg-black/5 text-[var(--text-muted)]">
-                      <Icon name="trash" size={16} />
-                    </button>
-                  </div>
+                  {items.map((item, idx) => (
+                    <div key={item.id || idx} className="gar-line">
+                      <span>{item.service}</span>
+                      <i />
+                      <b>{Number(item.price) > 0 ? garMoney(item.price) : ''}</b>
+                    </div>
+                  ))}
+                  {items.length > 1 && sum > 0 && (
+                    <div className="gar-line total"><span>Итого</span><i /><b>{garMoney(sum)}</b></div>
+                  )}
+                  {record.notes && <div className="gar-receipt-note">{record.notes}</div>}
                 </div>
-              </div>
+              </article>
             );
           })}
         </div>
       )}
-
       {editRecord && (
         <ServiceRecordModal
           record={editRecord}
@@ -20146,6 +20469,275 @@ function ServiceHistoryView({ data, setData }) {
     </div>
   );
 }
+
+function GarageSlips({ data, permits, onEdit, onReload }) {
+  const [filterCar, setFilterCar] = useState('all');
+  const cars = data.cars || [];
+  const visible = permits.filter(p => filterCar === 'all' || p.carId === filterCar)
+    .slice()
+    .sort((a, b) => String(a.ends).localeCompare(String(b.ends)));
+  const carName = (id) => {
+    const c = cars.find(x => x.id === id);
+    return c ? (c.name || c.plate || 'Авто') : 'Автомобиль удалён';
+  };
+  const remove = async (id) => {
+    if (!confirm('Удалить разрешение и приложенные файлы?')) return;
+    try {
+      await garApi('/api/cars/parking/delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      onReload();
+    } catch (e) { alert(e.message); }
+  };
+  return (
+    <div>
+      <button type="button" className="gar-add" data-testid="permit-add" onClick={() => onEdit()}>Новое разрешение</button>
+      {cars.filter(c => !c.archived).length > 0 && (
+        <div className="gar-chips">
+          <button type="button" className={filterCar === 'all' ? 'on' : ''} onClick={() => setFilterCar('all')}>Все</button>
+          {cars.filter(c => !c.archived).map(c => (
+            <button type="button" key={c.id} className={filterCar === c.id ? 'on' : ''} onClick={() => setFilterCar(c.id)}>{c.plate || c.name}</button>
+          ))}
+        </div>
+      )}
+      {visible.length === 0 ? (
+        <div className="gar-empty paper">
+          <div className="gar-empty-title">Нет бланков</div>
+          <div>Резидентское разрешение: номер, срок, скан и несколько напоминаний.</div>
+        </div>
+      ) : (
+        <div className="gar-slips">
+          {visible.map(p => (
+            <article key={p.id} className={`gar-slip ${p.phase || ''}`} data-testid="permit-card">
+              <div className="gar-slip-kicker">{carName(p.carId)}</div>
+              <div className="gar-slip-num">№ {p.number}</div>
+              <div className="gar-slip-dates">{garFmtDate(p.starts)} — {garFmtDate(p.ends)}</div>
+              <div className="gar-bar" aria-hidden="true"><span style={{ width: garFill(p) + '%' }} /></div>
+              <div className="gar-slip-phase">{GAR_PHASE[p.phase] || ''}</div>
+              <div className="gar-kv">
+                {p.zone && <span>Зона {p.zone}</span>}
+                {p.address && <span>{p.address}</span>}
+                {p.spot && <span>Место {p.spot}</span>}
+                {p.holder && <span>{p.holder}</span>}
+              </div>
+              {p.notes && <div className="gar-slip-note">{p.notes}</div>}
+              {(p.reminders || []).length > 0 && (
+                <div className="gar-stamps">
+                  {p.reminders.map(r => (
+                    <span key={r.id} className={r.sent ? 'sent' : ''}>
+                      {r.mode === 'days' ? `за ${r.daysBefore} дн.` : garFmtDate(r.date)} · {r.time}
+                      {r.text ? ` — ${r.text}` : ''}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {(p.files || []).length > 0 && (
+                <div className="gar-scans">
+                  {p.files.map((f, n) => (
+                    f.mime && String(f.mime).startsWith('image/')
+                      ? <a key={f.id} href={`/api/cars/parking/file/${f.id}`} target="_blank" rel="noopener"><img src={`/api/cars/parking/file/${f.id}`} alt={f.name} style={{ transform: `rotate(${n % 2 ? 2 : -2}deg)` }} /></a>
+                      : <a key={f.id} className="gar-pdf" href={`/api/cars/parking/file/${f.id}`} target="_blank" rel="noopener">{f.name}</a>
+                  ))}
+                </div>
+              )}
+              <div className="gar-slip-actions">
+                <button type="button" onClick={() => onEdit(null, p)}>Править</button>
+                <button type="button" className="danger" onClick={() => remove(p.id)}>Удалить</button>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PermitModal({ permit, cars, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    zone: '', address: '', spot: '', holder: '', notes: '', revoked: false, files: [], reminders: [], ...permit,
+  });
+  const [newFiles, setNewFiles] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const patchRem = (id, patch) => setForm(f => ({
+    ...f, reminders: (f.reminders || []).map(r => r.id === id ? { ...r, ...patch } : r),
+  }));
+
+  const submit = async () => {
+    if (!form.carId) return setErr('Выберите автомобиль');
+    if (!String(form.number || '').trim()) return setErr('Укажите номер разрешения');
+    if (!form.starts || !form.ends) return setErr('Укажите даты начала и окончания');
+    if (form.ends < form.starts) return setErr('Окончание раньше начала');
+    for (const r of form.reminders || []) {
+      if (r.mode === 'date' && !r.date) return setErr('Укажите дату напоминания');
+      if (r.mode === 'days' && (r.daysBefore === '' || r.daysBefore == null)) return setErr('Укажите, за сколько дней напомнить');
+    }
+    setBusy(true); setErr('');
+    try {
+      const saved = await garApi('/api/cars/parking', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: form.id, carId: form.carId, number: String(form.number).trim(),
+          starts: form.starts, ends: form.ends,
+          zone: form.zone || '', address: form.address || '', spot: form.spot || '',
+          holder: form.holder || '', notes: form.notes || '', revoked: !!form.revoked,
+          reminders: (form.reminders || []).map(r => ({
+            id: r.id, mode: r.mode, time: r.time || '10:00', text: r.text || '',
+            daysBefore: r.mode === 'days' ? Number(r.daysBefore) : undefined,
+            date: r.mode === 'date' ? r.date : '',
+          })),
+        }),
+      });
+      for (const file of newFiles) {
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        const res = await fetch(`/api/cars/parking/file?permit=${encodeURIComponent(saved.permit.id)}&name=${encodeURIComponent(file.name)}&ext=${encodeURIComponent(ext)}`, { method: 'POST', body: file });
+        let body = {};
+        try { body = await res.json(); } catch (e) { body = {}; }
+        if (!res.ok || body.ok === false) throw new Error(body.error || 'Файл не загрузился');
+      }
+      onSaved();
+    } catch (e) {
+      setErr(e.message || 'Не сохранилось');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dropFile = async (id) => {
+    try {
+      const body = await garApi('/api/cars/parking/file/' + id, { method: 'DELETE' });
+      setForm(f => ({ ...f, files: (body.permit && body.permit.files) || (f.files || []).filter(x => x.id !== id) }));
+    } catch (e) { setErr(e.message); }
+  };
+
+  return (
+    <Modal onClose={onClose} title={form.number ? 'Разрешение' : 'Резидентское разрешение'}>
+      <div className="gar-form space-y-4">
+        <div>
+          <label>Автомобиль</label>
+          <select data-testid="permit-car" value={form.carId || ''} onChange={e => set('carId', e.target.value)}>
+            <option value="">Выберите</option>
+            {cars.map(c => <option key={c.id} value={c.id}>{c.name}{c.plate ? ` · ${c.plate}` : ''}</option>)}
+          </select>
+        </div>
+        <div>
+          <label>Номер разрешения</label>
+          <input data-testid="permit-number" value={form.number || ''} onChange={e => set('number', e.target.value)} placeholder="77-123456" />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label>Начало</label>
+            <input data-testid="permit-starts" type="date" value={form.starts || ''} onChange={e => set('starts', e.target.value)} />
+          </div>
+          <div>
+            <label>Окончание</label>
+            <input data-testid="permit-ends" type="date" value={form.ends || ''} onChange={e => set('ends', e.target.value)} />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label>Зона</label>
+            <input value={form.zone || ''} onChange={e => set('zone', e.target.value)} placeholder="ЦАО" />
+          </div>
+          <div>
+            <label>Машиноместо</label>
+            <input value={form.spot || ''} onChange={e => set('spot', e.target.value)} placeholder="12" />
+          </div>
+        </div>
+        <div>
+          <label>Адрес</label>
+          <input value={form.address || ''} onChange={e => set('address', e.target.value)} placeholder="улица, дом" />
+        </div>
+        <div>
+          <label>На кого</label>
+          <input value={form.holder || ''} onChange={e => set('holder', e.target.value)} placeholder="ФИО в разрешении" />
+        </div>
+        <div>
+          <label>Заметки</label>
+          <textarea value={form.notes || ''} onChange={e => set('notes', e.target.value)} rows={2} />
+        </div>
+        <label className="gar-check"><input type="checkbox" checked={!!form.revoked} onChange={e => set('revoked', e.target.checked)} /> Аннулировано</label>
+
+        <div>
+          <label>Файлы</label>
+          <div className="gar-file-list">
+            {(form.files || []).map(f => (
+              <div key={f.id} className="gar-file">
+                <span>{f.name}</span>
+                <button type="button" onClick={() => dropFile(f.id)} aria-label="Убрать файл"><Icon name="x" size={14} /></button>
+              </div>
+            ))}
+            {newFiles.map((f, i) => (
+              <div key={f.name + i} className="gar-file fresh">
+                <span>{f.name}</span>
+                <button type="button" onClick={() => setNewFiles(list => list.filter((_, j) => j !== i))} aria-label="Убрать файл"><Icon name="x" size={14} /></button>
+              </div>
+            ))}
+          </div>
+          <label className="gar-upload">
+            Приложить фото или PDF
+            <input data-testid="permit-file" type="file" accept="image/*,application/pdf,.pdf" multiple
+              onChange={e => {
+                const picked = Array.from(e.target.files || []);
+                e.target.value = '';
+                if (picked.length) setNewFiles(list => [...list, ...picked]);
+              }} />
+          </label>
+        </div>
+
+        <div>
+          <label>Напоминания</label>
+          <p className="gar-hint">Несколько штук. В выбранный день и время текст уходит владельцу в Telegram. «За сколько дней» считается от даты окончания, 0 — в день окончания. Время московское. Если личный Telegram не подключён — в чат с категорией «Парковка», а если подписчик один, то ему.</p>
+          <div className="space-y-2">
+            {(form.reminders || []).map(r => (
+              <div key={r.id} className="gar-rem">
+                <div className="flex gap-2">
+                  <select className="flex-1" value={r.mode} onChange={e => patchRem(r.id, { mode: e.target.value })}>
+                    <option value="days">За сколько дней</option>
+                    <option value="date">В дату</option>
+                  </select>
+                  <button type="button" onClick={() => setForm(f => ({ ...f, reminders: f.reminders.filter(x => x.id !== r.id) }))} aria-label="Убрать напоминание"><Icon name="trash" size={16} /></button>
+                </div>
+                {r.mode === 'days' ? (
+                  <div>
+                    <label>Дней до окончания</label>
+                    <input type="number" min="0" max="3650" value={r.daysBefore} onChange={e => patchRem(r.id, { daysBefore: e.target.value })} />
+                  </div>
+                ) : (
+                  <div>
+                    <label>Дата</label>
+                    <input type="date" value={r.date || ''} onChange={e => patchRem(r.id, { date: e.target.value })} />
+                  </div>
+                )}
+                <div>
+                  <label>Время</label>
+                  <MskTimeInput value={r.time || '10:00'} onChange={t => patchRem(r.id, { time: t })} hint />
+                </div>
+                <div>
+                  <label>Текст в Telegram</label>
+                  <textarea rows={2} value={r.text || ''} onChange={e => patchRem(r.id, { text: e.target.value })} placeholder="Пусто — Джарвис сам напишет про окончание" />
+                </div>
+              </div>
+            ))}
+          </div>
+          <button type="button" className="gar-link" onClick={() => setForm(f => ({
+            ...f,
+            reminders: [...(f.reminders || []), { id: crypto.randomUUID(), mode: 'date', daysBefore: 7, date: f.ends || '', time: '10:00', text: '' }],
+          }))}>Ещё напоминание</button>
+        </div>
+
+        {err && <div className="gar-error">{err}</div>}
+        <div className="flex gap-3 pt-2">
+          <button type="button" onClick={onClose} className="btn-secondary flex-1" disabled={busy}>Отмена</button>
+          <button type="button" onClick={submit} className="btn-primary flex-1" data-testid="permit-save" disabled={busy}>{busy ? 'Сохраняю…' : 'Сохранить'}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 
 function ServiceRecordModal({ record, cars, allServiceNames, onSave, onClose }) {
   const initItems = () =>

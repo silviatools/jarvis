@@ -42,5 +42,7 @@ jarvis_routes.json
 jarvis_route_keys.json
 jarvis_health_drafts.json
 jarvis_card_ledger.json
+jarvis_cars.json
+jarvis_cars/
 photos/
 jarvis_moodle_reports.json
