@@ -266,7 +266,7 @@ class DownloadTests(unittest.TestCase):
 
         def get_file(token, method, payload=None, timeout=None):
             calls.append(payload["file_id"])
-            self.assertEqual(timeout, bot._GETFILE_TIMEOUT)
+            self.assertEqual(timeout, bot.PHOTO_GETFILE_TIMEOUT)
             if payload["file_id"] == "full":
                 err = bot.TgApiError("Bad Request: wrong file_id or the file is temporarily unavailable")
                 err.transient = True
@@ -303,7 +303,8 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(data, JPEG)
         self.assertEqual(calls, ["mid", "mid"])
         self.assertNotIn("huge", calls)
-        sleep.assert_called()
+        self.assertEqual(sleep.call_count, 1)
+        self.assertEqual(sleep.call_args.args[0], bot.PHOTO_PAUSE_SEC)
 
     def test_getfile_too_big_uses_smaller_photo_without_waiting(self):
         def get_file(token, method, payload=None, timeout=None):
@@ -363,6 +364,140 @@ class DownloadTests(unittest.TestCase):
         blob = " ".join(str(call) for call in printed.call_args_list)
         self.assertNotIn("updating", blob)
         self.assertNotIn("secret-token", blob)
+
+    def test_ready_jpeg_returns_without_pause(self):
+        timeouts = []
+
+        def get(url, timeout=None):
+            timeouts.append(timeout)
+            return self.response(JPEG)
+
+        sizes = [{"file_id": "full", "file_size": 30000, "width": 1000, "height": 1400}]
+        with patch.object(bot, "api", return_value={"file_path": "photos/a.jpg"}) as api, \
+             patch.object(bot.requests, "get", side_effect=get), \
+             patch.object(bot.time, "sleep") as sleep:
+            data = bot.download_photo("token", sizes)
+        self.assertEqual(data, JPEG)
+        self.assertTrue(bot.looks_like_image(data))
+        self.assertEqual(api.call_count, 1)
+        self.assertEqual(api.call_args.kwargs["timeout"], bot.PHOTO_GETFILE_TIMEOUT)
+        sleep.assert_not_called()
+        self.assertEqual(timeouts, [(bot.PHOTO_CONNECT_TIMEOUT, bot.PHOTO_READ_TIMEOUT)])
+
+    def test_updating_largest_uses_smaller_jpeg_without_pause(self):
+        calls = []
+
+        def get_file(token, method, payload=None, timeout=None):
+            calls.append(payload["file_id"])
+            return {"file_path": "photos/" + payload["file_id"] + ".jpg"}
+
+        def get(url, timeout=None):
+            if url.endswith("/full.jpg"):
+                return self.response(b"updating")
+            return self.response(JPEG)
+
+        sizes = [
+            {"file_id": "full", "file_size": 250000, "width": 1280, "height": 1700},
+            {"file_id": "mid", "file_size": 4000, "width": 640, "height": 480},
+        ]
+        with patch.object(bot, "api", side_effect=get_file), \
+             patch.object(bot.requests, "get", side_effect=get), \
+             patch.object(bot.time, "sleep") as sleep, \
+             patch("builtins.print") as printed:
+            data = bot.download_photo("secret-token", sizes)
+        self.assertEqual(calls, ["full", "mid"])
+        self.assertEqual(data, JPEG)
+        self.assertNotEqual(data, b"updating")
+        sleep.assert_not_called()
+        blob = " ".join(str(call) for call in printed.call_args_list)
+        self.assertNotIn("updating", blob)
+        self.assertNotIn("secret-token", blob)
+
+    def test_photo_ignores_long_retry_after_when_next_size_is_ready(self):
+        def get_file(token, method, payload=None, timeout=None):
+            if payload["file_id"] == "full":
+                err = bot.TgApiError("Bad Request: wrong file_id or the file is temporarily unavailable")
+                err.transient = True
+                err.retry_after = 12
+                raise err
+            return {"file_path": "photos/mid.jpg"}
+
+        sizes = [
+            {"file_id": "full", "file_size": 250000, "width": 1280, "height": 1700},
+            {"file_id": "mid", "file_size": 4000, "width": 640, "height": 480},
+        ]
+        with patch.object(bot, "api", side_effect=get_file), \
+             patch.object(bot.requests, "get", return_value=self.response(JPEG)), \
+             patch.object(bot.time, "sleep") as sleep:
+            data = bot.download_photo("token", sizes)
+        self.assertEqual(data, JPEG)
+        sleep.assert_not_called()
+
+    def test_single_size_placeholder_waits_one_short_pause(self):
+        with patch.object(bot, "api", return_value={"file_path": "photos/a.jpg"}) as api, \
+             patch.object(bot.requests, "get", side_effect=[
+                 self.response(b"updating"), self.response(JPEG)]), \
+             patch.object(bot.time, "sleep") as sleep:
+            data = bot.download_photo("token", [{"file_id": "full", "file_size": 20, "width": 40, "height": 40}])
+        self.assertEqual(data, JPEG)
+        self.assertEqual(api.call_count, 2)
+        self.assertEqual(sleep.call_count, 1)
+        self.assertEqual(sleep.call_args.args[0], bot.PHOTO_PAUSE_SEC)
+
+    def test_updating_body_is_never_returned_as_photo(self):
+        envelope = b'{"ok":false,"description":"Bad Request: file is updating"}'
+        with patch.object(bot, "api", return_value={"file_path": "photos/a.jpg"}), \
+             patch.object(bot.requests, "get", side_effect=[
+                 self.response(b"updating"), self.response(envelope)]), \
+             patch.object(bot.time, "sleep") as sleep, \
+             patch("builtins.print") as printed:
+            with self.assertRaises(bot.TgApiError) as error:
+                bot.download_photo("secret-token", [{"file_id": "full", "file_size": 20, "width": 40, "height": 40}])
+        self.assertNotIn("updating", str(error.exception))
+        self.assertEqual(sleep.call_count, 1)
+        self.assertEqual(sleep.call_args.args[0], bot.PHOTO_PAUSE_SEC)
+        blob = " ".join(str(call) for call in printed.call_args_list)
+        self.assertNotIn("updating", blob)
+        self.assertNotIn("secret-token", blob)
+
+    def test_photo_stops_at_budget_instead_of_five_long_rounds(self):
+        clock = {"t": 0.0}
+        pauses = []
+        calls = []
+
+        def monotonic():
+            return clock["t"]
+
+        def sleep(seconds):
+            pauses.append(seconds)
+            clock["t"] += seconds
+
+        def get_file(token, method, payload=None, timeout=None):
+            self.assertLessEqual(timeout, bot.PHOTO_GETFILE_TIMEOUT)
+            calls.append(timeout)
+            clock["t"] += float(timeout)
+            err = bot.TgApiError("getFile: файл ещё не готов")
+            err.transient = True
+            raise err
+
+        sizes = [
+            {"file_id": "a", "file_size": 3, "width": 30, "height": 30},
+            {"file_id": "b", "file_size": 2, "width": 20, "height": 20},
+            {"file_id": "c", "file_size": 1, "width": 10, "height": 10},
+        ]
+        with patch.object(bot.time, "monotonic", monotonic), \
+             patch.object(bot.time, "sleep", sleep), \
+             patch.object(bot, "api", side_effect=get_file), \
+             patch.object(bot.requests, "get") as get:
+            with self.assertRaises(bot.TgApiError) as error:
+                bot.download_photo("token", sizes)
+        get.assert_not_called()
+        self.assertLessEqual(clock["t"], bot.PHOTO_BUDGET_SEC + 0.05)
+        self.assertGreater(len(calls), 1)
+        self.assertLess(len(calls), bot.DOWNLOAD_ATTEMPTS * len(sizes))
+        self.assertLessEqual(sum(pauses), bot.PHOTO_PAUSE_SEC)
+        self.assertEqual(pauses, [bot.PHOTO_PAUSE_SEC])
+        self.assertNotIn("updating", str(error.exception))
 
 
 class MessageBatchIntegrationTests(unittest.TestCase):

@@ -1230,6 +1230,14 @@ def recent_photos(chat_id) -> list:
 
 DOWNLOAD_ATTEMPTS = 5
 _GETFILE_TIMEOUT = 15
+# Фото: готовый JPEG возвращается сразу. Заглушка — следующий размер без паузы,
+# один короткий повтор. Дольше PHOTO_BUDGET_SEC скачивание не блокирует ответ.
+PHOTO_BUDGET_SEC = 20.0
+PHOTO_ROUNDS = 2
+PHOTO_PAUSE_SEC = 0.4
+PHOTO_GETFILE_TIMEOUT = 5
+PHOTO_CONNECT_TIMEOUT = 5
+PHOTO_READ_TIMEOUT = 8
 _IMAGE_MAGIC = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n", b"GIF87a", b"GIF89a")
 
 
@@ -1331,20 +1339,24 @@ def _file_not_ready(data: bytes) -> bool:
     return isinstance(obj, dict) and obj.get("ok") is False and "description" in obj
 
 
-def download_file(token: str, file_id: str, size_hint: int = 0, attempts: int = DOWNLOAD_ATTEMPTS, expect_image: bool = False):
+def download_file(token: str, file_id: str, size_hint: int = 0, attempts: int = DOWNLOAD_ATTEMPTS,
+                  expect_image: bool = False, getfile_timeout=None, http_timeout=None):
     """Скачать файл бота. None — он больше 20 МБ. Иначе bytes.
 
     getFile и ссылка file/bot иногда отвечают раньше, чем файл появился на раздаче
     (нет file_path, 404/403, «temporarily unavailable», тело «updating»). Это повтор,
     а не постоянный отказ. Содержимое файла не логируется.
+    Фото передаёт короткие getfile_timeout и http_timeout; документы остаются на длинных.
     """
     if _as_size(size_hint) > MAX_DOWNLOAD:
         return None
     attempts = max(1, int(attempts))
+    getfile_timeout = _GETFILE_TIMEOUT if getfile_timeout is None else getfile_timeout
+    http_timeout = (10, 60) if http_timeout is None else http_timeout
     for attempt in range(attempts):
         response = None
         try:
-            info = api(token, "getFile", {"file_id": file_id}, timeout=_GETFILE_TIMEOUT)
+            info = api(token, "getFile", {"file_id": file_id}, timeout=getfile_timeout)
             if not isinstance(info, dict):
                 err = TgApiError("getFile: пустой ответ")
                 err.transient = True
@@ -1352,7 +1364,7 @@ def download_file(token: str, file_id: str, size_hint: int = 0, attempts: int = 
             if _as_size(info.get("file_size")) > MAX_DOWNLOAD:
                 return None
             url = _file_path_url(token, info.get("file_path"))
-            response = requests.get(url, timeout=(10, 60))
+            response = requests.get(url, timeout=http_timeout)
             if not getattr(response, "ok", False):
                 status = getattr(response, "status_code", 0) or 0
                 err = TgApiError(f"Скачивание вложения: HTTP {status}")
@@ -1414,10 +1426,21 @@ def _photo_candidates(sizes) -> list:
     return out
 
 
+def _photo_slice(deadline: float, cap: float):
+    """Сколько ещё можно ждать этот запрос. None — бюджет фото исчерпан."""
+    left = deadline - time.monotonic()
+    if left < 1:
+        return None
+    return min(float(cap), left)
+
+
 def download_photo(token: str, sizes) -> bytes | None:
     """Самый крупный размер фото; если он ещё не готов или больше 20 МБ — следующий.
 
-    None — все размеры больше лимита. Временный сбой самого скачивания — TgApiError.
+    Годный JPEG возвращается сразу, без остальных попыток. Заглушка «updating»
+    и обрыв связи не ждут retry_after: сразу меньший размер, затем одна пауза
+    PHOTO_PAUSE_SEC. None — все размеры больше лимита. Дольше PHOTO_BUDGET_SEC
+    ответ не блокируется.
     """
     candidates = _photo_candidates(sizes)
     usable = [p for p in candidates if _as_size(p.get("file_size")) <= MAX_DOWNLOAD]
@@ -1425,29 +1448,40 @@ def download_photo(token: str, sizes) -> bytes | None:
         return None
     if not usable:
         raise TgApiError("Не удалось скачать вложение")
+    deadline = time.monotonic() + PHOTO_BUDGET_SEC
     pending = list(usable)
-    last_retry = None
     permanent = False
-    for attempt in range(DOWNLOAD_ATTEMPTS):
+    for round_index in range(PHOTO_ROUNDS):
+        if time.monotonic() >= deadline:
+            break
         still = []
-        for photo in pending:
+        for index, photo in enumerate(pending):
+            getfile_timeout = _photo_slice(deadline, PHOTO_GETFILE_TIMEOUT)
+            read_timeout = _photo_slice(deadline, PHOTO_READ_TIMEOUT)
+            if getfile_timeout is None or read_timeout is None:
+                still.extend(pending[index:])
+                break
             try:
-                data = download_file(token, photo["file_id"], _as_size(photo.get("file_size")),
-                                     attempts=1, expect_image=True)
+                data = download_file(
+                    token, photo["file_id"], _as_size(photo.get("file_size")),
+                    attempts=1, expect_image=True, getfile_timeout=getfile_timeout,
+                    http_timeout=(min(PHOTO_CONNECT_TIMEOUT, read_timeout), read_timeout),
+                )
             except TgApiError as exc:
                 if getattr(exc, "transient", False):
                     still.append(photo)
-                    last_retry = exc
                 else:
                     permanent = True
                 continue
             if data:
                 return data
         pending = still
-        if not pending:
+        if not pending or round_index >= PHOTO_ROUNDS - 1:
             break
-        if attempt < DOWNLOAD_ATTEMPTS - 1:
-            time.sleep(_download_pause(attempt, last_retry))
+        left = deadline - time.monotonic()
+        if left < 1:
+            break
+        time.sleep(min(PHOTO_PAUSE_SEC, left))
     if pending or permanent:
         raise TgApiError("Не удалось скачать вложение")
     return None
