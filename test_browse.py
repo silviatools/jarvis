@@ -82,6 +82,9 @@ class BrowseTests(unittest.TestCase):
 
         result = self.start(decide)
         self.assertTrue(result['started'])
+        self.assertTrue(result['background'])
+        self.assertIn('фон', b.background_note(7).lower())
+        self.assertEqual(b.background_note(8), '')
         opened = self.job()
         self.assertEqual(opened['action'], {'action': 'open', 'url': 'https://kontur.ru/'})
         self.assertIsNone(self.poll()[1]['job'])
@@ -108,6 +111,11 @@ class BrowseTests(unittest.TestCase):
         self.reply(self.job(), SHOT)
         question = self.wait_question()
         self.assertIn('Какой тариф', self.notes[0][1])
+        self.assertIn('как обычно', self.notes[0][1])
+        waiting = b.background_note(7)
+        self.assertIn('browse_status', waiting)
+        self.assertIn('явно отвечает', waiting)
+        self.assertIn('Какой тариф', waiting)
         self.assertIsNone(b.claim_reply(7, 'Смотри стартовый', None))
         self.assertIsNone(b.claim_reply(8, 'Смотри стартовый', question['message_id']))
         self.assertIn('Принял', b.claim_reply(7, 'Смотри стартовый', question['message_id']))
@@ -116,6 +124,7 @@ class BrowseTests(unittest.TestCase):
         self.assertEqual(b._run['status'], 'completed')
         self.assertNotIn('Смотри стартовый', b._path().read_text())
         self.assertTrue(b.pending_note(7) == '')
+        self.assertIn('уже закончилось', b.background_note(7))
 
     def test_reply_tool_continues(self):
         self.start([{'action': 'ask', 'question': 'Продолжать?'},
@@ -228,7 +237,8 @@ class BrowseIntegrationTests(unittest.TestCase):
         self.assertFalse(jarvis.execute_assistant_tool('browse_start', {'task': 'https://kontur.ru/'}, off, '')['ok'])
         with open('index (9).html', encoding='utf-8') as handle:
             page = handle.read()
-        for marker in ('loadBrowseTools', '/api/browse/tool', 'BROWSE_AGENT_TOOLS', "startsWith('browse_')"):
+        for marker in ('loadBrowseTools', '/api/browse/tool', 'BROWSE_AGENT_TOOLS', "startsWith('browse_')",
+                       'output.background', 'download-pc-extension', 'Скачайте расширение 0.5.0'):
             self.assertIn(marker, page)
 
     def test_vision_adapter_passes_image(self):
@@ -248,6 +258,34 @@ class BrowseIntegrationTests(unittest.TestCase):
              patch.object(jarvis.requests, 'post', return_value=response), \
              patch.object(jarvis, '_log_call'):
             self.assertEqual(jarvis._browse_decide('system', {}, shot)['answer'], '1000')
+
+    def test_browse_start_releases_the_chat_turn(self):
+        import jarvis
+        calls = []
+
+        def post(url, **kwargs):
+            body = kwargs.get('json') or {}
+            calls.append(body.get('tools'))
+            resp = Mock(ok=True)
+            if len(calls) == 1:
+                resp.json.return_value = {
+                    'content': [{'type': 'tool_use', 'id': 't1', 'name': 'browse_start',
+                                 'input': {'task': 'цены', 'url': 'https://kontur.ru/'}}],
+                    'usage': {}, 'stop_reason': 'tool_use'}
+            else:
+                self.assertNotIn('tools', body)
+                resp.json.return_value = {'content': [{'type': 'text', 'text': 'Смотрю сайт в фоне.'}],
+                                          'usage': {}, 'stop_reason': 'end_turn'}
+            return resp
+
+        app = {'telegramSkills': {'web_browse': True}, 'settings': {}}
+        with patch.object(jarvis.requests, 'post', side_effect=post), \
+             patch.object(jarvis, 'execute_assistant_tool', return_value={'ok': True, 'started': True, 'background': True}), \
+             patch.object(jarvis, '_log_call'):
+            answer, _links = jarvis._assistant_loop_claude(
+                [{'role': 'user', 'content': 'Зайди на https://kontur.ru/'}], 'key', 'claude-test', app, '', False)
+        self.assertEqual(answer, 'Смотрю сайт в фоне.')
+        self.assertEqual(len(calls), 2)
 
 
 if __name__ == '__main__':

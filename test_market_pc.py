@@ -124,6 +124,8 @@ class PcTest(unittest.TestCase):
             self.assertIn('moodle.js', archive.namelist())
             self.assertIn('browse.js', archive.namelist())
             manifest = json.loads(archive.read('manifest.json'))
+            self.assertEqual(manifest['version'], pc.extension_version())
+            self.assertEqual(manifest['version'], '0.5.0')
             self.assertNotIn('cookies', manifest['permissions'])
             self.assertNotIn(self.token.encode(), archive.read('background.js'))
 
@@ -240,9 +242,14 @@ class HttpTest(unittest.TestCase):
             self.assertEqual(self.call(path, body, token=token)[0], 401, path)
         self.assertEqual(self.call('/api/market/pc/result', {'id': 'invented'}, token=token)[0], 409)
         self.assertEqual(self.call('/api/market/pc/poll', [], token=token)[0], 400)
-        code, blob = self.call('/api/market/pc/download', owner=True)
-        self.assertEqual(code, 200)
+        req = urllib.request.Request(self.base + '/api/market/pc/download', headers={'Cookie': 'jarvis_auth=' + jarvis.AUTH_COOKIE_VALUE})
+        with urllib.request.urlopen(req, timeout=4) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn('jarvis-pc-extension-0.5.0.zip', response.headers.get('Content-Disposition', ''))
+            blob = response.read()
         self.assertTrue(zipfile.is_zipfile(io.BytesIO(blob)))
+        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+            self.assertIn('browse.js', archive.namelist())
         self.call('/api/market/pc/disconnect', {}, owner=True)
         self.assertEqual(self.call('/api/market/pc/poll', {}, token=token)[0], 401)
 

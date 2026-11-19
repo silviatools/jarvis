@@ -7011,6 +7011,9 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
 _assistant_convo: dict = {}
 _ASSISTANT_MAX_TURNS = 16
 _ASSISTANT_MAX_STEPS = 8
+_BACKGROUND_NUDGE = ("Задание по сайту уже выполняется в фоне, этот ход его не ждёт. "
+                     "Ответь одним сообщением: сайт смотрится в фоне, можно писать о другом, итог и вопросы придут отдельно. "
+                     "Если в этом сообщении были другие просьбы — закрой их по уже полученным результатам. Инструменты больше не вызывай.")
 
 
 class _AssistantError(Exception):
@@ -7131,7 +7134,9 @@ def _openai_step(api_key: str, model: str, effort: str, messages: list, tools: l
     eff = ai_usage.fit_effort(model, effort) if ai_usage else ""
     if eff and eff != "none":
         return _responses_call(api_key, model, messages, tools, eff, cache_key)
-    body = {"model": model, "max_completion_tokens": 8192, "messages": messages, "tools": tools}
+    body = {"model": model, "max_completion_tokens": 8192, "messages": messages}
+    if tools:
+        body["tools"] = tools
     body.update(_openai_extras(model, effort, cache_key))
     try:
         r = _openai_post(api_key, body)
@@ -7184,6 +7189,7 @@ class _TurnState:
                         ok=False, confirm=False, groups=sorted(self.groups) if self.groups else [])
         self._tools = None
         self._sys = None
+        self.release = False
 
     # инструменты
     def tools(self) -> list:
@@ -7339,6 +7345,9 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
     continuations = 0
     while ts.next_round():
         try:
+            payload = {"model": ts.model, "max_tokens": 8192, "system": ts.claude_system(), "messages": convo}
+            if not ts.release:
+                payload["tools"] = ts.claude_tools()
             r = requests.post(
                 ANTHROPIC_MESSAGES_URL,
                 headers={
@@ -7346,10 +7355,7 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
                     "x-api-key": api_key,
                     "anthropic-version": "2023-06-01",
                 },
-                json={
-                    "model": ts.model, "max_tokens": 8192, "system": ts.claude_system(),
-                    "messages": convo, "tools": ts.claude_tools(),
-                },
+                json=payload,
                 timeout=60,
             )
         except Exception as e:
@@ -7380,10 +7386,13 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
 
         convo.append({"role": "assistant", "content": content})
         tool_results = []
+        background = False
         for tu in tool_uses:
             output = ts.run_tool(tu.get("name"), tu.get("input"), site_url)
             if tu.get("name") == "navigate" and output.get("url"):
                 nav_links.append((output.get("label"), output["url"]))
+            if isinstance(output, dict) and output.get("background"):
+                background = True
             # Картинка из чата (tg_get_file) уходит модели image-блоком внутри результата.
             img = output.pop("_image", None) if isinstance(output, dict) else None
             out_json = json.dumps(output, ensure_ascii=False)
@@ -7393,6 +7402,9 @@ def _assistant_loop_claude(history: list, api_key: str, model: str, app: dict, s
                     {"type": "text", "text": out_json},
                     {"type": "image", "source": {"type": "base64", "media_type": img["media_type"], "data": img["b64"]}}],
             })
+        if background:
+            ts.release = True
+            tool_results.append({"type": "text", "text": _BACKGROUND_NUDGE})
         convo.append({"role": "user", "content": tool_results})
     ts.finish(False)
     return None, nav_links
@@ -7413,7 +7425,8 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
     carried = ""
     continuations = 0
     while ts.next_round():
-        res = _openai_step(api_key, ts.model, ts.effort, ts.openai_system() + convo, ts.openai_tools(), ("jarvis-" + func) if cache else "")
+        res = _openai_step(api_key, ts.model, ts.effort, ts.openai_system() + convo,
+                           [] if ts.release else ts.openai_tools(), ("jarvis-" + func) if cache else "")
         if ai_usage:
             _log_call("openai", ts.model, role, func, res["effort"], ai_usage.usage_from_openai(res["usage"]), ts.step)
         tool_calls = res["tool_calls"]
@@ -7430,6 +7443,7 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
 
         convo.append({"role": "assistant", "content": res["content"] or None, "tool_calls": tool_calls})
         pending_images = []
+        background = False
         for tc in tool_calls:
             fn = tc.get("function") or {}
             try:
@@ -7439,10 +7453,15 @@ def _assistant_loop_openai(history: list, api_key: str, model: str, app: dict, s
             output = ts.run_tool(fn.get("name"), inp, site_url)
             if fn.get("name") == "navigate" and output.get("url"):
                 nav_links.append((output.get("label"), output["url"]))
+            if isinstance(output, dict) and output.get("background"):
+                background = True
             img = output.pop("_image", None) if isinstance(output, dict) else None
             if img:
                 pending_images.append(img)
             convo.append({"role": "tool", "tool_call_id": tc.get("id"), "content": json.dumps(output, ensure_ascii=False)})
+        if background:
+            ts.release = True
+            convo.append({"role": "user", "content": _BACKGROUND_NUDGE})
         if pending_images:   # у OpenAI картинок в результате инструмента нет — отдельным сообщением после всех tool-ответов
             convo.append({"role": "user", "content": [{"type": "text", "text": "Изображение из результата инструмента:"}] + [
                 {"type": "image_url", "image_url": {"url": f"data:{i['media_type']};base64,{i['b64']}"}} for i in pending_images]})
@@ -7719,7 +7738,7 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
     with_tg = bool(tg_user) and tg_user.is_owner_chat(chat_id)
     loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
     health_note = health_skill.pending_note(chat_id, app.get("telegramSkills")) if health_skill else ""
-    browse_note = browse_skill.pending_note(chat_id) if browse_skill else ""
+    browse_note = browse_skill.background_note(chat_id) if browse_skill else ""
     groups = None
     if tool_groups and cfg.get("toolGroups"):
         dlg = tg_bot.current_dialog(chat_id) or {}
@@ -7734,7 +7753,7 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
 
     def log_text():
         # Ход про медицинские документы или ответ сайту: текст сообщения в журнал ходов не пишем.
-        if health_note or browse_note or any(str(t).startswith(("health_", "browse_")) for t in stats.get("tools") or []):
+        if health_note or any(str(t).startswith(("health_", "browse_")) for t in stats.get("tools") or []):
             return ""
         return text
     try:
@@ -12382,9 +12401,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, market_skill.public_status() if market_skill else {"ok": False, "error": "Кабинеты маркетплейсов на сервере недоступны."})
         elif route == "/api/market/pc/download":
             blob = market_pc.extension_zip()
+            version = market_pc.extension_version()
             self.send_response(200)
             self.send_header("Content-Type", "application/zip")
-            self.send_header("Content-Disposition", 'attachment; filename="jarvis-marketplaces-windows.zip"')
+            self.send_header("Content-Disposition", f'attachment; filename="jarvis-pc-extension-{version}.zip"')
             self.send_header("Content-Length", str(len(blob)))
             self.send_header("Cache-Control", "private, no-store")
             self.end_headers()

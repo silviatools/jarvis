@@ -24,15 +24,18 @@ KEYS = {'Enter', 'Tab', 'Escape', 'Backspace', 'ArrowUp', 'ArrowDown', 'ArrowLef
 _STOP = {'стоп', 'останови', 'остановись', 'отмена', 'хватит', 'stop', 'cancel'}
 _SECRET_QUERY = re.compile(r'(token|session|password|passwd|code|auth|key|secret)', re.I)
 SKILLS = [{'id': 'web_browse', 'title': 'Сайты на моём ПК', 'risk': 'danger', 'default': False,
-           'desc': 'Открывает сайт в одной вкладке Chrome на ПК и делает задание по скриншотам: прокрутка, клики, ввод, формы, вход и отправка. '
-                   'Снимки передаются выбранному ИИ и не сохраняются. Если нужен пароль, код или выбор — спрашивает в Telegram и продолжает после ответа на это сообщение. '
-                   'Лимит 40 действий. Нужны включённый ПК, Chrome и расширение 0.5.0.',
+           'desc': 'Открывает сайт в одной вкладке Chrome на ПК и делает задание в фоне: диалог остаётся свободным, про это задание можно спросить отдельно. '
+                   'Прокрутка, клики, ввод, формы, вход и отправка. Снимки передаются выбранному ИИ и не сохраняются. '
+                   'Если нужен пароль, код или выбор — спрашивает в Telegram и продолжает после ответа на это сообщение. '
+                   'Лимит 40 действий. Нужны включённый ПК, Chrome и расширение 0.5.0 с сайта: Настройки → Маркетплейсы.',
            'tools': ['browse_start', 'browse_status', 'browse_reply', 'browse_stop']}]
 TOOLS = [
     {'name': 'browse_start', 'description': 'Открыть сайт в одной постоянной вкладке Chrome на ПК и выполнить задание по скриншотам. '
-     'url — адрес из просьбы. Работает в фоне: итог и вопросы приходят в Telegram. Повторный запуск, пока идёт просмотр, не открывает вторую вкладку.',
+     'url — адрес из просьбы. Сразу уходит в фон и возвращает background:true: ответь пользователю, что сайт смотрится в фоне, и закончи ход. '
+     'Не вызывай browse_status в этом ходе. Итог и вопросы придут отдельными сообщениями, диалог можно продолжать о другом. Повторный запуск не открывает вторую вкладку.',
      'input_schema': {'type': 'object', 'properties': {'task': {'type': 'string'}, 'url': {'type': 'string'}}, 'required': ['task']}},
-    {'name': 'browse_status', 'description': 'Статус просмотра сайта: шаг, адрес, ожидаемый вопрос, ответ или причина остановки.',
+    {'name': 'browse_status', 'description': 'Один снимок фонового просмотра сайта: шаг, адрес, вопрос, ответ или причина остановки. '
+     'Вызывай, когда пользователь спрашивает, как идёт или чем закончилось это задание. Повторять в том же ходе не нужно.',
      'input_schema': {'type': 'object', 'properties': {}}},
     {'name': 'browse_reply', 'description': 'Передать ответ пользователя на вопрос, который просмотр сайта задал в Telegram, и продолжить ту же вкладку.',
      'input_schema': {'type': 'object', 'properties': {'text': {'type': 'string'}}, 'required': ['text']}},
@@ -68,20 +71,45 @@ def skill_on(state):
 def prompt_section(state):
     if not skill_on(state):
         return ''
-    return ('\nСайты на ПК: browse_start(task, url) открывает адрес в одной постоянной вкладке Chrome и смотрит страницу по скриншотам. '
-            'url передавай, если в просьбе есть адрес. Это фон: не говори, что сайт уже открыт, пока инструмент не вернул started. '
-            'Итог и вопросы приходят в Telegram. Если пользователь отвечает на вопрос по сайту — browse_reply(text). '
-            'browse_status — что происходит, browse_stop — остановить. Пароли и коды не выдумывай: просмотр спросит их сам.\n')
+    return ('\nСайты на ПК идут в фон. browse_start(task, url) сразу возвращает управление: ответь, что задание пошло в фон, и закончи ход. '
+            'url передавай, если в просьбе есть адрес. Не вызывай browse_status, чтобы дождаться конца, и не говори, что сайт открыт, пока инструмент не вернул started. '
+            'Итог и вопросы приходят отдельными сообщениями, диалог остаётся свободным. '
+            'Если пользователь спрашивает, как идёт или чем закончилось это задание — один раз browse_status. '
+            'Другая тема — обычный ответ: просмотр не останавливай и чужие слова не передавай как ответ сайту. '
+            'Явный ответ на вопрос сайта — browse_reply(text). Остановить — browse_stop. Пароли и коды не выдумывай.\n')
+
+
+def background_note(chat_id):
+    """Короткая пометка к следующему сообщению: задание идёт само, про него можно спросить."""
+    with _lock:
+        run = _run
+        if not run or not _same_chat(run.get('chat_id'), chat_id):
+            return ''
+        status = run.get('status')
+        task = (run.get('task') or '').replace('\n', ' ')[:180]
+        if status in ('running', 'waiting'):
+            question = ((run.get('question') or {}).get('text') or '') if status == 'waiting' else ''
+            note = ('\nФоновое задание по сайту идёт само и диалог не занимает: «' + task + '», шаг '
+                    + str(run.get('steps') or 0) + '. Отвечай на текущую тему. Второй просмотр не запускай и этот не останавливай, пока не попросят. '
+                    'Если спрашивают, как оно идёт или что уже нашлось — один раз browse_status. ')
+            if question:
+                note += ('Сайт ждёт ответ на «' + question + '». Передай его через browse_reply, только если сообщение явно отвечает на этот вопрос. '
+                         '«Стоп» — browse_stop. ')
+            return note + 'Не опрашивай статус, чтобы дождаться конца.\n'
+        if status in ('completed', 'interrupted', 'stopped'):
+            finished = run.get('finished') or 0
+            if not finished or time.time() - finished > 6 * 3600:
+                return ''
+            return ('\nПоследнее фоновое задание по сайту уже закончилось: «' + task + '». '
+                    'Если пользователь спрашивает про него — один раз browse_status. На другую тему отвечай как обычно.\n')
+        return ''
 
 
 def pending_note(chat_id):
     with _lock:
         if not _run or _run.get('status') != 'waiting' or not _same_chat(_run.get('chat_id'), chat_id):
             return ''
-        question = ((_run.get('question') or {}).get('text') or '')
-    return ('\nСайт на ПК ждёт ответа в этом чате: «' + question + '». '
-            'Если сообщение пользователя отвечает на вопрос, вызови browse_reply с его текстом и не начинай новый просмотр. '
-            'Если просит остановить — browse_stop.\n')
+    return background_note(chat_id)
 
 
 def voice_payload(state):
@@ -154,7 +182,7 @@ def _wake_locked():
 
 def _halt_locked(message, status='stopped'):
     if _run and _run['status'] in ('running', 'waiting'):
-        _run.update(status=status, message=message)
+        _run.update(status=status, message=message, finished=time.time())
         _save()
         _wake_locked()
 
@@ -371,6 +399,23 @@ def _seen_suffix(run):
     return ' Успел увидеть: ' + '; '.join(run['seen'][-8:])
 
 
+def _remember(chat_id, text):
+    """Кладёт итог фона в текущий диалог, чтобы следующий вопрос видел его. Пустой диалог не трогает."""
+    if not chat_id or not text:
+        return
+    try:
+        import tg_bot
+        with tg_bot.chat_lock(chat_id):
+            hist = tg_bot.history_for(chat_id)
+            if not hist:
+                return
+            hist.append({'role': 'assistant', 'content': '(фоном) ' + text[:1500]})
+            tg_bot.trim(hist)
+            tg_bot.touch(chat_id)
+    except Exception:
+        pass
+
+
 def _tell(run, notify):
     if not notify or not run.get('chat_id'):
         return
@@ -387,13 +432,14 @@ def _tell(run, notify):
         notify(chat, text[:4000])
     except Exception:
         pass
+    _remember(chat, text[:1500])
 
 
 def _finish(run, answer, notify):
     with _lock:
         if run['status'] != 'running':
             return
-        run.update(status='completed', answer=answer[:4000], message=answer[:500])
+        run.update(status='completed', answer=answer[:4000], message=answer[:500], finished=time.time())
         _save()
     _tell(run, notify)
 
@@ -406,7 +452,7 @@ def _fail(run, exc, notify):
             message = str(exc)[:500]
             if run.get('seen') and 'Успел увидеть' not in message:
                 message = (message + _seen_suffix(run))[:500]
-            run.update(status='interrupted', message=message)
+            run.update(status='interrupted', message=message, finished=time.time())
             _save()
         elif run['status'] != 'interrupted':
             return
@@ -427,7 +473,7 @@ def _ask(run, question, notify):
     if not notify or not chat:
         raise RuntimeError('Некуда отправить вопрос: нет личного чата с ботом.')
     text = ('Нужно уточнение, чтобы продолжить на сайте.\n\n' + question.strip()
-            + '\n\nОтветьте на это сообщение — продолжу с того же места. «Стоп» останавливает просмотр.')
+            + '\n\nОтветьте на это сообщение — продолжу с того же места. Другие сообщения можно писать как обычно. «Стоп» останавливает просмотр.')
     try:
         message_id = notify(chat, text)
     except Exception:
@@ -440,6 +486,7 @@ def _ask(run, question, notify):
             run['question'] = None
             raise RuntimeError('Не удалось отправить вопрос в Telegram.')
         run['question']['message_id'] = message_id
+    _remember(chat, 'Спросил в Telegram: ' + question.strip()[:300] + '. Жду ответ на то сообщение. Диалог свободен.')
     paused = time.time()
     if not event.wait(ANSWER_WAIT):
         raise RuntimeError('Не дождался ответа в Telegram.')
@@ -564,8 +611,9 @@ def execute(name, inp, state, decide, enabled, notify=None, chat_id=None):
                 'reply_event': None, 'told': False}
         _save()
         threading.Thread(target=_worker, args=(_run, decide, enabled, notify), daemon=True).start()
-        return {'ok': True, 'started': True, 'run': _public(_run),
-                'message': 'Открываю сайт на ПК. Результат придёт в Telegram. Если понадобится пароль или выбор — спрошу там же.'}
+        return {'ok': True, 'started': True, 'background': True, 'run': _public(_run),
+                'message': 'Задание ушло в фон. Ответь, что сайт смотрится в фоне и можно писать о другом, затем закончи ход. '
+                           'browse_status в этом ходе не вызывай. Итог и вопросы придут в Telegram отдельно.'}
 
 
 def device_call(route, token, payload):

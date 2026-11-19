@@ -289,6 +289,13 @@ def _clean_result(section, raw, include_details=False, shop="wb"):
             "details_truncated": include_details and raw.get("details_truncated") is True}
 
 
+def extension_version():
+    try:
+        return str(json.loads((Path(__file__).parent / "windows" / "wb-extension" / "manifest.json").read_text(encoding="utf-8")).get("version") or "0")
+    except (OSError, ValueError):
+        return "0"
+
+
 def extension_zip():
     root = Path(__file__).parent / "windows" / "wb-extension"
     buf = io.BytesIO()
