@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ru"><head><meta charset="utf-8"><title>Джарвис — WB, Ozon и Moodle</title>
+<html lang="ru"><head><meta charset="utf-8"><title>Джарвис — WB, Ozon, Moodle и сайты</title>
 <style>
 body{font:14px system-ui,sans-serif;width:340px;padding:16px;color:#24212e}h1{font-size:19px;margin-top:0}label{display:block;margin:12px 0}input{box-sizing:border-box;width:100%;padding:9px;margin-top:5px;border:1px solid #bbb;border-radius:7px}button{padding:9px 12px;margin:3px 3px 3px 0;cursor:pointer}p{line-height:1.45}.muted{color:#666;font-size:12px}#status{white-space:pre-wrap}#error{color:#b42318}textarea{box-sizing:border-box;width:100%;height:200px;font:11px monospace}h2{font-size:16px}
 </style></head><body>
-<h1>Джарвис · WB, Ozon и Moodle</h1>
+<h1>Джарвис · WB, Ozon, Moodle и сайты</h1>
 <p>Войдите в WB и Ozon в этом профиле Chrome. Раздел маркетплейсов читает покупки и доставки.</p>
 <label>Магазин <select id="shop"><option value="wb">Wildberries</option><option value="ozon">Ozon</option></select></label>
 <label>Адрес вашего Джарвиса<input id="server" type="url" placeholder="https://…up.railway.app" autocomplete="off"></label>
@@ -23,4 +23,7 @@ body{font:14px system-ui,sans-serif;width:340px;padding:16px;color:#24212e}h1{fo
 <p>Запуск из чата разрешает отправку ответов и завершение попыток. Не используйте выбранную вкладку во время работы.</p>
 <button id="moodleBind">Подключить текущий курс</button><button id="moodleStop">Остановить Moodle</button>
 <p id="moodleStatus" role="status"></p>
+<h2>Сайты</h2>
+<p>Джарвис открывает одну постоянную вкладку и управляет ею по заданию из чата. Включите навык «Сайты на моём ПК». Во время работы Chrome показывает полосу отладки.</p>
+<p id="browseStatus" role="status">Заданий по сайтам нет.</p>
 <script src="popup.js"></script></body></html>

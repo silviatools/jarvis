@@ -97,6 +97,16 @@ const moodleInitialRevision = moodleUiRevision;
 chrome.storage.local.get('moodleStatus').then(s => {
   if (moodleUiRevision === moodleInitialRevision) byId('moodleStatus').textContent = s.moodleStatus || 'Курс не подключён.';
 });
+chrome.storage.local.get('browseStatus').then(s => {
+  const el = byId('browseStatus');
+  if (el) el.textContent = s.browseStatus || 'Заданий по сайтам нет.';
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.browseStatus) {
+    const el = byId('browseStatus');
+    if (el) el.textContent = changes.browseStatus.newValue || 'Заданий по сайтам нет.';
+  }
+});
 for (const type of ['moodleBind', 'moodleStop']) {
   byId(type).addEventListener('click', async () => {
     const button = byId(type);

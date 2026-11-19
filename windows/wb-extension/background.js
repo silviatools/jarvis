@@ -1,5 +1,5 @@
 // Marketplace commands remain read-only; Moodle is separately opt-in.
-importScripts("moodle.js");
+importScripts("moodle.js", "browse.js");
 const URLS = {
   orders: 'https://www.wildberries.ru/lk/myorders/archive',
   delivery: 'https://www.wildberries.ru/lk/myorders/delivery',
@@ -334,6 +334,7 @@ async function start() {
   await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
   await chrome.alarms.create('jarvis-wb', { periodInMinutes: 0.5 });
   await tick();
+  if (typeof browseKick === 'function') browseKick();
 }
 chrome.runtime.onInstalled.addListener(start);
 chrome.runtime.onStartup.addListener(start);

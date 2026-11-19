@@ -135,6 +135,7 @@
  Пока раздел «Сим-карты» (`SimCardsView`, CSS `sim-*`): данные — id-массивы `simCards` / `simDevices` (обычная синхронизация);
  виды карточки/список/по устройствам/платежи. Ассистенту — домен `sims` (без PIN/PUK и паролей) и запись через `WRITE_REGISTRY`.
 - `requirements.txt` — зависимости ставит Railway при деплое; новые библиотеки добавлять сюда.
+- `browse_skill.py` / `windows/wb-extension/browse.js` — навык «Сайты на моём ПК» (`web_browse`, по умолчанию выключен, risk danger): одно задание в одной вкладке Chrome на ПК. Расширение 0.5.0 по `chrome.debugger` делает снимок, клик, ввод, клавишу и прокрутку; сервер гоняет модель со зрением до 40 действий. Новое задание переходит по адресу в той же вкладке, пока Chrome открыт. Вопрос в Telegram — ответом на сообщение, затем тот же просмотр продолжается. Снимки, введённый текст и ответы пользователя в файл не пишутся. Отчёт — `DATA_DIR/jarvis_browse.json` (в бэкапе и `.gitignore`). Инструменты `browse_start/status/reply/stop`, API `/api/browse/{tools,tool}` и `/api/browse/pc/{poll,result}`. Тесты — `test_browse.py`, `tests/browse_extension.test.cjs`.
 - `market_pc.py` / `windows/wb-extension/` — WB через Chrome на Windows: исходящие poll/result,
   ключ устройства даёт доступ только к двум этим маршрутам. В настройках маркетплейсов — ZIP, ключ,
   статус ПК и проверка чтения. `jarvis_market_pc.json` хранит только хэш ключа; задания в памяти.

@@ -17209,6 +17209,21 @@ async function loadMoodleTools(force) {
   } catch (e) { MOODLE_AGENT_TOOLS = []; MOODLE_AGENT_PROMPT = ''; }
 }
 
+let BROWSE_AGENT_TOOLS = [];
+let BROWSE_AGENT_PROMPT = '';
+let browseToolsLoadedAt = 0;
+async function loadBrowseTools(force) {
+  if (!force && Date.now() - browseToolsLoadedAt < 20000) return;
+  try {
+    const r = await fetch('/api/browse/tools');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    BROWSE_AGENT_TOOLS = j.tools || [];
+    BROWSE_AGENT_PROMPT = j.prompt || '';
+    browseToolsLoadedAt = Date.now();
+  } catch (e) { BROWSE_AGENT_TOOLS = []; BROWSE_AGENT_PROMPT = ''; }
+}
+
 let ROUTE_AGENT_TOOLS = [];
 let ROUTE_AGENT_PROMPT = '';
 let routeToolsLoadedAt = 0;
@@ -17295,7 +17310,7 @@ ${writeList}
 
 9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй.
 
-${TG_AGENT_PROMPT}${MAX_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}${MOODLE_AGENT_PROMPT}${STUDY_JOURNAL_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true. Для события календаря в тексте подтверждения обязательно название календаря из message; если buttons:true — вопрос с кнопками уже в чате, не дублируй. needs_choice значит календарь не выбран: выбери лучший из calendars и повтори вызов, пользователю пока не пиши. needs_clarification — задай вопрос из message и остановись, событие не создано.
+${TG_AGENT_PROMPT}${MAX_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}${MOODLE_AGENT_PROMPT}${BROWSE_AGENT_PROMPT}${STUDY_JOURNAL_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true. Для события календаря в тексте подтверждения обязательно название календаря из message; если buttons:true — вопрос с кнопками уже в чате, не дублируй. needs_choice значит календарь не выбран: выбери лучший из calendars и повтори вызов, пользователю пока не пиши. needs_clarification — задай вопрос из message и остановись, событие не создано.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
@@ -17450,6 +17465,14 @@ async function executeVoiceTool(name, input, nav, data) {
       });
       return noop(await res.json());
     } catch (e) { return noop({ error: 'Сервер не ответил по Moodle: ' + e.message }); }
+  }
+  if (name.startsWith('browse_')) {
+    try {
+      const res = await fetch('/api/browse/tool', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, input }),
+      });
+      return noop(await res.json());
+    } catch (e) { return noop({ error: 'Сервер не ответил по сайту: ' + e.message }); }
   }
   if (name.startsWith('route_')) {
     try {
@@ -17679,6 +17702,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
   await loadMailTools();
   await loadPlanTools();
   await loadMoodleTools();
+  await loadBrowseTools();
   await loadRouteTools();
   await loadStudyJournalTools();
   const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
@@ -17692,7 +17716,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MAX_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS, ...STUDY_JOURNAL_TOOLS] }),
+      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MAX_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS, ...BROWSE_AGENT_TOOLS, ...STUDY_JOURNAL_TOOLS] }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -17803,10 +17827,11 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps, ef
   await loadMailTools();
   await loadPlanTools();
   await loadMoodleTools();
+  await loadBrowseTools();
   await loadRouteTools();
   await loadStudyJournalTools();
   const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
-  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MAX_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS, ...STUDY_JOURNAL_TOOLS].map(t => ({
+  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MAX_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS, ...BROWSE_AGENT_TOOLS, ...STUDY_JOURNAL_TOOLS].map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.input_schema },
   }));

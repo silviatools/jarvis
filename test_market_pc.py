@@ -119,9 +119,10 @@ class PcTest(unittest.TestCase):
 
     def test_download_archive(self):
         with zipfile.ZipFile(io.BytesIO(pc.extension_zip())) as archive:
-            self.assertEqual(len(archive.namelist()), 12)
+            self.assertEqual(len(archive.namelist()), 13)
             self.assertIn('ozon-capture.js', archive.namelist())
             self.assertIn('moodle.js', archive.namelist())
+            self.assertIn('browse.js', archive.namelist())
             manifest = json.loads(archive.read('manifest.json'))
             self.assertNotIn('cookies', manifest['permissions'])
             self.assertNotIn(self.token.encode(), archive.read('background.js'))
@@ -229,10 +230,13 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(self.call('/api/market/pc/poll', {}, owner=True)[0], 401)
         self.assertEqual(self.call('/api/moodle/pc/poll', {'session': 'test-session-12345'}, token=token)[0], 200)
         self.assertEqual(self.call('/api/moodle/pc/poll', {'session': 'test-session-12345'}, owner=True)[0], 401)
+        self.assertEqual(self.call('/api/browse/pc/poll', {'session': 'test-session-12345'}, token=token)[0], 200)
+        self.assertEqual(self.call('/api/browse/pc/poll', {'session': 'test-session-12345'}, owner=True)[0], 401)
         for path, body in [('/api/market/status', None), ('/api/market/pc/download', None),
                            ('/api/market/pc/pair', {}), ('/api/market/pc/disconnect', {}),
                            ('/api/market/pc/check', {}), ('/api/market/tool', {}), ('/api/config', {}),
-                           ('/api/moodle/tool', {'name': 'moodle_start'}), ('/api/moodle/tools', None)]:
+                           ('/api/moodle/tool', {'name': 'moodle_start'}), ('/api/moodle/tools', None),
+                           ('/api/browse/tool', {'name': 'browse_start'}), ('/api/browse/tools', None)]:
             self.assertEqual(self.call(path, body, token=token)[0], 401, path)
         self.assertEqual(self.call('/api/market/pc/result', {'id': 'invented'}, token=token)[0], 409)
         self.assertEqual(self.call('/api/market/pc/poll', [], token=token)[0], 400)

@@ -43,6 +43,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import tablet_stt
 import market_pc
 import moodle_skill
+import browse_skill
 import wb_watch_skill
 import route_skill
 import tg_history
@@ -1227,7 +1228,7 @@ def build_backup_zip() -> bytes:
             zf.write(path, arcname=arcname)
 
         data_names = {"jarvis_app_data.json", "jarvis_subscribers.json", "jarvis_notify_config.json", "jarvis_tg_bot_state.json", "jarvis_study_present_state.json", "jarvis_decks.json",
-                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_moodle_reports.json", "jarvis_wb_pickup.json", "jarvis_ozon_pickup.json", "jarvis_tg_history.sqlite3",
+                      "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_moodle_reports.json", "jarvis_browse.json", "jarvis_wb_pickup.json", "jarvis_ozon_pickup.json", "jarvis_tg_history.sqlite3",
                       "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl", "jarvis_routes.json", "jarvis_health_drafts.json",
                       "jarvis_newspaper_cache.json", "jarvis_newspaper_state.json", "jarvis_newspaper_latest.html",
                       "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png", "jarvis_card_ledger.json", "jarvis_study_journals.json", "jarvis_cars.json"}
@@ -6776,6 +6777,7 @@ def _prompt_sections(app, with_tg: bool, groups) -> str:
         + (deck_skill.prompt_section(st) if deck_skill and on("deck") else "")
         + (tg_history.prompt_section(st) if on("bot_history") else "")
         + (moodle_skill.prompt_section(st) if on("study") else "")
+        + (browse_skill.prompt_section(st) if on("browse") else "")
         + (study_skills.prompt_section(st) if study_skills and on("study") else "")
         + (study_journal.prompt_section(st) if study_journal and on("study") else "")
         + (market_skill.prompt_section(st) if market_skill and on("market") else "")
@@ -6824,6 +6826,19 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
             return {"ok": False, "error": "Moodle доступен только владельцу."}
         return moodle_skill.execute(name, inp, (app or {}).get("telegramSkills"), _moodle_decide,
                                    lambda: moodle_skill.skill_on((load_app_data() or {}).get("telegramSkills")))
+    if name in browse_skill.TOOL_NAMES:
+        ctx = tg_bot.get_ctx() if tg_bot else None
+        if ctx and (not tg_user or not tg_user.is_owner_chat(ctx.chat_id)):
+            return {"ok": False, "error": "Просмотр сайтов доступен только владельцу."}
+        chat_id = getattr(ctx, "chat_id", None) if ctx else None
+        if chat_id is None and tg_user:
+            try:
+                chat_id = ((tg_user.status() or {}).get("me") or {}).get("id")
+            except Exception:
+                chat_id = None
+        return browse_skill.execute(name, inp, (app or {}).get("telegramSkills"), _browse_decide,
+                                   lambda: browse_skill.skill_on((load_app_data() or {}).get("telegramSkills")),
+                                   _browse_notify, chat_id)
     if name in route_skill.TOOL_NAMES:
         if not route_skill.skill_on((app or {}).get("telegramSkills")):
             return {"error": "Навык «Места, маршруты и пробки» выключен."}
@@ -7704,21 +7719,27 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
     with_tg = bool(tg_user) and tg_user.is_owner_chat(chat_id)
     loop_fn = _assistant_loop_openai if provider == "openai" else _assistant_loop_claude
     health_note = health_skill.pending_note(chat_id, app.get("telegramSkills")) if health_skill else ""
+    browse_note = browse_skill.pending_note(chat_id) if browse_skill else ""
     groups = None
     if tool_groups and cfg.get("toolGroups"):
         dlg = tg_bot.current_dialog(chat_id) or {}
+        extra_groups = set()
+        if health_note:
+            extra_groups.add("health")
+        if browse_note:
+            extra_groups.add("browse")
         groups = tool_groups.pick(text, chat_id=chat_id, has_files=has_files, anchor=dlg.get("title") or "",
-                                  extra={"health"} if health_note else None)
+                                  extra=extra_groups or None)
     stats = {"esc": esc_reason}
 
     def log_text():
-        # Ход про медицинские документы: текст сообщения в журнал ходов не пишем.
-        if health_note or any(str(t).startswith("health_") for t in stats.get("tools") or []):
+        # Ход про медицинские документы или ответ сайту: текст сообщения в журнал ходов не пишем.
+        if health_note or browse_note or any(str(t).startswith(("health_", "browse_")) for t in stats.get("tools") or []):
             return ""
         return text
     try:
         answer, nav_links = loop_fn(turn, api_key, model, app, site_url, with_tg,
-                                    extra_system=health_note,
+                                    extra_system=health_note + browse_note,
                                     effort=conf[4], role=conf[5], func="chat", esc=esc, groups=groups, turn=stats,
                                     compact=bool(cfg.get("compactPrompt")), cache=bool(cfg.get("promptCache")))
     except _AssistantError as e:
@@ -7873,7 +7894,8 @@ def _mail_notify(acc: dict, metas: list):
 
 
 def _assistant_tool_list(app, with_tg: bool) -> list:
-    return (moodle_skill.TOOLS if moodle_skill.skill_on((app or {}).get("telegramSkills")) else []) + ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
+    return (moodle_skill.TOOLS if moodle_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
+        (browse_skill.TOOLS if browse_skill.skill_on((app or {}).get("telegramSkills")) else []) + ASSISTANT_TOOLS + STUDY_FILE_TOOLS + (tg_bot.BOT_TOOLS if tg_bot else []) + \
         (widget_skill.TOOLS if widget_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (deck_skill.TOOLS if deck_skill and deck_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (tg_tools.enabled_tools((app or {}).get("telegramSkills")) if with_tg else []) + \
@@ -7902,6 +7924,7 @@ def assistant_skills_catalog() -> list:
         + (health_skill.SKILLS if health_skill else [])
         + route_skill.SKILLS
         + moodle_skill.SKILLS
+        + browse_skill.SKILLS
     )
 
 
@@ -8088,7 +8111,7 @@ def _llm_text(conf, system: str, user: str, max_tokens: int = 2500, timeout: int
     return "".join(b.get("text", "") for b in (j.get("content") or []) if b.get("type") == "text").strip()
 
 
-def _moodle_decide(system, context, shot):
+def _vision_decide(system, context, shot, func):
     conf = _ai_conf(load_app_data())
     if not conf:
         raise RuntimeError("Настройте ключ и модель ИИ в настройках ассистента.")
@@ -8119,12 +8142,32 @@ def _moodle_decide(system, context, shot):
         text = "".join(b.get("text", "") for b in result.get("content", []) if b.get("type") == "text")
         usage = ai_usage.usage_from_claude(result.get("usage")) if ai_usage else {}
     if ai_usage:
-        _log_call(provider, model, conf[5], "moodle", conf[4], usage)
+        _log_call(provider, model, conf[5], func, conf[4], usage)
     # Never interpret model output as code. Only the validated action protocol is accepted.
     text = text.strip()
     if text.startswith("```") and text.endswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     return json.loads(text)
+
+
+def _moodle_decide(system, context, shot):
+    return _vision_decide(system, context, shot, "moodle")
+
+
+def _browse_notify(chat_id, text):
+    token = get_token()
+    if not token or not chat_id or not tg_bot:
+        return None
+    try:
+        ids = tg_bot.send_text(token, chat_id, text)
+    except Exception as exc:
+        print(f"  browse notify: {type(exc).__name__}", flush=True)
+        return None
+    return ids[0] if ids else None
+
+
+def _browse_decide(system, context, shot):
+    return _vision_decide(system, context, shot, "browse")
 
 
 def _study_owner_chats(app) -> list:
@@ -9157,6 +9200,19 @@ def updates_loop():
             # может занять несколько секунд, а держать им long-poll нельзя —
             # это задержит ответы диет-опросникам и остальным подписчикам.
             has_media = any(msg.get(k) for k in ("photo", "document", "voice", "audio", "video", "video_note"))
+            if text and not has_media and browse_skill:
+                reply_to = ((msg.get("reply_to_message") or {}).get("message_id"))
+                ack = browse_skill.claim_reply(cid, text, reply_to)
+                if ack:
+                    try:
+                        tg_history.record(cid, msg.get("message_id"), "user", "[ответ по сайту]", msg.get("date"), reply_to)
+                    except Exception:
+                        pass
+                    try:
+                        send_message(token, cid, ack)
+                    except Exception as e:
+                        print(f"  browse reply: {e}")
+                    continue
             if (text or has_media) and not text.startswith("/"):
                 # Ждём «своё значение» калорий после кнопки опроса питания — число
                 # уходит в dietLog, а не ассистенту.
@@ -12374,6 +12430,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif route == "/api/moodle/tools":
             state = (load_app_data() or {}).get("telegramSkills")
             self._json(200, {"tools": moodle_skill.TOOLS if moodle_skill.skill_on(state) else [], "prompt": moodle_skill.prompt_section(state)})
+        elif route == "/api/browse/tools":
+            self._json(200, browse_skill.voice_payload((load_app_data() or {}).get("telegramSkills")))
         elif route == "/api/routes/tools":
             self._json(200, route_skill.voice_payload((load_app_data() or {}).get("telegramSkills")))
         elif route == "/api/routes/status":
@@ -12467,7 +12525,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         route = self.path.split("?", 1)[0].rstrip("/") or "/"
-        if route in market_pc.DEVICE_ROUTES | moodle_skill.DEVICE_ROUTES:
+        if route in market_pc.DEVICE_ROUTES | moodle_skill.DEVICE_ROUTES | browse_skill.DEVICE_ROUTES:
             self._market_pc_device_post(route)
             return
         if route == "/login":
@@ -12631,6 +12689,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._plan_post(route)
         elif route == "/api/moodle/tool":
             self._moodle_tool_post()
+        elif route == "/api/browse/tool":
+            self._browse_tool_post()
         elif route.startswith("/api/routes/"):
             self._routes_post(route)
         elif route == "/api/student/check":
@@ -14232,7 +14292,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
     def _market_pc_device_post(self, route: str):
         """Only device poll/result endpoints accept the restricted PC key."""
         length = self._content_length()
-        if length is None or length < 0 or length > (4 * 1024 * 1024 if route in moodle_skill.DEVICE_ROUTES else 96 * 1024):
+        if length is None or length < 0 or length > (4 * 1024 * 1024 if route in moodle_skill.DEVICE_ROUTES | browse_skill.DEVICE_ROUTES else 96 * 1024):
             self._json(413, {"ok": False, "error": "invalid body size"})
             return
         try:
@@ -14242,7 +14302,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             return
         auth = self.headers.get("Authorization") or ""
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        handler = moodle_skill if route in moodle_skill.DEVICE_ROUTES else market_pc
+        handler = browse_skill if route in browse_skill.DEVICE_ROUTES else moodle_skill if route in moodle_skill.DEVICE_ROUTES else market_pc
         status, result = handler.device_call(route, token, payload)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -14406,6 +14466,20 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         try:
             payload = json.loads(self.rfile.read(length))
             if not isinstance(payload, dict) or payload.get("name") not in moodle_skill.TOOL_NAMES or not isinstance(payload.get("input", {}), dict):
+                raise ValueError()
+        except (ValueError, TypeError):
+            self._json(400, {"ok": False})
+            return
+        self._json(200, execute_assistant_tool(payload["name"], payload.get("input", {}), load_app_data() or {}, ""))
+
+    def _browse_tool_post(self):
+        length = self._content_length()
+        if length is None or not 0 <= length <= 8192:
+            self._json(413, {"ok": False})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict) or payload.get("name") not in browse_skill.TOOL_NAMES or not isinstance(payload.get("input", {}), dict):
                 raise ValueError()
         except (ValueError, TypeError):
             self._json(400, {"ok": False})
