@@ -18,8 +18,8 @@ android {
         applicationId = "ru.jarvis.tablet"
         minSdk = 33
         targetSdk = 34
-        versionCode = 24
-        versionName = "1.23"
+        versionCode = 25
+        versionName = "1.24"
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")
         }

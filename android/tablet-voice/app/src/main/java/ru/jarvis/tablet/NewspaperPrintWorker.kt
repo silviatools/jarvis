@@ -204,7 +204,10 @@ class NewspaperPrintWorker(
 
     private fun printerLine(probe: ProbeHit): String {
         val why = probe.error.ifBlank { "нет ответа" }
-        if (probe.outcome == "error" && ("это VPN" in probe.error || "EPERM" in probe.error)) {
+        if (probe.outcome == "error" && (
+                "это VPN" in probe.error || "EPERM" in probe.error || "Печать не начата" in probe.error
+            )
+        ) {
             return "газета: ${probe.error.removePrefix("газета: ")}"
         }
         return when (probe.outcome) {
@@ -216,7 +219,10 @@ class NewspaperPrintWorker(
 
     private fun outcomeFor(error: String): String {
         val low = error.lowercase()
-        if ("это vpn" in low || "eperm" in low || "bindsocket" in low || "binding socket" in low || "vpn не пускает" in low) {
+        if (
+            "это vpn" in low || "печать не начата" in low || "eperm" in low ||
+            "bindsocket" in low || "binding socket" in low || "vpn не пускает" in low
+        ) {
             return "error"
         }
         val down = listOf(

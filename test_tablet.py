@@ -376,8 +376,8 @@ class TabletUnitTest(unittest.TestCase):
             self.assertIn("@+id/userRoot", user)
             self.assertNotIn("@+id/version", user)
         gradle = (Path(__file__).resolve().parent / "android/tablet-voice/app/build.gradle.kts").read_text(encoding="utf-8")
-        self.assertIn('versionName = "1.23"', gradle)
-        self.assertIn("versionCode = 24", gradle)
+        self.assertIn('versionName = "1.24"', gradle)
+        self.assertIn("versionCode = 25", gradle)
         manifest = (root / "AndroidManifest.xml").read_text(encoding="utf-8")
         self.assertIn("android.permission.CHANGE_NETWORK_STATE", manifest)
         recs = []
@@ -485,14 +485,17 @@ class TabletUnitTest(unittest.TestCase):
         self.assertIn("TCP до него VPN не пускает", ipp)
         self.assertIn("Выключите VPN или разрешите локальную сеть", ipp)
         self.assertIn(".0/24", ipp)
-        self.assertIn('VoiceLog.add("газета: локальный адрес $src, не в сети принтера ${cidr24(lan)}")', ipp)
+        self.assertIn("Печать не начата", ipp)
+        self.assertIn("нет домашнего Wi‑Fi", ipp)
         probe = ipp.split("fun probe")[1].split("private fun capabilities")[0]
+        self.assertLess(probe.index("ensureHome"), probe.index("for (path in paths)"))
         self.assertIn("if (fallbacks && (lan == null || !isLan(lan) || onLan))", probe)
         self.assertLess(probe.index("paths.add(\"/ipp/print\")"), probe.index("paths.add(\"/printers/Pantum\")"))
         self.assertLess(probe.index("газета: пробую"), probe.index("capabilities(target)"))
         self.assertLess(probe.index("catch (e: PrinterRouteException)"), probe.index('VoiceLog.add("газета: $where — $msg")'))
         send = ipp.split("private fun send")[1].split("private fun postBound")[0]
-        self.assertLess(send.index("bindProcessToNetwork"), send.index("routeMessage"))
+        self.assertLess(send.index("postBound"), send.index("routeMessage"))
+        self.assertIn("useProcessBind", send)
         self.assertIn("PrinterRouteException", send)
         worker = (root / "java/ru/jarvis/tablet/NewspaperPrintWorker.kt").read_text(encoding="utf-8")
         self.assertIn('VoiceLog.add("газета: задание ${job.jobId} уже проверялось, повторный перебор пропущен")', worker)
@@ -501,10 +504,41 @@ class TabletUnitTest(unittest.TestCase):
         self.assertIn("это тот же принтер, повторный перебор пропущен", worker)
         self.assertIn('if (caps == null && probe.outcome != "error")', worker)
         self.assertIn('"это vpn" in low', worker)
+        self.assertIn('"печать не начата" in low', worker)
         self.assertIn("ipp.close()", worker)
         page = (Path(__file__).resolve().parent / "index (9).html").read_text(encoding="utf-8")
         card = page.split("function NewspaperSettings")[1].split("function WeatherCalendarSettings")[0]
         self.assertLess(card.index("printerOutcome === 'error' ? 'ошибка'"), card.index("'не отвечает'"))
+
+    def test_v124_foreign_subnet_skips_ipp_paths(self):
+        """10.31 не в сети принтера: одна строка, без перебора /ipp/* и без восьмисекундного TCP."""
+        root = Path(__file__).resolve().parent / "android/tablet-voice/app/src/main"
+        ipp = (root / "java/ru/jarvis/tablet/IppPrinter.kt").read_text(encoding="utf-8")
+        self.assertIn("removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)", ipp)
+        self.assertIn("allNetworks", ipp)
+        self.assertIn("DatagramSocket", ipp)
+        self.assertIn("fun homeMissing", ipp)
+        self.assertIn("fun ensureHome", ipp)
+        probe = ipp.split("fun probe")[1].split("private fun capabilities")[0]
+        self.assertLess(probe.index("if (!onLan) throw PrinterRouteException(missingHome(lan))"), probe.index("for (path in paths)"))
+        self.assertLess(probe.index("ensureHome(endpoint, lan)"), probe.index('VoiceLog.add("газета: пробую $where")'))
+        cover = ipp.split("fun wifiCovers")[1].split("private fun wifiUsable")[0]
+        self.assertNotIn("?: return true", cover)
+        self.assertIn("ipv4s(net).any { same24(it, lan) }", cover)
+        send = ipp.split("private fun send(")[1].split("private fun postBound")[0]
+        lan = send.split("if (lan != null && isLan(lan)) {", 1)[1].split("if (net != null)", 1)[0]
+        self.assertLess(lan.index("postBound(home"), lan.index("post(null"))
+        self.assertLess(lan.index("same24(active, lan)"), lan.index("post(null"))
+        self.assertIn("Wi‑Fi $via, но выход с $from, не из $cidr. Печать не начата", ipp)
+        worker = (root / "java/ru/jarvis/tablet/NewspaperPrintWorker.kt").read_text(encoding="utf-8")
+        line = worker.split("fun printerLine")[1].split("fun outcomeFor")[0]
+        self.assertIn("Печать не начата", line)
+        self.assertTrue(jarvis._bind_print_error(
+            "нет домашнего Wi‑Fi в 192.168.1.0/24, сейчас VPN 10.31.10.178. Печать не начата"
+        ))
+        self.assertTrue(jarvis._bind_print_error(
+            "Wi‑Fi 192.168.1.50, но выход с 10.31.10.178, не из 192.168.1.0/24. Печать не начата"
+        ))
 
     def test_v117_window_holds_phrase_and_slider_is_timer(self):
         """Речь с 4-й по 7-ю секунду — ход, без звука конца. Тишина — конец на 5-й и WAKE."""
@@ -1084,6 +1118,26 @@ class TabletHttpTest(unittest.TestCase):
             self.assertIn("192.168.1.0/24", vpn["agent"]["printer"]["error"])
             self.assertEqual(vpn["print"].get("error") or "", "")
             self.assertNotEqual(vpn["print"].get("status"), "error")
+
+            wrong_net = (
+                "нет домашнего Wi‑Fi в 192.168.1.0/24, сейчас VPN 10.31.10.178. Печать не начата"
+            )
+            code, subnet = self.req("POST", "/api/tablet/newspaper/report", {
+                "status": "check",
+                "printerHost": "192.168.1.100",
+                "printerPort": 631,
+                "printerVisible": False,
+                "printerOutcome": "error",
+                "error": wrong_net,
+            }, token=token)
+            self.assertEqual(code, 200, subnet)
+            _, off = self.req("GET", "/api/newspaper/status", token=token)
+            self.assertEqual(off["agent"]["printer"]["outcome"], "error")
+            self.assertIn("10.31.10.178", off["agent"]["printer"]["error"])
+            self.assertIn("Печать не начата", off["agent"]["printer"]["error"])
+            self.assertNotIn("не отвечает", off["agent"]["printer"]["error"])
+            self.assertEqual(off["print"].get("error") or "", "")
+            self.assertNotEqual(off["print"].get("status"), "error")
         finally:
             jarvis.NEWSPAPER_STATE_FILE, jarvis.NEWSPAPER_PDF_FILE, jarvis.NEWSPAPER_PNG_FILE = old
 
@@ -1111,10 +1165,10 @@ class TabletHttpTest(unittest.TestCase):
 
     def test_tablet_apk_downloads_with_site_cookie(self):
         path = jarvis.TABLET_APK_ROUTE
-        release = "https://github.com/silviatools/jarvis/releases/download/tablet-1.23/Jarvis-tablet-1.23.apk"
-        self.assertEqual(path, "/download/Jarvis-tablet-1.23.apk")
-        self.assertEqual(jarvis.TABLET_APK_NAME, "Jarvis-tablet-1.23.apk")
-        self.assertIn("1.23", jarvis.TABLET_APK_NAME)
+        release = "https://github.com/silviatools/jarvis/releases/download/tablet-1.24/Jarvis-tablet-1.24.apk"
+        self.assertEqual(path, "/download/Jarvis-tablet-1.24.apk")
+        self.assertEqual(jarvis.TABLET_APK_NAME, "Jarvis-tablet-1.24.apk")
+        self.assertIn("1.24", jarvis.TABLET_APK_NAME)
         self.assertNotIn(path, jarvis.AUTH_PUBLIC_FILES)
         self.assertTrue(jarvis.TABLET_APK_FILE.is_file())
         self.assertGreater(jarvis.TABLET_APK_FILE.stat().st_size, 1_000_000)
@@ -1122,8 +1176,8 @@ class TabletHttpTest(unittest.TestCase):
         html = jarvis.HTML_FILE.read_text(encoding="utf-8")
         self.assertIn("Скачать приложение", html)
         self.assertIn(release, html)
-        self.assertNotIn("Jarvis-tablet-1.22.apk", html)
-        self.assertIn("Версия 1.23", html)
+        self.assertNotIn("Jarvis-tablet-1.23.apk", html)
+        self.assertIn("Версия 1.24", html)
 
         import http.client
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
@@ -1132,7 +1186,7 @@ class TabletHttpTest(unittest.TestCase):
         self.assertEqual(full.status, 200)
         self.assertEqual(full.getheader("Content-Type"), "application/vnd.android.package-archive")
         self.assertIn("attachment", full.getheader("Content-Disposition") or "")
-        self.assertIn("Jarvis-tablet-1.23.apk", full.getheader("Content-Disposition") or "")
+        self.assertIn("Jarvis-tablet-1.24.apk", full.getheader("Content-Disposition") or "")
         self.assertEqual(int(full.getheader("Content-Length")), jarvis.TABLET_APK_FILE.stat().st_size)
         self.assertEqual(full.read(4), b"PK\x03\x04")
         conn.close()
@@ -1158,7 +1212,7 @@ class TabletHttpTest(unittest.TestCase):
             self.assertEqual(resp.headers.get("Content-Type"), "application/vnd.android.package-archive")
             disp = resp.headers.get("Content-Disposition", "")
             self.assertIn("attachment", disp)
-            self.assertIn("Jarvis-tablet-1.23.apk", disp)
+            self.assertIn("Jarvis-tablet-1.24.apk", disp)
             self.assertIn(f"/{jarvis.TABLET_APK_FILE.stat().st_size}", resp.headers.get("Content-Range", ""))
 
 
