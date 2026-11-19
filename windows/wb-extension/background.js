@@ -147,24 +147,8 @@ async function readWb(section, foreground = false, includeDetails = false) {
     attempts: attempt, elapsedMs: Date.now() - started,
     stage: result.diagnostic?.stage || stage } });
   try {
-    // Use an extension-owned background tab; never navigate a user's shopping tab.
-    const previous = await chrome.storage.session.get('wbTab');
-    if (Number.isInteger(previous.wbTab)) {
-      try {
-        const old = await chrome.tabs.get(previous.wbTab);
-        if (old.url?.startsWith('https://www.wildberries.ru/lk/myorders/')) tabId = old.id;
-      } catch (_) { /* closed by the user */ }
-    }
-    if (tabId !== undefined) await chrome.tabs.update(tabId, { url: URLS[section], ...(foreground ? { active: true } : {}) });
-    else {
-      const tab = await chrome.tabs.create({ url: URLS[section], active: foreground });
-      tabId = tab.id;
-      await chrome.storage.session.set({ wbTab: tabId });
-    }
-    // Force a full reload on a reused tab so the observed responses belong to
-    // this request, not to the previous section or an old signed-in session.
-    stage = 'reload_tab';
-    await chrome.tabs.reload(tabId);
+    // One extension-owned tab per shop, even if it left the orders page.
+    tabId = await shopTab('wbTab', URLS[section], foreground);
     const key = section === 'orders' ? 'orders' : 'delivery';
     const settings = await chrome.storage.local.get(['selectedFields']);
     const selectedFields = Array.isArray(settings.selectedFields) ? settings.selectedFields.filter(value => typeof value === 'string').slice(0, 600) : [];
@@ -239,14 +223,7 @@ async function readOzon(section, foreground = false, includeDetails = false) {
   const finish = result => ({ ...result, diagnostic: { ...(result.diagnostic || {}), shop: 'ozon', section,
     version: chrome.runtime.getManifest().version, attempts: attempt, elapsedMs: Date.now() - started } });
   try {
-    let tabId;
-    const previous = await chrome.storage.session.get('ozonTab');
-    if (Number.isInteger(previous.ozonTab)) {
-      try { const old = await chrome.tabs.get(previous.ozonTab); if (old.url?.startsWith('https://www.ozon.ru/my/orderlist')) tabId = old.id; } catch (_) { /* closed */ }
-    }
-    if (tabId !== undefined) await chrome.tabs.update(tabId, { url, ...(foreground ? { active: true } : {}) });
-    else { const tab = await chrome.tabs.create({ url, active: foreground }); tabId = tab.id; await chrome.storage.session.set({ ozonTab: tabId }); }
-    await chrome.tabs.reload(tabId);
+    const tabId = await shopTab('ozonTab', url, foreground);
     const config = await chrome.storage.local.get(['ozonSelectedFields', 'ozonDetailOffsets']);
     const selected = Array.isArray(config.ozonSelectedFields) ? config.ozonSelectedFields.filter(value => typeof value === 'string').slice(0, 600) : [];
     let result = { ok: false, code: 'unreadable', diagnostic: { stage: 'waiting_for_list' } };
@@ -265,6 +242,23 @@ async function readOzon(section, foreground = false, includeDetails = false) {
     }
     return finish(result);
   } catch (_) { return finish({ ok: false, code: 'browser', diagnostic: { stage: 'browser_error' } }); }
+}
+
+async function shopTab(storageKey, url, foreground) {
+  const stored = await chrome.storage.session.get(storageKey);
+  const saved = stored[storageKey];
+  if (Number.isInteger(saved)) {
+    try {
+      const tab = await chrome.tabs.get(saved);
+      const current = (tab.url || '').split('#')[0];
+      await chrome.tabs.update(saved, { url, ...(foreground ? { active: true } : {}) });
+      if (current === url) await chrome.tabs.reload(saved);
+      return saved;
+    } catch (_) { /* вкладку закрыли */ }
+  }
+  const tab = await chrome.tabs.create({ url, active: !!foreground });
+  await chrome.storage.session.set({ [storageKey]: tab.id });
+  return tab.id;
 }
 
 const readShop = (shop, ...args) => shop === 'wb' ? readWb(...args) : shop === 'ozon' ? readOzon(...args) : Promise.resolve({ ok: false, code: 'browser' });

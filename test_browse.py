@@ -191,7 +191,7 @@ class BrowseTests(unittest.TestCase):
     def test_validation_and_address_rules(self):
         self.assertFalse(b.execute('browse_start', {'task': 'x', 'url': 'https://kontur.ru/'}, {}, None, None, None, 7)['ok'])
         offline = b.execute('browse_start', {'task': 'https://kontur.ru/'}, {'web_browse': True}, None, lambda: True, lambda *_a: 1, 7)
-        self.assertIn('0.5.0', offline['error'])
+        self.assertIn('0.5.1', offline['error'])
         self.poll()
         for task, url in (('найди цены', None), ('x', 'javascript:alert(1)'), ('x', 'https://user:secret@kontur.ru/')):
             result = b.execute('browse_start', {'task': task} if url is None else {'task': task, 'url': url},
@@ -213,6 +213,22 @@ class BrowseTests(unittest.TestCase):
         self.wait_finished()
         self.assertIn('трижды', b._run['message'])
         self.assertIsNone(self.poll()[1]['job'])
+
+    def test_open_page_uses_the_same_tab_and_hides_the_raw_link(self):
+        self.poll()
+
+        def answer():
+            job = self.job()
+            self.assertEqual(job['action'], {'action': 'open', 'url': 'https://telemost.yandex.ru/j/1?token=SECRET'})
+            self.reply(job, {**SHOT, 'url': 'https://telemost.yandex.ru/j/1?token=SECRET', 'title': 'Телемост'})
+
+        threading.Thread(target=answer, daemon=True).start()
+        result = b.open_page('https://telemost.yandex.ru/j/1?token=SECRET', 'Пара')
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['title'], 'Телемост')
+        self.assertNotIn('SECRET', result['page'])
+        self.assertEqual(b._run['status'], 'completed')
+        self.assertNotIn('SECRET', b._path().read_text())
 
     def test_restart_marks_running_report_interrupted(self):
         b._path().write_text(json.dumps([{'id': 'old', 'status': 'running', 'task': 'x'}]))
@@ -238,7 +254,7 @@ class BrowseIntegrationTests(unittest.TestCase):
         with open('index (9).html', encoding='utf-8') as handle:
             page = handle.read()
         for marker in ('loadBrowseTools', '/api/browse/tool', 'BROWSE_AGENT_TOOLS', "startsWith('browse_')",
-                       'output.background', 'download-pc-extension', 'Скачайте расширение 0.5.0'):
+                       'output.background', 'download-pc-extension', 'Скачайте расширение 0.5.1', "name === 'study_join'", '/api/study/join'):
             self.assertIn(marker, page)
 
     def test_vision_adapter_passes_image(self):
@@ -286,6 +302,33 @@ class BrowseIntegrationTests(unittest.TestCase):
                 [{'role': 'user', 'content': 'Зайди на https://kontur.ru/'}], 'key', 'claude-test', app, '', False)
         self.assertEqual(answer, 'Смотрю сайт в фоне.')
         self.assertEqual(len(calls), 2)
+
+    def test_study_join_opens_the_current_lesson(self):
+        import jarvis
+        import tool_groups
+        from datetime import datetime
+        now = datetime(2026, 11, 19, 18, 0, tzinfo=jarvis.MSK)
+        lessons = [
+            {'date': '2026-11-19', 'pair': '6', 'start': '17:20', 'end': '18:50', 'subject': 'Риски',
+             'link': 'https://telemost.yandex.ru/j/1?token=SECRET'},
+            {'date': '2026-11-19', 'pair': '7', 'start': '19:00', 'end': '20:30', 'subject': 'Позже',
+             'link': 'https://example.com/later'},
+        ]
+        self.assertEqual(jarvis.study_current_lesson(lessons, now)[1], 'current')
+        self.assertEqual(jarvis.study_current_lesson(lessons, datetime(2026, 11, 19, 16, 0, tzinfo=jarvis.MSK))[0]['subject'], 'Риски')
+        self.assertIsNone(jarvis.study_current_lesson(lessons, datetime(2026, 11, 19, 21, 0, tzinfo=jarvis.MSK))[0])
+        self.assertIn('study', tool_groups.pick('подключи на пару сейчас'))
+        with patch.object(jarvis.browse_skill, 'skill_on', return_value=True), \
+             patch.object(jarvis, 'study_lessons', return_value={'lessons': lessons}), \
+             patch.object(jarvis, 'now_msk', return_value=now), \
+             patch.object(jarvis.browse_skill, 'open_page', return_value={'ok': True, 'title': 'Телемост'}) as opened:
+            result = jarvis.study_join()
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['relation'], 'current')
+        self.assertEqual(opened.call_args.args[0], lessons[0]['link'])
+        self.assertNotIn('SECRET', json.dumps(result, ensure_ascii=False))
+        with patch.object(jarvis.browse_skill, 'skill_on', return_value=False):
+            self.assertFalse(jarvis.study_join()['ok'])
 
 
 if __name__ == '__main__':

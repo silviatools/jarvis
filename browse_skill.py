@@ -27,7 +27,7 @@ SKILLS = [{'id': 'web_browse', 'title': 'Сайты на моём ПК', 'risk':
            'desc': 'Открывает сайт в одной вкладке Chrome на ПК и делает задание в фоне: диалог остаётся свободным, про это задание можно спросить отдельно. '
                    'Прокрутка, клики, ввод, формы, вход и отправка. Снимки передаются выбранному ИИ и не сохраняются. '
                    'Если нужен пароль, код или выбор — спрашивает в Telegram и продолжает после ответа на это сообщение. '
-                   'Лимит 40 действий. Нужны включённый ПК, Chrome и расширение 0.5.0 с сайта: Настройки → Маркетплейсы.',
+                   'Лимит 40 действий. Нужны включённый ПК, Chrome и расширение 0.5.1 с сайта: Настройки → Маркетплейсы.',
            'tools': ['browse_start', 'browse_status', 'browse_reply', 'browse_stop']}]
 TOOLS = [
     {'name': 'browse_start', 'description': 'Открыть сайт в одной постоянной вкладке Chrome на ПК и выполнить задание по скриншотам. '
@@ -604,7 +604,7 @@ def execute(name, inp, state, decide, enabled, notify=None, chat_id=None):
             return {'ok': False, 'error': 'Уже идёт просмотр сайта. Дождитесь результата или остановите его.',
                     'current': _public(_run) if _run else None}
         if not _connected_locked():
-            return {'ok': False, 'error': 'Подключите ПК: Chrome с расширением 0.5.0 должен быть открыт и связан с Джарвисом.'}
+            return {'ok': False, 'error': 'Подключите ПК: Chrome с расширением 0.5.1 должен быть открыт и связан с Джарвисом.'}
         _run = {'id': secrets.token_hex(8), 'session': _live['session'], 'task': task.strip(), 'url': url,
                 'status': 'running', 'steps': 0, 'message': '', 'answer': '', 'seen': [], 'answers': [], 'actions': [],
                 'started': time.time(), 'paused': 0.0, 'chat_id': chat_id, 'question': None, 'reply': None,
@@ -614,6 +614,37 @@ def execute(name, inp, state, decide, enabled, notify=None, chat_id=None):
         return {'ok': True, 'started': True, 'background': True, 'run': _public(_run),
                 'message': 'Задание ушло в фон. Ответь, что сайт смотрится в фоне и можно писать о другом, затем закончи ход. '
                            'browse_status в этом ходе не вызывай. Итог и вопросы придут в Telegram отдельно.'}
+
+
+def open_page(url, task='Открыть страницу'):
+    """Открывает адрес в той же вкладке Chrome и сразу заканчивает, без цикла скриншотов."""
+    global _run
+    try:
+        clean = clean_url(url)
+    except ValueError as exc:
+        return {'ok': False, 'error': str(exc)}
+    shown = public_url(clean)
+    if not shown:
+        parts = urlsplit(clean)
+        shown = parts.scheme + '://' + (parts.hostname or '')
+    with _lock:
+        if _pending or (_run and _run['status'] in ('running', 'waiting')):
+            return {'ok': False, 'error': 'Уже идёт просмотр сайта. Дождитесь результата или остановите его.'}
+        if not _connected_locked():
+            return {'ok': False, 'error': 'Подключите ПК: Chrome с расширением 0.5.1 должен быть открыт и связан с Джарвисом.'}
+        _run = {'id': secrets.token_hex(8), 'session': _live['session'], 'task': (task or 'Открыть страницу')[:300],
+                'url': shown, 'status': 'running', 'steps': 0, 'message': '', 'answer': '', 'seen': [], 'answers': [],
+                'actions': [], 'started': time.time(), 'paused': 0.0, 'chat_id': None, 'question': None, 'reply': None,
+                'reply_event': None, 'told': False}
+        run = _run
+        _save()
+    try:
+        shot = _command(run, {'action': 'open', 'url': clean})
+    except Exception as exc:
+        _fail(run, exc, None)
+        return {'ok': False, 'error': str(exc)[:300]}
+    _finish(run, 'Страница открыта на ПК.', None)
+    return {'ok': True, 'opened': True, 'title': (shot.get('title') or '')[:200], 'page': shot.get('url') or shown}
 
 
 def device_call(route, token, payload):

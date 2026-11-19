@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Джарвис — WB, Ozon и Moodle на моём ПК",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "minimum_chrome_version": "120",
   "description": "WB, Ozon, тесты Moodle и просмотр сайтов по заданию Джарвиса. Вход остаётся в Chrome.",
   "permissions": ["storage", "alarms", "scripting", "activeTab", "debugger"],

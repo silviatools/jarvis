@@ -215,3 +215,28 @@ test('worker sends Ozon jobs to a separate owned tab and keeps per-shop fields/l
   assert.equal('fieldCatalog' in upload.result, false);
   assert.equal('diagnostic' in upload.result, false);
 });
+
+test('order checks reuse one shop tab even after it leaves the orders page', async () => {
+  const session = { ozonTab: 4 };
+  const calls = [];
+  const context = vm.createContext({
+    importScripts: () => {}, URL, Date, AbortSignal, console, setTimeout: callback => queueMicrotask(callback),
+    chrome: {
+      storage: { session: { get: async key => ({ [key]: session[key] }), set: async value => Object.assign(session, value) } },
+      tabs: {
+        get: async id => ({ id, url: 'https://www.ozon.ru/my/orderdetails/?order=1', status: 'complete' }),
+        update: async (id, options) => { calls.push({ id, options }); return { id }; },
+        create: async () => { throw new Error('new tab'); },
+        reload: async () => { throw new Error('reload'); }
+      },
+      runtime: { getManifest: () => ({ version: '0.5.1' }), onInstalled: { addListener() {} }, onStartup: { addListener() {} }, onMessage: { addListener() {} } },
+      alarms: { onAlarm: { addListener() {} }, create: async () => {} }
+    }
+  });
+  vm.runInContext(backgroundCode, context);
+  const tabId = await vm.runInContext('shopTab("ozonTab", "https://www.ozon.ru/my/orderlist", false)', context);
+  assert.equal(tabId, 4);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.url, 'https://www.ozon.ru/my/orderlist');
+  assert.equal(session.ozonTab, 4);
+});

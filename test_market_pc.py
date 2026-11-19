@@ -125,7 +125,7 @@ class PcTest(unittest.TestCase):
             self.assertIn('browse.js', archive.namelist())
             manifest = json.loads(archive.read('manifest.json'))
             self.assertEqual(manifest['version'], pc.extension_version())
-            self.assertEqual(manifest['version'], '0.5.0')
+            self.assertEqual(manifest['version'], '0.5.1')
             self.assertNotIn('cookies', manifest['permissions'])
             self.assertNotIn(self.token.encode(), archive.read('background.js'))
 
@@ -245,7 +245,7 @@ class HttpTest(unittest.TestCase):
         req = urllib.request.Request(self.base + '/api/market/pc/download', headers={'Cookie': 'jarvis_auth=' + jarvis.AUTH_COOKIE_VALUE})
         with urllib.request.urlopen(req, timeout=4) as response:
             self.assertEqual(response.status, 200)
-            self.assertIn('jarvis-pc-extension-0.5.0.zip', response.headers.get('Content-Disposition', ''))
+            self.assertIn('jarvis-pc-extension-0.5.1.zip', response.headers.get('Content-Disposition', ''))
             blob = response.read()
         self.assertTrue(zipfile.is_zipfile(io.BytesIO(blob)))
         with zipfile.ZipFile(io.BytesIO(blob)) as archive:

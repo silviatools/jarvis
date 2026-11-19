@@ -6355,7 +6355,7 @@ function MarketplacePcSettings({ pc, onRefresh }) {
     <p className="text-sm text-[var(--text-muted)]">Покупки, доставки и просмотр сайтов через ваш Chrome. Прокси не нужен. ПК и Chrome должны работать; повторный вход выполняется на ПК.</p>
     <ol className="list-decimal pl-5 space-y-1 text-sm text-[var(--text-muted)]">
       <li>Создайте отдельный профиль Chrome «Джарвис» на Windows 10 и войдите в WB и Ozon.</li>
-      <li><a className="underline" href="/api/market/pc/download" data-testid="download-pc-extension">Скачайте расширение 0.5.0</a>, распакуйте ZIP. В chrome://extensions включите режим разработчика и загрузите распакованную папку. Если расширение уже стоит, распакуйте поверх прежней папки и нажмите «Обновить».</li>
+      <li><a className="underline" href="/api/market/pc/download" data-testid="download-pc-extension">Скачайте расширение 0.5.1</a>, распакуйте ZIP. В chrome://extensions включите режим разработчика и загрузите распакованную папку. Если расширение уже стоит, распакуйте поверх прежней папки и нажмите «Обновить».</li>
       <li>Создайте ключ ниже. В расширении укажите адрес {window.location.origin} и ключ, затем нажмите «Подключить».</li>
     </ol>
     <div className="flex flex-wrap gap-2">
@@ -17083,7 +17083,7 @@ const VOICE_AGENT_TOOLS = [
   ...APPLE_AGENT_TOOLS,
   {
     name: 'study_schedule',
-    description: 'Расписание пар пользователя в университете (РЭУ, rasp.rea.ru) за период. Подтверждения не требует. Используй на вопросы «какие пары завтра», «во сколько учёба в среду», «где у меня пара». Даты вычисляй сам от СЕГОДНЯ.',
+    description: 'Расписание пар пользователя в университете (РЭУ, rasp.rea.ru) за период. Подтверждения не требует. Используй на вопросы «какие пары завтра», «во сколько учёба в среду», «где у меня пара». Даты вычисляй сам от СЕГОДНЯ. Подключить на пару — study_join.',
     input_schema: {
       type: 'object',
       properties: {
@@ -17091,6 +17091,11 @@ const VOICE_AGENT_TOOLS = [
         to: { type: 'string', description: 'Конец периода включительно YYYY-MM-DD. По умолчанию +7 дней.' },
       },
     },
+  },
+  {
+    name: 'study_join',
+    description: 'Подключить на текущую или ближайшую пару на ПК: взять ссылку занятия и открыть её в одной вкладке Chrome. Вызывай на «подключи на пару», «подключись на пару сейчас», «зайди на пару».',
+    input_schema: { type: 'object', properties: {} },
   },
 ];
 
@@ -17308,7 +17313,7 @@ ${writeList}
 
 8. get_weather(city?, date?, date_from?, date_to?) — погода для города. Раздел «Погода» тоже НЕ данные приложения (внешний сервис), а живой запрос — используй этот инструмент, а не navigate/get_data. Город можно не указывать — тогда берётся сохранённый в настройках (Погода → город). Без date — текущая погода и 3 дня вперёд. Для конкретного дня или диапазона («в субботу», «на следующей неделе») передай date или date_from/date_to в формате YYYY-MM-DD — вычисли даты сам от СЕГОДНЯ (прогноз доступен на 16 дней вперёд).
 
-9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй.
+9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй. «Подключи на пару сейчас» — study_join, не browse_start.
 
 ${TG_AGENT_PROMPT}${MAX_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}${MOODLE_AGENT_PROMPT}${BROWSE_AGENT_PROMPT}${STUDY_JOURNAL_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true. Для события календаря в тексте подтверждения обязательно название календаря из message; если buttons:true — вопрос с кнопками уже в чате, не дублируй. needs_choice значит календарь не выбран: выбери лучший из calendars и повтори вызов, пользователю пока не пиши. needs_clarification — задай вопрос из message и остановись, событие не создано.
 
@@ -17502,6 +17507,14 @@ async function executeVoiceTool(name, input, nav, data) {
       return noop(await res.json());
     } catch (e) {
       return noop({ error: 'Сервер не ответил по журналу учёбы: ' + e.message });
+    }
+  }
+  if (name === 'study_join') {
+    try {
+      const res = await fetch('/api/study/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      return noop(await res.json());
+    } catch (e) {
+      return noop({ error: 'Сервер не ответил по подключению на пару: ' + e.message });
     }
   }
   if (name === 'study_schedule') {

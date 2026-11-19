@@ -4350,7 +4350,8 @@ STUDY_TOOLS = [
         "name": "study_schedule",
         "description": ("Расписание пар пользователя в университете (РЭУ, rasp.rea.ru) за период. "
                         "Подтверждения не требует. Используй на вопросы «какие пары завтра», «во сколько "
-                        "учёба в среду», «где у меня пара». Даты вычисляй сам от СЕГОДНЯ."),
+                        "учёба в среду», «где у меня пара». Даты вычисляй сам от СЕГОДНЯ. "
+                        "Подключить на пару — это study_join, не этот инструмент."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -4359,8 +4360,87 @@ STUDY_TOOLS = [
             },
         },
     },
+    {
+        "name": "study_join",
+        "description": ("Подключить на текущую или ближайшую пару на ПК. Смотрит расписание, берёт ссылку занятия "
+                        "и открывает её в одной вкладке Chrome. Вызывай на «подключи на пару», «подключись на пару сейчас», "
+                        "«зайди на пару». Ссылку сам не ищи и не открывай через browse_start."),
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 STUDY_TOOL_NAMES = {t["name"] for t in STUDY_TOOLS}
+
+
+def study_current_lesson(lessons, now: datetime):
+    """Текущая пара, если она идёт, иначе ближайшая будущая. (lesson, 'current'|'next') или (None, '')."""
+    rows = []
+    for lesson in lessons or []:
+        try:
+            day = date.fromisoformat(str(lesson.get("date") or "")[:10])
+            start = datetime.combine(day, datetime.strptime(lesson["start"], "%H:%M").time(), MSK)
+            end = datetime.combine(day, datetime.strptime(lesson["end"], "%H:%M").time(), MSK)
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows.append((start, end, lesson))
+    rows.sort(key=lambda item: (item[0], item[1]))
+    current = [item for item in rows if item[0] <= now <= item[1]]
+    if current:
+        return current[-1][2], "current"
+    upcoming = [item for item in rows if item[0] > now]
+    if upcoming:
+        return upcoming[0][2], "next"
+    return None, ""
+
+
+def _study_public_lesson(lesson: dict) -> dict:
+    return {k: lesson.get(k) or "" for k in ("date", "pair", "start", "end", "subject", "kind", "room")}
+
+
+def _study_refresh_link(lesson: dict) -> str:
+    group = study_settings().get("group") or ""
+    if not group or not student_status()["configured"]:
+        return ""
+    try:
+        fetched = student_fetch_links(group, 2, 0)
+    except Exception:
+        return ""
+    probe = [dict(lesson)]
+    if not attach_lesson_links(probe, fetched.get("lessons") or []):
+        return ""
+    link = probe[0].get("link") or ""
+    if not link:
+        return ""
+    state = study_load_state()
+    for row in state.get("lessons") or []:
+        if row.get("date") == lesson.get("date") and row.get("start") == lesson.get("start") and row.get("subject") == lesson.get("subject"):
+            row["link"] = link
+    study_save_state(state)
+    return link
+
+
+def study_join() -> dict:
+    """Текущая или ближайшая пара → ссылка из кабинета → одна вкладка Chrome на ПК."""
+    if not browse_skill.skill_on((load_app_data() or {}).get("telegramSkills")):
+        return {"ok": False, "error": "Включите навык «Сайты на моём ПК»: подключение открывает вкладку Chrome на ПК."}
+    today = today_msk()
+    loaded = study_lessons(today.isoformat(), (today + timedelta(days=7)).isoformat())
+    if loaded.get("error"):
+        return {"ok": False, "error": loaded["error"]}
+    lesson, relation = study_current_lesson(loaded.get("lessons") or [], now_msk())
+    if not lesson:
+        return {"ok": False, "error": "Ближайшей пары в расписании нет."}
+    link = lesson.get("link") or _study_refresh_link(lesson)
+    public = _study_public_lesson(lesson)
+    if not link:
+        return {"ok": False, "error": f"У пары «{public['subject'] or 'Пара'}» {public['date']} {public['start']} нет ссылки на подключение.",
+                "lesson": public, "relation": relation}
+    opened = browse_skill.open_page(link, "Пара: " + (public["subject"] or "занятие"))
+    if not opened.get("ok"):
+        return {"ok": False, "error": opened.get("error") or "Не удалось открыть ссылку на ПК.",
+                "lesson": public, "relation": relation}
+    return {"ok": True, "opened": True, "relation": relation, "lesson": public,
+            "pageTitle": opened.get("title") or "",
+            "message": "Открыл ссылку пары в одной вкладке Chrome на ПК. Если на странице есть кнопка входа — нажмите её там."}
 
 
 def execute_study_tool(name: str, inp: dict) -> dict:
@@ -4368,6 +4448,11 @@ def execute_study_tool(name: str, inp: dict) -> dict:
     try:
         if name == "study_schedule":
             return study_lessons(inp.get("from"), inp.get("to"))
+        if name == "study_join":
+            ctx = tg_bot.get_ctx() if tg_bot else None
+            if ctx and (not tg_user or not tg_user.is_owner_chat(ctx.chat_id)):
+                return {"ok": False, "error": "Подключение на пару доступно только владельцу."}
+            return study_join()
     except Exception as e:
         return {"error": f"Не удалось получить расписание: {e}"}
     return {"error": "unknown_tool"}
@@ -6658,7 +6743,10 @@ def _prompt_pieces(app: dict = None, with_tg: bool = False) -> dict:
         "вперёд).\n\n"
         "9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). "
         "Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары "
-        "дублируются в Apple Календарь «Учеба» автоматически — сам их туда не добавляй.\n\n"
+        "дублируются в Apple Календарь «Учеба» автоматически — сам их туда не добавляй. "
+        "«Подключи на пару», «подключись на пару сейчас», «зайди на пару» — study_join: он сам берёт текущую "
+        "или ближайшую пару, её ссылку и открывает в одной вкладке Chrome на ПК. Не вызывай для этого browse_start "
+        "и не выдумывай ссылку.\n\n"
         "10. Файлы в «Учёбе»: study_attach_file(subject, task_title, filename, content/sheets) — создать файл (docx, xlsx, "
         "pptx, pdf, txt, csv…) и положить его вложением в задание; study_get_attachment(action read|send) — прочитать "
         "вложение задания или прислать его пользователю. «Сформируй файл … и положи в задачу по предмету X» → сначала "
@@ -6716,7 +6804,8 @@ def _prompt_items_compact(on, domain_list: str, nav_list: str, write_list: str) 
                 "прогноз на 16 дней.\n\n")
     if on("study"):
         out += ("7. Учёба: study_schedule — расписание пар (РЭУ, rasp.rea.ru; вопросы про пары, универ, аудитории — сначала он; в Apple "
-                "Календарь «Учеба» пары дублируются сами — не добавляй). Файл в задание: get_data(study) → предмет и задание (нет подходящего "
+                "Календарь «Учеба» пары дублируются сами — не добавляй). «Подключи на пару сейчас» — study_join, не browse_start. "
+                "Файл в задание: get_data(study) → предмет и задание (нет подходящего "
                 "— спроси; новое — create_if_missing) → один вызов study_attach_file с готовым полным содержимым; присланный файл — "
                 "use_received_file; study_get_attachment — прочитать/прислать вложение. После успеха скажи, куда положил.\n\n")
     out += ("«Напомни …» → плановая задача (plan_create), а не Apple Напоминание, если пользователь прямо не просит Apple.\n\n")
@@ -12786,6 +12875,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
                 else:
                     threading.Thread(target=lambda: study_chats_scan(manual=True), daemon=True).start()
                     self._json(200, {"ok": True, "started": True})
+        elif route == "/api/study/join":
+            self._json(200, study_join())
         elif route == "/api/study/sync":
             length = self._content_length() or 0
             try:
