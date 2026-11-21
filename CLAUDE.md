@@ -133,8 +133,11 @@
   быстрые отметки с тостом «Отменить» (`useBudgetUndo`); все `Modal` внутри `BudgetView` на телефоне — шторки снизу
   (`ModalSheetContext`). ПК-вёрстку раздела мобильные правки не меняют.
 - «Прочее → Заметки» (`NotesView`, адрес `/notes`) — блокнот из разделов `NOTES_SECTIONS` (новый раздел — запись туда со своим `View`).
- Пока раздел «Сим-карты» (`SimCardsView`, CSS `sim-*`): данные — id-массивы `simCards` / `simDevices` (обычная синхронизация);
+ Раздел «Сим-карты» (`SimCardsView`, CSS `sim-*`): данные — id-массивы `simCards` / `simDevices` (обычная синхронизация);
  виды карточки/список/по устройствам/платежи. Ассистенту — домен `sims` (без PIN/PUK и паролей) и запись через `WRITE_REGISTRY`.
+ Раздел «Документы» (`NoteDocsView`, CSS `nd-*`): список, открытие, правка. Текст с оформлением, фото, видео и любые файлы.
+ Хранение `DATA_DIR/jarvis_notes.json` и `DATA_DIR/jarvis_notes/` — в бэкапе и `.gitignore`. Навык `notes_docs` (чтение):
+ `notes_search` / `notes_read`. Тесты — `test_notes_docs.py`.
 - `requirements.txt` — зависимости ставит Railway при деплое; новые библиотеки добавлять сюда.
 - `browse_skill.py` / `windows/wb-extension/browse.js` — навык «Сайты на моём ПК» (`web_browse`, по умолчанию выключен, risk danger): одно задание в одной вкладке Chrome на ПК, в фоне. Ход ассистента после `browse_start` сразу отпускает диалог; про задание можно спросить через `browse_status`. Расширение 0.5.1 скачивается с сайта (`/api/market/pc/download`, Настройки → Маркетплейсы) и по `chrome.debugger` делает снимок, клик, ввод, клавишу и прокрутку; сервер гоняет модель со зрением до 40 действий. Новое задание переходит по адресу в той же вкладке, пока Chrome открыт. Вопрос в Telegram — ответом на сообщение, остальные сообщения чата идут ассистенту. Снимки, введённый текст и ответы пользователя в файл не пишутся. Отчёт — `DATA_DIR/jarvis_browse.json` (в бэкапе и `.gitignore`). Инструменты `browse_start/status/reply/stop`, API `/api/browse/{tools,tool}` и `/api/browse/pc/{poll,result}`. Тесты — `test_browse.py`, `tests/browse_extension.test.cjs`.
 - `market_pc.py` / `windows/wb-extension/` — WB через Chrome на Windows: исходящие poll/result,
