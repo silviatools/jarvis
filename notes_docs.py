@@ -6,11 +6,13 @@
   DATA_DIR/jarvis_notes.json  — документы
   DATA_DIR/jarvis_notes/      — вложения
 
-Ассистент умеет искать и читать (навык notes_docs). Содержимое фото, видео и
-прочих файлов он не разбирает — только имя, тип и размер. Править документы
-инструментами нельзя.
+Ассистент умеет искать и читать (навык notes_docs). Текст вложений читается
+тем же file_tools.read_file, что вложения заданий «Учёбы». Фото прикладывается
+к ответу блоком _image, только если текущая модель его принимает. Видео, аудио
+и нечитаемый бинарный файл так и помечаются. Править документы инструментами нельзя.
 """
 
+import base64
 import html
 import json
 import os
@@ -19,8 +21,14 @@ import shutil
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from html.parser import HTMLParser
 from pathlib import Path
+
+try:
+    import file_tools
+except Exception:
+    file_tools = None
 
 STORE_NAME = "jarvis_notes.json"
 FILES_DIR_NAME = "jarvis_notes"
@@ -33,10 +41,15 @@ MAX_TITLE = 200
 MAX_FILES = 40
 MAX_FILE_BYTES = 50 * 1024 * 1024
 READ_LIMIT = 12_000
+FILE_TEXT = 8_000
+FILES_TEXT = 24_000
+VISION_MAX = 4_500_000
 EXCERPT = 180
 SEARCH_LIMIT = 30
+_VISION_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
 _lock = threading.RLock()
+_see = threading.local()
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
 _FILE_SRC = re.compile(r"^/api/notes/file/[A-Za-z0-9_-]{8,80}$")
 
@@ -55,9 +68,11 @@ SKILLS = [
     {"id": SKILL_ID, "title": "Документы в заметках", "risk": "read", "default": True,
      "desc": ("Ассистент ищет и читает документы из Прочее → Заметки → Документы: "
               "заметки с оформлением, фото, видео и любыми файлами. "
-              "Текст приходит обычными абзацами, без вёрстки. Содержимое фото, видео и вложений "
-              "не разбирается — в ответе имя, тип и размер. Править, создавать и удалять документы "
-              "этими инструментами нельзя: это делается в разделе на сайте."),
+              "Текст документа и текстовых вложений приходит обычными абзацами, без вёрстки. "
+              "Файлы txt, pdf, docx и другие читаемые форматы читаются так же, как вложения заданий «Учёбы». "
+              "Фото модель смотрит, только если сама принимает изображения; иначе в ответе будет, что фото не посмотреть. "
+              "Видео, аудио и нечитаемый файл приходят с пометкой, что содержимое не разобрать. "
+              "Править, создавать и удалять документы этими инструментами нельзя: это делается в разделе на сайте."),
      "tools": ["notes_search", "notes_read"]},
 ]
 
@@ -79,12 +94,17 @@ TOOLS = [
          "limit": {"type": "integer", "description": "сколько документов вернуть, до 30"},
      }, "required": []}},
     {"name": "notes_read",
-     "description": ("Прочитать один документ из Заметок. id — из notes_search. "
+     "description": ("Прочитать один документ из Заметок вместе с вложениями. id — из notes_search. "
                      "Либо query — название или фраза: если документ один, вернётся его текст; "
                      "если несколько — список, без полного текста, тогда вызови ещё раз с id. "
-                     "Текст без оформления. Файлы — только имя, тип и размер, содержимое фото и видео не читается."),
+                     "Текст документа без оформления. Читаемые файлы (txt, pdf, docx, xlsx и др.) — "
+                     "в files[].text, тем же чтением, что вложения заданий «Учёбы». "
+                     "Фото: если модель его принимает, одна картинка приложена к ответу (files[].seen). "
+                     "Остальные фото — повторный вызов с file (id или часть имени). "
+                     "Видео, аудио и нечитаемый файл — files[].unread, содержимого нет."),
      "input_schema": {"type": "object", "properties": {
          "id": _STR, "query": _STR,
+         "file": {"type": "string", "description": "id или часть имени одного вложения"},
      }, "required": []}},
 ]
 TOOL_NAMES = {t["name"] for t in TOOLS}
@@ -94,11 +114,17 @@ PROMPT = (
     "Раздел Прочее → Заметки → Документы хранит заметки пользователя: оформленный текст, фото, видео и любые файлы.\n"
     "а) Вопрос про заметку, конспект или «что в документе» — сначала notes_search, затем notes_read по id. "
     "Не отвечай по памяти и не выдумывай текст.\n"
-    "б) В ответе текст уже без вёрстки. Если truncated — скажи, что документ длиннее и прочитано начало.\n"
-    "в) Фото, видео и прочие вложения не разбираются: назови файл, тип и размер. Не описывай содержимое картинки, которой не видел.\n"
-    "г) Создавать, править и удалять документы этими инструментами нельзя. Если просят изменить — скажи, что это в "
+    "б) Текст документа и files[].text уже без вёрстки: txt, pdf, docx и прочие читаемые форматы читаются так же, "
+    "как вложения заданий «Учёбы». Если truncated — скажи, что прочитано начало.\n"
+    "в) Фото со seen:true приложено к ответу — смотри его. Если unread говорит, что модель не смотрит фото, "
+    "так и скажи: имени и размера достаточно, содержимое не описывай. Несколько фото: смотри приложенное, "
+    "для остальных вызови notes_read с file=id.\n"
+    "г) Видео, аудио и бинарный файл, который не прочитать, помечены unread. Назови имя, тип и размер и скажи, "
+    "что содержимое разобрать нельзя. Не выдумывай, что внутри.\n"
+    "д) Создавать, править и удалять документы этими инструментами нельзя. Если просят изменить — скажи, что это в "
     "Прочее → Заметки → Документы.\n"
-    "д) needs_clarification — несколько документов подошли. Перечисли названия и спроси, какой открыть. Не склеивай их в один текст.\n\n"
+    "е) needs_clarification — несколько документов или вложений подошли. Перечисли названия и спроси, какое открыть. "
+    "Не склеивай их в один текст.\n\n"
 )
 
 
@@ -119,8 +145,29 @@ def execute(name: str, inp: dict, state) -> dict:
     if name == "notes_search":
         return search_result(inp.get("query") or "", inp.get("limit"))
     if name == "notes_read":
-        return read_result(inp.get("id") or "", inp.get("query") or "")
+        return read_result(inp.get("id") or "", inp.get("query") or "", inp.get("file") or "")
     return {"error": "unknown tool"}
+
+
+@contextmanager
+def vision_scope(enabled: bool):
+    """Включает просмотр фото на время чтения. Снаружи цикла модели — выключено."""
+    prev = getattr(_see, "on", None)
+    _see.on = bool(enabled)
+    try:
+        yield
+    finally:
+        if prev is None:
+            try:
+                del _see.on
+            except AttributeError:
+                pass
+        else:
+            _see.on = prev
+
+
+def _vision_on() -> bool:
+    return getattr(_see, "on", False) is True
 
 
 def data_dir() -> Path:
@@ -338,16 +385,148 @@ def _full(doc: dict) -> dict:
     return row
 
 
-def _read_view(doc: dict) -> dict:
+def _read_view(doc: dict, files: list) -> dict:
     text = doc.get("text") or ""
     return {
         "id": doc.get("id"),
         "title": doc.get("title") or "",
         "text": text[:READ_LIMIT],
         "truncated": len(text) > READ_LIMIT,
-        "files": [_file_public(f) for f in (doc.get("files") or [])],
+        "files": files,
         "updatedAt": doc.get("updatedAt") or 0,
     }
+
+
+def _pick_files(files: list, raw: str):
+    """Одно вложение по id или части имени. Пустой запрос — все. Неоднозначно — список совпадений."""
+    sel = str(raw or "").strip()
+    if not sel:
+        return list(files), None
+    low = sel.casefold()
+    hit = [f for f in files if f.get("id") == sel or low in str(f.get("name") or "").casefold()]
+    if len(hit) == 1:
+        return hit, None
+    if not hit:
+        return [], "missing"
+    return hit, "several"
+
+
+def _readable_ext(name: str) -> str:
+    if not file_tools:
+        return ""
+    return file_tools.ext_of(name or "")
+
+
+def _expand_file(doc: dict, item: dict, budget: list, image_holder: dict, focus: bool) -> dict:
+    """Читает одно вложение. budget — [оставшиеся символы текста]. image_holder['img'] — первое фото."""
+    meta = _file_public(item)
+    path = _file_path(doc.get("id"), item.get("id"))
+    if path is None or not path.is_file():
+        meta["unread"] = "файл не найден на диске"
+        return meta
+    try:
+        size = path.stat().st_size
+    except OSError:
+        meta["unread"] = "файл не найден на диске"
+        return meta
+    if size > MAX_FILE_BYTES:
+        meta["unread"] = "файл больше 50 МБ — не читаю"
+        return meta
+    kind = item.get("kind") or "file"
+    mime = item.get("mime") or ""
+    name = item.get("name") or "файл"
+    if kind == "image" or str(mime).startswith("image/"):
+        return _expand_image(meta, path, mime, item.get("id"), image_holder, focus)
+    if kind in ("video", "audio") or str(mime).startswith(("video/", "audio/")):
+        meta["unread"] = "видео и аудио не читаются"
+        return meta
+    ext = _readable_ext(name)
+    if not file_tools:
+        meta["unread"] = "чтение файлов на сервере недоступно"
+        return meta
+    if ext and ext not in file_tools.READABLE_EXT:
+        meta["unread"] = f"формат .{ext} не читается, содержимое не прочитать"
+        return meta
+    if not ext:
+        try:
+            sample = path.read_bytes()[:8000]
+        except OSError:
+            meta["unread"] = "файл не найден на диске"
+            return meta
+        if b"\x00" in sample:
+            meta["unread"] = "бинарный файл, содержимое не прочитать"
+            return meta
+    limit = min(FILE_TEXT, budget[0])
+    if limit <= 0:
+        meta["unread"] = "текст вложения не влез в ответ — вызови notes_read с file=\"" + str(item.get("id") or "") + "\""
+        return meta
+    try:
+        data = path.read_bytes()
+        got = file_tools.read_file(data, name, limit)
+    except file_tools.FileToolError as e:
+        meta["unread"] = str(e)
+        return meta
+    except OSError:
+        meta["unread"] = "файл не найден на диске"
+        return meta
+    meta["text"] = got.get("text") or ""
+    meta["truncated"] = bool(got.get("truncated"))
+    meta["format"] = got.get("format") or ext or "txt"
+    budget[0] = max(0, budget[0] - len(meta["text"]))
+    return meta
+
+
+def _expand_image(meta: dict, path: Path, mime: str, file_id, image_holder: dict, focus: bool) -> dict:
+    if mime not in _VISION_MIME:
+        meta["unread"] = "этот формат фото не разбирается"
+        return meta
+    if not _vision_on():
+        meta["unread"] = "текущая модель не смотрит фото"
+        return meta
+    try:
+        size = path.stat().st_size
+        data = path.read_bytes() if size <= VISION_MAX else b""
+    except OSError:
+        meta["unread"] = "файл не найден на диске"
+        return meta
+    if size > VISION_MAX:
+        meta["unread"] = "фото больше 4.5 МБ, к ответу не прикладываю"
+        return meta
+    if image_holder.get("img") is not None and not focus:
+        meta["note"] = "чтобы посмотреть, вызови notes_read с file=\"" + str(file_id or "") + "\""
+        return meta
+    image_holder["img"] = {"media_type": mime, "b64": base64.b64encode(data).decode()}
+    meta["seen"] = True
+    meta["note"] = "фото приложено к этому ответу — посмотри его"
+    return meta
+
+
+def _files_for_read(doc: dict, file_ref: str):
+    files = list(doc.get("files") or [])
+    chosen, why = _pick_files(files, file_ref)
+    if why == "missing":
+        return None, {"ok": False, "error": "Вложение не найдено", "files": [_file_public(f) for f in files]}
+    if why == "several":
+        view = _read_view(doc, [_file_public(f) for f in chosen])
+        return None, {
+            "ok": True,
+            "needs_clarification": True,
+            "message": "Подошло несколько вложений. Уточни file — какое открыть.",
+            "doc": view,
+        }
+    targets = chosen if str(file_ref or "").strip() else files
+    focus_id = chosen[0].get("id") if str(file_ref or "").strip() and chosen else None
+    budget = [FILES_TEXT]
+    holder = {"img": None}
+    expanded = {}
+    ordered = sorted(targets, key=lambda item: 0 if item.get("id") == focus_id else 1)
+    for item in ordered:
+        expanded[item.get("id")] = _expand_file(doc, item, budget, holder, item.get("id") == focus_id)
+    if focus_id:
+        shown = [_file_public(item) if item.get("id") != focus_id else expanded[item.get("id")] for item in files]
+    else:
+        shown = [expanded.get(item.get("id")) or _file_public(item) for item in files]
+    return holder.get("img"), {"ok": True, "doc": _read_view(doc, shown)}
 
 
 def _find(data: dict, doc_id: str):
@@ -618,9 +797,16 @@ def search_result(query: str, limit=None) -> dict:
     return {"ok": True, "docs": [_card(doc) for doc in found], "count": len(found)}
 
 
-def read_result(doc_id: str, query: str) -> dict:
+def _with_image(result: dict, image) -> dict:
+    if image:
+        result["_image"] = {"media_type": image["media_type"], "b64": image["b64"]}
+    return result
+
+
+def read_result(doc_id: str, query: str, file_ref: str = "") -> dict:
     doc_id = str(doc_id or "").strip()
     query = str(query or "").strip()
+    file_ref = str(file_ref or "")
     if doc_id:
         if not _ok_id(doc_id):
             return {"ok": False, "error": "Неверный документ"}
@@ -628,7 +814,8 @@ def read_result(doc_id: str, query: str) -> dict:
             doc = _find(_load(), doc_id)
         if not doc:
             return {"ok": False, "error": "Документ не найден"}
-        return {"ok": True, "doc": _read_view(doc)}
+        image, result = _files_for_read(doc, file_ref)
+        return result if not result.get("ok") or result.get("needs_clarification") else _with_image(result, image)
     if not query:
         found = _ranked("", 20)
         return {"ok": True, "docs": [_card(doc) for doc in found], "count": len(found)}
@@ -637,10 +824,10 @@ def read_result(doc_id: str, query: str) -> dict:
         return {"ok": True, "docs": [], "count": 0}
     folded = _fold(query)
     exact = [doc for doc in found if _fold(doc.get("title") or "") == folded]
-    if len(exact) == 1:
-        return {"ok": True, "doc": _read_view(exact[0])}
-    if len(found) == 1:
-        return {"ok": True, "doc": _read_view(found[0])}
+    picked = exact[0] if len(exact) == 1 else (found[0] if len(found) == 1 else None)
+    if picked is not None:
+        image, result = _files_for_read(picked, file_ref)
+        return result if not result.get("ok") or result.get("needs_clarification") else _with_image(result, image)
     return {
         "ok": True,
         "needs_clarification": True,
