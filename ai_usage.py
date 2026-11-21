@@ -150,6 +150,15 @@ def supports_effort(model: str) -> bool:
     return bool(efforts_for(model))
 
 
+def supports_vision(model: str) -> bool:
+    """Модель принимает изображение во входе. Claude — да. Модель из каталога OpenAI — да.
+    Неизвестная или пустая — нет: фото к ответу не прикладывается."""
+    m = (model or "").strip().lower()
+    if m.startswith("claude"):
+        return True
+    return model_info(m) is not None
+
+
 def fit_effort(model: str, effort: str) -> str:
     """Подгоняет выбранный уровень под модель: неподдерживаемый «none» → ближайший низкий, чужой → пусто (по умолчанию)."""
     effort = (effort or "").strip()

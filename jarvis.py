@@ -7383,6 +7383,11 @@ class _TurnState:
         self.out["steps"] = self.step
         return True
 
+    def _sees_images(self) -> bool:
+        if ai_usage:
+            return ai_usage.supports_vision(self.model)
+        return str(self.model or "").lower().startswith("claude")
+
     def run_tool(self, name, inp, site_url):
         inp = inp if isinstance(inp, dict) else {}
         if self.allowed and name not in self.allowed:
@@ -7392,7 +7397,8 @@ class _TurnState:
         else:
             self.adopt(name)
             try:
-                output = execute_assistant_tool(name, inp, self.app, site_url, self.with_tg)
+                with notes_docs.vision_scope(self._sees_images()):
+                    output = execute_assistant_tool(name, inp, self.app, site_url, self.with_tg)
             except Exception as e:
                 output = {"error": str(e)}
         self.note(name, inp, output)
@@ -14891,7 +14897,12 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         if name not in notes_docs.TOOL_NAMES:
             self._json(400, {"error": "unknown tool"})
             return
-        self._json(200, execute_assistant_tool(name, payload.get("input") or {}, load_app_data() or {}, "", False))
+        app = load_app_data() or {}
+        conf = _ai_conf(app, "main")
+        model = conf.model if conf else ""
+        see = ai_usage.supports_vision(model) if ai_usage else str(model).lower().startswith("claude")
+        with notes_docs.vision_scope(see):
+            self._json(200, execute_assistant_tool(name, payload.get("input") or {}, app, "", False))
 
     def _json(self, code: int, data: dict):
         body = json.dumps(data).encode()

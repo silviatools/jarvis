@@ -1,5 +1,6 @@
 """Документы в Заметках: хранение, файлы, навык ассистента, страница."""
 
+import base64
 import io
 import json
 import os
@@ -133,6 +134,7 @@ class NotesStoreTest(unittest.TestCase):
         self.assertNotIn("text", many["docs"][0])
         by_id = jarvis.execute_assistant_tool("notes_read", {"id": second["id"]}, app(), "")
         self.assertIn("горы", by_id["doc"]["text"])
+        self.assertEqual(by_id["doc"]["files"], [])
         long_html = "<p>" + ("слово " * 4000) + "</p>"
         long_doc = notes_docs.create_doc({"title": "Длинный", "html": long_html})[1]["doc"]
         read = notes_docs.read_result(long_doc["id"], "")
@@ -189,6 +191,121 @@ class NotesStoreTest(unittest.TestCase):
         self.assertIn("море", text)
         self.assertIn("notes_search", seen[0])
         self.assertIn("notes_read", seen[0])
+
+    def test_read_text_pdf_photo_and_binary(self):
+        _, created = notes_docs.create_doc({"title": "Папка", "html": "<p>заметка</p>"})
+        doc_id = created["doc"]["id"]
+        notes_docs.save_file(doc_id, "заметка.txt", "txt", "билеты куплены".encode())
+        notes_docs.save_file(doc_id, "скан.png", "png", PNG)
+        notes_docs.save_file(doc_id, "ещё.png", "png", _png(8, 8, (9, 9, 9)))
+        notes_docs.save_file(doc_id, "ролик.mp4", "mp4", MP4)
+        notes_docs.save_file(doc_id, "blob.bin", "bin", b"\x00\x01\x02")
+        notes_docs.save_file(doc_id, "бланк.pdf", "pdf", PDF)
+        real_read = notes_docs.file_tools.read_file
+        pdf_calls = []
+
+        def read_file(data, name, limit=60000):
+            if str(name).endswith(".pdf"):
+                pdf_calls.append((data, name, limit))
+                return {"text": "строка из pdf", "truncated": False, "format": "pdf"}
+            return real_read(data, name, limit)
+
+        with patch.object(notes_docs.file_tools, "read_file", side_effect=read_file):
+            with notes_docs.vision_scope(True):
+                seen = notes_docs.read_result(doc_id, "")
+        self.assertEqual(pdf_calls[0][0], PDF)
+        self.assertEqual(pdf_calls[0][1], "бланк.pdf")
+        files = {f["name"]: f for f in seen["doc"]["files"]}
+        self.assertEqual(files["заметка.txt"]["text"], "билеты куплены")
+        self.assertEqual(files["бланк.pdf"]["text"], "строка из pdf")
+        self.assertNotIn("html", seen["doc"])
+        self.assertTrue(files["скан.png"].get("seen"))
+        self.assertNotIn("unread", files["скан.png"])
+        self.assertIn(files["ещё.png"]["id"], files["ещё.png"]["note"])
+        self.assertNotIn("_image", files["скан.png"])
+        self.assertEqual(base64.b64decode(seen["_image"]["b64"]), PNG)
+        self.assertEqual(seen["_image"]["media_type"], "image/png")
+        with notes_docs.vision_scope(True):
+            ambiguous = notes_docs.read_result(doc_id, "", "png")
+        self.assertTrue(ambiguous.get("needs_clarification"), ambiguous)
+        self.assertNotIn("_image", ambiguous)
+        self.assertIn("не читаются", files["ролик.mp4"]["unread"])
+        self.assertIn("не прочитать", files["blob.bin"]["unread"])
+        with notes_docs.vision_scope(True):
+            second = notes_docs.read_result(doc_id, "", files["ещё.png"]["id"])
+        self.assertEqual(base64.b64decode(second["_image"]["b64"]), _png(8, 8, (9, 9, 9)))
+        self.assertTrue(any(f.get("seen") and f["name"] == "ещё.png" for f in second["doc"]["files"]))
+        self.assertFalse(any(f.get("seen") for f in second["doc"]["files"] if f["name"] == "скан.png"))
+        plain = jarvis.execute_assistant_tool("notes_read", {"id": doc_id}, app(), "")
+        self.assertNotIn("_image", plain)
+        png = next(f for f in plain["doc"]["files"] if f["name"] == "скан.png")
+        self.assertIn("не смотрит фото", png["unread"])
+        with patch.object(notes_docs.file_tools, "read_file", side_effect=notes_docs.file_tools.FileToolError("в PDF нет текстового слоя")):
+            with notes_docs.vision_scope(False):
+                broken = notes_docs.read_result(doc_id, "", "бланк.pdf")
+        pdf = next(f for f in broken["doc"]["files"] if f["name"] == "бланк.pdf")
+        self.assertIn("текстового слоя", pdf["unread"])
+        self.assertNotIn("text", pdf)
+        self.assertTrue(jarvis.ai_usage.supports_vision("claude-sonnet-5"))
+        self.assertTrue(jarvis.ai_usage.supports_vision("gpt-4o"))
+        self.assertFalse(jarvis.ai_usage.supports_vision("blind-local"))
+        self.assertFalse(jarvis.ai_usage.supports_vision(""))
+
+    def test_loop_passes_photo_only_when_model_can_see(self):
+        _, created = notes_docs.create_doc({"title": "Море", "html": "<p>июнь</p>"})
+        doc_id = created["doc"]["id"]
+        notes_docs.save_file(doc_id, "sea.png", "png", PNG)
+        bodies = []
+
+        def post(url, headers=None, json=None, timeout=None, **kw):
+            bodies.append(json or {})
+            if len(bodies) == 1:
+                return Resp({"content": [{"type": "tool_use", "id": "t1", "name": "notes_read", "input": {"id": doc_id}}],
+                             "stop_reason": "tool_use", "usage": {}})
+            return Resp({"content": [{"type": "text", "text": "На фото море."}], "stop_reason": "end_turn", "usage": {}})
+
+        with patch.object(jarvis.requests, "post", side_effect=post):
+            text, _ = jarvis._assistant_loop_claude(
+                [{"role": "user", "content": "что на фото в заметке"}], "k", "claude-test", app(), "", False)
+        self.assertIn("море", text)
+        blob = json.dumps(bodies[1], ensure_ascii=False)
+        self.assertIn(base64.b64encode(PNG).decode(), blob)
+        self.assertNotIn(base64.b64encode(PNG).decode(), json.dumps(bodies[1]["messages"][-1]["content"][0]["content"][0]))
+
+        blind = []
+
+        def post_blind(url, headers=None, json=None, timeout=None, **kw):
+            blind.append(json or {})
+            if len(blind) == 1:
+                return Resp({"content": [{"type": "tool_use", "id": "t1", "name": "notes_read", "input": {"id": doc_id}}],
+                             "stop_reason": "tool_use", "usage": {}})
+            return Resp({"content": [{"type": "text", "text": "Фото не разобрать."}], "stop_reason": "end_turn", "usage": {}})
+
+        with patch.object(jarvis.requests, "post", side_effect=post_blind):
+            jarvis._assistant_loop_claude(
+                [{"role": "user", "content": "что на фото"}], "k", "blind-local", app(), "", False)
+        dumped = json.dumps(blind[1], ensure_ascii=False)
+        self.assertNotIn(base64.b64encode(PNG).decode(), dumped)
+        self.assertIn("не смотрит фото", dumped)
+
+        oai = []
+        args = json.dumps({"id": doc_id})
+
+        def post_oai(url, headers=None, json=None, timeout=None, **kw):
+            oai.append(json or {})
+            if len(oai) == 1:
+                return Resp({"choices": [{"message": {"content": "", "tool_calls": [{
+                    "id": "c1", "type": "function",
+                    "function": {"name": "notes_read", "arguments": args},
+                }]}, "finish_reason": "tool_calls"}], "usage": {}})
+            return Resp({"choices": [{"message": {"content": "вижу"}, "finish_reason": "stop"}], "usage": {}})
+
+        with patch.object(jarvis.requests, "post", side_effect=post_oai):
+            text, _ = jarvis._assistant_loop_openai(
+                [{"role": "user", "content": "фото"}], "k", "gpt-4o", app(), "", False)
+        self.assertEqual(text, "вижу")
+        packed = json.dumps(oai[1], ensure_ascii=False)
+        self.assertIn("data:image/png;base64," + base64.b64encode(PNG).decode(), packed)
 
     def test_backup_gitignore_static_and_ui(self):
         _, created = notes_docs.create_doc({"title": "Архив", "html": "<p>текст</p>"})
@@ -292,6 +409,28 @@ class NotesHttpTest(unittest.TestCase):
         self.assertEqual(code, 200, gone)
         code, listed, _ = self.req("GET", "/api/notes", cookie=True)
         self.assertEqual(listed["docs"], [])
+
+    def test_tool_reads_text_and_hides_photo_without_vision(self):
+        code, created, _ = self.req("POST", "/api/notes", {"title": "Папка", "html": "<p>текст</p>"}, cookie=True)
+        doc_id = created["doc"]["id"]
+        self.req("POST", f"/api/notes/file?doc={doc_id}&name=note.txt&ext=txt",
+                 cookie=True, raw="внутри файла".encode(), content_type="application/octet-stream")
+        self.req("POST", f"/api/notes/file?doc={doc_id}&name=sea.png&ext=png",
+                 cookie=True, raw=PNG, content_type="application/octet-stream")
+        with patch.object(jarvis.ai_usage, "supports_vision", return_value=False):
+            code, blind, _ = self.req("POST", "/api/notes/tool",
+                                      {"name": "notes_read", "input": {"id": doc_id}}, cookie=True)
+        self.assertEqual(code, 200, blind)
+        self.assertNotIn("_image", blind)
+        txt = next(f for f in blind["doc"]["files"] if f["name"] == "note.txt")
+        self.assertEqual(txt["text"], "внутри файла")
+        png = next(f for f in blind["doc"]["files"] if f["name"] == "sea.png")
+        self.assertIn("не смотрит фото", png["unread"])
+        with patch.object(jarvis.ai_usage, "supports_vision", return_value=True):
+            code, seen, _ = self.req("POST", "/api/notes/tool",
+                                     {"name": "notes_read", "input": {"id": doc_id}}, cookie=True)
+        self.assertEqual(code, 200, seen)
+        self.assertEqual(base64.b64decode(seen["_image"]["b64"]), PNG)
 
 
 CHROME = shutil.which("google-chrome") or shutil.which("google-chrome-stable")
