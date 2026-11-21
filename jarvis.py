@@ -51,6 +51,7 @@ import widget_skill
 import calendar_ics
 import card_ledger
 import cars_parking
+import notes_docs
 from foods_data import FOODS, FOOD_CATEGORIES
 from off_products_data import OFF_PRODUCTS
 
@@ -1210,9 +1211,9 @@ Jarvis — резервная копия проекта и данных
 def _static_forbidden(path: Path) -> bool:
     """Файлы, которые нельзя отдать по HTTP и нельзя класть в архив кода."""
     name = path.name
-    if name in (route_skill.KEYS_NAME, route_skill.KEYS_NAME + ".tmp", "jarvis_max_user.json") or name.startswith("jarvis_max_user."):
+    if name in (route_skill.KEYS_NAME, route_skill.KEYS_NAME + ".tmp", "jarvis_max_user.json", "jarvis_notes.json", "jarvis_notes.json.tmp") or name.startswith("jarvis_max_user."):
         return True
-    return "jarvis_max" in path.parts
+    return "jarvis_max" in path.parts or "jarvis_notes" in path.parts
 
 
 def build_backup_zip() -> bytes:
@@ -1231,7 +1232,7 @@ def build_backup_zip() -> bytes:
                       "jarvis_study_chats_state.json", "jarvis_anchors.json", "jarvis_market.json", "jarvis_market_pc.json", "jarvis_moodle_reports.json", "jarvis_browse.json", "jarvis_wb_pickup.json", "jarvis_ozon_pickup.json", "jarvis_tg_history.sqlite3",
                       "jarvis_webpush.json", "jarvis_tg_watch.json", "jarvis_mail.json", "jarvis_plan_tasks.json", "jarvis_ai_usage.jsonl", "jarvis_routes.json", "jarvis_health_drafts.json",
                       "jarvis_newspaper_cache.json", "jarvis_newspaper_state.json", "jarvis_newspaper_latest.html",
-                      "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png", "jarvis_card_ledger.json", "jarvis_study_journals.json", "jarvis_cars.json"}
+                      "jarvis_newspaper_latest.pdf", "jarvis_newspaper_latest.png", "jarvis_card_ledger.json", "jarvis_study_journals.json", "jarvis_cars.json", "jarvis_notes.json"}
 
         # 1. Project code — every file directly in the script's directory
         #    (skips subdirectories, e.g. .git, so no VCS history is dragged in;
@@ -1256,7 +1257,7 @@ def build_backup_zip() -> bytes:
                     add_file(fp, f"data/{fname}")
 
         # 3. User-uploaded content (body photos, mode training-program files)
-        for sub in ("photos", "files", "jarvis_cars"):
+        for sub in ("photos", "files", "jarvis_cars", "jarvis_notes"):
             d = DATA_DIR / sub
             if d.exists():
                 for f in sorted(d.rglob("*")):
@@ -5475,7 +5476,7 @@ ASSISTANT_NAV_TARGETS = {
     "wishlist": ("Хотелки", "/wishlist"),
     "study": ("Учёба", "/study"),
     "cards": ("Карты лояльности", "/cards"),
-    "notes": ("Заметки (сим-карты)", "/notes"),
+    "notes": ("Заметки", "/notes"),
     "gym": ("GYM", "/gym"),
     "music": ("Музыка", "/music"),
     "knowledge": ("База данных", "/knowledge"),
@@ -6875,6 +6876,7 @@ def _prompt_sections(app, with_tg: bool, groups) -> str:
         + (plan_skill.prompt_section(st) if plan_skill and on("plan") else "")
         + (health_skill.prompt_section(st) if health_skill and on("health") else "")
         + (route_skill.prompt_section(st) if on("routes") else "")
+        + (notes_docs.prompt_section(st) if on("notes") else "")
         + (tg_tools.prompt_section(st) if with_tg and on(*tg_any) else "")
         + (max_tools.prompt_section(st) if max_tools and _max_allowed(with_tg, st) and on("max_read") else "")
     )
@@ -6951,6 +6953,8 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
     if name in tg_history.TOOL_NAMES:
         return tg_history.execute(inp, (app or {}).get("telegramSkills"), tg_bot.get_ctx() if tg_bot else None,
                                   _bot_history_remote)
+    if name in notes_docs.TOOL_NAMES:
+        return notes_docs.execute(name, inp, (app or {}).get("telegramSkills"))
     if health_skill and name in health_skill.TOOL_NAMES:
         return health_skill.execute(name, inp, app, tg_bot.get_ctx() if tg_bot else None, getattr(_plan_scope, "on", False))
     if plan_skill and name in plan_skill.TOOL_NAMES:
@@ -8012,7 +8016,8 @@ def _assistant_tool_list(app, with_tg: bool) -> list:
         _plan_skill_tools(app) + (tg_history.TOOLS if tg_history.skill_on((app or {}).get("telegramSkills")) else []) + \
         (health_skill.TOOLS if health_skill and health_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (route_skill.TOOLS if route_skill.skill_on((app or {}).get("telegramSkills")) and
-         (not tg_bot or tg_bot.get_ctx() is None or (tg_user and tg_user.is_owner_chat(tg_bot.get_ctx().chat_id))) else [])
+         (not tg_bot or tg_bot.get_ctx() is None or (tg_user and tg_user.is_owner_chat(tg_bot.get_ctx().chat_id))) else []) + \
+        (notes_docs.TOOLS if notes_docs.skill_on((app or {}).get("telegramSkills")) else [])
 
 
 def assistant_skills_catalog() -> list:
@@ -8033,6 +8038,7 @@ def assistant_skills_catalog() -> list:
         + route_skill.SKILLS
         + moodle_skill.SKILLS
         + browse_skill.SKILLS
+        + notes_docs.SKILLS
     )
 
 
@@ -12245,6 +12251,9 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif route.startswith("/api/cars/parking/file/"):
             code, payload = cars_parking.remove_file(route[len("/api/cars/parking/file/"):])
             self._json(code, payload)
+        elif route.startswith("/api/notes/file/"):
+            code, payload = notes_docs.remove_file(route[len("/api/notes/file/"):])
+            self._json(code, payload)
         elif self.path.startswith("/api/photos/"):
             filename = self.path[len("/api/photos/"):]
             if "/" in filename or ".." in filename or not filename:
@@ -12611,6 +12620,15 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             self._json(200, cars_parking.view())
         elif route.startswith("/api/cars/parking/file/"):
             self._cars_file_get(route[len("/api/cars/parking/file/"):])
+        elif route == "/api/notes":
+            self._json(200, notes_docs.list_docs())
+        elif route == "/api/notes/tools":
+            self._json(200, notes_docs.voice_payload((load_app_data() or {}).get("telegramSkills")))
+        elif route.startswith("/api/notes/file/"):
+            self._notes_file_get(route[len("/api/notes/file/"):])
+        elif route.startswith("/api/notes/"):
+            code, payload = notes_docs.get_doc(route[len("/api/notes/"):])
+            self._json(code, payload)
         elif route == "/api/card-ledger":
             self._json(200, card_ledger.owner_view())
         elif self.path == "/api/data":
@@ -12648,6 +12666,16 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             return
         if route == "/api/cars/parking":
             self._cars_permit_post()
+        elif route == "/api/notes":
+            self._notes_write("create")
+        elif route == "/api/notes/save":
+            self._notes_write("save")
+        elif route == "/api/notes/delete":
+            self._notes_write("delete")
+        elif route == "/api/notes/file":
+            self._notes_file_post()
+        elif route == "/api/notes/tool":
+            self._notes_tool_post()
         elif route == "/api/cars/parking/delete":
             self._cars_permit_delete()
         elif route == "/api/cars/parking/purge":
@@ -14822,6 +14850,49 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
+    def _notes_write(self, action: str):
+        payload, err = self._cars_json_body(limit=1_500_000)
+        if err:
+            self._json(400, {"ok": False, "error": err})
+            return
+        if action == "create":
+            code, body = notes_docs.create_doc(payload)
+        elif action == "save":
+            code, body = notes_docs.save_doc(payload)
+        else:
+            code, body = notes_docs.delete_doc(str(payload.get("id") or ""))
+        self._json(code, body)
+
+    def _notes_file_post(self):
+        query = self._apple_query()
+        body, err = self._read_upload(notes_docs.MAX_FILE_BYTES)
+        if err:
+            self._json(413 if err == "file too large" else 400, {"ok": False, "error": err})
+            return
+        code, payload = notes_docs.save_file(query.get("doc") or "", query.get("name") or "", query.get("ext") or "", body or b"")
+        self._json(code, payload)
+
+    def _notes_file_get(self, file_id: str):
+        found = notes_docs.open_file(file_id)
+        if not found:
+            self._json(404, {"ok": False, "error": "Файл не найден"})
+            return
+        path, mime, name, kind = found
+        inline = kind in ("image", "video", "audio") or mime == "application/pdf"
+        disp = f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{quote(name)}"
+        self._serve_ranged(path, mime, "private, no-store", disposition=disp)
+
+    def _notes_tool_post(self):
+        payload, err = self._cars_json_body(limit=64 * 1024)
+        if err:
+            self._json(400, {"error": err})
+            return
+        name = payload.get("name")
+        if name not in notes_docs.TOOL_NAMES:
+            self._json(400, {"error": "unknown tool"})
+            return
+        self._json(200, execute_assistant_tool(name, payload.get("input") or {}, load_app_data() or {}, "", False))
+
     def _json(self, code: int, data: dict):
         body = json.dumps(data).encode()
         self.send_response(code)
@@ -14965,7 +15036,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
             TABLET_APK_NAME,
         )
 
-    def _serve_ranged(self, path, ctype: str, cache_control: str, download_name: str = ""):
+    def _serve_ranged(self, path, ctype: str, cache_control: str, download_name: str = "", disposition: str = ""):
         """Файл целиком или кусок по заголовку Range (206) — для аудио/видео."""
         size = path.stat().st_size
         start, end = 0, size - 1
@@ -14992,7 +15063,10 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         try:
             self.send_response(206 if partial else 200)
             self.send_header("Content-Type", ctype)
-            if download_name:
+            if disposition:
+                self.send_header("Content-Disposition", disposition)
+                self.send_header("X-Content-Type-Options", "nosniff")
+            elif download_name:
                 self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
                 self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Accept-Ranges", "bytes")
