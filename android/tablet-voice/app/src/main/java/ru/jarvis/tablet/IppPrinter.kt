@@ -14,20 +14,17 @@ import com.hp.jipp.encoding.ResolutionUnit
 import com.hp.jipp.encoding.Tag
 import com.hp.jipp.model.Operation
 import com.hp.jipp.model.Types
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
-import java.net.DatagramSocket
-import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URI
-import java.net.URL
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-
-class PrinterRouteException(message: String) : IllegalStateException(message)
 
 data class IppCapabilities(
     val endpoint: PrinterEndpoint,
@@ -41,26 +38,29 @@ class IppPrinter(context: android.content.Context) : AutoCloseable {
     private val cm = context.applicationContext.getSystemService(ConnectivityManager::class.java)
     private val wifiHold = WifiHold()
     private var wifi: Network? = null
-    private var homeOk = false
-    private var useProcessBind = true
+    private var homeIp: String? = null
 
     override fun close() {
-        releaseProcess()
         wifiHold.close()
+    }
+
+    /** Wi‑Fi в /24 принтера для mDNS. Без такого интерфейса — null, сокет не открывается. */
+    fun homeNetwork(printerHost: String): Network? {
+        val lan = ipv4(printerHost) ?: return null
+        if (!isLan(lan)) return null
+        wifi = wifiHold.await(lan)
+        val local = PrintRoute.chooseHome(snapshot(), printerHost) ?: return null
+        return networkFor(local)
     }
 
     fun probe(endpoint: PrinterEndpoint, fallbacks: Boolean = true): IppCapabilities {
         val lan = ipv4(endpoint.host)
-        wifi = wifiHold.await(if (lan != null && isLan(lan)) lan else null)
-        val onLan = lan != null && isLan(lan) && wifiCovers(lan)
-        // Чужая подсеть (VPN 10.31 или 198.18) — ни одного TCP. Четыре таймаута по 8 с ничего не меняют.
         if (lan != null && isLan(lan)) {
-            if (!onLan) throw PrinterRouteException(missingHome(lan))
-            ensureHome(endpoint, lan)
+            ensureHome(endpoint.host)
         }
         var last: Exception? = null
         val paths = linkedSetOf(PrinterDiscovery.cleanPath(endpoint.path))
-        if (fallbacks && (lan == null || !isLan(lan) || onLan)) {
+        if (fallbacks && (lan == null || !isLan(lan) || homeIp != null)) {
             paths.add("/ipp/print")
             paths.add("/ipp/printer")
             paths.add("/ipp")
@@ -78,7 +78,9 @@ class IppPrinter(context: android.content.Context) : AutoCloseable {
                 last = e
                 val msg = (e.message ?: e.javaClass.simpleName).replace('\n', ' ').take(450)
                 VoiceLog.add("газета: $where — $msg")
-                if (routeBlocked(e, lan, onLan)) throw PrinterRouteException(routeMessage(e, target.host, isBindFailure(e)))
+                if (routeBlocked(e, lan, homeIp != null)) {
+                    throw PrinterRouteException(routeMessage(e, target.host, isBindFailure(e)))
+                }
             }
         }
         throw last ?: IllegalStateException("IPP принтер не ответил")
@@ -139,152 +141,111 @@ class IppPrinter(context: android.content.Context) : AutoCloseable {
     }
 
     private fun send(endpoint: PrinterEndpoint, packet: IppPacket, document: ByteArray?): IppPacket {
-        val lan = ipv4(endpoint.host)
-        if (wifi == null) wifi = wifiHold.await(if (lan != null && isLan(lan)) lan else null)
         val body = ByteArrayOutputStream()
         IppOutputStream(body).write(packet)
         if (document != null) body.write(document)
         val bytes = body.toByteArray()
         val printing = document != null
-        val net = wifi
+        val lan = ipv4(endpoint.host)
         if (lan != null && isLan(lan)) {
-            ensureHome(endpoint, lan)
-            val home = wifi ?: throw PrinterRouteException(missingHome(lan))
+            ensureHome(endpoint.host)
+            val seen = seenNets()
+            val faces = snapshot()
+            var socket: Socket? = null
             try {
-                // bindSocket у HttpURLConnection не меняет источник: сокет остаётся на VPN (10.31 / 198.18) без EPERM.
-                return if (useProcessBind) postBound(home, endpoint, bytes, printing)
-                else post(home, endpoint, bytes, printing)
-            } catch (e: Exception) {
-                if (e is PrinterRouteException) throw e
-                if (!isBindFailure(e)) throw e
-                val active = activeIpv4()
-                if (active != null && same24(active, lan)) {
-                    VoiceLog.add("газета: привязка к Wi‑Fi запрещена (EPERM), локальный адрес ${active.hostAddress} в сети принтера")
-                    return post(null, endpoint, bytes, printing)
+                PrintRoute.connectHome(faces, endpoint.host, seen) { want ->
+                    val net = networkFor(want) ?: throw PrinterRouteException(missingHome(lan))
+                    val bound = openHome(net, want, lan, endpoint.port)
+                    socket = bound
+                    bound.localAddress?.hostAddress ?: want
                 }
-                throw PrinterRouteException(routeMessage(e, endpoint.host, bindFailed = true))
+                socket?.soTimeout = if (printing) 120_000 else 15_000
+                return readIpp(socket ?: throw PrinterRouteException(missingHome(lan)), endpoint, bytes)
+            } catch (e: PrinterRouteException) {
+                throw e
+            } finally {
+                try {
+                    socket?.close()
+                } catch (_: Exception) {
+                }
             }
         }
-        if (net != null) {
-            try {
-                return post(net, endpoint, bytes, printing)
-            } catch (e: Exception) {
-                if (!isBindFailure(e)) throw e
-                VoiceLog.add("газета: bindSocket к Wi‑Fi запрещён (EPERM), пробую bindProcessToNetwork")
-                return postBound(net, endpoint, bytes, printing)
-            }
-        }
-        return post(null, endpoint, bytes, printing)
-    }
-
-    /** Процесс на домашнем Wi‑Fi только на время этого POST, потом маршрут как был. */
-    private fun postBound(network: Network, endpoint: PrinterEndpoint, bytes: ByteArray, printing: Boolean): IppPacket {
-        if (!cm.bindProcessToNetwork(network)) {
-            throw IllegalStateException("bindProcessToNetwork")
-        }
-        processBound.set(true)
+        val socket = Socket()
         try {
-            return post(null, endpoint, bytes, printing)
-        } finally {
-            releaseProcess()
-        }
-    }
-
-    /**
-     * UDP connect не шлёт пакет и сразу показывает адрес, с которого уйдёт TCP.
-     * Если это не /24 принтера — IPP даже не начинаем.
-     */
-    private fun ensureHome(endpoint: PrinterEndpoint, lan: Inet4Address) {
-        if (homeOk) return
-        val net = wifi
-        val via = net?.let { n -> ipv4s(n).firstOrNull { ip -> same24(ip, lan) } }
-        if (net == null || via == null) throw PrinterRouteException(missingHome(lan))
-        val src = measureSource(net, endpoint, lan)
-        if (src != null && !src.isAnyLocalAddress && same24(src, lan)) {
-            homeOk = true
-            VoiceLog.add("газета: печать с ${src.hostAddress}, принтер в той же сети")
-            return
-        }
-        val active = activeIpv4()
-        if ((src == null || src.isAnyLocalAddress) && active != null && same24(active, lan)) {
-            useProcessBind = false
-            homeOk = true
-            VoiceLog.add("газета: печать с ${active.hostAddress}, принтер в той же сети")
-            return
-        }
-        throw PrinterRouteException(offSubnet(src, lan))
-    }
-
-    private fun measureSource(net: Network, endpoint: PrinterEndpoint, lan: Inet4Address): Inet4Address? {
-        val processOk = try {
-            cm.bindProcessToNetwork(net)
-        } catch (_: Exception) {
-            false
-        }
-        if (processOk) processBound.set(true)
-        try {
-            val viaProcess = if (processOk) datagramSource(null, lan, endpoint.port) else null
-            if (viaProcess != null && same24(viaProcess, lan)) {
-                useProcessBind = true
-                return viaProcess
-            }
-            val viaSocket = datagramSource(net, lan, endpoint.port)
-            if (viaSocket != null && same24(viaSocket, lan)) {
-                useProcessBind = false
-                return viaSocket
-            }
-            return viaProcess ?: viaSocket
-        } finally {
-            releaseProcess()
-        }
-    }
-
-    private fun datagramSource(net: Network?, lan: Inet4Address, port: Int): Inet4Address? {
-        var socket: DatagramSocket? = null
-        try {
-            socket = DatagramSocket()
-            if (net != null) net.bindSocket(socket)
-            socket.connect(InetSocketAddress(lan, port))
-            val local = socket.localAddress
-            if (local is Inet4Address && !local.isAnyLocalAddress && !local.isLoopbackAddress) return local
-            return null
-        } catch (e: Exception) {
-            if (isBindFailure(e)) return null
-            return sourceFrom(e)?.let { ipv4(it) }
+            socket.connect(InetSocketAddress(endpoint.host, endpoint.port), 8_000)
+            socket.soTimeout = if (printing) 120_000 else 15_000
+            return readIpp(socket, endpoint, bytes)
         } finally {
             try {
-                socket?.close()
+                socket.close()
             } catch (_: Exception) {
             }
         }
     }
 
-    private fun releaseProcess() {
-        if (!processBound.compareAndSet(true, false)) return
+    /**
+     * Сокет только этой Network и с локальным адресом Wi‑Fi.
+     * Источник проверяется до connect: чужой адрес не уходит в TCP на 631.
+     */
+    private fun openHome(network: Network, localIp: String, printer: Inet4Address, port: Int): Socket {
+        val socket = Socket()
         try {
-            cm.bindProcessToNetwork(null)
-        } catch (_: Exception) {
+            network.bindSocket(socket)
+            PrintRoute.bindLocal(socket, localIp)
+            val bound = socket.localAddress
+            val boundIp = bound?.hostAddress ?: "0.0.0.0"
+            if (bound !is Inet4Address || bound.isAnyLocalAddress || !PrintRoute.same24(boundIp, printer.hostAddress ?: localIp)) {
+                throw PrinterRouteException(PrintRoute.wrongSource(localIp, boundIp, printer.hostAddress ?: localIp))
+            }
+            socket.connect(InetSocketAddress(printer, port), 8_000)
+            val after = socket.localAddress
+            val afterIp = after?.hostAddress ?: "0.0.0.0"
+            if (after !is Inet4Address || !PrintRoute.same24(afterIp, printer.hostAddress ?: localIp)) {
+                throw PrinterRouteException(PrintRoute.wrongSource(localIp, afterIp, printer.hostAddress ?: localIp))
+            }
+            return socket
+        } catch (e: Exception) {
+            try {
+                socket.close()
+            } catch (_: Exception) {
+            }
+            if (e is PrinterRouteException) throw e
+            if (e is java.net.BindException || isBindFailure(e)) {
+                val why = (e.message ?: e.javaClass.simpleName).replace('\n', ' ').take(160)
+                throw PrinterRouteException("привязка к Wi‑Fi $localIp не вышла ($why). Печать не начата")
+            }
+            throw e
         }
     }
 
-    private fun post(network: Network?, endpoint: PrinterEndpoint, bytes: ByteArray, printing: Boolean): IppPacket {
-        val url = httpUrl(endpoint)
-        val conn = (network?.openConnection(url) ?: url.openConnection()) as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.connectTimeout = 8_000
-        conn.readTimeout = if (printing) 120_000 else 15_000
-        conn.doOutput = true
-        conn.setFixedLengthStreamingMode(bytes.size)
-        conn.setRequestProperty("Content-Type", "application/ipp")
-        conn.setRequestProperty("Accept", "application/ipp")
-        try {
-            conn.outputStream.use { it.write(bytes) }
-            val http = conn.responseCode
-            if (http !in 200..299) throw IllegalStateException("Принтер вернул HTTP $http")
-            return conn.inputStream.use { IppInputStream(it).readPacket() }
-        } finally {
-            conn.disconnect()
+    private fun readIpp(socket: Socket, endpoint: PrinterEndpoint, bytes: ByteArray): IppPacket {
+        val path = PrinterDiscovery.cleanPath(endpoint.path)
+        val head = buildString {
+            append("POST $path HTTP/1.1\r\n")
+            append("Host: ${uriHost(endpoint.host)}:${endpoint.port}\r\n")
+            append("Content-Type: application/ipp\r\n")
+            append("Accept: application/ipp\r\n")
+            append("Content-Length: ${bytes.size}\r\n")
+            append("Connection: close\r\n\r\n")
         }
+        val out = socket.getOutputStream()
+        out.write(head.toByteArray(Charsets.ISO_8859_1))
+        out.write(bytes)
+        out.flush()
+        val (code, body) = PrintRoute.readHttp(socket.getInputStream())
+        if (code !in 200..299) throw IllegalStateException("Принтер вернул HTTP $code")
+        return IppInputStream(ByteArrayInputStream(body)).readPacket()
+    }
+
+    /** Адрес на Wi‑Fi в /24 принтера уже достаточный. UDP-проба при VPN врёт и не нужна. */
+    private fun ensureHome(printerHost: String) {
+        if (homeIp != null) return
+        val lan = ipv4(printerHost) ?: return
+        wifi = wifiHold.await(lan)
+        val local = PrintRoute.chooseHome(snapshot(), printerHost)
+            ?: throw PrinterRouteException(missingHome(lan))
+        homeIp = local
+        VoiceLog.add("газета: печать с $local, принтер в той же сети")
     }
 
     private fun routeBlocked(e: Throwable, lan: Inet4Address?, onLan: Boolean): Boolean {
@@ -311,23 +272,14 @@ class IppPrinter(context: android.content.Context) : AutoCloseable {
 
     private fun routeMessage(e: Throwable, printer: String, bindFailed: Boolean): String {
         val lan = ipv4(printer)
-        val src = sourceFrom(e) ?: activeIpv4()?.hostAddress ?: "неизвестного адреса"
+        val src = sourceFrom(e) ?: "неизвестного адреса"
         val cidr = if (lan != null) cidr24(lan) else "192.168.0.0/16"
         val vpn = "Трафик с $src, это VPN. Принтер $printer найден в Wi‑Fi, TCP до него VPN не пускает. Выключите VPN или разрешите локальную сеть $cidr."
         return if (bindFailed) "привязка к Wi‑Fi запрещена (EPERM). $vpn" else vpn
     }
 
     private fun missingHome(lan: Inet4Address): String =
-        "нет домашнего Wi‑Fi в ${cidr24(lan)}, сейчас ${seenNets()}. Печать не начата"
-
-    private fun offSubnet(src: Inet4Address?, lan: Inet4Address): String {
-        val cidr = cidr24(lan)
-        val via = wifi?.let { net -> ipv4s(net).firstOrNull { ip -> same24(ip, lan) } }?.hostAddress
-        val from = src?.takeIf { !it.isAnyLocalAddress }?.hostAddress
-        if (from != null && via != null) return "Wi‑Fi $via, но выход с $from, не из $cidr. Печать не начата"
-        if (from != null) return "выход с $from, это не сеть принтера $cidr. Печать не начата"
-        return "нет маршрута до принтера в $cidr, сейчас ${seenNets()}. Печать не начата"
-    }
+        PrintRoute.missingHome(lan.hostAddress ?: "", seenNets())
 
     private fun seenNets(): String {
         val parts = ArrayList<String>()
@@ -347,14 +299,31 @@ class IppPrinter(context: android.content.Context) : AutoCloseable {
             }
             add("$kind $ip")
         }
-        if (parts.isNotEmpty()) return parts.joinToString(", ")
-        return activeIpv4()?.hostAddress?.let { "выход с $it" } ?: "адрес неизвестен"
+        return if (parts.isNotEmpty()) parts.joinToString(", ") else "адрес неизвестен"
     }
 
-    private fun wifiCovers(lan: Inet4Address?): Boolean {
-        val net = wifi ?: return false
-        if (lan == null || !isLan(lan)) return true
-        return ipv4s(net).any { same24(it, lan) }
+    private fun snapshot(): List<RouteFace> {
+        val active = cm.activeNetwork
+        return cm.allNetworks.map { net ->
+            val caps = cm.getNetworkCapabilities(net)
+            val vpn = caps == null ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) ||
+                !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            RouteFace(
+                ipv4 = ipv4s(net).mapNotNull { it.hostAddress },
+                wifi = caps != null && !vpn && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI),
+                vpn = vpn,
+                defaultRoute = net == active,
+            )
+        }
+    }
+
+    private fun networkFor(ip: String): Network? {
+        val held = wifi
+        if (held != null && ipv4s(held).any { it.hostAddress == ip }) return held
+        return cm.allNetworks.firstOrNull { net ->
+            wifiUsable(net) && ipv4s(net).any { it.hostAddress == ip }
+        }
     }
 
     private fun wifiUsable(net: Network): Boolean {
@@ -365,9 +334,6 @@ class IppPrinter(context: android.content.Context) : AutoCloseable {
         return true
     }
 
-    private fun matchingWifi(want: Inet4Address): Network? =
-        cm.allNetworks.firstOrNull { net -> wifiUsable(net) && ipv4s(net).any { same24(it, want) } }
-
     /** Wi‑Fi уже виден и ни один адрес не в сети принтера — ждать колбэк незачем. */
     private fun homeMissing(want: Inet4Address): Boolean {
         val wifis = cm.allNetworks.filter { wifiUsable(it) }
@@ -375,8 +341,6 @@ class IppPrinter(context: android.content.Context) : AutoCloseable {
         if (wifis.any { ipv4s(it).isEmpty() }) return false
         return wifis.none { net -> ipv4s(net).any { same24(it, want) } }
     }
-
-    private fun activeIpv4(): Inet4Address? = ipv4s(cm.activeNetwork).firstOrNull()
 
     private fun ipv4s(network: Network?): List<Inet4Address> {
         val lp = network?.let { cm.getLinkProperties(it) } ?: return emptyList()
@@ -391,7 +355,7 @@ class IppPrinter(context: android.content.Context) : AutoCloseable {
         while (cur != null) {
             if (cur is SecurityException) return true
             val msg = (cur.message ?: "").lowercase()
-            if ("bindsocket" in msg || "binding socket" in msg || "eperm" in msg || "bindprocesstonetwork" in msg) return true
+            if ("bindsocket" in msg || "binding socket" in msg || "eperm" in msg) return true
             cur = cur.cause
         }
         return false
@@ -415,9 +379,6 @@ class IppPrinter(context: android.content.Context) : AutoCloseable {
 
     private fun ippUri(endpoint: PrinterEndpoint): String =
         "ipp://${uriHost(endpoint.host)}:${endpoint.port}${PrinterDiscovery.cleanPath(endpoint.path)}"
-
-    private fun httpUrl(endpoint: PrinterEndpoint): URL =
-        URL("http://${uriHost(endpoint.host)}:${endpoint.port}${PrinterDiscovery.cleanPath(endpoint.path)}")
 
     private fun uriHost(host: String): String = if (':' in host && !host.startsWith("[")) "[$host]" else host
 
@@ -466,7 +427,7 @@ class IppPrinter(context: android.content.Context) : AutoCloseable {
                 .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .build()
             try {
-                // Колбэк живёт до close(): без удержанного request привязка к Wi‑Fi даёт EPERM.
+                // Колбэк живёт до close(): без удержанного request bindSocket к Wi‑Fi даёт EPERM.
                 cm.requestNetwork(request, callback, Handler(handlerThread.looper), 3_000)
                 registered.set(true)
             } catch (e: Exception) {
@@ -474,12 +435,13 @@ class IppPrinter(context: android.content.Context) : AutoCloseable {
                 VoiceLog.add("газета: requestNetwork Wi‑Fi — $msg")
                 ready.countDown()
             }
-            // Сеть из allNetworks берём только после колбэка: иначе bindSocket даёт EPERM.
             if (want != null && homeMissing(want)) return null
             ready.await(4, TimeUnit.SECONDS)
             val got = accepted(want)
             if (got != null || want == null) return got
-            return matchingWifi(want)
+            return cm.allNetworks.firstOrNull { net ->
+                wifiUsable(net) && want.let { ipv4s(net).any { ip -> same24(ip, it) } }
+            }
         }
 
         private fun accepted(want: Inet4Address?): Network? {
@@ -502,7 +464,6 @@ class IppPrinter(context: android.content.Context) : AutoCloseable {
 
     companion object {
         private val ids = AtomicInteger(1000)
-        private val processBound = AtomicBoolean(false)
         private val FROM_ADDR = Regex("""from /?(\d+\.\d+\.\d+\.\d+)""")
 
         private fun ipv4(host: String): Inet4Address? {
@@ -516,21 +477,12 @@ class IppPrinter(context: android.content.Context) : AutoCloseable {
             return addr as? Inet4Address
         }
 
-        private fun isLan(ip: Inet4Address): Boolean {
-            val a = ip.address[0].toInt() and 255
-            val b = ip.address[1].toInt() and 255
-            return a == 10 || (a == 192 && b == 168) || (a == 172 && b in 16..31)
-        }
+        private fun isLan(ip: Inet4Address): Boolean = PrintRoute.isLanHost(ip.hostAddress ?: "")
 
-        private fun same24(a: Inet4Address, b: Inet4Address): Boolean {
-            val ab = a.address
-            val bb = b.address
-            return ab[0] == bb[0] && ab[1] == bb[1] && ab[2] == bb[2]
-        }
+        private fun same24(a: Inet4Address, b: Inet4Address): Boolean =
+            PrintRoute.same24(a.hostAddress ?: "", b.hostAddress ?: "")
 
-        private fun cidr24(ip: Inet4Address): String {
-            val b = ip.address
-            return "${b[0].toInt() and 255}.${b[1].toInt() and 255}.${b[2].toInt() and 255}.0/24"
-        }
+        private fun cidr24(ip: Inet4Address): String =
+            PrintRoute.cidrOf(ip.hostAddress ?: "") ?: "192.168.0.0/16"
     }
 }
