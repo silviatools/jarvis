@@ -376,8 +376,8 @@ class TabletUnitTest(unittest.TestCase):
             self.assertIn("@+id/userRoot", user)
             self.assertNotIn("@+id/version", user)
         gradle = (Path(__file__).resolve().parent / "android/tablet-voice/app/build.gradle.kts").read_text(encoding="utf-8")
-        self.assertIn('versionName = "1.24"', gradle)
-        self.assertIn("versionCode = 25", gradle)
+        self.assertIn('versionName = "1.25"', gradle)
+        self.assertIn("versionCode = 26", gradle)
         manifest = (root / "AndroidManifest.xml").read_text(encoding="utf-8")
         self.assertIn("android.permission.CHANGE_NETWORK_STATE", manifest)
         recs = []
@@ -1004,7 +1004,9 @@ class TabletHttpTest(unittest.TestCase):
         jarvis.NEWSPAPER_STATE_FILE = root / "state.json"
         jarvis.NEWSPAPER_PDF_FILE = root / "paper.pdf"
         jarvis.NEWSPAPER_PNG_FILE = root / "paper.png"
-        self.app["newspaper"] = {"enabled": True, "autoPrint": True, "printerHost": "192.168.1.45"}
+        self.app["newspaper"] = {
+            "enabled": True, "autoPrint": True, "time": "00:00", "printerHost": "192.168.1.45",
+        }
         try:
             jarvis.NEWSPAPER_STATE_FILE.write_text(json.dumps({"latestDate": day}), encoding="utf-8")
             jarvis.NEWSPAPER_PDF_FILE.write_bytes(b"pdf")
@@ -1141,6 +1143,53 @@ class TabletHttpTest(unittest.TestCase):
         finally:
             jarvis.NEWSPAPER_STATE_FILE, jarvis.NEWSPAPER_PDF_FILE, jarvis.NEWSPAPER_PNG_FILE = old
 
+    def test_test_print_does_not_eat_missed_daily_slot(self):
+        """Проверочная печать не закрывает 20:00. Пропущенный слот ещё уходит."""
+        code, body = self.req("POST", "/api/tablet/login", {"password": jarvis.AUTH_PASSWORD})
+        self.assertEqual(code, 200)
+        token = body["token"]
+        day = jarvis.today_msk().isoformat()
+        root = Path(self.tmp.name)
+        old = (jarvis.NEWSPAPER_STATE_FILE, jarvis.NEWSPAPER_PDF_FILE, jarvis.NEWSPAPER_PNG_FILE)
+        jarvis.NEWSPAPER_STATE_FILE = root / "state.json"
+        jarvis.NEWSPAPER_PDF_FILE = root / "paper.pdf"
+        jarvis.NEWSPAPER_PNG_FILE = root / "paper.png"
+        self.app["newspaper"] = {
+            "enabled": True, "autoPrint": True, "time": "00:00", "printerHost": "192.168.1.100",
+        }
+        try:
+            jarvis.NEWSPAPER_STATE_FILE.write_text(json.dumps({
+                "latestDate": day,
+                "printedJobs": ["manual:abc", f"daily:{day}"],
+                "print": {"lastJobId": "manual:abc", "status": "printed"},
+                "printRequest": {"id": "abc", "status": "printed"},
+            }), encoding="utf-8")
+            jarvis.NEWSPAPER_PDF_FILE.write_bytes(b"pdf")
+            jarvis.NEWSPAPER_PNG_FILE.write_bytes(b"png")
+            code, job = self.req("GET", "/api/tablet/newspaper/job", token=token)
+            self.assertEqual(code, 200, job)
+            self.assertTrue(job["ready"])
+            self.assertEqual(job["jobId"], f"daily:{day}")
+
+            code, report = self.req("POST", "/api/tablet/newspaper/report", {
+                "jobId": job["jobId"], "status": "printed", "printer": "Pantum",
+            }, token=token)
+            self.assertEqual(code, 200, report)
+            _, done = self.req("GET", "/api/tablet/newspaper/job", token=token)
+            self.assertFalse(done["ready"])
+
+            code, requested = self.req("POST", "/api/newspaper/print", {}, token=token)
+            self.assertEqual(code, 200, requested)
+            self.assertTrue(requested["jobId"].startswith("manual:"))
+            self.req("POST", "/api/tablet/newspaper/report", {
+                "jobId": requested["jobId"], "status": "printed", "printer": "Pantum",
+            }, token=token)
+            _, still = self.req("GET", "/api/tablet/newspaper/job", token=token)
+            self.assertFalse(still["ready"])
+            self.assertFalse(still["jobId"].startswith("manual:"))
+        finally:
+            jarvis.NEWSPAPER_STATE_FILE, jarvis.NEWSPAPER_PDF_FILE, jarvis.NEWSPAPER_PNG_FILE = old
+
     def test_newspaper_agent_offline_after_three_minutes(self):
         from datetime import datetime, timedelta
         now = datetime(2026, 11, 5, 20, 0, tzinfo=jarvis.MSK)
@@ -1165,10 +1214,10 @@ class TabletHttpTest(unittest.TestCase):
 
     def test_tablet_apk_downloads_with_site_cookie(self):
         path = jarvis.TABLET_APK_ROUTE
-        release = "https://github.com/silviatools/jarvis/releases/download/tablet-1.24/Jarvis-tablet-1.24.apk"
-        self.assertEqual(path, "/download/Jarvis-tablet-1.24.apk")
-        self.assertEqual(jarvis.TABLET_APK_NAME, "Jarvis-tablet-1.24.apk")
-        self.assertIn("1.24", jarvis.TABLET_APK_NAME)
+        release = "https://github.com/silviatools/jarvis/releases/download/tablet-1.25/Jarvis-tablet-1.25.apk"
+        self.assertEqual(path, "/download/Jarvis-tablet-1.25.apk")
+        self.assertEqual(jarvis.TABLET_APK_NAME, "Jarvis-tablet-1.25.apk")
+        self.assertIn("1.25", jarvis.TABLET_APK_NAME)
         self.assertNotIn(path, jarvis.AUTH_PUBLIC_FILES)
         self.assertTrue(jarvis.TABLET_APK_FILE.is_file())
         self.assertGreater(jarvis.TABLET_APK_FILE.stat().st_size, 1_000_000)
@@ -1176,8 +1225,8 @@ class TabletHttpTest(unittest.TestCase):
         html = jarvis.HTML_FILE.read_text(encoding="utf-8")
         self.assertIn("Скачать приложение", html)
         self.assertIn(release, html)
-        self.assertNotIn("Jarvis-tablet-1.23.apk", html)
-        self.assertIn("Версия 1.24", html)
+        self.assertNotIn("Jarvis-tablet-1.24.apk", html)
+        self.assertIn("Версия 1.25", html)
 
         import http.client
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
@@ -1186,7 +1235,7 @@ class TabletHttpTest(unittest.TestCase):
         self.assertEqual(full.status, 200)
         self.assertEqual(full.getheader("Content-Type"), "application/vnd.android.package-archive")
         self.assertIn("attachment", full.getheader("Content-Disposition") or "")
-        self.assertIn("Jarvis-tablet-1.24.apk", full.getheader("Content-Disposition") or "")
+        self.assertIn("Jarvis-tablet-1.25.apk", full.getheader("Content-Disposition") or "")
         self.assertEqual(int(full.getheader("Content-Length")), jarvis.TABLET_APK_FILE.stat().st_size)
         self.assertEqual(full.read(4), b"PK\x03\x04")
         conn.close()
@@ -1212,8 +1261,58 @@ class TabletHttpTest(unittest.TestCase):
             self.assertEqual(resp.headers.get("Content-Type"), "application/vnd.android.package-archive")
             disp = resp.headers.get("Content-Disposition", "")
             self.assertIn("attachment", disp)
-            self.assertIn("Jarvis-tablet-1.24.apk", disp)
+            self.assertIn("Jarvis-tablet-1.25.apk", disp)
             self.assertIn(f"/{jarvis.TABLET_APK_FILE.stat().st_size}", resp.headers.get("Content-Range", ""))
+
+
+class NewspaperSlotTest(unittest.TestCase):
+    def test_missed_20_00_still_prints_and_test_print_does_not_close_it(self):
+        day = "2026-11-23"
+        cfg = {"enabled": True, "autoPrint": True, "time": "20:00"}
+        poisoned = {
+            "latestDate": day,
+            "printedJobs": ["manual:abc", f"daily:{day}"],
+            "print": {"lastJobId": "manual:abc", "status": "printed"},
+            "printRequest": {"id": "abc", "status": "printed"},
+        }
+        self.assertTrue(jarvis.newspaper_time_reached("20:00", "20:00"))
+        self.assertTrue(jarvis.newspaper_time_reached("20:01", "20:00"))
+        self.assertFalse(jarvis.newspaper_time_reached("19:54", "20:00"))
+        self.assertTrue(jarvis.newspaper_time_reached("9:05", "09:00"))
+        self.assertFalse(jarvis.newspaper_daily_ready(cfg, poisoned, "19:54", day, True))
+        self.assertTrue(jarvis.newspaper_daily_ready(cfg, poisoned, "20:01", day, True))
+        self.assertFalse(jarvis.newspaper_should_generate(cfg, poisoned, "20:01", day))
+
+        not_built = {"latestDate": "2026-11-22", "printedJobs": []}
+        self.assertFalse(jarvis.newspaper_should_generate(cfg, not_built, "19:54", day))
+        self.assertTrue(jarvis.newspaper_should_generate(cfg, not_built, "20:01", day))
+        self.assertFalse(jarvis.newspaper_daily_ready(cfg, not_built, "20:01", day, True))
+
+        # Час сменили с 07:30 на 20:00, выпуск уже собран, на принтер не уходил.
+        gathered = {"latestDate": day, "printedJobs": [], "dailyPrinted": []}
+        morning = {"enabled": True, "autoPrint": True, "time": "07:30"}
+        self.assertTrue(jarvis.newspaper_daily_ready(morning, gathered, "08:00", day, True))
+        self.assertFalse(jarvis.newspaper_daily_ready(cfg, gathered, "19:54", day, True))
+        self.assertTrue(jarvis.newspaper_daily_ready(cfg, gathered, "20:01", day, True))
+
+        printed = {
+            "latestDate": day,
+            "dailyPrinted": [day],
+            "printedJobs": [f"daily:{day}", "manual:abc"],
+            "print": {"lastJobId": "manual:abc", "status": "printed"},
+            "printRequest": {"id": "abc", "status": "printed"},
+        }
+        self.assertFalse(jarvis.newspaper_daily_ready(cfg, printed, "21:00", day, True))
+
+        honest = {
+            "latestDate": day,
+            "printedJobs": [f"daily:{day}"],
+            "print": {"lastJobId": f"daily:{day}", "status": "printed"},
+        }
+        self.assertFalse(jarvis.newspaper_daily_ready(cfg, honest, "20:01", day, True))
+        self.assertFalse(jarvis.newspaper_daily_ready(cfg, poisoned, "20:01", day, False))
+        off = {"enabled": True, "autoPrint": False, "time": "20:00"}
+        self.assertFalse(jarvis.newspaper_daily_ready(off, gathered, "20:01", day, True))
 
 
 class TabletSttStreamTest(unittest.TestCase):
