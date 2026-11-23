@@ -91,11 +91,11 @@ except ImportError:
     print("NOTE: 'requests' not installed — Telegram disabled. Run: pip3 install requests\n")
 
 DIR      = Path(__file__).parent
-# Sideload APK планшета 1.24 (сборка 25). Лежит в репозитории, чтобы Railway
+# Sideload APK планшета 1.25 (сборка 26). Лежит в репозитории, чтобы Railway
 # отдал его с самого сайта. Кнопка на сайте ведёт на GitHub Release — так файл
 # открывается с телефона. Вход на запасной маршрут тот же: cookie jarvis_auth.
-TABLET_APK_VERSION = "1.24"
-TABLET_APK_NAME = "Jarvis-tablet-1.24.apk"
+TABLET_APK_VERSION = "1.25"
+TABLET_APK_NAME = "Jarvis-tablet-1.25.apk"
 TABLET_APK_FILE = DIR / "android" / "tablet-voice" / "release" / TABLET_APK_NAME
 TABLET_APK_ROUTE = "/download/" + TABLET_APK_NAME
 try:
@@ -5102,6 +5102,102 @@ def _printer_check_from(payload: dict, now_iso: str) -> dict:
     }
 
 
+def newspaper_minutes(value: str) -> int | None:
+    """Минуты от полуночи. Принимает и 7:30, и 07:30."""
+    parts = str(value or "").strip().split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        hour, minute = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return hour * 60 + minute
+
+
+def newspaper_time_reached(now_str: str, slot: str) -> bool:
+    """Слот наступил: точная минута или любой более поздний тик в те же сутки."""
+    now_m = newspaper_minutes(now_str)
+    slot_m = newspaper_minutes(slot)
+    if now_m is None or slot_m is None:
+        return False
+    return now_m >= slot_m
+
+
+def newspaper_legacy_daily_printed(state: dict) -> list:
+    """Дни, закрытые именно ежедневной печатью.
+
+    Раньше успешная проверочная печать дописывала daily:день в printedJobs.
+    Если последний успех — эта проверка, сегодняшний слот ещё открыт.
+    Более ранние дни без этого следа остаются закрытыми.
+    """
+    jobs = state.get("printedJobs") if isinstance(state.get("printedJobs"), list) else []
+    days: list[str] = []
+    manuals: list[str] = []
+    for job in jobs:
+        text = str(job or "")
+        if text.startswith("daily:"):
+            day = text.split(":", 1)[1]
+            if day and day not in days:
+                days.append(day)
+        elif text.startswith("manual:"):
+            manuals.append(text)
+    if not manuals:
+        return days
+    print_state = state.get("print") if isinstance(state.get("print"), dict) else {}
+    last = str(print_state.get("lastJobId") or "")
+    request = state.get("printRequest") if isinstance(state.get("printRequest"), dict) else {}
+    latest = str(state.get("latestDate") or "")
+    manual_closed_today = bool(latest) and last.startswith("manual:") and (
+        last in manuals or (request.get("status") == "printed" and last == f"manual:{request.get('id')}")
+    )
+    if not manual_closed_today:
+        return days
+    return [day for day in days if day != latest]
+
+
+def newspaper_daily_printed(state: dict, day: str) -> bool:
+    if not day:
+        return False
+    raw = state.get("dailyPrinted") if isinstance(state, dict) else None
+    if isinstance(raw, list):
+        return day in {str(item) for item in raw}
+    return day in newspaper_legacy_daily_printed(state or {})
+
+
+def newspaper_should_generate(cfg: dict, state: dict, now_str: str, today_iso: str, locked: bool = False) -> bool:
+    """Собрать PDF, если время выпуска уже было и сегодняшнего файла ещё нет."""
+    if not cfg.get("enabled"):
+        return False
+    if not newspaper_time_reached(now_str, str(cfg.get("time") or "")):
+        return False
+    if locked:
+        return False
+    return str((state or {}).get("latestDate") or "") != today_iso
+
+
+def newspaper_daily_ready(cfg: dict, state: dict, now_str: str, today_iso: str, has_files: bool) -> bool:
+    """Автопечать сегодняшнего выпуска: слот наступил и именно он ещё не печатался.
+
+    Проверочная печать сюда не входит. Смена часа в тот же день не закрывает
+    слот, если ежедневный выпуск так и не ушёл на принтер. До наступления
+    нового времени задание не отдаётся.
+    """
+    state = state or {}
+    latest = str(state.get("latestDate") or "")
+    if not has_files or latest != today_iso:
+        return False
+    if not cfg.get("enabled") or not cfg.get("autoPrint"):
+        return False
+    if not newspaper_time_reached(now_str, str(cfg.get("time") or "")):
+        return False
+    request = state.get("printRequest") if isinstance(state.get("printRequest"), dict) else {}
+    if request.get("id") and request.get("status") != "printed":
+        return False
+    return not newspaper_daily_printed(state, today_iso)
+
+
 def newspaper_print_job() -> dict:
     """Задание для домашнего Android-агента. Сам принтер из интернета недоступен."""
     cfg = newspaper.settings(load_app_data()) if newspaper else {}
@@ -5109,14 +5205,16 @@ def newspaper_print_job() -> dict:
     latest_date = str(state.get("latestDate") or "")
     request = state.get("printRequest") if isinstance(state.get("printRequest"), dict) else {}
     manual_pending = bool(request.get("id") and request.get("status") != "printed")
-    job_id = f"manual:{request.get('id')}" if manual_pending else (f"daily:{latest_date}" if latest_date else "")
     printed_jobs = state.get("printedJobs") if isinstance(state.get("printedJobs"), list) else []
-    is_today = latest_date == today_msk().isoformat()
-    ready = bool(
-        job_id and NEWSPAPER_PDF_FILE.exists() and NEWSPAPER_PNG_FILE.exists()
-        and (manual_pending or (cfg.get("enabled") and cfg.get("autoPrint") and is_today))
-        and job_id not in printed_jobs
-    )
+    has_files = NEWSPAPER_PDF_FILE.exists() and NEWSPAPER_PNG_FILE.exists()
+    now_str = now_msk().strftime("%H:%M")
+    today = today_msk().isoformat()
+    if manual_pending:
+        job_id = f"manual:{request.get('id')}"
+        ready = bool(job_id and has_files and job_id not in printed_jobs)
+    else:
+        job_id = f"daily:{latest_date}" if latest_date else ""
+        ready = bool(job_id and newspaper_daily_ready(cfg, state, now_str, today, has_files))
     _newspaper_update_state({"printAgentLastSeenAt": now_msk().isoformat()})
     return {
         "ok": True,
@@ -5190,10 +5288,18 @@ def newspaper_print_report(payload: dict) -> dict:
         history = _newspaper_state().get("printedJobs")
         history = history if isinstance(history, list) else []
         completed = [job_id]
-        latest_date = str(_newspaper_state().get("latestDate") or "")
-        if job_id.startswith("manual:") and latest_date:
-            completed.append(f"daily:{latest_date}")
         patch["printedJobs"] = ([x for x in history if x not in completed] + completed)[-32:]
+        # Проверочная печать (manual:) слот дня не закрывает. Закрывает только отчёт daily:день.
+        if job_id.startswith("daily:"):
+            day = job_id.split(":", 1)[1]
+            state_now = _newspaper_state()
+            dates = state_now.get("dailyPrinted")
+            if not isinstance(dates, list):
+                dates = newspaper_legacy_daily_printed(state_now)
+            dates = [str(item) for item in dates if str(item)]
+            if day and day not in dates:
+                dates.append(day)
+            patch["dailyPrinted"] = dates[-64:]
     request = _newspaper_state().get("printRequest")
     if status == "printed" and isinstance(request, dict) and job_id == f"manual:{request.get('id')}":
         patch["printRequest"] = {**request, "status": "printed", "printedAt": report["updatedAt"]}
@@ -5250,14 +5356,17 @@ def newspaper_generate(reason: str = "manual", refresh: bool = True, override: d
 
 
 def newspaper_tick(app_data: dict, now_str: str, today_iso: str) -> None:
-    """Собирает выпуск в заданное время или при первом тике после него."""
+    """Собирает выпуск в заданную минуту или на первом тике после неё.
+
+    Уже собранный сегодняшний PDF не пересобирается: печать слота решает
+    newspaper_print_job. Проверочная печать день сборки не съедает.
+    Смена часа сравнивается как минуты суток, не как строки.
+    """
     if not newspaper:
         return
     cfg = newspaper.settings(app_data)
-    if not cfg["enabled"] or now_str < cfg["time"]:
-        return
     state = _newspaper_state()
-    if state.get("latestDate") == today_iso or _NEWSPAPER_LOCK.locked():
+    if not newspaper_should_generate(cfg, state, now_str, today_iso, _NEWSPAPER_LOCK.locked()):
         return
     threading.Thread(
         target=lambda: print(f"[newspaper] {newspaper_generate(reason='schedule', refresh=True)}", flush=True),
@@ -15036,7 +15145,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         self._serve_ranged(path, MUSIC_EXT.get(ext, "application/octet-stream"), "private, max-age=86400")
 
     def _serve_tablet_apk(self):
-        """APK как вложение: телефонный браузер сохраняет Jarvis-tablet-1.24.apk, а не HTML."""
+        """APK как вложение: телефонный браузер сохраняет Jarvis-tablet-1.25.apk, а не HTML."""
         if not TABLET_APK_FILE.is_file():
             self._json(404, {"error": "not found"})
             return
