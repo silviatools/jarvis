@@ -5448,8 +5448,9 @@ ASSISTANT_DATA_DOMAINS = {
         lambda app: [c for c in app.get("chores", []) if not c.get("archived")]),
     "house_tasks": ("Канбан-доска задач. У задачи attachments — вложения {id, name, filename, kind, size}; класть через kanban_attach_file, читать и присылать через kanban_get_attachment. Через kanban_update_task вложения не правятся",
         lambda app: (app.get("kanban") or {}).get("columns", [])),
-    "cars": ("Автомобили: название, номер, марка, модель, год, цвет, VIN, СТС; история обслуживания; "
-             "permits — резидентские разрешения (номер, срок, файлы, напоминания об окончании)",
+    "cars": ("Автомобили: название, номер, марка, модель, год, цвет, VIN, СТС; история обслуживания. "
+             "permits — резидентские разрешения вкладки «Разрешения» (номер, район, срок, бесплатные часы, плата, УИН, файлы, напоминания). "
+             "Создавать, править и удалять разрешение — только parking_permit_create/update/cancel, не через заметки автомобиля и не через create_record",
         lambda app: {
             "cars": [c for c in app.get("cars", []) if not c.get("archived")],
             "serviceRecords": app.get("serviceRecords", [])[-150:],
@@ -5665,7 +5666,7 @@ WRITE_REGISTRY = {
         "create_defaults": lambda: {"period": "morning", "days": [1, 2, 3, 4, 5], "archived": False},
     },
     "cars": {
-        "label": "Автомобиль (name, plate — гос. номер, make — марка, model — модель, year, color, vin, sts — номер СТС, notes, archived)",
+        "label": "Автомобиль (name, plate — гос. номер, make — марка, model — модель, year, color, vin, sts — номер СТС, notes — заметка о машине, не разрешение, archived). Резидентское разрешение в notes не писать: вкладка «Разрешения», инструменты parking_permit_*",
         "create_defaults": lambda: {"archived": False, "make": "", "model": "", "color": "", "vin": "", "sts": ""},
         "cascade_delete": [{"collection": "serviceRecords", "field": "carId"}],
     },
@@ -6883,7 +6884,9 @@ def _prompt_pieces(app: dict = None, with_tg: bool = False) -> dict:
         "- Если просят открыть/показать раздел — вызови navigate.\n"
         "- Если данных нет или вопрос не по теме проекта — так и скажи, не выдумывай.\n"
         "- Никогда не удаляй и не меняй финансовые данные без подтверждения, даже если пользователь говорит это "
-        "как бы между делом."
+        "как бы между делом.\n"
+        "- Резидентское парковочное разрешение — вкладка «Разрешения» (parking_permit_create), не заметка автомобиля и не plan_create. "
+        "Напоминания разрешения уже уходят владельцу в Telegram."
     )
     return {"head": head, "date": date_block, "about": about_block, "items": items, "tail": tail}
 
@@ -6918,7 +6921,8 @@ def _prompt_items_compact(on, domain_list: str, nav_list: str, write_list: str) 
                 "Файл в задание: get_data(study) → предмет и задание (нет подходящего "
                 "— спроси; новое — create_if_missing) → один вызов study_attach_file с готовым полным содержимым; присланный файл — "
                 "use_received_file; study_get_attachment — прочитать/прислать вложение. После успеха скажи, куда положил.\n\n")
-    out += ("«Напомни …» → плановая задача (plan_create), а не Apple Напоминание, если пользователь прямо не просит Apple.\n\n")
+    out += ("«Напомни …» → плановая задача (plan_create), а не Apple Напоминание, если пользователь прямо не просит Apple. "
+            "Резидентское разрешение — parking_permit_* во вкладке «Разрешения», не заметка автомобиля и не plan_create.\n\n")
     return out
 
 
@@ -6964,6 +6968,14 @@ def _max_tools_for(app, with_tg: bool) -> list:
     return max_tools.TOOLS
 
 
+def _parking_owner_ok() -> bool:
+    """Разрешения — данные владельца. Сайт (нет контекста чата) и его личный чат — да."""
+    ctx = tg_bot.get_ctx() if tg_bot else None
+    if ctx is None:
+        return True
+    return bool(tg_user and tg_user.is_owner_chat(getattr(ctx, "chat_id", None)))
+
+
 def _prompt_sections(app, with_tg: bool, groups) -> str:
     st = (app or {}).get("telegramSkills")
 
@@ -6986,6 +6998,7 @@ def _prompt_sections(app, with_tg: bool, groups) -> str:
         + (health_skill.prompt_section(st) if health_skill and on("health") else "")
         + (route_skill.prompt_section(st) if on("routes") else "")
         + (notes_docs.prompt_section(st) if on("notes") else "")
+        + (cars_parking.prompt_section(st) if on("parking") and _parking_owner_ok() else "")
         + (tg_tools.prompt_section(st) if with_tg and on(*tg_any) else "")
         + (max_tools.prompt_section(st) if max_tools and _max_allowed(with_tg, st) and on("max_read") else "")
     )
@@ -7064,6 +7077,10 @@ def execute_assistant_tool(name: str, inp: dict, app: dict, site_url: str, with_
                                   _bot_history_remote)
     if name in notes_docs.TOOL_NAMES:
         return notes_docs.execute(name, inp, (app or {}).get("telegramSkills"))
+    if name in cars_parking.TOOL_NAMES:
+        if not _parking_owner_ok():
+            return {"error": "Резидентские разрешения доступны только владельцу."}
+        return cars_parking.execute(name, inp, app, (app or {}).get("telegramSkills"))
     if health_skill and name in health_skill.TOOL_NAMES:
         return health_skill.execute(name, inp, app, tg_bot.get_ctx() if tg_bot else None, getattr(_plan_scope, "on", False))
     if plan_skill and name in plan_skill.TOOL_NAMES:
@@ -8132,7 +8149,8 @@ def _assistant_tool_list(app, with_tg: bool) -> list:
         (health_skill.TOOLS if health_skill and health_skill.skill_on((app or {}).get("telegramSkills")) else []) + \
         (route_skill.TOOLS if route_skill.skill_on((app or {}).get("telegramSkills")) and
          (not tg_bot or tg_bot.get_ctx() is None or (tg_user and tg_user.is_owner_chat(tg_bot.get_ctx().chat_id))) else []) + \
-        (notes_docs.TOOLS if notes_docs.skill_on((app or {}).get("telegramSkills")) else [])
+        (notes_docs.TOOLS if notes_docs.skill_on((app or {}).get("telegramSkills")) else []) + \
+        (cars_parking.TOOLS if cars_parking.skill_on((app or {}).get("telegramSkills")) and _parking_owner_ok() else [])
 
 
 def assistant_skills_catalog() -> list:
@@ -8154,6 +8172,7 @@ def assistant_skills_catalog() -> list:
         + moodle_skill.SKILLS
         + browse_skill.SKILLS
         + notes_docs.SKILLS
+        + cars_parking.SKILLS
     )
 
 
@@ -12731,6 +12750,8 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         elif route == "/api/study/lessons":
             q = self._apple_query()
             self._json(200, study_lessons(q.get("from"), q.get("to")))
+        elif route == "/api/cars/parking/tools":
+            self._json(200, cars_parking.voice_payload((load_app_data() or {}).get("telegramSkills")))
         elif route == "/api/cars/parking":
             self._json(200, cars_parking.view())
         elif route.startswith("/api/cars/parking/file/"):
@@ -12779,7 +12800,9 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         if not route_is_public(route) and not self._is_authed():
             self._json(401, {"error": "unauthorized"})
             return
-        if route == "/api/cars/parking":
+        if route == "/api/cars/parking/tool":
+            self._cars_permit_tool()
+        elif route == "/api/cars/parking":
             self._cars_permit_post()
         elif route == "/api/notes":
             self._notes_write("create")
@@ -14915,6 +14938,18 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         if not isinstance(payload, dict):
             return None, "Ожидался объект"
         return payload, None
+
+    def _cars_permit_tool(self):
+        length = self._content_length() or 0
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}") if length and length <= 64 * 1024 else {}
+        except Exception:
+            payload = {}
+        name = (payload or {}).get("name") if isinstance(payload, dict) else ""
+        if name not in cars_parking.TOOL_NAMES:
+            self._json(400, {"error": "unknown tool"})
+            return
+        self._json(200, execute_assistant_tool(name, (payload or {}).get("input") or {}, load_app_data() or {}, "", False))
 
     def _cars_permit_post(self):
         payload, err = self._cars_json_body()
