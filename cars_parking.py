@@ -9,6 +9,10 @@
 Напоминание: либо дата, либо за сколько дней до окончания, плюс время (МСК)
 и текст. Минутный цикл забирает просроченные в окне 6 часов и шлёт текст
 владельцу в Telegram. Повторно то же напоминание не уходит.
+Отдельные плановые задачи для этих слотов не нужны.
+
+Ассистент пишет в тот же файл инструментами parking_permit_*: навык
+«Резидентские разрешения». Заметки бокса для этого не используются.
 """
 
 import json
@@ -109,6 +113,52 @@ def _as_int(value):
     return None
 
 
+def _clock_field(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text if _TIME_RE.match(text) else None
+
+
+def _money_field(value):
+    """Сумма в рублях: None — пусто, False — не разобрать, иначе целое."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            return False
+        number = int(value)
+    else:
+        text = str(value).replace("\u00a0", "").replace(" ", "").replace("₽", "")
+        text = text.replace("руб.", "").replace("руб", "").replace(",", ".")
+        if not re.fullmatch(r"\d+(?:\.0+)?", text or ""):
+            return False
+        number = int(float(text))
+    if number < 0 or number > 100_000_000:
+        return False
+    return number
+
+
+def _uin_field(value):
+    text = re.sub(r"\s+", "", str(value or ""))
+    if not text:
+        return ""
+    if not re.fullmatch(r"\d{1,40}", text):
+        return None
+    return text
+
+
+def _payload_has(payload, *keys):
+    for key in keys:
+        if key in payload:
+            return key
+    return None
+
+
 def human_date(iso: str) -> str:
     day = _parse_date(iso)
     if not day:
@@ -193,6 +243,10 @@ def public_permit(permit: dict, today=None) -> dict:
         "spot": permit.get("spot") or "",
         "holder": permit.get("holder") or "",
         "notes": permit.get("notes") or "",
+        "freeFrom": permit.get("freeFrom") or "",
+        "freeUntil": permit.get("freeUntil") or "",
+        "fee": permit.get("fee") if isinstance(permit.get("fee"), int) else None,
+        "uin": permit.get("uin") or "",
         "revoked": bool(permit.get("revoked")),
         "phase": phase(permit, today),
         "files": files,
@@ -260,6 +314,8 @@ def _reminders(raw, existing):
 def save_permit(payload: dict):
     if not isinstance(payload, dict):
         return 400, {"ok": False, "error": "Ожидался объект"}
+    if "zone" not in payload and "district" in payload:
+        payload = {**payload, "zone": payload.get("district")}
     with _lock:
         data = _load()
         permits = data["permits"]
@@ -280,7 +336,7 @@ def save_permit(payload: dict):
         if not _ID_RE.match(car_id):
             return 400, {"ok": False, "error": "Выберите автомобиль"}
         number = _clean(payload.get("number") if "number" in payload else base.get("number"), 40)
-        if not number or not _NUMBER_RE.match(number):
+        if number and not _NUMBER_RE.match(number):
             return 400, {"ok": False, "error": "Укажите номер разрешения"}
         starts = _parse_date(payload.get("starts") if "starts" in payload else base.get("starts"))
         ends = _parse_date(payload.get("ends") if "ends" in payload else base.get("ends"))
@@ -291,6 +347,36 @@ def save_permit(payload: dict):
         reminders, err = _reminders(payload.get("reminders") if "reminders" in payload else None, existing)
         if err:
             return 400, {"ok": False, "error": err}
+        free_key = _payload_has(payload, "freeFrom", "free_from")
+        until_key = _payload_has(payload, "freeUntil", "free_until")
+        if free_key:
+            free_from = _clock_field(payload.get(free_key))
+            if free_from is None:
+                return 400, {"ok": False, "error": "Начало бесплатной парковки — ЧЧ:ММ"}
+        else:
+            free_from = str(base.get("freeFrom") or "")
+        if until_key:
+            free_until = _clock_field(payload.get(until_key))
+            if free_until is None:
+                return 400, {"ok": False, "error": "Конец бесплатной парковки — ЧЧ:ММ"}
+        else:
+            free_until = str(base.get("freeUntil") or "")
+        if bool(free_from) != bool(free_until):
+            return 400, {"ok": False, "error": "Укажите оба времени бесплатной парковки"}
+        if _payload_has(payload, "fee"):
+            fee = _money_field(payload.get("fee"))
+            if fee is False:
+                return 400, {"ok": False, "error": "Плата — сумма в рублях"}
+        else:
+            fee = base.get("fee") if isinstance(base.get("fee"), int) else None
+        if _payload_has(payload, "uin"):
+            uin = _uin_field(payload.get("uin"))
+            if uin is None:
+                return 400, {"ok": False, "error": "УИН — только цифры"}
+        else:
+            uin = str(base.get("uin") or "")
+        if not number and not uin:
+            return 400, {"ok": False, "error": "Укажите номер разрешения или УИН"}
         if "revoked" in payload:
             revoked = payload.get("revoked")
             revoked = revoked if isinstance(revoked, bool) else str(revoked).lower() in ("1", "true", "yes", "on")
@@ -307,6 +393,10 @@ def save_permit(payload: dict):
             "spot": _clean(payload.get("spot") if "spot" in payload else base.get("spot"), 40),
             "holder": _clean(payload.get("holder") if "holder" in payload else base.get("holder"), 80),
             "notes": _clean(payload.get("notes") if "notes" in payload else base.get("notes"), 1000, newlines=True),
+            "freeFrom": free_from,
+            "freeUntil": free_until,
+            "fee": fee,
+            "uin": uin,
             "revoked": revoked,
             "files": list(base.get("files") or []),
             "reminders": reminders,
@@ -530,3 +620,489 @@ def recipients(owner_id, chat_ids, routed_ids) -> list:
     if not out and len(chats) == 1:
         add(chats[0])
     return out
+
+
+# ── навык ассистента ─────────────────────────────────────────────────────────
+
+SKILL_ID = "parking_permits"
+
+SKILLS = [
+    {"id": SKILL_ID, "title": "Резидентские разрешения", "risk": "write", "default": True,
+     "desc": ("Ассистент сам заносит резидентское парковочное разрешение во вкладку «Разрешения» "
+              "раздела «Автомобили»: номер, район, срок, часы бесплатной парковки, годовая плата, УИН, "
+              "файл из уже присланного вложения и несколько напоминаний. Привязывает к боксу по госномеру "
+              "или имени. В заметки автомобиля не пишет и не предлагает сделать это на ПК. "
+              "Напоминание — дата или за сколько дней до окончания, московское время, текст владельцу "
+              "в Telegram: это те же слоты, что в карточке разрешения. Отдельную плановую задачу на тот же "
+              "срок не ставит. Чтение сразу. Запись и правка сразу. Удаление разрешения вместе с файлами — "
+              "только после подтверждения."),
+     "tools": ["parking_permit_list", "parking_permit_create", "parking_permit_update", "parking_permit_cancel"]},
+]
+
+
+def skill_on(state) -> bool:
+    v = (state or {}).get(SKILL_ID)
+    return True if v is None else bool(v)
+
+
+_STR = {"type": "string"}
+_REMINDER = {"type": "object", "properties": {
+    "mode": {"type": "string", "enum": ["date", "days"],
+             "description": "date — в конкретную дату; days — за сколько дней до окончания"},
+    "date": {"type": "string", "description": "YYYY-MM-DD или ДД.ММ.ГГГГ, если mode=date"},
+    "daysBefore": {"type": "integer", "description": "дней до окончания, если mode=days; 0 — в день окончания"},
+    "time": {"type": "string", "description": "ЧЧ:ММ, московское, по умолчанию 10:00"},
+    "text": {"type": "string", "description": "текст владельцу в Telegram; пусто — Джарвис напишет про окончание"},
+}}
+
+_PERMIT_FIELDS = {
+    "car": {"type": "string", "description": "госномер или имя бокса, например X758KC977 или Бусик"},
+    "car_id": _STR,
+    "number": {"type": "string", "description": "номер разрешения на бланке, если он есть отдельно от УИН"},
+    "district": {"type": "string", "description": "район, например Таганский"},
+    "starts": {"type": "string", "description": "начало срока, YYYY-MM-DD или ДД.ММ.ГГГГ, день включительно"},
+    "ends": {"type": "string", "description": "окончание срока, день включительно"},
+    "free_from": {"type": "string", "description": "с какого времени бесплатно, ЧЧ:ММ"},
+    "free_until": {"type": "string", "description": "до какого времени бесплатно, ЧЧ:ММ; интервал может переходить через полночь"},
+    "fee": {"type": "integer", "description": "годовая плата за круглосуточную парковку, рубли, без копеек"},
+    "uin": {"type": "string", "description": "УИН, только цифры"},
+    "reminders": {"type": "array", "items": _REMINDER,
+                  "description": "напоминания самого разрешения. Не дублируй их plan_create"},
+    "use_received_file": {"type": "string",
+                          "description": "часть имени уже присланного вложения или last. Нет файла — разрешение всё равно запишется"},
+    "notes": {"type": "string", "description": "короткая пометка на бланке. Сюда не складывай район, срок, часы, плату и УИН"},
+}
+
+TOOLS = [
+    {"name": "parking_permit_list",
+     "description": ("Прочитать резидентские разрешения из Автомобили → Разрешения. "
+                     "car — госномер или имя бокса; без него — все. Не смотри в заметки автомобиля."),
+     "input_schema": {"type": "object", "properties": {"car": _STR, "car_id": _STR}, "required": []}},
+    {"name": "parking_permit_create",
+     "description": ("Создать резидентское разрешение во вкладке «Разрешения» и привязать к боксу по госномеру или имени. "
+                     "Вызывай сам, когда пользователь прислал бланк и просит добавить. Не пиши это в notes автомобиля, "
+                     "не создавай новый бокс и не спрашивай про ПК. Номер — только если он есть на бланке; УИН клади в uin. "
+                     "Срок starts/ends включительно. Бесплатные часы — free_from и free_until. "
+                     "fee — годовая плата за круглосуточную стоянку в рублях; оплату не отмечай, такого поля нет. "
+                     "Напоминания — reminders этого разрешения (дата или за сколько дней, время МСК, текст в Telegram). "
+                     "Эти слоты уже шлёт минутный цикл. plan_create на те же сроки не вызывай. "
+                     "Файл, который уже лежит во вложении чата, — use_received_file. "
+                     "Повтор с тем же УИН у того же авто обновляет запись, а не плодит вторую."),
+     "input_schema": {"type": "object", "properties": _PERMIT_FIELDS, "required": ["car", "starts", "ends"]}},
+    {"name": "parking_permit_update",
+     "description": ("Поправить разрешение во вкладке «Разрешения». id — из parking_permit_list; "
+                     "без id берётся единственное разрешение автомобиля (car — госномер или имя). "
+                     "Передавай только то, что меняется. reminders, если переданы, заменяют список целиком. "
+                     "Не переноси правку в заметки автомобиля. Удаление — parking_permit_cancel."),
+     "input_schema": {"type": "object", "properties": {**_PERMIT_FIELDS, "id": _STR, "revoked": {"type": "boolean"}},
+                      "required": ["car"]}},
+    {"name": "parking_permit_cancel",
+     "description": ("Удалить резидентское разрешение и его файлы. Без confirmed:true ничего не удаляет и просит подтверждение. "
+                     "После согласия пользователя повтори вызов с confirmed:true. Напоминания этого разрешения пропадут вместе с ним. "
+                     "Плановые задачи не трогает."),
+     "input_schema": {"type": "object", "properties": {
+         "car": _STR, "car_id": _STR, "id": _STR, "number": _STR, "uin": _STR,
+         "confirmed": {"type": "boolean"},
+     }, "required": ["car"]}},
+]
+TOOL_NAMES = {t["name"] for t in TOOLS}
+_missing = [t for s in SKILLS for t in s["tools"] if t not in TOOL_NAMES]
+if _missing:
+    raise RuntimeError("parking skills tools missing: " + ", ".join(_missing))
+
+PROMPT = (
+    "РЕЗИДЕНТСКИЕ РАЗРЕШЕНИЯ — parking_permit_list, parking_permit_create, parking_permit_update, parking_permit_cancel. "
+    "Раздел «Автомобили», вкладка «Разрешения». Резидентское парковочное разрешение клади только сюда.\n"
+    "а) Не пиши его в заметки автомобиля (поле notes бокса), не в «Базу данных», не в документы заметок и не новым боксом. "
+    "Не предлагай сделать это на ПК и не открывай сайт вместо записи: инструменты пишут в ту же карточку, что форма на сайте.\n"
+    "б) Бокс ищи по госномеру или имени («Бусик», «X758KC977»). Латинские и русские буквы номера — одно и то же. "
+    "Не нашёл или их несколько — спроси, ничего не записывай.\n"
+    "в) С бланка бери только то, что на нём есть: номер разрешения, район, срок (окончание включительно), "
+    "часы бесплатной парковки, годовую плату за круглосуточную стоянку, УИН. Не выдумывай остальное. "
+    "Отметки «оплачено» в разрешении нет — не ставь её и не пиши про оплату в заметки, если человек сам её не назвал.\n"
+    "г) Напоминания — массив reminders у разрешения: mode date или days, time ЧЧ:ММ по Москве, text — текст владельцу в Telegram. "
+    "Слоты уже уходят минутным циклом. plan_create на эти сроки не вызывай и уже стоящие плановые задачи сам не отменяй.\n"
+    "д) Файл, который уже есть во вложении этого чата, приложи use_received_file (часть имени или last). "
+    "Если файла в буфере нет — разрешение всё равно запиши и скажи, что скан не приложен.\n"
+    "е) После записи ответь коротко: авто, район, срок, бесплатные часы, плата, УИН, когда уйдут напоминания, приложен ли файл.\n"
+    "ж) Правка — parking_permit_update. Удаление разрешения и файлов — parking_permit_cancel: без confirmed вернётся "
+    "needs_confirmation, после «да» повтори с confirmed:true. Список — parking_permit_list.\n\n"
+)
+
+
+def prompt_section(state=None) -> str:
+    return PROMPT if skill_on(state) else ""
+
+
+def voice_payload(state) -> dict:
+    if not skill_on(state):
+        return {"tools": [], "prompt": ""}
+    return {"tools": TOOLS, "prompt": PROMPT}
+
+
+_PLATE_FOLD = str.maketrans({
+    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H",
+    "О": "O", "Р": "P", "С": "C", "Т": "T", "У": "Y", "Х": "X",
+})
+
+
+def plate_key(value) -> str:
+    text = str(value or "").upper().translate(_PLATE_FOLD)
+    return re.sub(r"[^0-9A-Z]", "", text)
+
+
+def _name_key(value) -> str:
+    text = str(value or "").casefold().replace("ё", "е")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _active_cars(app):
+    return [c for c in ((app or {}).get("cars") or [])
+            if isinstance(c, dict) and c.get("id") and not c.get("archived")]
+
+
+def _all_cars(app):
+    return [c for c in ((app or {}).get("cars") or []) if isinstance(c, dict) and c.get("id")]
+
+
+def _car_brief(car) -> dict:
+    return {"id": car.get("id"), "name": car.get("name") or "", "plate": car.get("plate") or ""}
+
+
+def _confirmed(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on", "да")
+
+
+def _user_date(value) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    day = _parse_date(raw)
+    if day:
+        return day.isoformat()
+    match = re.fullmatch(r"(\d{1,2})[./](\d{1,2})[./](\d{4})", raw)
+    if not match:
+        return ""
+    try:
+        return datetime(int(match.group(3)), int(match.group(2)), int(match.group(1))).date().isoformat()
+    except ValueError:
+        return ""
+
+
+def resolve_car(app, inp):
+    inp = inp or {}
+    cars = _active_cars(app)
+    cid = str(inp.get("car_id") or inp.get("carId") or "").strip()
+    if cid:
+        hit = next((c for c in cars if str(c.get("id")) == cid), None)
+        if hit:
+            return hit, None
+        archived = next((c for c in _all_cars(app) if str(c.get("id")) == cid and c.get("archived")), None)
+        if archived:
+            return None, {"error": "Автомобиль в архиве. Разрешение привязываю только к боксу в гараже."}
+        return None, {"error": "Автомобиль с таким id не найден. Новый бокс не создаю и в заметки не пишу."}
+    query = str(inp.get("car") or inp.get("plate") or "").strip()
+    if not query:
+        return None, {"error": "Укажите автомобиль: госномер или имя бокса."}
+    folded = plate_key(query)
+    by_plate = [c for c in cars if folded and plate_key(c.get("plate")) == folded] if any(ch.isdigit() for ch in folded) else []
+    exact = [c for c in cars if _name_key(query) and _name_key(c.get("name")) == _name_key(query)]
+    if by_plate:
+        found = by_plate
+    elif exact:
+        found = exact
+    else:
+        found = [c for c in cars if _name_key(query) and _name_key(query) in _name_key(c.get("name"))]
+        if not found and any(ch.isdigit() for ch in folded):
+            if any(c.get("archived") and plate_key(c.get("plate")) == folded for c in _all_cars(app)):
+                return None, {"error": "Этот автомобиль в архиве. Разрешение привязываю только к боксу в гараже."}
+    if len(found) == 1:
+        return found[0], None
+    if len(found) > 1:
+        return None, {"needs_clarification": True,
+                      "message": "Подходит несколько автомобилей. Уточни, к какому привязать разрешение.",
+                      "cars": [_car_brief(c) for c in found]}
+    return None, {"error": "Автомобиль не найден среди боксов. Новый не создаю и в заметки автомобиля не пишу."}
+
+
+def _free_hours(inp):
+    keys = ("free_from", "freeFrom", "free_until", "freeUntil", "free_hours")
+    if not any(k in inp for k in keys):
+        return None
+    if "free_hours" in inp and "free_from" not in inp and "freeFrom" not in inp:
+        raw = str(inp.get("free_hours") or "").strip()
+        if not raw:
+            return ("", "")
+        parts = re.split(r"\s*[–—-]\s*", raw)
+        if len(parts) != 2:
+            return False
+        start, end = _clock_field(parts[0]), _clock_field(parts[1])
+        if not start or not end:
+            return False
+        return (start, end)
+    start = _clock_field(inp.get("free_from") if "free_from" in inp else inp.get("freeFrom"))
+    end = _clock_field(inp.get("free_until") if "free_until" in inp else inp.get("freeUntil"))
+    if start is None or end is None or bool(start) != bool(end):
+        return False
+    return (start, end)
+
+
+def _tool_reminders(raw):
+    if raw is None:
+        return [], None
+    if not isinstance(raw, list):
+        return None, "Напоминания — список"
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return None, "Напоминание задано неверно"
+        mode = item.get("mode")
+        days = item.get("daysBefore") if "daysBefore" in item else item.get("days_before")
+        if mode not in ("date", "days"):
+            if item.get("date"):
+                mode = "date"
+            elif days is not None:
+                mode = "days"
+            else:
+                return None, "Напоминание: укажите дату или за сколько дней"
+        rec = {"mode": mode, "time": item.get("time") or "10:00", "text": item.get("text") or ""}
+        if item.get("id"):
+            rec["id"] = str(item.get("id"))
+        if mode == "days":
+            rec["daysBefore"] = days
+        else:
+            parsed = _user_date(item.get("date"))
+            if not parsed:
+                return None, "Укажите дату напоминания"
+            rec["date"] = parsed
+        out.append(rec)
+    return out, None
+
+
+def _build_payload(car, inp, existing):
+    payload = {"carId": car.get("id")}
+    if existing:
+        payload["id"] = existing.get("id")
+    if "number" in inp:
+        payload["number"] = inp.get("number") or ""
+    if "district" in inp or "zone" in inp:
+        payload["zone"] = inp.get("district") if "district" in inp else inp.get("zone")
+    for src, dst in (("starts", "starts"), ("start", "starts"), ("ends", "ends"), ("end", "ends")):
+        if src not in inp or dst in payload:
+            continue
+        parsed = _user_date(inp.get(src))
+        if inp.get(src) and not parsed:
+            return None, {"error": "Дата — ГГГГ-ММ-ДД или ДД.ММ.ГГГГ"}
+        payload[dst] = parsed
+    hours = _free_hours(inp)
+    if hours is False:
+        return None, {"error": "Часы бесплатной парковки — ЧЧ:ММ, оба конца, например 20:00 и 08:00"}
+    if hours is not None:
+        payload["freeFrom"], payload["freeUntil"] = hours
+    if "fee" in inp:
+        fee = _money_field(inp.get("fee"))
+        if fee is False:
+            return None, {"error": "Плата — сумма в рублях"}
+        payload["fee"] = fee
+    if "uin" in inp:
+        uin = _uin_field(inp.get("uin"))
+        if uin is None:
+            return None, {"error": "УИН — только цифры"}
+        payload["uin"] = uin
+    if "reminders" in inp:
+        reminders, err = _tool_reminders(inp.get("reminders"))
+        if err:
+            return None, {"error": err}
+        payload["reminders"] = reminders
+    for key in ("address", "spot", "holder", "notes"):
+        if key in inp:
+            payload[key] = inp.get(key)
+    if "revoked" in inp:
+        payload["revoked"] = inp.get("revoked")
+    return payload, None
+
+
+def _decorate(app, permit):
+    cars = {str(c.get("id")): c for c in _all_cars(app)}
+    car = cars.get(str(permit.get("carId"))) or {}
+    return {**permit, "carName": car.get("name") or "", "plate": car.get("plate") or ""}
+
+
+def _permits_of(car_id):
+    return [p for p in _load()["permits"] if p.get("carId") == car_id]
+
+
+def _find_permit(car, inp):
+    rows = _permits_of(car.get("id"))
+    pid = str((inp or {}).get("id") or (inp or {}).get("permit_id") or "").strip()
+    if pid:
+        hit = next((p for p in rows if p.get("id") == pid), None)
+        if hit:
+            return hit, None
+        if any(p.get("id") == pid for p in _load()["permits"]):
+            return None, {"error": "Это разрешение другого автомобиля."}
+        return None, {"error": "Разрешение не найдено."}
+    number = _clean(inp.get("number"), 40) if inp.get("number") else ""
+    uin = _uin_field(inp.get("uin")) if inp.get("uin") else ""
+    if uin is None:
+        return None, {"error": "УИН — только цифры"}
+    pool = rows
+    if uin:
+        pool = [p for p in pool if p.get("uin") == uin]
+    if number:
+        pool = [p for p in pool if p.get("number") == number]
+    if not uin and not number:
+        open_rows = [p for p in rows if not p.get("revoked")]
+        pool = open_rows or rows
+    if len(pool) == 1:
+        return pool[0], None
+    if not pool:
+        return None, {"error": "Разрешение этого автомобиля не найдено."}
+    return None, {"needs_clarification": True,
+                  "message": "У автомобиля несколько разрешений. Укажи id, номер или УИН.",
+                  "permits": [_decorate({}, public_permit(p)) for p in pool]}
+
+
+def _same_open(car, payload):
+    rows = _permits_of(car.get("id"))
+    uin = payload.get("uin") or ""
+    number = payload.get("number") or ""
+    if uin:
+        hit = [p for p in rows if p.get("uin") == uin]
+        if len(hit) == 1:
+            return hit[0]
+        if len(hit) > 1:
+            return "many"
+    if number:
+        hit = [p for p in rows if p.get("number") == number]
+        if len(hit) == 1:
+            return hit[0]
+        if len(hit) > 1:
+            return "many"
+    return None
+
+
+def _received(hint):
+    try:
+        import tg_bot
+    except Exception:
+        return None, "модуль Telegram недоступен"
+    ctx = tg_bot.get_ctx()
+    if ctx is None or getattr(ctx, "chat_id", None) is None:
+        return None, "присланный файл доступен в чате с ботом — разрешение запишу без скана"
+    raw = str(hint or "").strip()
+    if raw.lower() in ("last", "latest", "true", "1", "последний", "последнее"):
+        raw = ""
+    got = tg_bot.recent_file(ctx.chat_id, raw)
+    if not got:
+        return None, "присланного файла не нашёл — разрешение запишу без скана"
+    return got, None
+
+
+def _attach_received(permit_id, inp):
+    stored = next((p for p in _load()["permits"] if p.get("id") == permit_id), None)
+    if "use_received_file" not in (inp or {}) or (inp or {}).get("use_received_file") in (None, False, ""):
+        return {"permit": public_permit(stored) if stored else None}
+    got, err = _received(inp.get("use_received_file"))
+    if err or not stored:
+        return {"permit": public_permit(stored) if stored else None, "file_error": err or "разрешение не найдено"}
+    name, data = got
+    safe = Path(str(name or "scan")).name
+    if any(f.get("name") == safe and f.get("size") == len(data) for f in (stored.get("files") or [])):
+        return {"permit": public_permit(stored), "file": {"name": safe, "already": True}}
+    ext = Path(safe).suffix.lower().lstrip(".")
+    code, body = save_file(permit_id, safe, ext, data)
+    if code != 200:
+        return {"permit": public_permit(stored), "file_error": body.get("error") or "файл не приложен"}
+    return {"permit": body.get("permit"), "file": body.get("file")}
+
+
+def _finish(app, car, body, inp, updated_existing=False):
+    if not body.get("ok"):
+        return body
+    attached = _attach_received(body["permit"]["id"], inp)
+    out = {"ok": True, "permit": attached.get("permit") or body["permit"], "car": _car_brief(car),
+           "where": "Автомобили → Разрешения"}
+    if updated_existing:
+        out["updated_existing"] = True
+    if attached.get("file"):
+        out["file"] = attached["file"]
+    if attached.get("file_error"):
+        out["file_error"] = attached["file_error"]
+    return out
+
+
+def _list(app, inp):
+    query = str((inp or {}).get("car") or (inp or {}).get("plate") or (inp or {}).get("car_id") or (inp or {}).get("carId") or "").strip()
+    rows = for_assistant()
+    if not query:
+        return {"ok": True, "permits": [_decorate(app, p) for p in rows]}
+    car, err = resolve_car(app, inp)
+    if err:
+        return err
+    return {"ok": True, "permits": [_decorate(app, p) for p in rows if p.get("carId") == car.get("id")],
+            "car": _car_brief(car)}
+
+
+def _write(app, inp, create: bool):
+    car, err = resolve_car(app, inp)
+    if err:
+        return err
+    existing = None
+    if not create:
+        existing, err = _find_permit(car, inp)
+        if err:
+            return err
+    payload, err = _build_payload(car, inp, existing)
+    if err:
+        return err
+    updated_existing = False
+    if create:
+        same = _same_open(car, payload)
+        if same == "many":
+            return {"needs_clarification": True,
+                    "message": "У автомобиля уже несколько разрешений с таким номером или УИН. Укажи id."}
+        if same:
+            payload["id"] = same.get("id")
+            updated_existing = True
+    code, body = save_permit(payload)
+    if code != 200:
+        return body
+    return _finish(app, car, body, inp, updated_existing)
+
+
+def _cancel(app, inp):
+    car, err = resolve_car(app, inp)
+    if err:
+        return err
+    permit, err = _find_permit(car, inp)
+    if err:
+        return err
+    if not _confirmed(inp.get("confirmed")):
+        who = car.get("name") or car.get("plate") or "автомобиль"
+        title = permit.get("number") or permit.get("uin") or "без номера"
+        files = len(permit.get("files") or [])
+        return {"needs_confirmation": True,
+                "message": (f"Удалить резидентское разрешение {title} ({who}) и файлы ({files})? "
+                            "Напоминания этого разрешения тоже удалятся. После согласия повтори вызов с confirmed:true.")}
+    code, body = delete_permit(permit.get("id"))
+    if code != 200:
+        return body
+    return {"ok": True, "deleted": permit.get("id"), "car": _car_brief(car)}
+
+
+def execute(name: str, inp: dict, app: dict, state=None) -> dict:
+    if not skill_on(state):
+        return {"error": "Навык «Резидентские разрешения» выключен."}
+    inp = inp or {}
+    if name == "parking_permit_list":
+        return _list(app, inp)
+    if name == "parking_permit_create":
+        return _write(app, inp, True)
+    if name == "parking_permit_update":
+        return _write(app, inp, False)
+    if name == "parking_permit_cancel":
+        return _cancel(app, inp)
+    return {"error": "unknown tool"}

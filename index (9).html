@@ -2035,7 +2035,7 @@
   .gar-slip.soon::before { background: #e07a2f; }
   .gar-slip.expired::before, .gar-slip.revoked::before { background: #b42318; }
   .gar-slip-kicker { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #8a7352; }
-  .gar-slip-num { font-family: 'Liberation Sans', Arial, sans-serif; font-weight: 700; font-size: 30px; letter-spacing: .04em; line-height: 1; margin-top: 2px; }
+  .gar-slip-num { font-family: 'Liberation Sans', Arial, sans-serif; font-weight: 700; font-size: 30px; letter-spacing: .04em; line-height: 1.1; margin-top: 2px; overflow-wrap: anywhere; }
   .gar-slip-dates { font-size: 13px; margin-top: 4px; }
   .gar-bar { height: 6px; border-radius: 99px; background: rgba(36,28,18,.12); margin: 8px 0 4px; overflow: hidden; }
   .gar-bar span { display: block; height: 100%; background: #241c12; border-radius: 99px; }
@@ -8334,6 +8334,7 @@ function AssistantSkillsCard({ data, setData, embedded }) {
     planToolsLoadedAt = 0;
     routeToolsLoadedAt = 0;
     moodleToolsLoadedAt = 0;
+    parkingToolsLoadedAt = 0;
   };
   const riskLabel = { read: 'чтение', create: 'создаёт файлы', write: 'действия с подтверждением', danger: 'опасно' };
   const riskCls = {
@@ -16183,7 +16184,7 @@ const VOICE_DATA_DOMAINS = {
   house_cleaning: { label: 'Регулярные дела по дому',      get: d => (d.chores || []).filter(c => !c.archived) },
   house_tasks:    { label: 'Канбан-доска задач. У задачи attachments — вложения {id, name, filename, kind, size}; кладутся в карточке на сайте, через kanban_update_task не правятся', get: d => d.kanban?.columns || [] },
   cars: {
-    label: 'Автомобили: название, номер, марка, модель, год, цвет, VIN, СТС и история обслуживания. permits — резидентские разрешения (номер, срок, файлы, напоминания); подгружаются с сервера',
+    label: 'Автомобили: название, номер, марка, модель, год, цвет, VIN, СТС и история обслуживания. permits — резидентские разрешения вкладки «Разрешения» (номер, район, срок, бесплатные часы, плата, УИН, файлы, напоминания); подгружаются с сервера. Создавать и править — parking_permit_*, не через заметки автомобиля',
     get: d => ({
       cars: (d.cars || []).filter(c => !c.archived),
       serviceRecords: (d.serviceRecords || []).slice(-150),
@@ -16384,7 +16385,7 @@ const WRITE_REGISTRY = {
     createDefaults: () => ({ period: 'morning', days: [1, 2, 3, 4, 5], archived: false }),
   },
   cars: {
-    label: 'Автомобиль (name, plate — гос. номер, make — марка, model — модель, year, color, vin, sts — номер СТС, notes, archived)',
+    label: 'Автомобиль (name, plate — гос. номер, make — марка, model — модель, year, color, vin, sts — номер СТС, notes — заметка о машине, не разрешение, archived). Резидентское разрешение в notes не писать: вкладка «Разрешения», инструменты parking_permit_*',
     createDefaults: () => ({ archived: false, make: '', model: '', color: '', vin: '', sts: '' }),
     cascadeDelete: [{ collection: 'serviceRecords', field: 'carId' }],
   },
@@ -17315,6 +17316,21 @@ async function loadBrowseTools(force) {
   } catch (e) { BROWSE_AGENT_TOOLS = []; BROWSE_AGENT_PROMPT = ''; }
 }
 
+let PARKING_AGENT_TOOLS = [];
+let PARKING_AGENT_PROMPT = '';
+let parkingToolsLoadedAt = 0;
+async function loadParkingTools(force) {
+  if (!force && Date.now() - parkingToolsLoadedAt < 20000) return;
+  try {
+    const r = await fetch('/api/cars/parking/tools');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    PARKING_AGENT_TOOLS = j.tools || [];
+    PARKING_AGENT_PROMPT = j.prompt || '';
+    parkingToolsLoadedAt = Date.now();
+  } catch (e) { PARKING_AGENT_TOOLS = []; PARKING_AGENT_PROMPT = ''; }
+}
+
 let ROUTE_AGENT_TOOLS = [];
 let ROUTE_AGENT_PROMPT = '';
 let routeToolsLoadedAt = 0;
@@ -17401,7 +17417,7 @@ ${writeList}
 
 9. study_schedule(from?, to?) — расписание пар пользователя в университете (РЭУ, сайт rasp.rea.ru). Вопросы про пары, учёбу, универ, аудиторию, во сколько занятия — сначала этот инструмент. Пары автоматически дублируются в Apple Календарь «Учеба» — сам их туда не добавляй. «Подключи на пару сейчас» — study_join, не browse_start.
 
-${TG_AGENT_PROMPT}${MAX_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}${MOODLE_AGENT_PROMPT}${BROWSE_AGENT_PROMPT}${STUDY_JOURNAL_PROMPT}${NOTES_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true. Для события календаря в тексте подтверждения обязательно название календаря из message; если buttons:true — вопрос с кнопками уже в чате, не дублируй. needs_choice значит календарь не выбран: выбери лучший из calendars и повтори вызов, пользователю пока не пиши. needs_clarification — задай вопрос из message и остановись, событие не создано.
+${TG_AGENT_PROMPT}${MAX_AGENT_PROMPT}${MARKET_AGENT_PROMPT}${WATCH_AGENT_PROMPT}${MAIL_AGENT_PROMPT}${PLAN_AGENT_PROMPT}${ROUTE_AGENT_PROMPT}${MOODLE_AGENT_PROMPT}${BROWSE_AGENT_PROMPT}${STUDY_JOURNAL_PROMPT}${NOTES_AGENT_PROMPT}${PARKING_AGENT_PROMPT}ПОДТВЕРЖДЕНИЕ: удаление (delete_record, kanban_delete_task), любая запись в финансовые разделы (помечены выше «финансовое») и любая запись в Apple Календарь/Напоминания требуют явного согласия пользователя. Если в инструменте нет confirmed:true — вызов ничего не сделает и вернёт needs_confirmation. Когда это произошло: опиши пользователю простыми словами, что именно собираешься сделать, и спроси подтверждение как ФИНАЛЬНЫЙ текстовый ответ (не вызывай инструмент повторно в этом же ответе). Только когда пользователь подтвердит СЛЕДУЮЩИМ сообщением («да», «подтверждаю» и т.п.) — вызови тот же инструмент ещё раз с confirmed:true. Для события календаря в тексте подтверждения обязательно название календаря из message; если buttons:true — вопрос с кнопками уже в чате, не дублируй. needs_choice значит календарь не выбран: выбери лучший из calendars и повтори вызов, пользователю пока не пиши. needs_clarification — задай вопрос из message и остановись, событие не создано.
 
 Правила:
 - Сначала вызови нужные инструменты, потом дай один короткий финальный ответ обычным текстом — без JSON и разметки.
@@ -17582,6 +17598,17 @@ async function executeVoiceTool(name, input, nav, data) {
       return noop(await res.json());
     } catch (e) {
       return noop({ error: 'Сервер не ответил по кабинету: ' + e.message });
+    }
+  }
+  if (name.startsWith('parking_permit_')) {
+    try {
+      const res = await fetch('/api/cars/parking/tool', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, input }),
+      });
+      return noop(await res.json());
+    } catch (e) {
+      return noop({ error: 'Сервер не ответил по разрешениям: ' + e.message });
     }
   }
   if (name.startsWith('notes_')) {
@@ -17816,6 +17843,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
   await loadRouteTools();
   await loadStudyJournalTools();
   await loadNotesTools();
+  await loadParkingTools();
   const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
   let pendingConfirmation = false;
   for (let step = 0; step < maxSteps; step++) {
@@ -17827,7 +17855,7 @@ async function runVoiceAgentClaude(convo, apiKey, model, data, nav, maxSteps) {
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MAX_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS, ...BROWSE_AGENT_TOOLS, ...STUDY_JOURNAL_TOOLS, ...NOTES_AGENT_TOOLS] }),
+      body: JSON.stringify({ model, max_tokens: 800, system, messages: convo, tools: [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MAX_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS, ...BROWSE_AGENT_TOOLS, ...STUDY_JOURNAL_TOOLS, ...NOTES_AGENT_TOOLS, ...PARKING_AGENT_TOOLS] }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -17964,8 +17992,9 @@ async function runVoiceAgentOpenAI(convo, apiKey, model, data, nav, maxSteps, ef
   await loadRouteTools();
   await loadStudyJournalTools();
   await loadNotesTools();
+  await loadParkingTools();
   const system = buildVoiceAgentSystemPrompt(data, lastVoiceUserText(convo));
-  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MAX_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS, ...BROWSE_AGENT_TOOLS, ...STUDY_JOURNAL_TOOLS, ...NOTES_AGENT_TOOLS].map(t => ({
+  const tools = [...VOICE_AGENT_TOOLS, ...TG_AGENT_TOOLS, ...MAX_AGENT_TOOLS, ...MARKET_AGENT_TOOLS, ...WATCH_AGENT_TOOLS, ...MAIL_AGENT_TOOLS, ...PLAN_AGENT_TOOLS, ...ROUTE_AGENT_TOOLS, ...MOODLE_AGENT_TOOLS, ...BROWSE_AGENT_TOOLS, ...STUDY_JOURNAL_TOOLS, ...NOTES_AGENT_TOOLS, ...PARKING_AGENT_TOOLS].map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.input_schema },
   }));
@@ -20354,7 +20383,7 @@ function CarsView({ data, setData }) {
       setPermitEdit({
         carId: carId || (cars[0] && cars[0].id) || '',
         number: '', starts: getTodayKey(), ends: '',
-        zone: '', address: '', spot: '', holder: '', notes: '', revoked: false, files: [],
+        zone: '', address: '', spot: '', holder: '', notes: '', freeFrom: '', freeUntil: '', fee: '', uin: '', revoked: false, files: [],
         reminders: [{ id: crypto.randomUUID(), mode: 'days', daysBefore: 30, date: '', time: '10:00', text: '' }],
       });
     }
@@ -20785,12 +20814,15 @@ function GarageSlips({ data, permits, onEdit, onReload }) {
           {visible.map(p => (
             <article key={p.id} className={`gar-slip ${p.phase || ''}`} data-testid="permit-card">
               <div className="gar-slip-kicker">{carName(p.carId)}</div>
-              <div className="gar-slip-num">№ {p.number}</div>
+              <div className="gar-slip-num">{p.number ? `№ ${p.number}` : 'Резидентское'}</div>
               <div className="gar-slip-dates">{garFmtDate(p.starts)} — {garFmtDate(p.ends)}</div>
               <div className="gar-bar" aria-hidden="true"><span style={{ width: garFill(p) + '%' }} /></div>
               <div className="gar-slip-phase">{GAR_PHASE[p.phase] || ''}</div>
               <div className="gar-kv">
-                {p.zone && <span>Зона {p.zone}</span>}
+                {p.zone && <span>Район {p.zone}</span>}
+                {p.freeFrom && p.freeUntil && <span>Бесплатно {p.freeFrom}–{p.freeUntil}</span>}
+                {p.fee != null && p.fee !== '' && <span>{new Intl.NumberFormat('ru-RU').format(p.fee)} ₽ в год</span>}
+                {p.uin && <span>УИН {p.uin}</span>}
                 {p.address && <span>{p.address}</span>}
                 {p.spot && <span>Место {p.spot}</span>}
                 {p.holder && <span>{p.holder}</span>}
@@ -20841,7 +20873,8 @@ function PermitModal({ permit, cars, onClose, onSaved }) {
 
   const submit = async () => {
     if (!form.carId) return setErr('Выберите автомобиль');
-    if (!String(form.number || '').trim()) return setErr('Укажите номер разрешения');
+    if (!String(form.number || '').trim() && !String(form.uin || '').trim()) return setErr('Укажите номер разрешения или УИН');
+    if ((form.freeFrom || form.freeUntil) && !(form.freeFrom && form.freeUntil)) return setErr('Укажите оба времени бесплатной парковки');
     if (!form.starts || !form.ends) return setErr('Укажите даты начала и окончания');
     if (form.ends < form.starts) return setErr('Окончание раньше начала');
     for (const r of form.reminders || []) {
@@ -20857,6 +20890,9 @@ function PermitModal({ permit, cars, onClose, onSaved }) {
           starts: form.starts, ends: form.ends,
           zone: form.zone || '', address: form.address || '', spot: form.spot || '',
           holder: form.holder || '', notes: form.notes || '', revoked: !!form.revoked,
+          freeFrom: form.freeFrom || '', freeUntil: form.freeUntil || '',
+          fee: form.fee === '' || form.fee == null ? null : Number(form.fee),
+          uin: String(form.uin || '').replace(/\s+/g, ''),
           reminders: (form.reminders || []).map(r => ({
             id: r.id, mode: r.mode, time: r.time || '10:00', text: r.text || '',
             daysBefore: r.mode === 'days' ? Number(r.daysBefore) : undefined,
@@ -20912,12 +20948,32 @@ function PermitModal({ permit, cars, onClose, onSaved }) {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label>Зона</label>
-            <input value={form.zone || ''} onChange={e => set('zone', e.target.value)} placeholder="ЦАО" />
+            <label>Район</label>
+            <input data-testid="permit-zone" value={form.zone || ''} onChange={e => set('zone', e.target.value)} placeholder="Таганский" />
           </div>
           <div>
             <label>Машиноместо</label>
             <input value={form.spot || ''} onChange={e => set('spot', e.target.value)} placeholder="12" />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label>Бесплатно с</label>
+            <input data-testid="permit-free-from" type="time" value={form.freeFrom || ''} onChange={e => set('freeFrom', e.target.value)} />
+          </div>
+          <div>
+            <label>до</label>
+            <input data-testid="permit-free-until" type="time" value={form.freeUntil || ''} onChange={e => set('freeUntil', e.target.value)} />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label>Плата за круглосуточную, ₽ в год</label>
+            <input data-testid="permit-fee" type="number" min="0" value={form.fee ?? ''} onChange={e => set('fee', e.target.value)} placeholder="3000" />
+          </div>
+          <div>
+            <label>УИН</label>
+            <input data-testid="permit-uin" value={form.uin || ''} onChange={e => set('uin', e.target.value)} placeholder="только цифры" inputMode="numeric" />
           </div>
         </div>
         <div>
