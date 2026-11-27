@@ -92,11 +92,11 @@ except ImportError:
     print("NOTE: 'requests' not installed — Telegram disabled. Run: pip3 install requests\n")
 
 DIR      = Path(__file__).parent
-# Sideload APK планшета 1.25 (сборка 26). Лежит в репозитории, чтобы Railway
+# Sideload APK планшета 1.26 (сборка 27). Лежит в репозитории, чтобы Railway
 # отдал его с самого сайта. Кнопка на сайте ведёт на GitHub Release — так файл
 # открывается с телефона. Вход на запасной маршрут тот же: cookie jarvis_auth.
-TABLET_APK_VERSION = "1.25"
-TABLET_APK_NAME = "Jarvis-tablet-1.25.apk"
+TABLET_APK_VERSION = "1.26"
+TABLET_APK_NAME = "Jarvis-tablet-1.26.apk"
 TABLET_APK_FILE = DIR / "android" / "tablet-voice" / "release" / TABLET_APK_NAME
 TABLET_APK_ROUTE = "/download/" + TABLET_APK_NAME
 try:
@@ -15205,7 +15205,7 @@ class JarvisHandler(SimpleHTTPRequestHandler):
         self._serve_ranged(path, MUSIC_EXT.get(ext, "application/octet-stream"), "private, max-age=86400")
 
     def _serve_tablet_apk(self):
-        """APK как вложение: телефонный браузер сохраняет Jarvis-tablet-1.25.apk, а не HTML."""
+        """APK как вложение: телефонный браузер сохраняет Jarvis-tablet-1.26.apk, а не HTML."""
         if not TABLET_APK_FILE.is_file():
             self._json(404, {"error": "not found"})
             return

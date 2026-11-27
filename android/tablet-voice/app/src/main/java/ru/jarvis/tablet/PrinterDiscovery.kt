@@ -1,11 +1,13 @@
 package ru.jarvis.tablet
 
 import android.content.Context
+import android.net.Network
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -35,13 +37,15 @@ class PrinterDiscovery(private val context: Context) {
         Prefs.printerPath = endpoint.path
     }
 
-    fun discover(timeoutMs: Long = 9_000): PrinterEndpoint? {
+    /** mDNS только с переданной Network. Без неё поиск не запускается — иначе он идёт через VPN. */
+    fun discover(network: Network, timeoutMs: Long = 9_000): PrinterEndpoint? {
         val nsd = context.getSystemService(NsdManager::class.java)
         val wifi = context.applicationContext.getSystemService(WifiManager::class.java)
         val multicast = wifi.createMulticastLock("jarvis:pantum-discovery").apply {
             setReferenceCounted(false)
             acquire()
         }
+        val executor = Executors.newSingleThreadExecutor()
         val done = CountDownLatch(1)
         val resolving = AtomicBoolean(false)
         var found: PrinterEndpoint? = null
@@ -82,11 +86,12 @@ class PrinterDiscovery(private val context: Context) {
             override fun onServiceLost(service: NsdServiceInfo) = Unit
         }
         return try {
-            nsd.discoverServices("_ipp._tcp.", NsdManager.PROTOCOL_DNS_SD, listener)
+            nsd.discoverServices("_ipp._tcp.", NsdManager.PROTOCOL_DNS_SD, network, executor, listener)
             done.await(timeoutMs, TimeUnit.MILLISECONDS)
             found
         } finally {
             try { nsd.stopServiceDiscovery(listener) } catch (_: Exception) {}
+            executor.shutdownNow()
             try { multicast.release() } catch (_: Exception) {}
         }
     }

@@ -86,7 +86,9 @@ class NewspaperPrintWorker(
                 return Result.success()
             }
             if (caps == null) {
-                VoiceLog.add("газета: печать не начата — ${probe.error.ifBlank { "принтер недоступен" }}")
+                if ("Печать не начата" !in probe.error) {
+                    VoiceLog.add("газета: печать не начата — ${probe.error.ifBlank { "принтер недоступен" }}")
+                }
                 return Result.success()
             }
             PrinterDiscovery(applicationContext).remember(caps.endpoint.copy(name = caps.printerName))
@@ -132,9 +134,14 @@ class NewspaperPrintWorker(
                     // Адрес и ошибка уже в журнале.
                 }
             }
+            val home = ipp.homeNetwork(triedHost)
+            if (home == null) {
+                VoiceLog.add("газета: mDNS пропущен, нет Wi‑Fi в сети принтера")
+                return null
+            }
             VoiceLog.add("газета: ищу Pantum в Wi‑Fi")
             val found = try {
-                discovery.discover()
+                discovery.discover(home)
             } catch (e: Exception) {
                 VoiceLog.add("газета: mDNS — ${shortError(e)}")
                 null
