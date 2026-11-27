@@ -18,6 +18,7 @@ Requirements: pip3 install requests
 """
 
 import base64
+import contextvars
 import gzip
 import hashlib
 import html
@@ -7883,13 +7884,25 @@ def _record_turn(stats: dict, cfg: dict, func: str, text: str, chat_id=None):
         ai_usage.record_turn(func=func, role=stats.get("role") or "main", model=stats.get("model") or "", steps=stats.get("steps", 0),
                              ok=stats.get("ok", False), tool_errors=stats.get("tool_errors", 0), tools=stats.get("tools"),
                              escalated=stats.get("esc") or "", groups=stats.get("groups"), tools_more=stats.get("tools_more", 0),
-                             confirm=stats.get("confirm", False), chat=chat_id, text=text, log_text=bool(cfg.get("turnLog")))
+                             confirm=stats.get("confirm", False), chat=chat_id, text=text, log_text=bool(cfg.get("turnLog")),
+                             usd=ai_usage.turn_cost_usd())
     except Exception as e:
         print(f"  ai usage turn: {e}", flush=True)
 
 
 def _handle_assistant_message(token: str, chat_id, text: str, images: list, message_id,
                               archive_text=None, reply_to=None, message_date=None):
+    """Один запрос пользователя. Стоимость всех вызовов модели этого хода копится в ai_usage и попадает в подпись."""
+    cost_token = ai_usage.open_turn() if ai_usage else None
+    try:
+        _assistant_chat_turn(token, chat_id, text, images, message_id, archive_text, reply_to, message_date)
+    finally:
+        if cost_token is not None:
+            ai_usage.close_turn(cost_token)
+
+
+def _assistant_chat_turn(token: str, chat_id, text: str, images: list, message_id,
+                         archive_text=None, reply_to=None, message_date=None):
     def say(msg: str):
         try:
             tg_bot.send_text(token, chat_id, msg)
@@ -7927,9 +7940,12 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
     title_thread = None
     if is_new:
         tg_bot.start_dialog(chat_id, tg_bot.fallback_title(text))
+        # Название считается в другом потоке, но это тот же запрос: его цена входит в сумму хода.
+        turn_ctx = contextvars.copy_context()
         title_thread = threading.Thread(
-            target=lambda: title_box.update(t=generate_dialog_title(title_conf[0], title_conf[1], title_conf[2], text,
-                                                                    effort=title_conf[4])), daemon=True)
+            target=lambda: turn_ctx.run(lambda: title_box.update(
+                t=generate_dialog_title(title_conf[0], title_conf[1], title_conf[2], text, effort=title_conf[4]))),
+            daemon=True)
         title_thread.start()
 
     dialog = tg_bot.current_dialog(chat_id) or {}
@@ -7940,17 +7956,25 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
     except Exception as exc:
         print(f"  bot history save: {type(exc).__name__}", flush=True)
 
+    title_waited = False
+
+    def wait_title():
+        nonlocal title_waited
+        if title_waited or not (is_new and title_thread):
+            return
+        title_thread.join(timeout=12)
+        title_waited = True
+
     def dialog_tag() -> str:
-        """Подпись с названием диалога; вызывать, когда ответ точно ушёл в историю."""
+        """Подпись с названием диалога и стоимостью этого хода; вызывать, когда ответ точно ушёл в историю."""
+        wait_title()
         if is_new:
-            if title_thread:
-                title_thread.join(timeout=12)
             tg_bot.rename_dialog(chat_id, title_box.get("t") or tg_bot.fallback_title(text))
             dialog = tg_bot.current_dialog(chat_id) or {}
             tg_history.set_dialog(chat_id, dialog.get("id"), dialog.get("title") or "")
         else:
             tg_bot.bump_dialog(chat_id)
-        return tg_bot.dialog_footer(chat_id, is_new)
+        return tg_bot.dialog_footer(chat_id, is_new, ai_usage.turn_cost_label() if ai_usage else "")
 
     # В историю идёт чистый текст; картинка нужна только текущему ходу.
     stored_text = text + (" [фото]" if images else "")
@@ -7995,6 +8019,7 @@ def _handle_assistant_message(token: str, chat_id, text: str, images: list, mess
         tg_bot.set_ctx(None)
     if tool_groups and stats.get("groups"):
         tool_groups.remember(chat_id, set(stats["groups"]))
+    wait_title()
     _record_turn(stats, cfg, "chat", log_text(), chat_id)
 
     if answer is None:

@@ -535,5 +535,206 @@ class ToolGroupsTest(Base):
         self.assertEqual({t["function"]["name"] for t in self.sent[0]["tools"]}, allowed)
 
 
+class DialogCostTest(Base):
+    """Подпись диалога: сумма известных цен этого хода; без цены строка не ломается."""
+
+    CHAT = 77
+    TITLE = "стр. 1 --- ПРАВИТЕЛЬСТВО МОСКВЫ…"
+
+    def setUp(self):
+        super().setUp()
+        self.texts = []
+        self.app = make_app()
+        bot = jarvis.tg_bot
+        self._load, self._send, self._api = jarvis.load_app_data, bot.send_text, bot.api
+        jarvis.load_app_data = lambda: self.app
+        bot.send_text = lambda token, chat_id, text, **kw: self.texts.append(text) or [1]
+        bot.api = lambda *a, **k: {}
+        bot.reset(self.CHAT)
+
+    def tearDown(self):
+        jarvis.load_app_data = self._load
+        jarvis.tg_bot.send_text = self._send
+        jarvis.tg_bot.api = self._api
+        jarvis.tg_bot.reset(self.CHAT)
+        super().tearDown()
+
+    def seed(self, n=21):
+        bot = jarvis.tg_bot
+        bot.reset(self.CHAT)
+        bot.start_dialog(self.CHAT, self.TITLE)
+        with bot.chat_lock(self.CHAT):
+            hist = bot.history_for(self.CHAT)
+            hist.append({"role": "user", "content": "раньше"})
+            hist.append({"role": "assistant", "content": "ок"})
+            bot.touch(self.CHAT)
+        with bot._convo_guard:
+            bot._dialogs[self.CHAT]["n"] = n
+
+    def reply(self):
+        self.assertTrue(self.texts, "ответ не отправлен")
+        return jarvis.tg_bot.strip_tags(self.texts[-1])
+
+    def rows(self):
+        out = []
+        with open(ai_usage.usage_path(), encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    out.append(json.loads(line))
+        return out
+
+    def test_format_skips_zero_and_footer_keeps_one_line(self):
+        self.assertEqual(ai_usage.format_usd(0.012), "$0.012")
+        self.assertEqual(ai_usage.format_usd(0), "")
+        self.assertEqual(ai_usage.format_usd(None), "")
+        self.assertEqual(ai_usage.format_usd(0.0000004), "")
+        bot = jarvis.tg_bot
+        bot.reset(3)
+        bot.start_dialog(3, "Тема")
+        with bot._convo_guard:
+            bot._dialogs[3]["n"] = 22
+        plain = bot.strip_tags(bot.dialog_footer(3, False, "$0.012"))
+        self.assertEqual(plain, "\n\n💬 Диалог: «Тема» · сообщений: 22 · $0.012")
+        for bad in ("", "$0", "$0.000", "—", "-", "–", "0"):
+            plain = bot.strip_tags(bot.dialog_footer(3, False, bad))
+            self.assertNotIn("$", plain)
+            self.assertNotIn("—", plain)
+            self.assertNotIn("–", plain)
+            self.assertTrue(plain.rstrip().endswith("сообщений: 22"))
+        with bot._convo_guard:
+            bot._dialogs[3]["resumed"] = True
+        plain = bot.strip_tags(bot.dialog_footer(3, False, "$0.012"))
+        self.assertIn("↩ Продолжаем диалог: «Тема» · сообщений: 22 · $0.012", plain)
+        bot.start_dialog(3, "Тема")
+        plain = bot.strip_tags(bot.dialog_footer(3, True, "$0.012"))
+        self.assertIn("🆕 Новый диалог: «Тема» · $0.012", plain)
+        plain = bot.strip_tags(bot.dialog_footer(3, True, ""))
+        self.assertNotIn("$", plain)
+        bot.reset(3)
+
+    def test_usd_goes_to_usage_log_not_the_message(self):
+        token = ai_usage.open_turn()
+        try:
+            ai_usage.record_call(provider="openai", model="gpt-6.1-terra", role="main", func="chat",
+                                 usage={"in": 1000, "cached": 0, "out": 2000})
+            secret = "диспепсия 100 мг PIN 4321"
+            ai_usage.record_turn(func="chat", role="main", model="gpt-6.1-terra", text=secret, log_text=False,
+                                 usd=ai_usage.turn_cost_usd())
+            self.assertEqual(ai_usage.turn_cost_label(), "$0.011")
+        finally:
+            ai_usage.close_turn(token)
+        usage = ai_usage.usage_path().read_text(encoding="utf-8")
+        self.assertNotIn("диспеп", usage.lower())
+        self.assertNotIn("4321", usage)
+        self.assertNotIn(secret, usage)
+        self.assertIn('"usd":', usage)
+        self.assertFalse(ai_usage.turns_path().exists())
+
+    def test_known_price_is_sum_of_this_turn(self):
+        """Инструмент, обрыв ответа и добивка — одна подпись с суммой из журнала."""
+        self.seed()
+        def usage(inp, out):
+            return {"prompt_tokens": inp, "completion_tokens": out, "prompt_tokens_details": {"cached_tokens": 0}}
+        self.script(
+            R({"choices": [{"message": {"content": None, "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "get_data", "arguments": json.dumps({"domain": "about"})}}]},
+                "finish_reason": "tool_calls"}], "usage": usage(200, 40)}),
+            R({"choices": [{"message": {"content": "черновик "}, "finish_reason": "length"}], "usage": usage(300, 60)}),
+            oai_text("готово", usage(1000, 2000)),
+        )
+        jarvis._handle_assistant_message("t", self.CHAT, "что я рассказал о себе", [], 11)
+        parts = [ai_usage.cost("gpt-6.1-terra", i, 0, o) for i, o in ((200, 40), (300, 60), (1000, 2000))]
+        label = ai_usage.format_usd(sum(parts))
+        self.assertEqual(label, "$0.012")
+        plain = self.reply()
+        self.assertEqual([ln for ln in plain.splitlines() if ln.strip()][-1],
+                         f"💬 Диалог: «{self.TITLE}» · сообщений: 22 · {label}")
+        self.assertNotIn("—", plain)
+        self.assertNotIn("–", plain)
+        calls = [r for r in self.rows() if r.get("kind") == "call"]
+        turns = [r for r in self.rows() if r.get("kind") == "turn"]
+        self.assertEqual(len(calls), 3)
+        total = round(sum(r["usd"] for r in calls), 6)
+        self.assertEqual(turns[0]["usd"], total)
+        self.assertEqual(ai_usage.format_usd(total), label)
+        logged = ai_usage.usage_path().read_text(encoding="utf-8")
+        self.assertNotIn("что я рассказал о себе", logged)
+
+    def test_new_dialog_includes_title_call(self):
+        title_u = {"prompt_tokens": 200, "completion_tokens": 20, "prompt_tokens_details": {"cached_tokens": 0}}
+        main_u = {"prompt_tokens": 1000, "completion_tokens": 2000, "prompt_tokens_details": {"cached_tokens": 0}}
+        self.script(oai_text("Парковка", title_u), oai_text("готово", main_u))
+
+        class Immediate:
+            def __init__(self, target=None, daemon=None, **kwargs):
+                self._target = target
+
+            def start(self):
+                if self._target:
+                    self._target()
+
+            def join(self, timeout=None):
+                return None
+
+        old = jarvis.threading.Thread
+        jarvis.threading.Thread = Immediate
+        try:
+            jarvis._handle_assistant_message("t", self.CHAT, "как оформить парковку у дома", [], 12)
+        finally:
+            jarvis.threading.Thread = old
+        label = ai_usage.format_usd(ai_usage.cost("gpt-6-luna", 200, 0, 20) + ai_usage.cost("gpt-6.1-terra", 1000, 0, 2000))
+        self.assertNotEqual(label, ai_usage.format_usd(ai_usage.cost("gpt-6.1-terra", 1000, 0, 2000)))
+        plain = self.reply()
+        self.assertIn(f"🆕 Новый диалог: «Парковка» · {label}", plain)
+        calls = [r for r in self.rows() if r.get("kind") == "call"]
+        self.assertEqual({r["model"] for r in calls}, {"gpt-6-luna", "gpt-6.1-terra"})
+        self.assertEqual(ai_usage.format_usd(sum(r["usd"] for r in calls)), label)
+        self.assertNotIn("как оформить парковку у дома", ai_usage.usage_path().read_text(encoding="utf-8"))
+
+    def test_missing_price_does_not_break_footer(self):
+        def finish(text):
+            plain = jarvis.tg_bot.strip_tags(text)
+            self.assertTrue(plain.rstrip().endswith("сообщений: 22"), plain)
+            self.assertNotIn("$", plain)
+            self.assertNotIn("—", plain)
+            self.assertNotIn("–", plain)
+            self.assertNotRegex(plain, r"сообщений: 22\s*·")
+            turns = [r for r in self.rows() if r.get("kind") == "turn"]
+            self.assertTrue(turns)
+            self.assertNotIn("usd", turns[-1])
+
+        self.seed()
+        self.app = make_app(provider="claude", preset_model="claude-sonnet-5")
+        self.script(R({"content": [{"type": "text", "text": "готово"}], "stop_reason": "end_turn",
+                       "usage": {"input_tokens": 1500, "output_tokens": 40}}))
+        jarvis._handle_assistant_message("t", self.CHAT, "привет", [], 13)
+        finish(self.texts[-1])
+
+        for p in (ai_usage.usage_path(), ai_usage.turns_path()):
+            if p.exists():
+                p.unlink()
+        self.texts.clear()
+        self.seed()
+        self.app = make_app()
+        self.script(oai_text("готово", {"prompt_tokens": 0, "completion_tokens": 0}))
+        jarvis._handle_assistant_message("t", self.CHAT, "привет", [], 14)
+        finish(self.texts[-1])
+
+        for p in (ai_usage.usage_path(), ai_usage.turns_path()):
+            if p.exists():
+                p.unlink()
+        self.texts.clear()
+        self.seed()
+        self.app = make_app({"enabled": True, "main": {"model": "local-llm", "effort": "none"},
+                             "escalation": False, "toolGroups": False})
+        self.script(oai_text("готово", {"prompt_tokens": 500, "completion_tokens": 20}))
+        jarvis._handle_assistant_message("t", self.CHAT, "привет", [], 15)
+        finish(self.texts[-1])
+        calls = [r for r in self.rows() if r.get("kind") == "call"]
+        self.assertTrue(calls)
+        self.assertEqual(calls[-1]["usd"], 0.0)
+        self.assertIsNone(ai_usage.model_info("local-llm"))
+
+
 if __name__ == "__main__":
     unittest.main()

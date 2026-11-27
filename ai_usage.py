@@ -5,10 +5,12 @@ ai_usage.py — модели ИИ по ролям, уровни рассужде
   Уровень нигде не зашит в код вызовов — он берётся из settings.aiModels (Настройки → Ассистент),
   а здесь только справочник «что поддерживает модель».
 • Роли (main / complex / background и отдельные задачи): resolve_role(settings, role).
-• Журнал расхода: jarvis_ai_usage.jsonl (в бэкапе) — по записи на каждый запрос к модели и на каждый ход;
+• Журнал расхода: jarvis_ai_usage.jsonl (в бэкапе) — по записи на каждый запрос к модели и на каждый ход
+  (у хода поле usd — сумма известных цен вызовов этого запроса, если она больше нуля);
   jarvis_ai_turns.jsonl (не в бэкапе, 14 дней) — текст сообщения и вызванные инструменты для проверки маршрутизатора групп.
 """
 
+import contextvars
 import json
 import os
 import re
@@ -234,6 +236,86 @@ def cost(model: str, inp: int = 0, cached: int = 0, out: int = 0, write: int = N
     return round(total / 1e6, 6)
 
 
+def priced_usd(provider: str, model: str, usage: dict):
+    """Цена запроса по каталогу, $, или None, если модели нет в каталоге. Ноль не подменяем выдуманной ценой."""
+    if (provider or "") != "openai" or model_info(model) is None:
+        return None
+    u = usage or {}
+    return cost(model, u.get("in", 0), u.get("cached", 0), u.get("out", 0), u.get("write"))
+
+
+def format_usd(usd) -> str:
+    """Короткая сумма для подписи: «$0.012». Пусто, если цены нет или она нулевая."""
+    try:
+        v = round(float(usd), 6)
+    except (TypeError, ValueError):
+        return ""
+    if v <= 0:
+        return ""
+    text = f"{v:.6f}".rstrip("0").rstrip(".")
+    if "." not in text:
+        text += ".000"
+    else:
+        whole, frac = text.split(".", 1)
+        if len(frac) < 3:
+            frac = frac.ljust(3, "0")
+        text = whole + "." + frac
+    return "$" + text
+
+
+# Сумма известных цен одного запроса пользователя (все вызовы модели этого хода, включая инструменты,
+# продолжения и название диалога). Копится в памяти из тех же usd, что пишутся в журнал.
+class _TurnCost:
+    __slots__ = ("usd", "priced", "lock")
+
+    def __init__(self):
+        self.usd = 0.0
+        self.priced = False
+        self.lock = threading.Lock()
+
+    def add(self, usd):
+        if usd is None:
+            return
+        with self.lock:
+            self.priced = True
+            self.usd += float(usd)
+
+
+_turn_cost = contextvars.ContextVar("jarvis_ai_turn_cost", default=None)
+
+
+def open_turn():
+    """Начать копиться стоимость хода. Вернуть токен для close_turn. Потоку названия диалога нужен copy_context."""
+    return _turn_cost.set(_TurnCost())
+
+
+def close_turn(token):
+    if token is not None:
+        _turn_cost.reset(token)
+
+
+def _note_turn(usd):
+    bucket = _turn_cost.get()
+    if bucket is not None:
+        bucket.add(usd)
+
+
+def turn_cost_usd():
+    """Сумма известных цен открытого хода или None (цены нет либо она нулевая)."""
+    bucket = _turn_cost.get()
+    if bucket is None:
+        return None
+    with bucket.lock:
+        if not bucket.priced:
+            return None
+        v = round(bucket.usd, 6)
+    return v if v > 0 else None
+
+
+def turn_cost_label() -> str:
+    return format_usd(turn_cost_usd())
+
+
 # ── Журнал ───────────────────────────────────────────────────────────────────
 
 def _dir() -> Path:
@@ -310,20 +392,28 @@ def record_call(*, provider: str, model: str, role: str = "", func: str = "", ef
     row = {"kind": "call", "ts": round(_now(), 3), "provider": provider, "model": model, "role": role, "func": func,
            "effort": effort or "", "step": step, "in": u.get("in", 0), "cached": u.get("cached", 0), "out": u.get("out", 0),
            "reasoning": u.get("reasoning", 0), "src": source}
-    row["usd"] = cost(model, u.get("in", 0), u.get("cached", 0), u.get("out", 0), u.get("write")) if provider == "openai" else 0.0
+    priced = priced_usd(provider, model, u)
+    row["usd"] = priced if priced is not None else 0.0
     row.update(extra)
     _append(usage_path(), row, USAGE_KEEP_DAYS)
+    _note_turn(priced)
     return row
 
 
 def record_turn(*, func: str, role: str, model: str, steps: int = 0, ok: bool = True, tool_errors: int = 0, tools: list = None,
                 escalated: str = "", groups: list = None, tools_more: int = 0, confirm: bool = False, chat=None, text: str = "",
-                log_text: bool = True):
-    """Итог хода: нужен для метрик качества и дневного лимита эскалаций."""
+                log_text: bool = True, usd=None):
+    """Итог хода: нужен для метрик качества и дневного лимита эскалаций. usd — сумма известных цен вызовов хода."""
     now = _now()
     row = {"kind": "turn", "ts": round(now, 3), "func": func, "role": role, "model": model, "steps": steps, "ok": bool(ok),
            "tool_errors": tool_errors, "esc": escalated or "", "groups": sorted(groups) if groups else [],
            "tools_more": tools_more, "confirm": bool(confirm)}
+    try:
+        v = round(float(usd), 6) if usd else 0.0
+    except (TypeError, ValueError):
+        v = 0.0
+    if v > 0:
+        row["usd"] = v
     _append(usage_path(), row, USAGE_KEEP_DAYS)
     if log_text and text:
         _append(turns_path(), {"ts": round(now, 3), "func": func, "chat": chat, "text": text[:600], "tools": sorted(set(tools or [])),
